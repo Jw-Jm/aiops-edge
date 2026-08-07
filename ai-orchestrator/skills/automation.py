@@ -9,7 +9,9 @@ def register_automation_skill():
             ToolRegistry.register(name="execute_shell",
                                   description="执行 Shell/K8s 命令（受安全策略管控，需人工审批）",
                                   category="automation",
-                                  requires_approval=True)(execute_shell)
+                                  requires_approval=True,
+                                  params={"command": {"type": "string", "required": True, "default": "", "desc": "要执行的命令"},
+                                          "timeout": {"type": "int", "required": False, "default": 30, "desc": "超时秒数"}})(execute_shell)
     except Exception as e:
         print(f"[skills.automation] 工具注册失败: {e}")
 
