@@ -111,4 +111,15 @@ export const getDeepFlowStatus = () => api.get('/deepflow/status')
 // Logs
 export const queryLogs = (params: Record<string, unknown>) => api.get('/logs/query', { params })
 
+// ===== FlowEditor (self-built engine) =====
+export const listNodeTypes = () => api.get('/ai/flows/node-types')
+export const createFlow = (data: Record<string, unknown>) => api.post('/ai/flows', data)
+export const updateFlow = (id: string, data: Record<string, unknown>) => api.put(`/ai/flows/${encodeURIComponent(id)}`, data)
+export const deleteFlow = (id: string) => api.delete(`/ai/flows/${encodeURIComponent(id)}`)
+export const toggleFlow = (id: string) => api.post(`/ai/flows/${encodeURIComponent(id)}/toggle`)
+export const runFlowAsync = (id: string, trigger: Record<string, unknown>) => api.post(`/ai/flows/${encodeURIComponent(id)}/run`, { trigger })
+export const listFlowRuns = (id: string) => api.get(`/ai/flows/${encodeURIComponent(id)}/runs`)
+export const getFlowRun = (id: string, runId: string) => api.get(`/ai/flows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`)
+export const resumeFlowRun = (id: string, runId: string, approved: boolean) => api.post(`/ai/flows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/resume`, { approved })
+
 export default api

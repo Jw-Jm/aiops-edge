@@ -1,13 +1,17 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Row, Col, Button, Drawer, Form, Input, message } from 'antd'
-import { listFlows, runFlow } from '../../api/client'
+import { Card, Row, Col, Button, Drawer, Form, Input, message, Popconfirm, Space } from 'antd'
+import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined } from '@ant-design/icons'
+import { useNavigate } from 'react-router-dom'
+import { listFlows, runFlow, createFlow, deleteFlow, toggleFlow } from '../../api/client'
 
 interface Flow {
   key: string
+  id?: string
   name: string
   description: string
   nodes: any[]
   edges: any[]
+  enabled?: boolean
 }
 
 const Workflows: React.FC = () => {
@@ -18,6 +22,7 @@ const Workflows: React.FC = () => {
   const [runParams, setRunParams] = useState({ service: '', message: '' })
   const [runResult, setRunResult] = useState('')
   const [running, setRunning] = useState(false)
+  const navigate = useNavigate()
 
   const load = async () => {
     setLoading(true)
@@ -36,6 +41,45 @@ const Workflows: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const doCreate = async () => {
+    const defaultGraph: Record<string, unknown> = {
+      name: '新建流程',
+      description: '默认 chain 流程图',
+      nodes: [
+        { id: 'node_start', type: 'start', label: '开始', position: { x: 120, y: 40 } },
+        { id: 'node_end', type: 'end', label: '结束', position: { x: 120, y: 220 } },
+      ],
+      edges: [{ id: 'edge_1', source: 'node_start', target: 'node_end' }],
+    }
+    try {
+      await createFlow(defaultGraph)
+      message.success('新建流程成功')
+      load()
+    } catch {
+      message.error('新建流程失败')
+    }
+  }
+
+  const doDelete = async (key: string) => {
+    try {
+      await deleteFlow(key)
+      message.success('删除成功')
+      load()
+    } catch {
+      message.error('删除失败')
+    }
+  }
+
+  const doToggle = async (key: string) => {
+    try {
+      const r = await toggleFlow(key)
+      message.success(r?.data?.message || '状态已更新')
+      load()
+    } catch {
+      message.error('切换状态失败')
+    }
+  }
+
   const doRun = async (key: string) => {
     setRunning(true)
     setRunResult('运行中...')
@@ -52,11 +96,22 @@ const Workflows: React.FC = () => {
 
   return (
     <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>共 {flows.length} 个流程</div>
+        <Button type="primary" icon={<PlusOutlined />} onClick={doCreate}>
+          新建流程
+        </Button>
+      </div>
       <Row gutter={[16, 16]}>
         {flows.map((f) => (
           <Col span={12} key={f.key}>
             <Card
-              title={f.name}
+              title={
+                <Space>
+                  {f.name}
+                  {f.enabled === false && <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>（已停用）</span>}
+                </Space>
+              }
               style={{ background: 'var(--surface)', borderColor: 'var(--border)', borderRadius: 10 }}
               extra={
                 <Button
@@ -73,6 +128,26 @@ const Workflows: React.FC = () => {
             >
               <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 8 }}>{f.description}</div>
               <div style={{ color: 'var(--text)', fontSize: 12 }}>{f.nodes?.length} 个节点 · {f.edges?.length} 条边</div>
+              <div style={{ marginTop: 12 }}>
+                <Space wrap>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<EditOutlined />}
+                    onClick={() => navigate(`/workflows/editor?id=${encodeURIComponent(f.id || f.key)}`)}
+                  >
+                    编辑
+                  </Button>
+                  <Button size="small" onClick={() => doToggle(f.key)}>
+                    {f.enabled === false ? '启用' : '停用'}
+                  </Button>
+                  <Popconfirm title="确认删除该流程？" onConfirm={() => doDelete(f.key)}>
+                    <Button size="small" danger icon={<DeleteOutlined />}>
+                      删除
+                    </Button>
+                  </Popconfirm>
+                </Space>
+              </div>
             </Card>
           </Col>
         ))}
@@ -94,7 +169,7 @@ const Workflows: React.FC = () => {
           </svg>
         </div>
         <div style={{ marginTop: 16 }}>
-          <Button type="primary" onClick={() => setRunOpen(true)}>
+          <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => setRunOpen(true)}>
             运行
           </Button>
         </div>
