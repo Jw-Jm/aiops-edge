@@ -798,6 +798,16 @@ class BrainOrchestrator:
                 step_num += 1
                 label = step_names.get(node_name, node_name)
                 yield {"type": "progress", "node": node_name, "text": f"{label}", "step": min(step_num, 7), "total": 8}
+                # 工具级事件（节点级推断；真实工具级采集为独立后续）
+                tool_node_map = {"crewai": "CrewAI 分析", "holmes": "Trace 调查", "rca": "RCA 根因分析",
+                                 "rag": "RAG 案例匹配", "plan": "生成操作方案"}
+                tool_id = f"tool_{node_name}_{step_num}"
+                if node_name in tool_node_map:
+                    yield {"type": "tool_start", "tool_call_id": tool_id,
+                           "name": tool_node_map[node_name], "status": "pending", "arguments": {}}
+                    yield {"type": "tool_end", "tool_call_id": tool_id,
+                           "name": tool_node_map[node_name], "status": "success",
+                           "arguments": {}, "result": str(node_data)[:500]}
                 # 捕获分析结果供任务工作台生成建议
                 if node_name == "crewai":
                     suggestion.update(node_data)

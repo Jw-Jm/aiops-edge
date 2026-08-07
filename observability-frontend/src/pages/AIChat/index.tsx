@@ -138,6 +138,7 @@ const AIChat: React.FC = () => {
     setInput('');
     setLoading(true);
     setProgressText('分析开始...');
+    setToolCards([]);
 
     try {
       const baseURL = api.defaults.baseURL || '/api/v1';
@@ -445,6 +446,21 @@ const AIChat: React.FC = () => {
             </div>
           </div>
         ))}
+
+        {toolCards.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+            {toolCards.map((t) => (
+              <div
+                key={t.tool_call_id}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', background: 'var(--surface-2)', borderRadius: 8 }}
+              >
+                <span style={{ fontSize: 12, color: 'var(--text)' }}>⚙️ {t.name}</span>
+                <span style={{ fontSize: 11, color: t.status === 'success' ? '#22c55e' : t.status === 'pending' ? 'var(--text-muted)' : '#ef4444' }}>{t.status}</span>
+                {t.result && <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{String(t.result).slice(0, 80)}</span>}
+              </div>
+            ))}
+          </div>
+        )}
 
         {loading && (
           <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16 }}>
