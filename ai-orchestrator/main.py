@@ -160,6 +160,12 @@ async def ai_chat(req: ChatRequest, request: Request):
         thread = threading.Thread(target=_run_stream, daemon=True)
         thread.start()
 
+        def _format_sse(ev: dict) -> str:
+            """将内部事件 dict 序列化为标准 SSE 帧（event: + data:）。"""
+            etype = ev.get("type", "message")
+            data = json.dumps(ev, ensure_ascii=False)
+            return f"event: {etype}\ndata: {data}\n\n"
+
         async def generate():
             while True:
                 try:
@@ -171,7 +177,21 @@ async def ai_chat(req: ChatRequest, request: Request):
                     continue
                 if event is None:
                     break
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                # done/error 补结构化字段；其余透传
+                if event.get("type") == "done":
+                    yield _format_sse({
+                        "type": "done",
+                        "text": event.get("text", ""),
+                        "assistant_message": {
+                            "id": f"asst_{thread_id}",
+                            "content": event.get("text", ""),
+                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        },
+                    })
+                elif event.get("type") == "error":
+                    yield _format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
+                else:
+                    yield _format_sse(event)
 
         return StreamingResponse(generate(), media_type="text/event-stream",
                                  headers={"X-Session-Id": thread_id, "Cache-Control": "no-cache"})
