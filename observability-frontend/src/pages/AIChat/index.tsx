@@ -236,7 +236,7 @@ const AIChat: React.FC = () => {
         {sessions.length === 0
           ? <Empty description='暂无' image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ marginTop: 40 }} />
           : <List loading={sessionsLoading} dataSource={sessions} size='small' renderItem={s => (
-              <List.Item onClick={() => loadSession(s.session_id)}
+              <List.Item onClick={() => navigate(`/chat/${s.session_id}`)}
                 style={{ cursor: 'pointer', padding: '8px 4px', borderRadius: 6, background: activeSession === s.session_id ? '#e6f4ff' : 'transparent', marginBottom: 2 }}
                 actions={[
                   <Popconfirm key='del' title='删除？' onConfirm={(e: any) => { e?.stopPropagation(); deleteSession(s.session_id); }} onCancel={(e: any) => e?.stopPropagation()}>

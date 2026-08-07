@@ -12,6 +12,7 @@ import {
   DashboardOutlined,
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
+import ChatThread from './pages/AIChat/ChatThread'
 import Alerts from './pages/Alerts'
 import IncidentDetail from './pages/Alerts/IncidentDetail'
 import Settings from './pages/Settings'
@@ -195,6 +196,7 @@ const AppLayout: React.FC = () => {
               <Routes>
                 <Route path="/" element={<Overview />} />
                 <Route path="/aichat" element={<AIChat />} />
+                <Route path="/chat/:sessionId" element={<ChatThread />} />
                 <Route path="/services" element={<Services />} />
                 <Route path="/services/:name" element={<ServiceDetail />} />
                 <Route path="/topology" element={<Topology />} />
