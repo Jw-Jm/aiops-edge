@@ -75,6 +75,20 @@ const STATUS_STYLE: Record<string, { border: string; bg: string; color: string }
   pending: { border: '#8c8c8c', bg: 'rgba(140,140,140,0.08)', color: '#8c8c8c' },
 }
 
+// Backend stores node output as `output_json` (a JSON string); parse it safely.
+function parseOutput(rn: any): any {
+  const raw = rn?.output_json
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return { raw }
+    }
+  }
+  return raw
+}
+
 // Output port naming for a node type. condition/wait_approval have named output ports.
 function outputPorts(spec?: NodeTypeSpec): string[] {
   if (!spec) return ['next', 'error']
@@ -341,7 +355,7 @@ const WorkflowEditor: React.FC = () => {
             data: {
               ...n.data,
               runStatus: st,
-              output: d?.output !== undefined ? d.output : n.data.output,
+              output: d ? parseOutput(d) : n.data.output,
               firedPort: d?.fired_port,
               nodeError: d?.error,
             },
@@ -368,9 +382,9 @@ const WorkflowEditor: React.FC = () => {
             return
           }
           if (run.status === 'waiting_approval') {
-            // find wait_approval node output
+            // find wait_approval node output (stored in output_json as a JSON string)
             const waitNode = (run.nodes || []).find((rn: any) => rn.node_type === 'wait_approval')
-            setApproval({ runId: rid, output: waitNode?.output || run.output || null })
+            setApproval({ runId: rid, output: parseOutput(waitNode) ?? null })
           }
         } catch {
           stopPolling()
@@ -411,7 +425,7 @@ const WorkflowEditor: React.FC = () => {
         }
         if (run.status === 'waiting_approval') {
           const waitNode = (run.nodes || []).find((rn: any) => rn.node_type === 'wait_approval')
-          setApproval({ runId: rid, output: waitNode?.output || run.output || null })
+          setApproval({ runId: rid, output: parseOutput(waitNode) ?? null })
           setRunning(false)
           return
         }
@@ -653,14 +667,33 @@ const WorkflowEditor: React.FC = () => {
           </Space>
         }
       >
-        <pre
-          style={{
-            background: 'var(--surface-2)', padding: 12, borderRadius: 8, color: 'var(--text)',
-            fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 360, overflow: 'auto',
-          }}
-        >
-          {approval?.output ? JSON.stringify(approval.output, null, 2) : '（无输出内容）'}
-        </pre>
+        {approval?.output ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>风险分</Text>
+              <Tag color={(approval.output.risk_score ?? 0) >= 6 ? 'red' : (approval.output.risk_score ?? 0) >= 3 ? 'orange' : 'green'}>
+                {approval.output.risk_score ?? 0}
+              </Tag>
+              {approval.output.risk_reason && (
+                <span style={{ color: 'var(--text)', fontSize: 12 }}>{approval.output.risk_reason}</span>
+              )}
+            </div>
+            {approval.output.plan && (
+              <div>
+                <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>方案</Text>
+                <pre style={{ background: 'var(--surface-2)', padding: 10, borderRadius: 8, fontSize: 12, whiteSpace: 'pre-wrap', marginTop: 4 }}>{approval.output.plan}</pre>
+              </div>
+            )}
+            {approval.output.script && (
+              <div>
+                <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>脚本</Text>
+                <pre style={{ background: 'var(--surface-2)', padding: 10, borderRadius: 8, fontSize: 12, whiteSpace: 'pre-wrap', marginTop: 4 }}>{approval.output.script}</pre>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>（无审批输出内容）</div>
+        )}
       </Modal>
 
       {/* Run history drawer */}
