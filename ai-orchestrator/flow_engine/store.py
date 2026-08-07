@@ -84,8 +84,8 @@ class FlowStore:
         self._conn.commit()
         return True
 
-    def create_run(self, flow_id, flow_version, trigger_type, trigger_json) -> str:
-        rid = str(uuid.uuid4())
+    def create_run(self, flow_id, flow_version, trigger_type, trigger_json, run_id: str = None) -> str:
+        rid = run_id or str(uuid.uuid4())
         self._conn.execute(
             "INSERT INTO flow_runs (run_id,flow_id,flow_version,status,trigger_type,trigger_json,created_at) "
             "VALUES (?,?,?,?,?,?,?)",
