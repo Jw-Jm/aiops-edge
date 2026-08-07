@@ -832,7 +832,7 @@ class BrainOrchestrator:
                        "final_response": suggestion.get("final_response", "")[:3000]}
                 # 内联审批卡事件：task_id 由调用方(main.py)捕获后回填
                 yield {"type": "approval_pending",
-                       "task_id": context.get("thread_id", ""),
+                       "task_id": thread_id,
                        "plan": plan,
                        "script": script[:1000],
                        "risk_score": suggestion.get("risk_score", 0),
