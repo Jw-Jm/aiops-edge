@@ -34,18 +34,23 @@ type AlertRule struct {
 
 // AlertEvent represents a triggered alert event.
 type AlertEvent struct {
-	ID             string  `json:"id"`
-	RuleID         string  `json:"rule_id"`
-	RuleName       string  `json:"rule_name"`
-	Service        string  `json:"service"`
-	Severity       string  `json:"severity"`
-	Message        string  `json:"message"`
-	Value          float64 `json:"value"`
-	Threshold      float64 `json:"threshold"`
-	Timestamp      string  `json:"timestamp"`
-	Count          int     `json:"count"`
-	FirstTimestamp string  `json:"first_timestamp"`
-	LastTimestamp  string  `json:"last_timestamp"`
+	ID               string  `json:"id"`
+	RuleID           string  `json:"rule_id"`
+	RuleName         string  `json:"rule_name"`
+	Service          string  `json:"service"`
+	Severity         string  `json:"severity"`
+	Message          string  `json:"message"`
+	Value            float64 `json:"value"`
+	Threshold        float64 `json:"threshold"`
+	Timestamp        string  `json:"timestamp"`
+	Count            int     `json:"count"`
+	FirstTimestamp   string  `json:"first_timestamp"`
+	LastTimestamp    string  `json:"last_timestamp"`
+	Status           string  `json:"status"` // firing/acknowledged/resolved
+	AcknowledgedAt   string  `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy   string  `json:"acknowledged_by,omitempty"`
+	ResolvedAt       string  `json:"resolved_at,omitempty"`
+	ResolvedBy       string  `json:"resolved_by,omitempty"`
 }
 
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
@@ -173,6 +178,31 @@ func saveAlertEvents() {
 	if err := os.WriteFile(alertEventsPath, data, 0600); err != nil {
 		log.Printf("saveAlertEvents write: %v", err)
 	}
+}
+
+// transitionStatus 执行告警事件状态迁移；非法迁移返回 false 且不修改。
+// 合法：firing -> acknowledged -> resolved，或 firing -> resolved。
+func transitionStatus(ev *AlertEvent, to, by string) bool {
+	now := time.Now().Format(time.RFC3339)
+	switch to {
+	case "acknowledged":
+		if ev.Status != "firing" {
+			return false
+		}
+		ev.Status = to
+		ev.AcknowledgedAt = now
+		ev.AcknowledgedBy = by
+	case "resolved":
+		if ev.Status == "resolved" {
+			return false
+		}
+		ev.Status = to
+		ev.ResolvedAt = now
+		ev.ResolvedBy = by
+	default:
+		return false
+	}
+	return true
 }
 
 func loadAlertSilences() {
@@ -633,6 +663,7 @@ func (h *Handler) evaluateAlerts() {
 					Count:          1,
 					FirstTimestamp: nowStr,
 					LastTimestamp:  nowStr,
+					Status:         "firing",
 				}
 				alertEvents = append(alertEvents, event)
 				if len(alertEvents) > maxAlertEvents {
