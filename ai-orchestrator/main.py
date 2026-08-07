@@ -300,7 +300,7 @@ async def ai_flow_run(key: str, body: dict = None):
     message = (body or {}).get("message", "对服务进行完整诊断")
     intent = "chat" if mode == "chat" else "ops"
     brain = _get_brain()
-    result = await _asyncio.get_event_loop().run_in_executor(
+    result = await asyncio.get_event_loop().run_in_executor(
         None, brain.execute_sync_full, intent, service, message, "workflow-run"
     )
     return {"run_id": f"run_{int(time.time()*1000)}", "result": result}
