@@ -3,6 +3,8 @@
 每个 Skill 封装一组相关工具 + 意图关键词 + 系统提示词模板，
 专家 (Expert) 通过引用多个 Skill 组合能力，实现"工具分层、专家编排"。
 """
+import os
+import json
 from dataclasses import dataclass, field
 from typing import Callable, Optional, List
 
@@ -227,6 +229,66 @@ class ExpertRegistry:
             return []
         return [SkillRegistry.get(s) for s in expert.skills if SkillRegistry.get(s)]
 
+    BUILTIN_EXPERTS = {"inspection", "diagnosis", "ops", "query"}
+
+    @classmethod
+    def update(cls, name: str, **fields) -> bool:
+        """更新专家字段（role/goal/backstory/intent_keywords/skills/tools/system_prompt_template）。"""
+        expert = cls._experts.get(name)
+        if not expert:
+            return False
+        for k, v in fields.items():
+            if hasattr(expert, k):
+                setattr(expert, k, v)
+        cls.save_custom_store()
+        return True
+
+    @classmethod
+    def delete(cls, name: str) -> bool:
+        """删除用户自定义专家；内置专家不可删。"""
+        if name in cls.BUILTIN_EXPERTS:
+            return False
+        if name in cls._experts:
+            del cls._experts[name]
+            cls.save_custom_store()
+            return True
+        return False
+
+    @classmethod
+    def _store_path(cls) -> str:
+        return os.environ.get("EXPERTS_STORE", "/tmp/expert_store.json")
+
+    @classmethod
+    def save_custom_store(cls):
+        """将用户自定义专家（非内置）持久化到 JSON。"""
+        custom = {}
+        for k, v in cls._experts.items():
+            if k in cls.BUILTIN_EXPERTS:
+                continue
+            custom[k] = {
+                "name": v.name, "role": v.role, "goal": v.goal, "backstory": v.backstory,
+                "intent_keywords": v.intent_keywords, "skills": v.skills, "tools": v.tools,
+                "system_prompt_template": v.system_prompt_template,
+            }
+        try:
+            with open(cls._store_path(), "w") as f:
+                json.dump(custom, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[skill_registry] 保存自定义专家失败: {e}")
+
+    @classmethod
+    def load_custom_store(cls):
+        """启动时加载用户自定义专家（与内置专家合并）。"""
+        try:
+            with open(cls._store_path()) as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        for k, v in data.items():
+            if k in cls.BUILTIN_EXPERTS:
+                continue
+            cls._experts[k] = ExpertDef(**v)
+
 
 # ═══════════════════════════════════════════════════════
 #  初始化（在 orchestrator 中调用）
@@ -239,3 +301,4 @@ def _init_defaults():
     from skills import init_skills, init_experts
     init_skills()
     init_experts()
+    ExpertRegistry.load_custom_store()  # 加载用户自定义专家
