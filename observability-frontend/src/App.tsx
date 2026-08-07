@@ -24,6 +24,7 @@ import Topology from './pages/Topology'
 import Traces from './pages/Traces'
 import TraceDetail from './pages/TraceDetail'
 import Overview from './pages/Overview'
+import Monitor from './pages/Monitor'
 
 const { Sider, Content, Header } = Layout
 
@@ -199,6 +200,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/traces" element={<Traces />} />
                 <Route path="/traces/:traceId" element={<TraceDetail />} />
                 <Route path="/logs" element={<Logs />} />
+                <Route path="/monitor" element={<Monitor />} />
                 <Route path="/deepflow" element={<DeepFlow />} />
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/tasks" element={<Tasks />} />
