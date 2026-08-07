@@ -22,7 +22,8 @@ def register_rca_skill():
     if not ToolRegistry.get("rca_analyze"):
         ToolRegistry.register(name="rca_analyze",
                               description="执行根因分析（确定性+假设引擎），定位故障根因",
-                              category="analysis")(_rca_run)
+                              category="analysis",
+                              params={"service": {"type": "string", "required": False, "default": "", "desc": "服务名（空为自动检测）"}})(_rca_run)
 
     SkillRegistry.register(SkillDef(
         name="skill.rca",

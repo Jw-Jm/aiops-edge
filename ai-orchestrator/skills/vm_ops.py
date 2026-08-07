@@ -90,15 +90,19 @@ def register_vm_skill():
     if not ToolRegistry.get("vm_list"):
         ToolRegistry.register(name="vm_list",
                               description="列出所有 KubeVirt 虚拟机及其运行状态",
-                              category="vm")(vm_list)
+                              category="vm",
+                              params={})(vm_list)
     if not ToolRegistry.get("vm_status"):
         ToolRegistry.register(name="vm_status",
                               description="查询单个 KubeVirt 虚拟机详细状态",
-                              category="vm")(vm_status)
+                              category="vm",
+                              params={"vm_name": {"type": "string", "required": True, "default": "", "desc": "虚拟机名"}})(vm_status)
     if not ToolRegistry.get("vm_operate"):
         ToolRegistry.register(name="vm_operate",
                               description="对虚拟机执行运维操作 (restart/start/stop/migrate)，需人工审批",
-                              category="vm", requires_approval=True)(vm_operate)
+                              category="vm", requires_approval=True,
+                              params={"action": {"type": "string", "required": True, "default": "", "desc": "操作类型(restart/start/stop/migrate)"},
+                                      "vm_name": {"type": "string", "required": True, "default": "", "desc": "虚拟机名"}})(vm_operate)
 
     SkillRegistry.register(SkillDef(
         name="skill.vm_ops",

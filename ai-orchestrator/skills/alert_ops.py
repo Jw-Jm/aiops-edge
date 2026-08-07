@@ -55,11 +55,13 @@ def register_alert_skill():
     if not ToolRegistry.get("alert_rules"):
         ToolRegistry.register(name="alert_rules",
                               description="查询全部告警规则及阈值配置",
-                              category="alert")(alert_rules)
+                              category="alert",
+                              params={})(alert_rules)
     if not ToolRegistry.get("alert_events"):
         ToolRegistry.register(name="alert_events",
                               description="查询最近告警事件（按规则聚合，含触发次数）",
-                              category="alert")(alert_events)
+                              category="alert",
+                              params={"limit": {"type": "int", "required": False, "default": 10, "desc": "返回条数"}})(alert_events)
 
     SkillRegistry.register(SkillDef(
         name="skill.alert_ops",

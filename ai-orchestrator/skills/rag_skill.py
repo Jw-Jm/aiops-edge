@@ -31,11 +31,15 @@ def register_rag_skill():
     if not ToolRegistry.get("case_search"):
         ToolRegistry.register(name="case_search",
                               description="检索相似历史运维案例（含根因/方案/处理结果）",
-                              category="knowledge")(_case_search)
+                              category="knowledge",
+                              params={"query": {"type": "string", "required": False, "default": "", "desc": "检索关键词"},
+                                      "limit": {"type": "int", "required": False, "default": 5, "desc": "返回条数"}})(_case_search)
     if not ToolRegistry.get("case_feedback"):
         ToolRegistry.register(name="case_feedback",
                               description="对历史案例提交有效性反馈 (success/failed)，用于案例权重调整",
-                              category="knowledge")(_case_feedback)
+                              category="knowledge",
+                              params={"case_id": {"type": "string", "required": True, "default": "", "desc": "案例 ID"},
+                                      "outcome": {"type": "string", "required": False, "default": "success", "desc": "反馈结果(success/failed)"}})(_case_feedback)
 
     SkillRegistry.register(SkillDef(
         name="skill.rag_cases",
