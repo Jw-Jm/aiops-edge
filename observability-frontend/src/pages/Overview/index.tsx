@@ -13,48 +13,57 @@ const { Text } = Typography
 const Overview: React.FC = () => {
   const navigate = useNavigate()
   const [stats, setStats] = useState({
-    services: 0, alerts: 0, edges: 0,
+    services: 0, alerts: 0, edges: 0, errorRate: 0, avgLatency: 0,
   })
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [svcRes, alertRes, topoRes] = await Promise.allSettled([
-          api.get('/services'),
-          api.get('/alerts/events', { params: { limit: 1 } }),
-          api.get('/topology/global'),
-        ])
-        // 兼容多种后端返回结构：
-        // - 服务: { data: { count, data:[...] } } 或 { data: [...] }
-        // - 告警: { data: { count, total, data:[...] } }
-        // - 拓扑: { data: { edge_count, edges:[...] } } 或 { data: { edges:[...] } }
-        const services = (() => {
-          if (svcRes.status !== 'fulfilled') return 0
-          const d = svcRes.value?.data
-          if (Array.isArray(d)) return d.length
-          if (Array.isArray(d?.data)) return d.data.length
-          if (typeof d?.count === 'number') return d.count
-          return 0
-        })()
-        const alerts = (() => {
-          if (alertRes.status !== 'fulfilled') return 0
-          const d = alertRes.value?.data
-          if (typeof d?.total === 'number') return d.total
-          if (typeof d?.count === 'number') return d.count
-          if (Array.isArray(d?.data)) return d.data.length
-          if (Array.isArray(d)) return d.length
-          return 0
-        })()
-        const edges = (() => {
-          if (topoRes.status !== 'fulfilled') return 0
-          const d = topoRes.value?.data
-          if (typeof d?.edge_count === 'number') return d.edge_count
-          if (Array.isArray(d?.edges)) return d.edges.length
-          if (typeof d?.edges === 'number') return d.edges
-          return 0
-        })()
-        setStats({ services, alerts, edges })
+        // 优先走 /dashboard/stats 聚合接口；失败则回退到原 3 个并发请求兜底
+        try {
+          const res = await api.get('/dashboard/stats')
+          const d = res?.data
+          setStats({
+            services: d?.services ?? 0,
+            alerts: 0,
+            edges: d?.edges ?? 0,
+            errorRate: d?.error_rate ?? 0,
+            avgLatency: d?.avg_latency_ms ?? 0,
+          })
+        } catch {
+          const [svcRes, alertRes, topoRes] = await Promise.allSettled([
+            api.get('/services'),
+            api.get('/alerts/events', { params: { limit: 1 } }),
+            api.get('/topology/global'),
+          ])
+          const services = (() => {
+            if (svcRes.status !== 'fulfilled') return 0
+            const d = svcRes.value?.data
+            if (Array.isArray(d)) return d.length
+            if (Array.isArray(d?.data)) return d.data.length
+            if (typeof d?.count === 'number') return d.count
+            return 0
+          })()
+          const alerts = (() => {
+            if (alertRes.status !== 'fulfilled') return 0
+            const d = alertRes.value?.data
+            if (typeof d?.total === 'number') return d.total
+            if (typeof d?.count === 'number') return d.count
+            if (Array.isArray(d?.data)) return d.data.length
+            if (Array.isArray(d)) return d.length
+            return 0
+          })()
+          const edges = (() => {
+            if (topoRes.status !== 'fulfilled') return 0
+            const d = topoRes.value?.data
+            if (typeof d?.edge_count === 'number') return d.edge_count
+            if (Array.isArray(d?.edges)) return d.edges.length
+            if (typeof d?.edges === 'number') return d.edges
+            return 0
+          })()
+          setStats({ services, alerts, edges, errorRate: 0, avgLatency: 0 })
+        }
       } catch { /* ignore */ } finally {
         setLoading(false)
       }
@@ -64,8 +73,9 @@ const Overview: React.FC = () => {
 
   const statCards = [
     { title: '服务数量', value: stats.services, icon: <DatabaseOutlined />, color: '#1677ff', path: '/services', desc: '已观测服务' },
-    { title: '告警事件', value: stats.alerts, icon: <AlertOutlined />, color: '#fa8c16', path: '/alerts', desc: '当前活跃告警' },
     { title: '拓扑调用', value: stats.edges, icon: <ApartmentOutlined />, color: '#722ed1', path: '/topology', desc: '服务调用关系' },
+    { title: '错误率', value: `${stats.errorRate.toFixed(2)}%`, icon: <AlertOutlined />, color: '#fa8c16', path: '/alerts', desc: '近 24h 请求错误率' },
+    { title: '平均延迟', value: `${stats.avgLatency.toFixed(1)}ms`, icon: <ThunderboltOutlined />, color: '#52c41a', path: '/traces', desc: '近 24h 平均调用延迟' },
   ]
 
   return (
