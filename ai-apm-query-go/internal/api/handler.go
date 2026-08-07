@@ -15,7 +15,25 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/biz"
 )
+
+// toInt64 将 ClickHouse JSONEachRow 的值安全转换为 int64。
+func toInt64(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	case string:
+		i, err := strconv.ParseInt(n, 10, 64)
+		return i, err == nil
+	default:
+		return 0, false
+	}
+}
 
 // Handler handles HTTP API requests and queries ClickHouse.
 type Handler struct {
@@ -642,6 +660,58 @@ func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 		"data":    rows,
 		"count":   len(rows),
 	})
+}
+
+// DashboardStats handles GET /api/v1/dashboard/stats
+// 聚合服务 RED + 拓扑边数，返回平台总览统计。
+func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
+	tid := extractTenantID(r)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	sql := fmt.Sprintf(
+		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id='%s' AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 20",
+		tid,
+	)
+	body, err := h.queryClickHouse(ctx, sql)
+	if err != nil {
+		log.Printf("DashboardStats query error: %v", err)
+		respondError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	rows, err := parseRows(body)
+	if err != nil {
+		log.Printf("DashboardStats parse error: %v", err)
+		respondError(w, http.StatusInternalServerError, "parse failed")
+		return
+	}
+
+	var items []biz.StatsItem
+	for _, row := range rows {
+		svc, _ := row["service_name"].(string)
+		calls, _ := toInt64(row["calls"])
+		errors, _ := toInt64(row["errors"])
+		latSum, _ := toInt64(row["lat_sum"])
+		items = append(items, biz.StatsItem{
+			Service:  svc,
+			Calls:    calls,
+			Errors:   errors,
+			LatSumNs: latSum,
+		})
+	}
+	stats := biz.AggregateStats(items)
+
+	// 拓扑边数
+	edgeSQL := fmt.Sprintf("SELECT count() FROM observability.service_topology WHERE tenant_id='%s' AND date >= today()-1", tid)
+	if eb, err := h.queryClickHouse(ctx, edgeSQL); err == nil {
+		if er, perr := parseRows(eb); perr == nil && len(er) > 0 {
+			if n, ok := toInt64(er[0]["count()"]); ok {
+				stats.Edges = n
+			}
+		}
+	}
+
+	respondJSON(w, http.StatusOK, stats)
 }
 
 // nodeTypeInfo 根据服务名推断节点类型、分层 rank 与图标（参考 DeepFlow 分层拓扑）。
