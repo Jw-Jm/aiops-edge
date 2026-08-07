@@ -77,7 +77,7 @@ class AgentState(TypedDict):
 #  LLM call
 # ═══════════════════════════════════════════════════════════════
 
-from llm_mock import should_skip_llm
+from llm_mock import is_mock_enabled, mock_llm_response, should_skip_llm
 
 def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家") -> str:
     if is_mock_enabled():
