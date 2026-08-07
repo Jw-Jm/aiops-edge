@@ -57,6 +57,11 @@ export const executeSkill = (key: string, params: Record<string, unknown>) => ap
 export const listAgents = () => api.get('/ai/agents')
 export const getAgent = (name: string) => api.get(`/ai/agents/${encodeURIComponent(name)}`)
 
+// ===== AI Workflows =====
+export const listFlows = () => api.get('/ai/flows')
+export const getFlow = (key: string) => api.get(`/ai/flows/${encodeURIComponent(key)}`)
+export const runFlow = (key: string, params: Record<string, unknown>) => api.post(`/ai/flows/${encodeURIComponent(key)}/run`, params)
+
 export const chatWithAI = (data: Record<string, unknown>) =>
   api.post('/ai/chat', data, {
     timeout: 120000,          // LLM analysis takes 30-90s

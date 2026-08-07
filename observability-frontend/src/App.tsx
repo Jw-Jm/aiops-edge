@@ -9,7 +9,7 @@ import {
   RadarChartOutlined, FileSearchOutlined, ToolOutlined,
   ApartmentOutlined, DatabaseOutlined, NodeIndexOutlined, CloudServerOutlined,
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
-  DashboardOutlined,
+  DashboardOutlined, DeploymentUnitOutlined,
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
 import ChatThread from './pages/AIChat/ChatThread'
@@ -17,6 +17,7 @@ import Alerts from './pages/Alerts'
 import IncidentDetail from './pages/Alerts/IncidentDetail'
 import Skills from './pages/Skills'
 import Agents from './pages/Agents'
+import Workflows from './pages/Workflows'
 import Settings from './pages/Settings'
 import DeepFlow from './pages/DeepFlow'
 import Login from './pages/Login'
@@ -61,6 +62,7 @@ const menuGroups = [
       { key: '/aichat', icon: <RobotOutlined />, label: 'AI 诊断' },
       { key: '/skills', icon: <ToolOutlined />, label: '技能目录' },
       { key: '/agents', icon: <RobotOutlined />, label: 'AI 助理' },
+      { key: '/workflows', icon: <DeploymentUnitOutlined />, label: '工作流' },
       { key: '/alerts', icon: <AlertOutlined />, label: '告警中心' },
     ],
   },
@@ -203,6 +205,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/chat/:sessionId" element={<ChatThread />} />
                 <Route path="/skills" element={<Skills />} />
                 <Route path="/agents" element={<Agents />} />
+                <Route path="/workflows" element={<Workflows />} />
                 <Route path="/services" element={<Services />} />
                 <Route path="/services/:name" element={<ServiceDetail />} />
                 <Route path="/topology" element={<Topology />} />
