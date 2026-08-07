@@ -44,6 +44,12 @@ export const getTraceDetail = (id: string) => api.get(`/traces/${id}`)
 export const getTraceContext = (id: string) => api.get(`/traces/${id}/context`)
 export const getTopology = (params?: Record<string, unknown>) => api.get('/topology/global', { params })
 export const getTopologyNodeDetail = (name: string, params?: Record<string, unknown>) => api.get(`/topology/node/${encodeURIComponent(name)}`, { params })
+
+// ===== Chat Sessions =====
+export const getChatSessions = () => api.get('/ai/sessions')
+export const getSession = (sid: string) => api.get(`/ai/session/${sid}`)
+export const deleteSession = (sid: string) => api.delete(`/ai/session/${sid}`)
+
 export const chatWithAI = (data: Record<string, unknown>) =>
   api.post('/ai/chat', data, {
     timeout: 120000,          // LLM analysis takes 30-90s
