@@ -40,6 +40,14 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/clickhouse
+            - name: remote-config
+              mountPath: /etc/clickhouse-server/users.d/allow-remote.xml
+              subPath: allow-remote.xml
+              readOnly: true
+      volumes:
+        - name: remote-config
+          configMap:
+            name: clickhouse-remote
   volumeClaimTemplates:
     - metadata:
         name: data

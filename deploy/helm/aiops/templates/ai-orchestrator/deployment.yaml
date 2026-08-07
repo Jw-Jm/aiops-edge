@@ -47,9 +47,15 @@ spec:
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.aiOrchestrator.resources | nindent 12 }}
           volumeMounts:
