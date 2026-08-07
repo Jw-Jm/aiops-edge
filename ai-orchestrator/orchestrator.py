@@ -830,6 +830,14 @@ class BrainOrchestrator:
                        "risk_score": suggestion.get("risk_score", 0),
                        "risk_reason": suggestion.get("risk_reason", ""),
                        "final_response": suggestion.get("final_response", "")[:3000]}
+                # 内联审批卡事件：task_id 由调用方(main.py)捕获后回填
+                yield {"type": "approval_pending",
+                       "task_id": context.get("thread_id", ""),
+                       "plan": plan,
+                       "script": script[:1000],
+                       "risk_score": suggestion.get("risk_score", 0),
+                       "risk_reason": suggestion.get("risk_reason", "需要人工确认后执行"),
+                       "requires_approval": True}
             yield {"type": "done", "text": suggestion.get("final_response", "")[:500]}
         except Exception as e:
             # DAG 执行异常，返回错误信息而不是卡死
