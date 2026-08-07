@@ -53,7 +53,7 @@ victoriaLogs:
   enabled: true
   external:
     host: ""
-  image: "victoriametrics/victoria-logs:v1.6.0"
+  image: "victoriametrics/victoria-logs:v1.52.0"
   storageClass: ""
   storage: 5Gi
   resources:
@@ -119,7 +119,7 @@ vmalert:
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true
-  image: "docker.io/library/observability-frontend:latest"
+  image: "observability-frontend:latest"
   nodePort: 30253
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
@@ -127,7 +127,7 @@ frontend:
 
 queryApi:
   enabled: true
-  image: "docker.io/library/query-api:latest"
+  image: "query-api:latest"
   # 以下 DNS 与代码硬编码一致（查询/告警/K8s/设置）
   clickhouseHost: "clickhouse-0.clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -140,7 +140,7 @@ queryApi:
 
 ingest:
   enabled: true
-  image: "docker.io/library/ingest-pipeline:latest"
+  image: "ingest-pipeline:latest"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
@@ -155,7 +155,7 @@ ingest:
 
 aiOrchestrator:
   enabled: true
-  image: "docker.io/library/ai-orchestrator:latest"
+  image: "ai-orchestrator:latest"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   minioEndpoint: "minio.observability.svc.cluster.local:9000"
   clickhouseHost: "clickhouse-0.clickhouse.observability.svc.cluster.local"

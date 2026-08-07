@@ -19,6 +19,7 @@ spec:
       containers:
         - name: ingest
           image: {{ .Values.ingest.image }}
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:
@@ -75,7 +76,9 @@ metadata:
   namespace: {{ .Values.namespace.observability }}
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: {{ .Values.ingest.walStorageClass | default "" | quote }}
+  {{- if .Values.ingest.walStorageClass }}
+  storageClassName: {{ .Values.ingest.walStorageClass }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.ingest.walStorage }}

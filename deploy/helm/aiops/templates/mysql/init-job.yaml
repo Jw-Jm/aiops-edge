@@ -2,12 +2,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: mysql-init-{{ .Release.Revision }}
+  name: mysql-init
   namespace: {{ .Values.namespace.observability }}
-  annotations:
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "6"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  labels:
+    app: mysql-init
 spec:
   template:
     metadata:

@@ -58,7 +58,9 @@ metadata:
   namespace: {{ .Values.namespace.observability }}
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: {{ .Values.chromadb.storageClass | default "" | quote }}
+  {{- if .Values.chromadb.storageClass }}
+  storageClassName: {{ .Values.chromadb.storageClass }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.chromadb.storage }}

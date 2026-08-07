@@ -10,7 +10,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 build() {
   local dir="$1" name="$2"
   echo ">>> building $name from $dir"
-  (cd "$ROOT/$dir" && docker build --platform linux/arm64 -t "docker.io/library/$name:latest" .)
+  # 用本地 tag（无 registry 前缀），OrbStack K8s 直接使用本地镜像
+  (cd "$ROOT/$dir" && docker build --platform linux/arm64 -t "$name:latest" .)
   echo ">>> built $name"
 }
 

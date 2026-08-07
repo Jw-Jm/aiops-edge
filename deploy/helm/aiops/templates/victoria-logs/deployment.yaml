@@ -36,10 +36,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /vlogsdata
-  volumes:
-    - name: data
-      persistentVolumeClaim:
-        claimName: vlogs-data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vlogs-data
 ---
 apiVersion: v1
 kind: Service
@@ -62,7 +62,9 @@ metadata:
   namespace: {{ .Values.namespace.observability }}
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: {{ .Values.victoriaLogs.storageClass | default "" | quote }}
+  {{- if .Values.victoriaLogs.storageClass }}
+  storageClassName: {{ .Values.victoriaLogs.storageClass }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.victoriaLogs.storage }}

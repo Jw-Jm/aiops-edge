@@ -19,6 +19,7 @@ spec:
       containers:
         - name: query-api
           image: {{ .Values.queryApi.image }}
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:

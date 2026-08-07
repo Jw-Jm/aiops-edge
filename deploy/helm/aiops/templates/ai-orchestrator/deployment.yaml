@@ -19,6 +19,7 @@ spec:
       containers:
         - name: ai-orchestrator
           image: {{ .Values.aiOrchestrator.image }}
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           env:
@@ -81,7 +82,9 @@ metadata:
   namespace: {{ .Values.namespace.observability }}
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: {{ .Values.aiOrchestrator.dataStorageClass | default "" | quote }}
+  {{- if .Values.aiOrchestrator.dataStorageClass }}
+  storageClassName: {{ .Values.aiOrchestrator.dataStorageClass }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.aiOrchestrator.dataStorage }}

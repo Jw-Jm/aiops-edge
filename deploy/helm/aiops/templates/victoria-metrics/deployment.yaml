@@ -36,10 +36,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /vmdata
-  volumes:
-    - name: data
-      persistentVolumeClaim:
-        claimName: vm-data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vm-data
 ---
 apiVersion: v1
 kind: Service
@@ -62,7 +62,9 @@ metadata:
   namespace: {{ .Values.namespace.observability }}
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: {{ .Values.victoriaMetrics.storageClass | default "" | quote }}
+  {{- if .Values.victoriaMetrics.storageClass }}
+  storageClassName: {{ .Values.victoriaMetrics.storageClass }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.victoriaMetrics.storage }}

@@ -14,9 +14,18 @@ helm repo add deepflow https://deepflowio.github.io/deepflow >/dev/null 2>&1 || 
 helm repo update deepflow >/dev/null 2>&1 || true
 
 echo "=== [1/2] 部署 observability (自研 + 中间件) ==="
+# 本机开发默认密钥（生产环境务必用 values-prod.yaml 覆盖真实密钥）
 helm upgrade --install aiops "$CHART_DIR" \
   --namespace observability --create-namespace \
   --set deepflow.enabled=false \
+  --set secrets.jwtSecret="dev-jwt-secret-change-me" \
+  --set secrets.internalToken="dev-internal-token" \
+  --set secrets.ingestApiKey="dev-ingest-key" \
+  --set secrets.clickhousePassword="dev-ch-pass" \
+  --set secrets.redisPassword="dev-redis-pass" \
+  --set secrets.minioAccessKey="minioadmin" \
+  --set secrets.minioSecretKey="minioadmin123" \
+  --set secrets.mysqlRootPassword="dev-mysql-pass" \
   --wait \
   --timeout 15m
 

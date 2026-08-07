@@ -46,7 +46,9 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: {{ .Values.mysql.storageClass | default "" | quote }}
+        {{- if .Values.mysql.storageClass }}
+        storageClassName: {{ .Values.mysql.storageClass }}
+        {{- end }}
         resources:
           requests:
             storage: {{ .Values.mysql.storage }}

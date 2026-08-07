@@ -38,10 +38,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-  volumes:
-    - name: data
-      persistentVolumeClaim:
-        claimName: redis-data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: redis-data
 ---
 apiVersion: v1
 kind: Service
@@ -64,7 +64,9 @@ metadata:
   namespace: {{ .Values.namespace.observability }}
 spec:
   accessModes: ["ReadWriteOnce"]
-  storageClassName: {{ .Values.redis.storageClass | default "" | quote }}
+  {{- if .Values.redis.storageClass }}
+  storageClassName: {{ .Values.redis.storageClass }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.redis.storage }}
