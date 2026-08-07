@@ -76,6 +76,27 @@ class SkillDef:
     system_prompt: str = ""                     # 该技能的领域系统提示词
     trigger_actions: List[str] = field(default_factory=list)  # 可触发的动作（如审批执行）
 
+    def to_summary(self) -> dict:
+        """导出技能元数据，供 /ai/skills 接口与前端渲染。"""
+        tools = []
+        for tn in self.tools:
+            t = ToolRegistry.get(tn)
+            tools.append({
+                "name": tn,
+                "description": t.description if t else "",
+                "category": t.category if t else "general",
+                "requires_approval": t.requires_approval if t else False,
+                "params": list((t.params or {}).keys()),
+            })
+        return {
+            "key": self.name,
+            "name": self.title,
+            "description": self.description,
+            "intent_keywords": self.intent_keywords,
+            "tools": tools,
+            "system_prompt": self.system_prompt,
+        }
+
 
 class SkillRegistry:
     _skills: dict[str, SkillDef] = {}
