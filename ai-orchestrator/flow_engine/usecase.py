@@ -15,6 +15,35 @@ class WorkflowService:
         self.store = store
         self.engine = Engine()
         register_aiops_nodes()
+        self._seed_builtin_flows()
+
+    def _seed_builtin_flows(self):
+        """内置 full/chat 流程种子化到 store，使 flow_api 的 list_flows/get_flow
+        统一走 DB 路径同时服务内置与用户流程。orchestrator 导入失败时优雅跳过。"""
+        if self.store.list_flows():
+            return  # 已有数据（含用户流程），不重复种子化
+        try:
+            from orchestrator import GRAPH_DEFS
+        except Exception as e:
+            print(f"[flow] 内置 flows 种子化跳过（orchestrator 不可用）: {e}")
+            return
+        for mode, g in GRAPH_DEFS.items():
+            try:
+                self.store.save_flow({"id": g["key"], "name": g["name"],
+                                      "description": g.get("description", ""),
+                                      "enabled": True, "graph": self._builtin_to_graph(g)})
+            except Exception as e:
+                print(f"[flow] 内置 flow 种子化失败 {g.get('key')}: {e}")
+
+    def _builtin_to_graph(self, g) -> dict:
+        """把 orchestrator.GRAPH_DEFS 的节点/边元数据转成新的 Graph wire 格式。
+        节点 id 即其 type 名；wait_approval 出边走 approved 端口。"""
+        nodes = [{"id": n["id"], "type": n["id"], "name": n.get("label", n["id"]),
+                  "config": {}, "position": {"x": 0, "y": 0}} for n in g["nodes"]]
+        edges = [{"id": f"e{i}", "source": s,
+                  "sourcePort": ("approved" if s == "wait_approval" else "next"),
+                  "target": t} for i, (s, t) in enumerate(g["edges"])]
+        return {"nodes": nodes, "edges": edges}
 
     def node_types(self) -> list[dict]:
         return [{"type": s.type, "kind": s.kind, "category": s.category,
