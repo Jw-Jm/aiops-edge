@@ -22,6 +22,7 @@ type Handler struct {
 	chHost string
 	chPort int
 	client *http.Client
+	vmURL  string // VictoriaMetrics base URL, e.g. http://victoria-metrics.observability.svc.cluster.local:8428
 }
 
 // NewHandler creates a new Handler.
@@ -30,6 +31,14 @@ func NewHandler(chHost string, chPort int) *Handler {
 		chHost: chHost,
 		chPort: chPort,
 		client: &http.Client{Timeout: 30 * time.Second},
+		vmURL:  "http://victoria-metrics.observability.svc.cluster.local:8428",
+	}
+}
+
+// SetVMURL overrides the VictoriaMetrics base URL (from env).
+func (h *Handler) SetVMURL(u string) {
+	if u != "" {
+		h.vmURL = u
 	}
 }
 
