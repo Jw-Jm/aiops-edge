@@ -8,15 +8,18 @@ def register_infra_skill():
         if not ToolRegistry.get("get_infrastructure"):
             ToolRegistry.register(name="get_infrastructure",
                                   description="获取 K8s 基础设施（节点/Pod/Deployment）",
-                                  category="infra")(get_infrastructure)
+                                  category="infra",
+                                  params={})(get_infrastructure)
         if not ToolRegistry.get("deepflow_status"):
             ToolRegistry.register(name="deepflow_status",
                                   description="检查 DeepFlow eBPF 采集状态",
-                                  category="infra")(deepflow_status)
+                                  category="infra",
+                                  params={})(deepflow_status)
         if not ToolRegistry.get("k8sgpt_diagnose"):
             ToolRegistry.register(name="k8sgpt_diagnose",
                                   description="使用 K8sGPT 诊断集群问题",
-                                  category="k8s")(k8sgpt_diagnose)
+                                  category="k8s",
+                                  params={"namespace": {"type": "string", "required": False, "default": "observability", "desc": "命名空间"}})(k8sgpt_diagnose)
     except Exception as e:
         print(f"[skills.infra] 工具注册失败: {e}")
 
