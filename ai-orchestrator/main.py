@@ -15,6 +15,8 @@ from shell_policy import ShellPolicy
 from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCARequest
 from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
+from skill_registry import SkillRegistry, ExpertRegistry
+from skills import init_skills, init_experts
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭
 os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
@@ -209,6 +211,73 @@ async def ai_chat(req: ChatRequest, request: Request):
 # ═══════════════════════════════════════════════════════════════
 #  Sessions
 # ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  AI Skills / Agents（只读 + 执行）
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/ai/skills")
+async def ai_skills():
+    try:
+        if not SkillRegistry.list_all():
+            init_skills()
+            init_experts()
+    except Exception:
+        pass
+    return {"skills": [s.to_summary() for s in SkillRegistry.list_all()]}
+
+@app.get("/api/v1/ai/skills/{key}")
+async def ai_skill_detail(key: str):
+    try:
+        if not SkillRegistry.list_all():
+            init_skills()
+            init_experts()
+    except Exception:
+        pass
+    skill = SkillRegistry.get(key)
+    if not skill:
+        raise HTTPException(404, "skill not found")
+    return skill.to_summary()
+
+@app.post("/api/v1/ai/skills/{key}/execute")
+async def ai_skill_execute(key: str, body: dict = None):
+    try:
+        if not SkillRegistry.list_all():
+            init_skills()
+            init_experts()
+    except Exception:
+        pass
+    params = (body or {}).get("params", {})
+    try:
+        return SkillRegistry.execute_skill(key, params)
+    except KeyError:
+        raise HTTPException(404, "skill not found")
+
+@app.get("/api/v1/ai/agents")
+async def ai_agents():
+    try:
+        if not ExpertRegistry.list_all():
+            init_experts()
+    except Exception:
+        pass
+    return {"agents": [
+        {"name": e.name, "role": e.role, "goal": e.goal,
+         "description": e.goal, "skills": e.skills, "tools": e.tools}
+        for e in ExpertRegistry.list_all()
+    ]}
+
+@app.get("/api/v1/ai/agents/{name}")
+async def ai_agent_detail(name: str):
+    try:
+        if not ExpertRegistry.list_all():
+            init_experts()
+    except Exception:
+        pass
+    e = ExpertRegistry.get(name)
+    if not e:
+        raise HTTPException(404, "agent not found")
+    return {"name": e.name, "role": e.role, "goal": e.goal, "backstory": e.backstory,
+            "skills": e.skills, "tools": e.tools}
 
 @app.get("/api/v1/ai/sessions")
 async def list_sessions():
