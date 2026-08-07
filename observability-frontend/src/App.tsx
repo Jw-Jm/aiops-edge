@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
 import Alerts from './pages/Alerts'
+import IncidentDetail from './pages/Alerts/IncidentDetail'
 import Settings from './pages/Settings'
 import DeepFlow from './pages/DeepFlow'
 import Login from './pages/Login'
@@ -203,6 +204,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/monitor" element={<Monitor />} />
                 <Route path="/deepflow" element={<DeepFlow />} />
                 <Route path="/alerts" element={<Alerts />} />
+                <Route path="/alerts/incidents/:id" element={<IncidentDetail />} />
                 <Route path="/tasks" element={<Tasks />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>

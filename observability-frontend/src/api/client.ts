@@ -72,6 +72,9 @@ export const deleteAlertRule = (id: string) => api.delete(`/alerts/rules/${id}`)
 
 // Alert Events
 export const getAlertEvents = (params?: Record<string, unknown>) => api.get('/alerts/events', { params })
+export const getAlertEventByID = (id: string) => api.get(`/alerts/events/${id}`)
+export const ackAlertEvent = (id: string) => api.post(`/alerts/events/${id}/ack`)
+export const resolveAlertEvent = (id: string) => api.post(`/alerts/events/${id}/resolve`)
 
 // Alert → RCA (告警根因分析联动)
 export const rcaAlertAnalysis = (data: Record<string, unknown>) =>

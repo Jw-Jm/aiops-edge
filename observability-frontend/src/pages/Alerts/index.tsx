@@ -382,7 +382,12 @@ const AlertEventsTab: React.FC = () => {
       render: (s: string) => <Tag color={severityColors[s]}>{s?.toUpperCase()}</Tag>,
     },
     { title: '服务', dataIndex: 'service', key: 'service', width: 140, render: (s: string) => <Tag>{s || '-'}</Tag> },
-    { title: '规则名称', dataIndex: 'rule_name', key: 'rule_name', ellipsis: true },
+    {
+      title: '规则名称', dataIndex: 'rule_name', key: 'rule_name', ellipsis: true,
+      render: (v: string, record: AlertEvent) => (
+        <a onClick={() => { window.location.href = `/alerts/incidents/${record.id}` }} style={{ color: '#60a5fa' }}>{v}</a>
+      ),
+    },
     {
       title: '次数', dataIndex: 'count', key: 'count', width: 90, align: 'center' as const,
       render: (v: number) => <Tag color={v >= 10 ? 'red' : v >= 5 ? 'orange' : 'blue'}>{v || 0}</Tag>,
