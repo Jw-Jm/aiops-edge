@@ -468,10 +468,6 @@ def eval_condition(expr: str, ctx: RunContext) -> bool:
     for op in (">=", "<=", "==", "!=", ">", "<"):
         if op in resolved:
             left, right = resolved.split(op, 1)
-            try:
-                return float(left) op_float(right) if op in (">", "<", ">=", "<=") else _numcmp(op, left.strip(), right.strip())
-            except ValueError:
-                pass
             return _numcmp(op, left.strip(), right.strip())
     if " contains " in resolved:
         left, right = resolved.split(" contains ", 1)
@@ -489,21 +485,6 @@ def _numcmp(op, left, right):
     except ValueError:
         return False
     return {"<": l < r, ">": l > r, "<=": l <= r, ">=": l >= r}[op]
-```
-
-**注意**：上面 `eval_condition` 中有一处笔误（`op_float` 不存在），需修正为以下正确版本：
-
-```python
-def eval_condition(expr: str, ctx: RunContext) -> bool:
-    resolved = resolve_template(expr, ctx)
-    for op in (">=", "<=", "==", "!=", ">", "<"):
-        if op in resolved:
-            left, right = resolved.split(op, 1)
-            return _numcmp(op, left.strip(), right.strip())
-    if " contains " in resolved:
-        left, right = resolved.split(" contains ", 1)
-        return right.strip() in left.strip()
-    return False
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -552,16 +533,15 @@ from flow_engine.engine import Engine, RunStatus
 def _setup():
     node_registry.reset()
     register_node(NodeSpec(type="start", kind="action", category="t", label="s",
-                           ports=["next"], execute=lambda ctx, config: {"out": config.get("v")}))
+                           ports=["next"], execute=lambda ctx, config: {"out": config.get("v", 0)}))
     register_node(NodeSpec(type="double", kind="action", category="t", label="d",
-                           ports=["next"], execute=lambda ctx, config: {"out": ctx.nodes.get("start", {}).get("output", {}).get("out", 0) * 2}))
-    register_node(NodeSpec(type="cond", kind="control", category="t", label="c",
-                           ports=["true", "false"],
-                           execute=lambda ctx, config: eval_condition(config["expr"], ctx) and {"_": 0} or {"_": 0}))
-    register_node(NodeSpec(type="approval", kind="control", category="t", label="a",
-                           ports=["approved", "rejected"],
-                           execute=lambda ctx, config: {"approved": config.get("approved")}))
-    # condition/approval 的实际端口由引擎根据返回/expr 决定，execute 返回值仅写 output
+                           ports=["next"],
+                           execute=lambda ctx, config: {"out": ctx.nodes.get("n1", {}).get("output", {}).get("out", 0) * 2}))
+    register_node(NodeSpec(type="condition", kind="control", category="t", label="c",
+                           ports=["true", "false"], execute=lambda ctx, config: {}))
+    register_node(NodeSpec(type="wait_approval", kind="control", category="t", label="a",
+                           ports=["approved", "rejected"], execute=lambda ctx, config: {}))
+    # condition/wait_approval 的实际端口由引擎根据 expr/resume 决定，execute 返回值仅写 output
 
 def _g(nodes, edges):
     return Graph(nodes=[GraphNode(id=i, type=t) for i, t in nodes],
@@ -571,7 +551,7 @@ def test_sequential_chain():
     _setup()
     g = _g([("n1", "start"), ("n2", "double")],
            [("n1", "next", "n2")])
-    res = Engine().execute(g, {"service": "x"}, config={"n1": {"v": 21}})
+    res = Engine().execute(g, {"service": "x"}, graph_config={"n1": {"v": 21}})
     assert res.status == "succeeded"
     assert res.context.nodes["n2"]["output"]["out"] == 42
 
@@ -586,29 +566,27 @@ def test_error_port_marks_failed_when_no_error_edge():
 
 def test_condition_routes_true():
     _setup()
-    from flow_engine.expr import eval_condition as _e  # noqa
-    # 注册真条件分支：cond 由引擎 eval_condition 决定
-    g = _g([("n1", "start"), ("n2", "cond"), ("nt", "start"), ("nf", "start")],
+    g = _g([("n1", "start"), ("n2", "condition"), ("nt", "start"), ("nf", "start")],
            [("n1", "next", "n2"), ("n2", "true", "nt"), ("n2", "false", "nf")])
-    res = Engine().execute(g, {}, config={"n1": {"v": 1}, "n2": {"expr": "{{nodes.n1.output.out}} == 1"}})
+    res = Engine().execute(g, {}, graph_config={"n1": {"v": 1}, "n2": {"expr": "{{nodes.n1.output.out}} == 1"}})
     assert res.status == "succeeded"
     assert "nt" in res.context.nodes and "nf" not in res.context.nodes
 
 def test_wait_approval_pauses_and_resumes():
     _setup()
-    g = _g([("n1", "start"), ("n2", "approval"), ("n3", "double")],
+    g = _g([("n1", "start"), ("n2", "wait_approval"), ("n3", "double")],
            [("n1", "next", "n2"), ("n2", "approved", "n3")])
     calls = {"n": 0}
     def hook(ctx, node_id):
         calls["n"] += 1
         return True, {}
-    res = Engine().execute(g, {}, resume_hook=hook)
+    res = Engine().execute(g, {}, resume_hook=hook, graph_config={"n1": {"v": 5}})
     assert calls["n"] == 1
     assert res.status == "succeeded"
     assert "n3" in res.context.nodes
 ```
 
-**注意**：测试中 `_setup()` 里 condition/approval 的 execute 只是占位；引擎内部对 `kind=="control"` 且 type 为 `cond`/`approval` 特殊处理端口路由（`cond` 用 `eval_condition(config["expr"], ctx)`，`approval` 用 resume 结果）。为简化，引擎按 **spec.type** 特判 `cond` 与 `approval`。
+**注意**：测试中 `_setup()` 里 condition/wait_approval 的 execute 只是占位；引擎内部对 `kind=="control"` 且 type 为 `condition`/`wait_approval` 特殊处理端口路由（`condition` 用 `eval_condition(config["expr"], ctx)`，`wait_approval` 用 resume 结果）。为简化，引擎按 **spec.type** 特判 `condition` 与 `wait_approval`。节点类型名必须与 Task 6 注册的 `condition` / `wait_approval` 一致。
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -685,9 +663,9 @@ class Engine:
                 ctx.nodes[node.id] = {"output": out, "status": "done"}
                 nr.output = out
                 nr.status = "done"
-                if node.type == "cond":
+                if node.type == "condition":
                     fired = "true" if eval_condition(config.get("expr", "false"), ctx) else "false"
-                elif node.type == "approval":
+                elif node.type == "wait_approval":
                     if resume_hook is None:
                         fired = "approved"
                     else:
