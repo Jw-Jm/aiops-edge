@@ -60,6 +60,7 @@ const AIChat: React.FC = () => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [progressText, setProgressText] = useState('');
+  const [toolCards, setToolCards] = useState<Array<{ tool_call_id: string; name: string; status: string; result?: string }>>([]);
   const [expert, setExpert] = useState('diagnosis');
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -156,25 +157,41 @@ const AIChat: React.FC = () => {
       const reader = resp.body?.getReader();
       if (!reader) throw new Error('No stream');
       const decoder = new TextDecoder(); let buf = ''; let fullText = '';
+      let toolCardsLocal: Array<{ tool_call_id: string; name: string; status: string; result?: string }> = [];
+      const dispatchEvent = (evName: string, ev: any) => {
+        switch (evName) {
+          case 'progress': if (ev.text) setProgressText(ev.text); break;
+          case 'chunk': if (ev.text) fullText += ev.text; break;
+          case 'assistant': fullText = ev.content ?? ev.text ?? fullText; break;
+          case 'tool_start': toolCardsLocal.push({ tool_call_id: ev.tool_call_id, name: ev.name, status: 'pending' }); break;
+          case 'tool_end':
+            toolCardsLocal = toolCardsLocal.map((t) => (t.tool_call_id === ev.tool_call_id ? { ...t, status: ev.status, result: ev.result } : t));
+            break;
+          case 'approval_pending': break;
+          case 'done':
+            if (!fullText) fullText = ev.text ?? ev.assistant_message?.content ?? '';
+            setToolCards(toolCardsLocal);
+            break;
+          case 'error': fullText = `⚠️ ${ev.error ?? ev.text ?? ''}`; setToolCards(toolCardsLocal); break;
+          default: break;
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n'); buf = lines.pop() || '';
-        for (const l of lines) {
-          if (!l.startsWith('data: ')) continue;
-          try {
-            const ev = JSON.parse(l.slice(6));
-            if (ev.type === 'progress' && ev.text) {
-              setProgressText(ev.text);
-            } else if (ev.type === 'error' && ev.text) {
-              fullText = `⚠️ ${ev.text}`;
-            } else if (ev.type === 'chunk' && ev.text) {
-              fullText += ev.text;
-            } else if (ev.type === 'done' && ev.text && !fullText) {
-              fullText = ev.text;
-            }
-          } catch {}
+        // 按 \n\n 空行切出完整帧
+        const frames = buf.split('\n\n'); buf = frames.pop() || '';
+        for (const frame of frames) {
+          if (!frame.trim()) continue;
+          let evName = 'message';
+          const dataLines: string[] = [];
+          for (const l of frame.split('\n')) {
+            if (l.startsWith('event: ')) evName = l.slice(7).trim();
+            else if (l.startsWith('data: ')) dataLines.push(l.slice(6));
+          }
+          if (dataLines.length === 0) continue;
+          try { dispatchEvent(evName, JSON.parse(dataLines.join('\n'))); } catch {}
         }
       }
       const aiText = fullText || 'LLM 分析未返回结果，请检查配置后重试。';
