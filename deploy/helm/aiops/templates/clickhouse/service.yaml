@@ -1,0 +1,21 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: clickhouse
+spec:
+  # headless：使 clickhouse-0.clickhouse.<ns>.svc.cluster.local 解析到具体 pod
+  clusterIP: None
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000
+{{- end }}

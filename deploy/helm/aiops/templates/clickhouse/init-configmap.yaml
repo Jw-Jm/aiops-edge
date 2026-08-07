@@ -1,0 +1,10 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-init
+  namespace: {{ .Values.namespace.observability }}
+data:
+  init_clickhouse.sql: |-
+{{ .Files.Get "files/clickhouse/init_clickhouse.sql" | indent 4 }}
+{{- end }}

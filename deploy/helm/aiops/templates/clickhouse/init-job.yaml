@@ -1,0 +1,36 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clickhouse-init-{{ .Release.Revision }}
+  namespace: {{ .Values.namespace.observability }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    metadata:
+      name: clickhouse-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: init-tables
+          image: {{ .Values.clickhouse.image }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "waiting for clickhouse..."
+              until clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --query 'SELECT 1' >/dev/null 2>&1; do sleep 5; done
+              echo "clickhouse ready, running init sql..."
+              clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --multiquery < /init/init_clickhouse.sql
+              echo "init done"
+          volumeMounts:
+            - name: init-sql
+              mountPath: /init
+              readOnly: true
+      volumes:
+        - name: init-sql
+          configMap:
+            name: clickhouse-init
+{{- end }}

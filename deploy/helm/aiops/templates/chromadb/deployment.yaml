@@ -1,0 +1,65 @@
+{{- if .Values.chromadb.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chromadb
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: chromadb
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: chromadb
+  template:
+    metadata:
+      labels:
+        app: chromadb
+    spec:
+      containers:
+        - name: chromadb
+          image: {{ .Values.chromadb.image }}
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /api/v1/heartbeat, port: 8000 }
+            initialDelaySeconds: 15
+          livenessProbe:
+            httpGet: { path: /api/v1/heartbeat, port: 8000 }
+            initialDelaySeconds: 25
+          resources:
+            {{- toYaml .Values.chromadb.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: chromadb-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chromadb
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: chromadb
+spec:
+  selector:
+    app: chromadb
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: chromadb-data
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.chromadb.storageClass | default "" | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.chromadb.storage }}
+{{- end }}

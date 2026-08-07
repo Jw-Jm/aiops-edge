@@ -1,0 +1,10 @@
+{{- if .Values.mysql.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-migrations
+  namespace: {{ .Values.namespace.observability }}
+data:
+  0001_init.sql: |-
+{{ .Files.Get "files/mysql/migrations/0001_init.sql" | indent 4 }}
+{{- end }}

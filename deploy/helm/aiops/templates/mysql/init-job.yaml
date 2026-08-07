@@ -1,0 +1,43 @@
+{{- if .Values.mysql.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mysql-init-{{ .Release.Revision }}
+  namespace: {{ .Values.namespace.observability }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "6"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    metadata:
+      name: mysql-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: init-db
+          image: {{ .Values.mysql.image }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "waiting for mysql..."
+              until mysqladmin ping -h mysql.{{ .Values.namespace.observability }}.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; do sleep 5; done
+              echo "mysql ready, running migrations..."
+              for f in /migrations/*.sql; do
+                echo "applying $f"
+                mysql -h mysql.{{ .Values.namespace.observability }}.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" < "$f"
+              done
+              echo "migrations done"
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: mysql-migrations
+{{- end }}
