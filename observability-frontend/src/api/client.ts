@@ -50,6 +50,13 @@ export const getChatSessions = () => api.get('/ai/sessions')
 export const getSession = (sid: string) => api.get(`/ai/session/${sid}`)
 export const deleteSession = (sid: string) => api.delete(`/ai/session/${sid}`)
 
+// ===== AI Skills / Agents =====
+export const listSkills = () => api.get('/ai/skills')
+export const getSkill = (key: string) => api.get(`/ai/skills/${encodeURIComponent(key)}`)
+export const executeSkill = (key: string, params: Record<string, unknown>) => api.post(`/ai/skills/${encodeURIComponent(key)}/execute`, { params })
+export const listAgents = () => api.get('/ai/agents')
+export const getAgent = (name: string) => api.get(`/ai/agents/${encodeURIComponent(name)}`)
+
 export const chatWithAI = (data: Record<string, unknown>) =>
   api.post('/ai/chat', data, {
     timeout: 120000,          // LLM analysis takes 30-90s
