@@ -66,8 +66,9 @@ class WorkflowService:
         store.update_run_status(run_id, "running")
         result = self.engine.execute(g, trigger, resume_hook=resume_hook,
                                      graph_config={n["id"]: n.get("config", {}) for n in graph["nodes"]})
+        type_map = {n["id"]: n["type"] for n in graph["nodes"]}
         for node_id, nr in result.node_results.items():
-            store.save_run_node(run_id, node_id, node_id,
+            store.save_run_node(run_id, node_id, type_map.get(node_id, ""),
                                 nr.status, "{}", json.dumps(nr.output, ensure_ascii=False),
                                 nr.fired_port, nr.error)
         store.update_run_status(run_id, result.status, error=result.error,
