@@ -1,0 +1,82 @@
+{{- if .Values.ingest.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ingest
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: ingest
+  template:
+    metadata:
+      labels:
+        app: ingest
+    spec:
+      containers:
+        - name: ingest
+          image: {{ .Values.ingest.image }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: CLICKHOUSE_HOST
+              value: {{ .Values.ingest.clickhouseHost | quote }}
+            - name: CLICKHOUSE_PORT
+              value: {{ .Values.ingest.clickhousePort | quote }}
+            # DeepFlow 同步：host 为空则禁用同步器
+            - name: DEEPFLOW_CH_HOST
+              value: {{ .Values.ingest.deepflowChHost | quote }}
+            - name: DEEPFLOW_CH_PORT
+              value: {{ .Values.ingest.deepflowChPort | quote }}
+            - name: DEEPFLOW_SYNC_INTERVAL
+              value: {{ .Values.ingest.syncInterval | quote }}
+            - name: INGEST_WAL_DIR
+              value: "/wal"
+            - name: INGEST_API_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: INGEST_API_KEY }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 20
+          resources:
+            {{- toYaml .Values.ingest.resources | nindent 12 }}
+          volumeMounts:
+            - name: wal
+              mountPath: /wal
+      volumes:
+        - name: wal
+          persistentVolumeClaim:
+            claimName: ingest-wal
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ingest
+spec:
+  selector:
+    app: ingest
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ingest-wal
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.ingest.walStorageClass | default "" | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.ingest.walStorage }}
+{{- end }}

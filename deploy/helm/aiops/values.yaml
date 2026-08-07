@@ -147,6 +147,7 @@ ingest:
   deepflowChHost: "deepflow-clickhouse.deepflow.svc.cluster.local"
   deepflowChPort: "8123"
   syncInterval: "10s"
+  walStorageClass: ""
   walStorage: 5Gi
   resources:
     requests: { cpu: "200m", memory: "256Mi" }
@@ -160,6 +161,7 @@ aiOrchestrator:
   clickhouseHost: "clickhouse-0.clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   llmMock: "true"
+  dataStorageClass: ""
   dataStorage: 5Gi
   resources:
     requests: { cpu: "500m", memory: "1Gi" }

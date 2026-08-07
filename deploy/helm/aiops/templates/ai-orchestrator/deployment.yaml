@@ -1,0 +1,88 @@
+{{- if .Values.aiOrchestrator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-orchestrator
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-orchestrator
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: ai-orchestrator
+  template:
+    metadata:
+      labels:
+        app: ai-orchestrator
+    spec:
+      containers:
+        - name: ai-orchestrator
+          image: {{ .Values.aiOrchestrator.image }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: QUERY_API_URL
+              value: {{ .Values.aiOrchestrator.queryApiUrl | quote }}
+            - name: INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
+            - name: MINIO_ENDPOINT
+              value: {{ .Values.aiOrchestrator.minioEndpoint | quote }}
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MINIO_ACCESS_KEY }
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MINIO_SECRET_KEY }
+            - name: MINIO_SECURE
+              value: "false"
+            - name: CLICKHOUSE_HOST
+              value: {{ .Values.aiOrchestrator.clickhouseHost | quote }}
+            - name: CLICKHOUSE_PORT
+              value: {{ .Values.aiOrchestrator.clickhousePort | quote }}
+            - name: LLM_MOCK
+              value: {{ .Values.aiOrchestrator.llmMock | quote }}
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 20
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 30
+          resources:
+            {{- toYaml .Values.aiOrchestrator.resources | nindent 12 }}
+          volumeMounts:
+            # ChromaDB PersistentClient 硬编码路径 /tmp/ops-cases；LangGraph checkpoint 硬编码 /tmp/ai-sessions.db
+            - name: data
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: orchestrator-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-orchestrator
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-orchestrator
+spec:
+  selector:
+    app: ai-orchestrator
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orchestrator-data
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.aiOrchestrator.dataStorageClass | default "" | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.aiOrchestrator.dataStorage }}
+{{- end }}
