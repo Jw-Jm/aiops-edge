@@ -890,4 +890,66 @@ class BrainOrchestrator:
         return "unknown"
 
 
+# ═══════════════════════════════════════════════════════════════
+#  内置 workflow 定义（与 build_graph 固定 DAG 对齐，只读展示/运行用）
+# ═══════════════════════════════════════════════════════════════
+GRAPH_DEFS = {
+    "full": {
+        "key": "workflow.full_diagnosis",
+        "name": "完整诊断流程",
+        "description": "采集→清洗→根因→RAG→AI分析→方案→风险→审批→执行→验证→报告→记忆→汇总",
+        "nodes": [
+            {"id": "collect", "label": "数据采集", "desc": "采集服务指标/调用链/错误"},
+            {"id": "clean", "label": "数据清洗", "desc": "清洗归一化采集数据"},
+            {"id": "rca", "label": "RCA 根因分析", "desc": "确定性+假设证伪定位根因"},
+            {"id": "rag", "label": "RAG 案例匹配", "desc": "检索相似历史案例"},
+            {"id": "crewai", "label": "CrewAI 专家分析", "desc": "多专家协同分析"},
+            {"id": "plan", "label": "生成方案", "desc": "生成可执行运维方案"},
+            {"id": "risk", "label": "风险评估", "desc": "评估方案风险"},
+            {"id": "wait_approval", "label": "人工审批", "desc": "等待审批中断"},
+            {"id": "execute", "label": "执行方案", "desc": "执行审批通过的脚本"},
+            {"id": "verify", "label": "执行验证", "desc": "验证执行效果"},
+            {"id": "report", "label": "生成报告", "desc": "生成诊断报告"},
+            {"id": "memorize", "label": "记忆学习", "desc": "沉淀案例到 RAG"},
+            {"id": "summarize", "label": "汇总输出", "desc": "生成最终总结"},
+        ],
+        "edges": [
+            ("collect", "clean"), ("clean", "rca"), ("rca", "rag"), ("rag", "crewai"),
+            ("crewai", "plan"), ("plan", "risk"), ("risk", "wait_approval"),
+            ("wait_approval", "execute"), ("execute", "verify"), ("verify", "report"),
+            ("report", "memorize"), ("memorize", "summarize"),
+        ],
+    },
+    "chat": {
+        "key": "workflow.chat_diagnosis",
+        "name": "交互诊断流程",
+        "description": "采集→清洗→根因→RAG→AI分析→汇总（对话用）",
+        "nodes": [
+            {"id": "collect", "label": "数据采集", "desc": "采集服务指标/调用链/错误"},
+            {"id": "clean", "label": "数据清洗", "desc": "清洗归一化采集数据"},
+            {"id": "rca", "label": "RCA 根因分析", "desc": "定位根因"},
+            {"id": "rag", "label": "RAG 案例匹配", "desc": "检索相似案例"},
+            {"id": "crewai", "label": "CrewAI 专家分析", "desc": "专家分析"},
+            {"id": "summarize", "label": "汇总输出", "desc": "生成最终总结"},
+        ],
+        "edges": [
+            ("collect", "clean"), ("clean", "rca"), ("rca", "rag"), ("rag", "crewai"), ("crewai", "summarize"),
+        ],
+    },
+}
+
+
+def describe_graph(mode: str = "full") -> dict:
+    """返回内置 workflow 定义（nodes/edges 用 dict 结构），供 /ai/flows 展示。"""
+    g = GRAPH_DEFS.get(mode, GRAPH_DEFS["full"])
+    return {
+        "key": g["key"],
+        "name": g["name"],
+        "description": g["description"],
+        "mode": mode,
+        "nodes": g["nodes"],
+        "edges": [{"source": s, "target": t} for s, t in g["edges"]],
+    }
+
+
 brain = BrainOrchestrator()
