@@ -1,0 +1,36 @@
+# =============================================================================
+# AIOps 生产标准 overrides
+# 用于正式生产环境部署时叠加：helm upgrade --install aiops . -f values-prod.yaml
+# 说明：本机(OrbStack)默认 values.yaml 已是"除副本数=1 外按生产标准"。
+#       部署到正式环境时，按需覆盖以下项。
+# =============================================================================
+
+# 正式环境通常多副本（前提：有状态组件需改有状态方案或保持单写，谨慎扩）
+replicaCount: 2
+
+# 存储类：正式环境指定真实 SC（如云盘/企业 NFS），覆盖默认 ""
+clickhouse:
+  storageClass: "standard"
+victoriaMetrics:
+  storageClass: "standard"
+victoriaLogs:
+  storageClass: "standard"
+redis:
+  storageClass: "standard"
+chromadb:
+  storageClass: "standard"
+minio:
+  storageClass: "standard"
+mysql:
+  storageClass: "standard"
+
+# LLM 接真实模型（关闭 mock）
+aiOrchestrator:
+  llmMock: "false"
+
+# 密钥：正式环境必须显式注入（勿用默认占位）
+secrets:
+  jwtSecret: "CHANGE_ME"
+  internalToken: "CHANGE_ME"
+  ingestApiKey: "CHANGE_ME"
+  mysqlRootPassword: "CHANGE_ME"

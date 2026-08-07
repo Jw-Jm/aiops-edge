@@ -1,0 +1,170 @@
+# =============================================================================
+# AIOps Helm Chart 全局 values
+# 本机(arm64 OrbStack K8s)默认配置；除副本数=1 外按生产标准。
+# 换环境时改 storageClass / external 地址 / 镜像即可移植。
+# =============================================================================
+
+# 全局
+replicaCount: 1
+namespace:
+  observability: observability
+  deepflow: deepflow
+
+# ---------------------------------------------------------------------------
+# 密钥（占位，实际用 values 文件 / --set 注入，不提交真实值，不入 git）
+# ---------------------------------------------------------------------------
+secrets:
+  jwtSecret: ""
+  internalToken: ""
+  ingestApiKey: ""
+  clickhousePassword: ""
+  redisPassword: ""
+  minioAccessKey: "minioadmin"
+  minioSecretKey: "minioadmin123"
+  mysqlRootPassword: ""
+
+# ---------------------------------------------------------------------------
+# 中间件：enabled=true 由 Chart 内部拉起；enabled=false 走 external 复用已有实例
+# ---------------------------------------------------------------------------
+clickhouse:
+  enabled: true
+  external:
+    host: ""
+    port: "8123"
+  image: "clickhouse/clickhouse-server:24.8-alpine"
+  storageClass: ""
+  storage: 20Gi
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits: { cpu: "2", memory: "4Gi" }
+
+victoriaMetrics:
+  enabled: true
+  external:
+    host: ""
+  image: "victoriametrics/victoria-metrics:v1.101.0"
+  storageClass: ""
+  storage: 5Gi
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+victoriaLogs:
+  enabled: true
+  external:
+    host: ""
+  image: "victoriametrics/victoria-logs:v1.6.0"
+  storageClass: ""
+  storage: 5Gi
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+redis:
+  enabled: true
+  external:
+    host: ""
+    port: "6379"
+  image: "redis:7-alpine"
+  storageClass: ""
+  storage: 1Gi
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }
+
+chromadb:
+  enabled: true
+  external:
+    host: ""
+  image: "chromadb/chroma:0.5.5"
+  storageClass: ""
+  storage: 5Gi
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits: { cpu: "2", memory: "2Gi" }
+
+minio:
+  enabled: true
+  external:
+    host: ""
+    port: "9000"
+  image: "minio/minio:RELEASE.2024-09-13T20-26-02Z"
+  storageClass: ""
+  storage: 10Gi
+  resources:
+    requests: { cpu: "200m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+mysql:
+  enabled: true
+  external:
+    host: ""
+    port: "3306"
+  image: "mysql:8.4"
+  storageClass: ""
+  storage: 10Gi
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+vmalert:
+  enabled: true
+  image: "victoriametrics/vmalert:v1.101.0"
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "200m", memory: "256Mi" }
+
+# ---------------------------------------------------------------------------
+# 自研服务（镜像 tag 由 build-images.sh 构建，统一 :latest 本地镜像）
+# ---------------------------------------------------------------------------
+frontend:
+  enabled: true
+  image: "docker.io/library/observability-frontend:latest"
+  nodePort: 30253
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }
+
+queryApi:
+  enabled: true
+  image: "docker.io/library/query-api:latest"
+  # 以下 DNS 与代码硬编码一致（查询/告警/K8s/设置）
+  clickhouseHost: "clickhouse-0.clickhouse.observability.svc.cluster.local"
+  clickhousePort: "8123"
+  redisUrl: "redis.observability.svc.cluster.local:6379"
+  victoriaLogsUrl: "http://victoria-logs.observability.svc.cluster.local:9428"
+  victoriaMetricsUrl: "http://victoria-metrics.observability.svc.cluster.local:8428"
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+ingest:
+  enabled: true
+  image: "docker.io/library/ingest-pipeline:latest"
+  clickhouseHost: "clickhouse.observability.svc.cluster.local"
+  clickhousePort: "8123"
+  # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
+  deepflowChHost: "deepflow-clickhouse.deepflow.svc.cluster.local"
+  deepflowChPort: "8123"
+  syncInterval: "10s"
+  walStorage: 5Gi
+  resources:
+    requests: { cpu: "200m", memory: "256Mi" }
+    limits: { cpu: "1", memory: "1Gi" }
+
+aiOrchestrator:
+  enabled: true
+  image: "docker.io/library/ai-orchestrator:latest"
+  queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
+  minioEndpoint: "minio.observability.svc.cluster.local:9000"
+  clickhouseHost: "clickhouse-0.clickhouse.observability.svc.cluster.local"
+  clickhousePort: "8123"
+  llmMock: "true"
+  dataStorage: 5Gi
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits: { cpu: "2", memory: "3Gi" }
+
+# deepflow 子 chart（完整装；enabled=false 则不装）
+deepflow:
+  enabled: true

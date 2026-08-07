@@ -1,0 +1,12 @@
+apiVersion: v2
+name: aiops
+description: AIOps 平台（自研 ongrid 风格）本机/生产 Helm Chart
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: deepflow
+    version: "7.1.002"
+    repository: "https://deepflowio.github.io/deepflow"
+    condition: deepflow.enabled

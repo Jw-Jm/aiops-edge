@@ -40,3 +40,4 @@ secrets/
 
 # 日志
 *.log
+deploy/helm/aiops/charts/
