@@ -191,6 +191,12 @@ async def ai_chat(req: ChatRequest, request: Request):
                             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         },
                     })
+                elif event.get("type") == "approval_pending":
+                    # 创建待审批任务并回填真实 task_id 供前端审批卡绑定
+                    tid = _create_chat_suggestion_task(event, req, thread_id)
+                    if tid:
+                        event["task_id"] = tid
+                    yield _format_sse(event)
                 elif event.get("type") == "error":
                     yield _format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
                 else:
@@ -438,7 +444,7 @@ def _create_chat_suggestion_task(event: dict, req, thread_id: str):
         script = event.get("script", "")
         plan = event.get("plan", "")
         if not script and not plan:
-            return
+            return None
         tid = _task_id()
         task = {
             "id": tid, "status": "waiting", "source": "ai_chat",
@@ -456,8 +462,10 @@ def _create_chat_suggestion_task(event: dict, req, thread_id: str):
         }
         _task_store[tid] = task
         print(f"[ai_chat] 已创建待审批任务 {tid} (含操作建议)")
+        return tid
     except Exception as e:
         print(f"[ai_chat] 创建建议任务失败: {e}")
+        return None
 
 
 @app.post("/api/v1/ops/tasks")
