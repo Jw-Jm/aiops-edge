@@ -1,11 +1,21 @@
+/* ===== zinc 语义色板（对齐 ongrid 深色极简风格，独立实现） ===== */
+:root {
+  --bg: #09090b;          /* zinc-950 */
+  --surface: #18181b;     /* zinc-900 */
+  --surface-2: #27272a;   /* zinc-800 */
+  --border: #27272a;      /* zinc-800 */
+  --text: #f4f4f5;        /* zinc-100 */
+  --text-muted: #a1a1aa;  /* zinc-400 */
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #0a0f1c;
-  color: rgba(255,255,255,0.88);
+  background: var(--bg);
+  color: var(--text);
 }
 
 /* ===== 专业滚动条 ===== */

@@ -94,15 +94,15 @@ const AppLayout: React.FC = () => {
     document.body.classList.toggle('light', !next)
   }
 
-  // 深色主题 token
+  // 深色主题 token（zinc 语义色板）
   const darkToken = {
     colorPrimary: '#1677ff',
     borderRadius: 8,
-    colorBgLayout: '#0a0f1c',
-    colorBgContainer: '#121826',
-    colorBgElevated: '#1a2233',
-    colorText: 'rgba(255,255,255,0.88)',
-    colorTextSecondary: 'rgba(255,255,255,0.55)',
+    colorBgLayout: '#09090b',
+    colorBgContainer: '#18181b',
+    colorBgElevated: '#27272a',
+    colorText: '#f4f4f5',
+    colorTextSecondary: '#a1a1aa',
     colorBorder: 'rgba(255,255,255,0.12)',
     colorBorderSecondary: 'rgba(255,255,255,0.08)',
     colorSplit: 'rgba(255,255,255,0.08)',
