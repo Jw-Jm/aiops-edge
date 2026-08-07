@@ -27,6 +27,9 @@ func main() {
 	}
 
 	handler := api.NewHandler(*chHost, *chPort)
+	if vmURL := os.Getenv("VICTORIA_METRICS_URL"); vmURL != "" {
+		handler.SetVMURL(vmURL)
+	}
 	handler.StartAlertEvaluation()
 	api.InitK8sRules()
 
@@ -49,6 +52,7 @@ func main() {
 	mux.HandleFunc("/api/v1/traces/", handler.TraceRouter)
 	// Metrics & Topology & Logs
 	mux.HandleFunc("/api/v1/metrics/query", handler.QueryMetrics)
+	mux.HandleFunc("/api/v1/metrics/query_range", handler.QueryRange)
 	mux.HandleFunc("/api/v1/topology/global", handler.GlobalTopology)
 	mux.HandleFunc("/api/v1/topology/node/", handler.TopologyNodeDetail)
 	mux.HandleFunc("/api/v1/topology/sync", handler.SyncTopologyFromK8s)
