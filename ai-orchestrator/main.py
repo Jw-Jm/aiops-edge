@@ -17,6 +17,7 @@ from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
+from orchestrator import describe_graph
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭
 os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
@@ -278,6 +279,31 @@ async def ai_agent_detail(name: str):
         raise HTTPException(404, "agent not found")
     return {"name": e.name, "role": e.role, "goal": e.goal, "backstory": e.backstory,
             "skills": e.skills, "tools": e.tools}
+
+# ═══════════════════════════════════════════════════════════════
+#  Workflows（内置 DAG 只读 + 运行）
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/ai/flows")
+async def ai_flows():
+    return {"flows": [describe_graph("full"), describe_graph("chat")]}
+
+@app.get("/api/v1/ai/flows/{key}")
+async def ai_flow_detail(key: str):
+    mode = "chat" if key.endswith("chat_diagnosis") else "full"
+    return describe_graph(mode)
+
+@app.post("/api/v1/ai/flows/{key}/run")
+async def ai_flow_run(key: str, body: dict = None):
+    mode = "chat" if key.endswith("chat_diagnosis") else "full"
+    service = (body or {}).get("service", "")
+    message = (body or {}).get("message", "对服务进行完整诊断")
+    intent = "chat" if mode == "chat" else "ops"
+    brain = _get_brain()
+    result = await _asyncio.get_event_loop().run_in_executor(
+        None, brain.execute_sync_full, intent, service, message, "workflow-run"
+    )
+    return {"run_id": f"run_{int(time.time()*1000)}", "result": result}
 
 @app.get("/api/v1/ai/sessions")
 async def list_sessions():
