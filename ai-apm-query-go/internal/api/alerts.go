@@ -423,7 +423,7 @@ func (h *Handler) AlertEventByID(w http.ResponseWriter, r *http.Request) {
 	alertEventsMu.RLock()
 	defer alertEventsMu.RUnlock()
 	for _, ev := range alertEvents {
-		if ev.ID == id {
+		if ev.ID == id || ev.RuleID == id {
 			respondJSON(w, http.StatusOK, ev)
 			return
 		}
@@ -443,7 +443,7 @@ func (h *Handler) AlertEventAck(w http.ResponseWriter, r *http.Request) {
 	alertEventsMu.Lock()
 	defer alertEventsMu.Unlock()
 	for i := range alertEvents {
-		if alertEvents[i].ID == id {
+		if alertEvents[i].ID == id || alertEvents[i].RuleID == id {
 			if !transitionStatus(&alertEvents[i], "acknowledged", by) {
 				respondError(w, http.StatusConflict, "cannot acknowledge from current status")
 				return
@@ -468,7 +468,7 @@ func (h *Handler) AlertEventResolve(w http.ResponseWriter, r *http.Request) {
 	alertEventsMu.Lock()
 	defer alertEventsMu.Unlock()
 	for i := range alertEvents {
-		if alertEvents[i].ID == id {
+		if alertEvents[i].ID == id || alertEvents[i].RuleID == id {
 			if !transitionStatus(&alertEvents[i], "resolved", by) {
 				respondError(w, http.StatusConflict, "cannot resolve from current status")
 				return
