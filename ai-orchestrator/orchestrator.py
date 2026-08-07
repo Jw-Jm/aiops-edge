@@ -77,7 +77,11 @@ class AgentState(TypedDict):
 #  LLM call
 # ═══════════════════════════════════════════════════════════════
 
+from llm_mock import is_mock_enabled, mock_llm_response
+
 def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家") -> str:
+    if is_mock_enabled():
+        return mock_llm_response(system_prompt + user_prompt)
     if not cfg or not cfg.get("api_key"):
         return ""
     try:

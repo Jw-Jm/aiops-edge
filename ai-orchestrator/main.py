@@ -16,6 +16,9 @@ from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCAReque
 from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 
+# 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭
+os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
+
 app = FastAPI(title="AIOps Orchestrator", version="5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 shell_policy = ShellPolicy()
