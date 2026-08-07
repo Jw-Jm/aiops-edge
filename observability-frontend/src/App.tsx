@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Menu, ConfigProvider, theme, Space, Input, Tag, Avatar, Dropdown, Tooltip } from 'antd'
+import { useUIStore } from './store/uiStore'
+import CommandPalette from './components/CommandPalette'
+import AgentSidePanel from './components/AgentSidePanel'
 import {
   RobotOutlined, AlertOutlined, SettingOutlined,
   RadarChartOutlined, FileSearchOutlined, ToolOutlined,
@@ -24,7 +27,7 @@ import Overview from './pages/Overview'
 
 const { Sider, Content, Header } = Layout
 
-// 菜单：观测(数据) | 智能(AI) | 运维
+// 菜单：8 区段布局
 const menuGroups = [
   {
     title: '总览',
@@ -37,8 +40,14 @@ const menuGroups = [
     items: [
       { key: '/services', icon: <DatabaseOutlined />, label: '服务列表' },
       { key: '/topology', icon: <ApartmentOutlined />, label: '服务拓扑' },
-  { key: '/traces', icon: <NodeIndexOutlined />, label: '链路追踪' },
-  { key: '/logs', icon: <FileSearchOutlined />, label: '日志查询' },
+      { key: '/traces', icon: <NodeIndexOutlined />, label: '链路追踪' },
+      { key: '/logs', icon: <FileSearchOutlined />, label: '日志查询' },
+    ],
+  },
+  {
+    title: '监控',
+    items: [
+      { key: '/monitor', icon: <RadarChartOutlined />, label: '监控面板' },
     ],
   },
   {
@@ -46,13 +55,23 @@ const menuGroups = [
     items: [
       { key: '/aichat', icon: <RobotOutlined />, label: 'AI 诊断' },
       { key: '/alerts', icon: <AlertOutlined />, label: '告警中心' },
+    ],
+  },
+  {
+    title: '任务',
+    items: [
       { key: '/tasks', icon: <ToolOutlined />, label: '任务工作台' },
     ],
   },
   {
     title: '集成',
     items: [
-      { key: '/deepflow', icon: <RadarChartOutlined />, label: 'DeepFlow' },
+      { key: '/deepflow', icon: <CloudServerOutlined />, label: 'DeepFlow' },
+    ],
+  },
+  {
+    title: '设置',
+    items: [
       { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
     ],
   },
@@ -63,8 +82,10 @@ const allMenuItems = menuGroups.flatMap(g => g.items)
 const AppLayout: React.FC = () => {
   const navigate = useNavigate()
   const location = useLocation()
-  const [collapsed, setCollapsed] = useState(false)
-  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('darkMode') !== 'false') // 默认深色
+  const collapsed = useUIStore((s) => s.collapsed)
+  const toggleCollapsed = useUIStore((s) => s.toggleCollapsed)
+  const darkMode = useUIStore((s) => s.darkMode)
+  const setDarkMode = useUIStore((s) => s.setDarkMode)
   const [clock, setClock] = useState('')
   const seg = location.pathname.split('/')[1]
   const selectedKey = seg ? '/' + seg : '/'
@@ -88,10 +109,7 @@ const AppLayout: React.FC = () => {
   }, [])
 
   const toggleDark = () => {
-    const next = !darkMode
-    setDarkMode(next)
-    localStorage.setItem('darkMode', String(next))
-    document.body.classList.toggle('light', !next)
+    setDarkMode(!darkMode)
   }
 
   // 深色主题 token（zinc 语义色板）
@@ -112,7 +130,7 @@ const AppLayout: React.FC = () => {
     <ConfigProvider theme={{ algorithm: darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm, token: darkMode ? darkToken : { colorPrimary: '#1677ff', borderRadius: 8 } }}>
       <Layout style={{ minHeight: '100vh' }}>
         {/* 侧边栏 */}
-        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={230} theme="dark"
+        <Sider collapsible collapsed={collapsed} onCollapse={toggleCollapsed} width={230} theme="dark"
           style={{ background: 'linear-gradient(180deg, #0d1526 0%, #0a0f1c 100%)', borderRight: '1px solid rgba(255,255,255,0.06)' }}>
           {/* Logo */}
           <div style={{ height: 64, display: 'flex', alignItems: 'center', padding: collapsed ? '0 12px' : '0 20px', gap: 10, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
@@ -190,6 +208,8 @@ const AppLayout: React.FC = () => {
           </Content>
         </Layout>
       </Layout>
+      <CommandPalette />
+      <AgentSidePanel />
     </ConfigProvider>
   )
 }
