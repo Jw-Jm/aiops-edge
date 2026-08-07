@@ -138,6 +138,34 @@ class SkillRegistry:
             f"- {s.name} ({s.title}): {s.description}" for s in cls._skills.values()
         )
 
+    @classmethod
+    def execute_skill(cls, key: str, params: dict) -> dict:
+        """执行技能：遍历其 tools，调用对应工具函数。
+
+        - 需审批工具（requires_approval）返回提示，不执行。
+        - 参数按工具 params schema 过滤后调用 func；缺失参数用默认值。
+        """
+        skill = cls._skills.get(key)
+        if not skill:
+            raise KeyError(f"skill not found: {key}")
+        out = {}
+        for tn in skill.tools:
+            t = ToolRegistry.get(tn)
+            if not t:
+                out[tn] = {"error": "tool not found"}
+                continue
+            if t.requires_approval:
+                out[tn] = {"requires_approval": True, "tool": tn}
+                continue
+            try:
+                schema = t.params or {}
+                tool_params = {k: v for k, v in (params or {}).items() if k in schema}
+                result = t.func(**tool_params) if tool_params else t.func()
+                out[tn] = {"result": str(result)[:1000]}
+            except Exception as e:
+                out[tn] = {"error": str(e)}
+        return {"skill": key, "outputs": out}
+
 
 # ═══════════════════════════════════════════════════════
 #  Expert (专家 = 多个 Skill 的组合编排)
