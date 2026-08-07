@@ -1,0 +1,20 @@
+# =============================================================================
+# deepflow 独立 Helm release 配置
+# deepflow 部署到独立 deepflow namespace（前端 nginx 硬编码 deepflow-grafana.deepflow）
+# 用法（由 apply.sh 调用）：
+#   helm install deepflow deepflow/deepflow -n deepflow -f values-deepflow.yaml
+# =============================================================================
+
+global:
+  replicas: 1
+  storageClass: ""
+  timezone: "Asia/Shanghai"
+  # 完整装：server + agent(DaemonSet) + clickhouse + mysql + grafana
+  allInOneLocalStorage: true
+
+# server 与各组件单副本（本机）
+server:
+  replicas: 1
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits: { cpu: "2", memory: "2Gi" }
