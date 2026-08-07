@@ -280,6 +280,43 @@ async def ai_agent_detail(name: str):
     return {"name": e.name, "role": e.role, "goal": e.goal, "backstory": e.backstory,
             "skills": e.skills, "tools": e.tools}
 
+@app.post("/api/v1/ai/agents")
+async def ai_agent_create(body: dict = None):
+    b = body or {}
+    name = b.get("name", "")
+    if not name:
+        raise HTTPException(400, "name required")
+    try:
+        if not ExpertRegistry.list_all():
+            init_experts()
+    except Exception:
+        pass
+    ExpertRegistry.register(
+        name=name, role=b.get("role", ""), goal=b.get("goal", ""), backstory=b.get("backstory", ""),
+        intent_keywords=b.get("intent_keywords", []), skills=b.get("skills", []),
+        tools=b.get("tools", []), system_prompt_template=b.get("system_prompt_template", ""),
+    )
+    ExpertRegistry.save_custom_store()
+    return ExpertRegistry.get(name).__dict__
+
+@app.put("/api/v1/ai/agents/{name}")
+async def ai_agent_update(name: str, body: dict = None):
+    b = body or {}
+    fields = {}
+    for k in ("role", "goal", "backstory", "intent_keywords", "skills", "tools", "system_prompt_template"):
+        if k in b:
+            fields[k] = b[k]
+    ok = ExpertRegistry.update(name, **fields)
+    if not ok:
+        raise HTTPException(404, "agent not found")
+    return ExpertRegistry.get(name).__dict__
+
+@app.delete("/api/v1/ai/agents/{name}")
+async def ai_agent_delete(name: str):
+    if not ExpertRegistry.delete(name):
+        raise HTTPException(400, "cannot delete built-in or not found")
+    return {"deleted": name}
+
 # ═══════════════════════════════════════════════════════════════
 #  Workflows（内置 DAG 只读 + 运行）
 # ═══════════════════════════════════════════════════════════════
