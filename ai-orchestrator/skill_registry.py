@@ -26,14 +26,19 @@ class ToolRegistry:
 
     @classmethod
     def register(cls, name: str = None, description: str = "",
-                 category: str = "general", requires_approval: bool = False):
-        """装饰器: 注册工具函数"""
+                 category: str = "general", requires_approval: bool = False,
+                 params: dict = None):
+        """装饰器: 注册工具函数
+
+        params: param_name -> {"type","required","default","desc"}，供前端渲染执行表单。
+        """
         def decorator(func):
             tool_name = name or func.__name__
             cls._tools[tool_name] = ToolDef(
                 name=tool_name, description=description,
                 func=func, category=category,
                 requires_approval=requires_approval,
+                params=params or {},
             )
             return func
         return decorator

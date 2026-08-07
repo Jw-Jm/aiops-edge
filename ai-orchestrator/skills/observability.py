@@ -9,11 +9,14 @@ def register_observability_skill():
         if not ToolRegistry.get("query_metrics"):
             ToolRegistry.register(name="query_metrics",
                                   description="查询服务 RED 指标（请求量/错误率/延迟）",
-                                  category="metrics")(query_metrics)
+                                  category="metrics",
+                                  params={"service": {"type": "string", "required": True, "default": "", "desc": "服务名"}})(query_metrics)
         if not ToolRegistry.get("query_traces"):
             ToolRegistry.register(name="query_traces",
                                   description="查询 Trace 调用链数据",
-                                  category="trace")(query_traces)
+                                  category="trace",
+                                  params={"service": {"type": "string", "required": False, "default": "", "desc": "服务名（空为全部）"},
+                                          "limit": {"type": "int", "required": False, "default": 5, "desc": "返回条数"}})(query_traces)
         if not ToolRegistry.get("query_topology"):
             ToolRegistry.register(name="query_topology",
                                   description="查询全局服务拓扑图",
