@@ -56,6 +56,9 @@ export const getSkill = (key: string) => api.get(`/ai/skills/${encodeURIComponen
 export const executeSkill = (key: string, params: Record<string, unknown>) => api.post(`/ai/skills/${encodeURIComponent(key)}/execute`, { params })
 export const listAgents = () => api.get('/ai/agents')
 export const getAgent = (name: string) => api.get(`/ai/agents/${encodeURIComponent(name)}`)
+export const createAgent = (data: Record<string, unknown>) => api.post('/ai/agents', data)
+export const updateAgent = (name: string, data: Record<string, unknown>) => api.put(`/ai/agents/${encodeURIComponent(name)}`, data)
+export const deleteAgent = (name: string) => api.delete(`/ai/agents/${encodeURIComponent(name)}`)
 
 // ===== AI Workflows =====
 export const listFlows = () => api.get('/ai/flows')
