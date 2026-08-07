@@ -18,6 +18,7 @@ import IncidentDetail from './pages/Alerts/IncidentDetail'
 import Skills from './pages/Skills'
 import Agents from './pages/Agents'
 import Workflows from './pages/Workflows'
+import WorkflowEditor from './pages/Workflows/Editor'
 import Settings from './pages/Settings'
 import DeepFlow from './pages/DeepFlow'
 import Login from './pages/Login'
@@ -206,6 +207,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/skills" element={<Skills />} />
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/workflows" element={<Workflows />} />
+                <Route path="/workflows/editor" element={<WorkflowEditor />} />
                 <Route path="/services" element={<Services />} />
                 <Route path="/services/:name" element={<ServiceDetail />} />
                 <Route path="/topology" element={<Topology />} />

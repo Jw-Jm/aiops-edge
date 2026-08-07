@@ -11,6 +11,7 @@
   "dependencies": {
     "@ant-design/icons": "^5.5.0",
     "@antv/g6": "^5.0.0",
+    "@xyflow/react": "^12.11.2",
     "antd": "^5.22.0",
     "axios": "^1.7.0",
     "dayjs": "^1.11.13",
