@@ -202,9 +202,10 @@ func (s *DeepFlowSyncer) Sync() error {
 
 	// 同步调用记录（l7 flow → span），支撑 /services、/traces 与拓扑详情趋势
 	if err := s.syncTraces(start); err != nil {
-		log.Printf("DeepFlowSyncer: syncTraces error: %v", err)
+		// traces 同步失败时不可推进水位，否则该窗口的调用记录会永久丢失
+		return fmt.Errorf("syncTraces failed, watermark not advanced: %w", err)
 	}
-	// 成功同步后推进增量水位（下次从本次窗口末尾继续）
+	// edge 与 traces 均成功后推进增量水位（下次从本次窗口末尾继续）
 	s.lastSyncMu.Lock()
 	if now.After(s.lastSyncTime) {
 		s.lastSyncTime = now
@@ -413,5 +414,4 @@ func toUint(v interface{}) uint64 {
 	return 0
 }
 
-// strings 已在其他文件引用，这里避免未使用。
-var _ = strings.TrimSpace
+
