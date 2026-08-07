@@ -396,6 +396,91 @@ func (h *Handler) AlertEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ---- Incident Detail / Ack / Resolve ----
+
+// AlertEventRouter 分发 /api/v1/alerts/events/{id}[/ack|/resolve]
+func (h *Handler) AlertEventRouter(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
+	p = strings.TrimRight(p, "/")
+	switch {
+	case strings.HasSuffix(p, "/ack"):
+		h.AlertEventAck(w, r)
+	case strings.HasSuffix(p, "/resolve"):
+		h.AlertEventResolve(w, r)
+	default:
+		h.AlertEventByID(w, r)
+	}
+}
+
+// AlertEventByID handles GET /api/v1/alerts/events/{id}
+func (h *Handler) AlertEventByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
+	id = strings.TrimRight(id, "/")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "event id required")
+		return
+	}
+	alertEventsMu.RLock()
+	defer alertEventsMu.RUnlock()
+	for _, ev := range alertEvents {
+		if ev.ID == id {
+			respondJSON(w, http.StatusOK, ev)
+			return
+		}
+	}
+	respondError(w, http.StatusNotFound, "event not found")
+}
+
+// AlertEventAck handles POST /api/v1/alerts/events/{id}/ack
+func (h *Handler) AlertEventAck(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
+	id = strings.TrimSuffix(id, "/ack")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "event id required")
+		return
+	}
+	by := extractTenantID(r)
+	alertEventsMu.Lock()
+	defer alertEventsMu.Unlock()
+	for i := range alertEvents {
+		if alertEvents[i].ID == id {
+			if !transitionStatus(&alertEvents[i], "acknowledged", by) {
+				respondError(w, http.StatusConflict, "cannot acknowledge from current status")
+				return
+			}
+			saveAlertEvents()
+			respondJSON(w, http.StatusOK, alertEvents[i])
+			return
+		}
+	}
+	respondError(w, http.StatusNotFound, "event not found")
+}
+
+// AlertEventResolve handles POST /api/v1/alerts/events/{id}/resolve
+func (h *Handler) AlertEventResolve(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
+	id = strings.TrimSuffix(id, "/resolve")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "event id required")
+		return
+	}
+	by := extractTenantID(r)
+	alertEventsMu.Lock()
+	defer alertEventsMu.Unlock()
+	for i := range alertEvents {
+		if alertEvents[i].ID == id {
+			if !transitionStatus(&alertEvents[i], "resolved", by) {
+				respondError(w, http.StatusConflict, "cannot resolve from current status")
+				return
+			}
+			saveAlertEvents()
+			respondJSON(w, http.StatusOK, alertEvents[i])
+			return
+		}
+	}
+	respondError(w, http.StatusNotFound, "event not found")
+}
+
 // ---- Alert Silence CRUD ----
 
 // AlertSilences handles GET (list) and POST (create) for /api/v1/alerts/silences

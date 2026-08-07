@@ -122,6 +122,7 @@ func main() {
 	mux.HandleFunc("/api/v1/alerts/rules", handler.AlertRules)
 	mux.HandleFunc("/api/v1/alerts/rules/", handler.AlertRuleByID)
 	mux.HandleFunc("/api/v1/alerts/events", handler.AlertEvents)
+	mux.HandleFunc("/api/v1/alerts/events/", handler.AlertEventRouter)
 	mux.HandleFunc("/api/v1/alerts/aggregation", handler.AlertAggregation)
 	mux.HandleFunc("/api/v1/alerts/silences", handler.AlertSilences)
 	mux.HandleFunc("/api/v1/alerts/silences/", handler.AlertSilenceByID)
