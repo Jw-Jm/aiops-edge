@@ -106,7 +106,7 @@ const Logs: React.FC = () => {
 
   const columns = [
     { title: '时间', dataIndex: 'timestamp', key: 'ts', width: 170,
-      render: (v: string) => <Text style={{ fontSize: 12, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{fmtLocalTime(v, '-', 'MM-DD HH:mm:ss')}</Text> },
+      render: (v: string) => <Text style={{ fontSize: 12, fontFamily: 'monospace', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>{fmtLocalTime(v, '-', 'MM-DD HH:mm:ss')}</Text> },
     { title: '服务', dataIndex: 'service', key: 'svc', width: 200, ellipsis: true,
       render: (v: string) => v ? <Text code style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{v}</Text> : '-' },
     { title: '级别', dataIndex: 'severity', key: 'lvl', width: 80,
@@ -123,7 +123,7 @@ const Logs: React.FC = () => {
   return (
     <div>
       {/* Search bar */}
-      <Card size='small' style={{ marginBottom: 12 }}>
+      <Card size='small' style={{ marginBottom: 12, background: 'var(--surface)', borderColor: 'var(--border)', borderRadius: 10 }}>
         <Space direction='vertical' size='small' style={{ width: '100%' }}>
           <Row gutter={[12, 8]} align='middle'>
             <Col>
@@ -163,7 +163,7 @@ const Logs: React.FC = () => {
           {backend === 'victorialogs' && (
             <Row>
               <Col>
-                <Text type='secondary' style={{ fontSize: 11 }}>
+                <Text style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                   <ThunderboltOutlined /> LogsQL: <Text code style={{ fontSize: 11 }}>_time:15m error</Text> 按时间/关键词搜 |
                   <Text code style={{ fontSize: 11 }}>{'{service="api"}'}</Text> 按标签过滤 |
                   <Text code style={{ fontSize: 11 }}>| stats count() by (level)</Text> 聚合统计
@@ -175,7 +175,7 @@ const Logs: React.FC = () => {
       </Card>
 
       {/* Results */}
-      <Card size='small' title={logs.length > 0 ? `日志 (${logs.length} 条)` : '日志'} >
+      <Card size='small' title={logs.length > 0 ? `日志 (${logs.length} 条)` : '日志'} style={{ background: 'var(--surface)', borderColor: 'var(--border)', borderRadius: 10 }}>
         <Table columns={columns} dataSource={logs} rowKey={r => r.id}
           loading={loading} pagination={{ pageSize: 25, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
           size='small' scroll={{ x: 800 }}
