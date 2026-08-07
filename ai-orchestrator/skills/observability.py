@@ -20,11 +20,13 @@ def register_observability_skill():
         if not ToolRegistry.get("query_topology"):
             ToolRegistry.register(name="query_topology",
                                   description="查询全局服务拓扑图",
-                                  category="trace")(query_topology)
+                                  category="trace",
+                                  params={})(query_topology)
         if not ToolRegistry.get("get_service_list"):
             ToolRegistry.register(name="get_service_list",
                                   description="获取所有服务列表及概览（含调用量/延迟/错误率）",
-                                  category="infra")(get_service_list)
+                                  category="infra",
+                                  params={"limit": {"type": "int", "required": False, "default": 50, "desc": "返回服务数上限"}})(get_service_list)
     except Exception as e:
         print(f"[skills.observability] 工具注册失败: {e}")
 
