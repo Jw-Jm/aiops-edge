@@ -18,6 +18,7 @@ import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
 from orchestrator import describe_graph
+from flow_api import router as flow_router
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭
 os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
@@ -25,6 +26,7 @@ os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
 app = FastAPI(title="AIOps Orchestrator", version="5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 shell_policy = ShellPolicy()
+app.include_router(flow_router)
 
 # 延迟导入：orchestrator 中的 ChromaDB 模型下载会阻塞启动
 # 使用 startup event 在后台初始化
@@ -336,7 +338,7 @@ async def ai_flow_detail(key: str):
     mode = "chat" if key.endswith("chat_diagnosis") else "full"
     return describe_graph(mode)
 
-@app.post("/api/v1/ai/flows/{key}/run")
+@app.post("/api/v1/ai/flows/{key}/run-legacy")
 async def ai_flow_run(key: str, body: dict = None):
     mode = "chat" if key.endswith("chat_diagnosis") else "full"
     service = (body or {}).get("service", "")
