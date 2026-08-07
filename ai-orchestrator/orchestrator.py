@@ -77,7 +77,7 @@ class AgentState(TypedDict):
 #  LLM call
 # ═══════════════════════════════════════════════════════════════
 
-from llm_mock import is_mock_enabled, mock_llm_response
+from llm_mock import should_skip_llm
 
 def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家") -> str:
     if is_mock_enabled():
@@ -373,7 +373,7 @@ def node_rag(state: AgentState) -> dict:
 
 def node_crewai(state: AgentState) -> dict:
     cfg = state.get("llm_config")
-    if not cfg or not cfg.get("api_key"):
+    if should_skip_llm(cfg):
         return {"crewai_result": ""}
 
     # LLM 动态路由: 根据用户消息匹配最佳专家
@@ -433,7 +433,7 @@ def node_crewai(state: AgentState) -> dict:
 
 def node_holmes(state: AgentState) -> dict:
     cfg = state.get("llm_config")
-    if not cfg or not cfg.get("api_key"):
+    if should_skip_llm(cfg):
         return {"holmesgpt_result": ""}
     svc = state.get("service", "")
     context = f"服务: {svc}\nRED: {state.get('red_metrics','')}\nTrace: {state.get('trace_data','')}"[:4000]

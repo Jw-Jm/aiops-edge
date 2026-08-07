@@ -20,3 +20,14 @@ def mock_llm_response(prompt: str) -> str:
         "[mock] analysis: 已生成根因分析，从指标与拓扑看，可能为最近一次发布引起的调用异常。\n"
         f"待分析内容：{prompt[:200]}"
     )
+
+
+def should_skip_llm(cfg) -> bool:
+    """判断是否应跳过 LLM 调用。
+
+    mock 开启时返回 False（不跳过，让 _llm 短路返回 mock 结果，即使未配置 api_key）；
+    否则在缺少 api_key 时返回 True（跳过，返回空）。
+    """
+    if is_mock_enabled():
+        return False
+    return not cfg or not cfg.get("api_key")
