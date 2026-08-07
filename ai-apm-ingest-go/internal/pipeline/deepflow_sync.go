@@ -7,11 +7,52 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
 )
+
+const (
+	defaultSyncInterval = 60 * time.Second
+	minSyncInterval     = 5 * time.Second
+	maxSyncInterval     = 3600 * time.Second
+)
+
+// parseSyncInterval 从 env DEEPFLOW_SYNC_INTERVAL 解析同步间隔；
+// 支持纯数字（秒）或 Go duration（如 "30s"）；非法/越界回退默认 60s。
+func parseSyncInterval(v string) time.Duration {
+	if v == "" {
+		return defaultSyncInterval
+	}
+	s := strings.TrimSpace(v)
+	if _, err := strconv.Atoi(s); err == nil {
+		s = s + "s"
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return defaultSyncInterval
+	}
+	if d < minSyncInterval || d > maxSyncInterval {
+		return defaultSyncInterval
+	}
+	return d
+}
+
+// clampStartTime 处理时钟回拨/漂移，把增量起点限制在 [now-15m, now] 内。
+func clampStartTime(last, now time.Time) time.Time {
+	lo := now.Add(-15 * time.Minute)
+	if last.Before(lo) {
+		return lo
+	}
+	if last.After(now) {
+		return now
+	}
+	return last
+}
 
 // DeepFlowSyncer 定期从 DeepFlow ClickHouse 拉取应用层调用数据，
 // 解析服务名后写入 observability 的 service_topology（拓扑边）与 trace_spans（调用记录），
@@ -24,6 +65,9 @@ type DeepFlowSyncer struct {
 	logWriter  interface{ Add(*model.LogRecord) }
 	tenantID   string
 	interval   time.Duration
+	// 增量拉取状态（线程安全）
+	lastSyncMu   sync.Mutex
+	lastSyncTime time.Time
 }
 
 // NewDeepFlowSyncer 创建 DeepFlow 同步器。edgeWriter 写拓扑边，spanWriter 写 span，logWriter 写日志。
@@ -35,7 +79,7 @@ func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, edgeWriter interface{ AddE
 		spanWriter: spanWriter,
 		logWriter:  logWriter,
 		tenantID:   "default",
-		interval:   60 * time.Second,
+		interval:   parseSyncInterval(os.Getenv("DEEPFLOW_SYNC_INTERVAL")),
 	}
 }
 
@@ -92,15 +136,25 @@ func (s *DeepFlowSyncer) execDF(sql string) error {
 	return nil
 }
 
-// Sync 拉取最近一次 application_map 聚合，写入 service_topology。
+// Sync 增量拉取 application_map 聚合，写入 service_topology。
 func (s *DeepFlowSyncer) Sync() error {
-	// 取最近 5 分钟（覆盖分钟聚合窗口）
+	// 增量窗口起点：默认最近 10 分钟（首次），否则自上次成功同步起（保护重叠 1 分钟，避免漏拉）
+	now := time.Now().UTC()
+	s.lastSyncMu.Lock()
+	start := clampStartTime(s.lastSyncTime, now).Add(-1 * time.Minute)
+	s.lastSyncMu.Unlock()
+	// DeepFlow 的 time 为 Asia/Shanghai 时区，需按该时区格式化查询下界
+	shanghai, errLoc := time.LoadLocation("Asia/Shanghai")
+	if errLoc != nil {
+		shanghai = time.FixedZone("CST", 8*3600)
+	}
+	startStr := start.In(shanghai).Format("2006-01-02 15:04:05")
 	sql := "SELECT time, s0.name AS src, s1.name AS dst, sum(request) AS calls, " +
 		"sum(client_error) + sum(server_error) + sum(timeout) AS errs " +
 		"FROM flow_metrics.`application_map.1m` " +
 		"LEFT JOIN flow_tag.pod_service_map s0 ON s0.id = auto_service_id_0 " +
 		"LEFT JOIN flow_tag.pod_service_map s1 ON s1.id = auto_service_id_1 " +
-		"WHERE s0.name IS NOT NULL AND s1.name IS NOT NULL AND time >= now() - INTERVAL 10 MINUTE " +
+		"WHERE s0.name IS NOT NULL AND s1.name IS NOT NULL AND time >= '" + startStr + "' " +
 		"GROUP BY time, src, dst"
 
 	rows, err := s.queryDF(sql)
@@ -109,11 +163,6 @@ func (s *DeepFlowSyncer) Sync() error {
 	}
 
 	count := 0
-	// application_map 的 time 为 Asia/Shanghai 时区，需按该时区解析再转 UTC
-	shanghai, errLoc := time.LoadLocation("Asia/Shanghai")
-	if errLoc != nil {
-		shanghai = time.FixedZone("CST", 8*3600)
-	}
 	for _, r := range rows {
 		src, _ := r["src"].(string)
 		dst, _ := r["dst"].(string)
@@ -149,22 +198,33 @@ func (s *DeepFlowSyncer) Sync() error {
 		})
 		count++
 	}
-	log.Printf("DeepFlowSyncer: synced %d edges from %d rows", count, len(rows))
+	log.Printf("DeepFlowSyncer: synced %d edges from %d rows (window since %s)", count, len(rows), startStr)
 
 	// 同步调用记录（l7 flow → span），支撑 /services、/traces 与拓扑详情趋势
-	if err := s.syncTraces(); err != nil {
+	if err := s.syncTraces(start); err != nil {
 		log.Printf("DeepFlowSyncer: syncTraces error: %v", err)
 	}
+	// 成功同步后推进增量水位（下次从本次窗口末尾继续）
+	s.lastSyncMu.Lock()
+	if now.After(s.lastSyncTime) {
+		s.lastSyncTime = now
+	}
+	s.lastSyncMu.Unlock()
 	return nil
 }
 
 // syncTraces 从 DeepFlow l7_flow_log 拉取最近的应用层调用，构造 span 写入 trace_spans。
 // l7_flow_log 是每请求一条的真实 HTTP 调用记录（含源/目标服务、请求路径、响应码、时长）。
-func (s *DeepFlowSyncer) syncTraces() error {
+func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 	if s.spanWriter == nil {
 		return nil
 	}
-	// 最近 3 分钟的真实调用（控制写入量，取前 2000 条）
+	// 从增量起点拉取真实调用（控制写入量，取前 2000 条）
+	shanghai, errLoc := time.LoadLocation("Asia/Shanghai")
+	if errLoc != nil {
+		shanghai = time.FixedZone("CST", 8*3600)
+	}
+	windowStartStr := windowStart.In(shanghai).Format("2006-01-02 15:04:05")
 	sql := "SELECT start_time, response_duration, s0.name AS src, s1.name AS dst, " +
 		"request_resource, response_code " +
 		"FROM flow_log.`l7_flow_log` " +
@@ -172,7 +232,7 @@ func (s *DeepFlowSyncer) syncTraces() error {
 		"LEFT JOIN flow_tag.pod_service_map s1 ON s1.id = auto_service_id_1 " +
 		"WHERE s0.name IS NOT NULL AND s1.name IS NOT NULL " +
 		"AND l7_protocol IN (20, 21, 22, 30) " + // HTTP/HTTP2/HTTPS/DNS 等应用协议
-		"AND start_time >= now() - INTERVAL 3 MINUTE " +
+		"AND start_time >= '" + windowStartStr + "' " +
 		"ORDER BY start_time DESC LIMIT 2000"
 
 	rows, err := s.queryDF(sql)
@@ -181,18 +241,12 @@ func (s *DeepFlowSyncer) syncTraces() error {
 	}
 
 	count := 0
-	// DeepFlow 的 start_time 为 Asia/Shanghai 时区，需先按该时区解析，再转 UTC 存储。
-	// 精简镜像可能无 tzdata，加载失败时用固定 UTC+8。
-	shanghai, errLoc := time.LoadLocation("Asia/Shanghai")
-	if errLoc != nil {
-		shanghai = time.FixedZone("CST", 8*3600)
-	}
 	for _, r := range rows {
-		startStr, _ := r["start_time"].(string)
-		start, perr := time.ParseInLocation("2006-01-02 15:04:05.000000", startStr, shanghai)
+		rowStartStr, _ := r["start_time"].(string)
+		ts, perr := time.ParseInLocation("2006-01-02 15:04:05.000000", rowStartStr, shanghai)
 		if perr != nil {
-			if t2, e2 := time.ParseInLocation("2006-01-02 15:04:05", startStr, shanghai); e2 == nil {
-				start = t2
+			if t2, e2 := time.ParseInLocation("2006-01-02 15:04:05", rowStartStr, shanghai); e2 == nil {
+				ts = t2
 			} else {
 				continue
 			}
@@ -219,7 +273,7 @@ func (s *DeepFlowSyncer) syncTraces() error {
 			isErr = 1
 		}
 		// 用 start_time 生成稳定的 trace_id / span_id（十六进制）
-		base := fmt.Sprintf("%d", start.UnixNano())
+		base := fmt.Sprintf("%d", ts.UnixNano())
 		span := &model.Span{
 			TenantID:      s.tenantID,
 			TraceID:       hexHash(base, 32),
@@ -229,7 +283,7 @@ func (s *DeepFlowSyncer) syncTraces() error {
 			OperationName: operation,
 			SpanKind:      "SERVER",
 			StatusCode:    uint8(code),
-			StartTime:     start.In(time.UTC),
+			StartTime:     ts.In(time.UTC),
 			DurationNs:    durNs,
 			Attributes:    map[string]string{"http.url": operation, "source": fmt.Sprintf("%v", r["src"])},
 			HTTPMethod:    "GET",
@@ -250,15 +304,15 @@ func (s *DeepFlowSyncer) syncTraces() error {
 			srcName := fmt.Sprintf("%v", r["src"])
 			s.logWriter.Add(&model.LogRecord{
 				TenantID:    s.tenantID,
-				Timestamp:   start.In(time.UTC),
+				Timestamp:   ts.In(time.UTC),
 				ServiceName: dst,
 				Severity:    severity,
 				Body:        fmt.Sprintf("%s -> %s %s [%d] %dms", srcName, dst, operation, code, durNs/1e6),
 				Attributes:  map[string]string{"http.url": operation, "source": srcName, "http.status_code": fmt.Sprintf("%d", code)},
 				TraceID:     span.TraceID,
 				SpanID:      span.SpanID,
-				TimeBucket:  start.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
-				Date:        start.Format("2006-01-02"),
+				TimeBucket:  ts.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
+				Date:        ts.Format("2006-01-02"),
 			})
 		}
 		count++
