@@ -1,0 +1,42 @@
+# =============================================================================
+# AIOps 平台项目 .gitignore
+# =============================================================================
+
+# ongrid 参考副本（AGPL-3.0，仅对标不复制，绝不入库）
+/ongrid-ref/
+
+# 前端构建产物
+node_modules/
+dist/
+.next/
+coverage/
+*.tsbuildinfo
+
+# Go 构建产物
+*.exe
+*.out
+/bin/
+/tmp/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 环境与密钥（绝不入库）
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# 系统与编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 日志
+*.log
