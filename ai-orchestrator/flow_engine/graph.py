@@ -42,6 +42,15 @@ def graph_from_dict(data: dict) -> Graph:
     return Graph(nodes=nodes, edges=edges)
 
 
+def graph_to_dict(g: Graph) -> dict:
+    return {
+        "nodes": [{"id": n.id, "type": n.type, "name": n.name,
+                   "config": n.config, "position": n.position} for n in g.nodes],
+        "edges": [{"id": e.id, "source": e.source, "sourcePort": e.source_port,
+                   "target": e.target} for e in g.edges],
+    }
+
+
 def validate_graph(g: Graph):
     if not g.nodes:
         raise ValueError("graph has no nodes")
