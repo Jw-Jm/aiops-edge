@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Card, Input, Button, Spin, message } from 'antd'
 import { SendOutlined } from '@ant-design/icons'
-import { getSession } from '../../api/client'
+import { getSession, approveTask, rejectTask } from '../../api/client'
 
 interface ChatMessage {
   id: string
@@ -24,6 +24,7 @@ const ChatThread: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [progressText, setProgressText] = useState('')
   const [toolCards, setToolCards] = useState<ToolCard[]>([])
+  const [approval, setApproval] = useState<{ task_id: string; plan: string; script: string; risk_score: number; risk_reason: string } | null>(null)
   const [historyLoading, setHistoryLoading] = useState(true)
 
   // 进入路由回放历史
@@ -58,6 +59,7 @@ const ChatThread: React.FC = () => {
     setLoading(true)
     setProgressText('分析开始...')
     setToolCards([])
+    setApproval(null)
     const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: 'user', content: text, timestamp: new Date().toISOString() }
     setMessages((p) => [...p, userMsg])
     try {
@@ -84,6 +86,9 @@ const ChatThread: React.FC = () => {
           case 'tool_start': toolLocal.push({ tool_call_id: ev.tool_call_id, name: ev.name, status: 'pending' }); break
           case 'tool_end':
             toolLocal = toolLocal.map((t) => (t.tool_call_id === ev.tool_call_id ? { ...t, status: ev.status, result: ev.result } : t))
+            break
+          case 'approval_pending':
+            setApproval({ task_id: ev.task_id, plan: ev.plan || '', script: ev.script || '', risk_score: ev.risk_score || 0, risk_reason: ev.risk_reason || '' })
             break
           case 'done': if (!fullText) fullText = ev.text ?? ev.assistant_message?.content ?? ''; break
           case 'error': fullText = `⚠️ ${ev.error ?? ev.text ?? ''}`; break
@@ -152,6 +157,25 @@ const ChatThread: React.FC = () => {
             <span style={{ fontSize: 11, color: t.status === 'success' ? '#22c55e' : '#a1a1aa' }}>{t.status}</span>
           </div>
         ))}
+        {approval && (
+          <div style={{ display: 'flex', flexDirection: 'column', marginBottom: 12, padding: '12px 14px', background: 'var(--surface-2)', border: '1px solid #d97706', borderRadius: 8 }}>
+            <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>⏳ 待人工审批</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+              {approval.plan} · 风险 {Math.round((approval.risk_score || 0) * 100)}% {approval.risk_reason ? `· ${approval.risk_reason}` : ''}
+            </div>
+            <pre style={{ background: 'var(--surface)', padding: 8, borderRadius: 6, fontSize: 12, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>
+              {approval.script}
+            </pre>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <Button size="small" type="primary" onClick={() => {
+                approveTask(approval.task_id).then(() => { message.success('已批准执行'); setApproval(null) }).catch(() => message.error('审批失败'))
+              }}>批准执行</Button>
+              <Button size="small" danger onClick={() => {
+                rejectTask(approval.task_id).then(() => { message.success('已拒绝'); setApproval(null) }).catch(() => message.error('操作失败'))
+              }}>拒绝</Button>
+            </div>
+          </div>
+        )}
         {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>🤖 {progressText}</div>}
       </div>
       <div style={{ display: 'flex', gap: 8 }}>

@@ -10,7 +10,7 @@ import {
   Collapse,
   Tag,
   Alert,
-  List, Tooltip, Popconfirm, Empty, Badge,
+  List, Tooltip, Popconfirm, Empty, Badge, message,
 } from "antd";
 import {
   SendOutlined,
@@ -23,7 +23,7 @@ import {
   DeleteOutlined, PlusOutlined, HistoryOutlined, MessageOutlined,
 } from '@ant-design/icons';
 import api from "../../api/client";
-import { getLLMSettings } from '../../api/client';
+import { getLLMSettings, approveTask, rejectTask } from '../../api/client';
 import { useNavigate } from 'react-router-dom';
 import { fmtLocalTime } from '../../utils/date';
 
@@ -61,6 +61,7 @@ const AIChat: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [progressText, setProgressText] = useState('');
   const [toolCards, setToolCards] = useState<Array<{ tool_call_id: string; name: string; status: string; result?: string }>>([]);
+  const [approval, setApproval] = useState<{ task_id: string; plan: string; script: string; risk_score: number; risk_reason: string } | null>(null);
   const [expert, setExpert] = useState('diagnosis');
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -139,6 +140,7 @@ const AIChat: React.FC = () => {
     setLoading(true);
     setProgressText('分析开始...');
     setToolCards([]);
+    setApproval(null);
 
     try {
       const baseURL = api.defaults.baseURL || '/api/v1';
@@ -168,7 +170,9 @@ const AIChat: React.FC = () => {
           case 'tool_end':
             toolCardsLocal = toolCardsLocal.map((t) => (t.tool_call_id === ev.tool_call_id ? { ...t, status: ev.status, result: ev.result } : t));
             break;
-          case 'approval_pending': break;
+          case 'approval_pending':
+            setApproval({ task_id: ev.task_id, plan: ev.plan || '', script: ev.script || '', risk_score: ev.risk_score || 0, risk_reason: ev.risk_reason || '' });
+            break;
           case 'done':
             if (!fullText) fullText = ev.text ?? ev.assistant_message?.content ?? '';
             setToolCards(toolCardsLocal);
@@ -459,6 +463,42 @@ const AIChat: React.FC = () => {
                 {t.result && <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>{String(t.result).slice(0, 80)}</span>}
               </div>
             ))}
+          </div>
+        )}
+
+        {approval && (
+          <div style={{ display: 'flex', flexDirection: 'column', marginBottom: 12, padding: '12px 14px', background: 'var(--surface-2)', border: '1px solid #d97706', borderRadius: 8 }}>
+            <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>⏳ 待人工审批</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+              {approval.plan} · 风险 {Math.round((approval.risk_score || 0) * 100)}% {approval.risk_reason ? `· ${approval.risk_reason}` : ''}
+            </div>
+            <pre style={{ background: 'var(--surface)', padding: 8, borderRadius: 6, fontSize: 12, color: 'var(--text)', whiteSpace: 'pre-wrap' }}>
+              {approval.script}
+            </pre>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => {
+                  approveTask(approval.task_id)
+                    .then(() => { message.success('已批准执行'); setApproval(null) })
+                    .catch(() => message.error('审批失败'));
+                }}
+              >
+                批准执行
+              </Button>
+              <Button
+                size="small"
+                danger
+                onClick={() => {
+                  rejectTask(approval.task_id)
+                    .then(() => { message.success('已拒绝'); setApproval(null) })
+                    .catch(() => message.error('操作失败'));
+                }}
+              >
+                拒绝
+              </Button>
+            </div>
           </div>
         )}
 

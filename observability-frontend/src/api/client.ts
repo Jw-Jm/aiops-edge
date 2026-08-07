@@ -65,6 +65,10 @@ export const listFlows = () => api.get('/ai/flows')
 export const getFlow = (key: string) => api.get(`/ai/flows/${encodeURIComponent(key)}`)
 export const runFlow = (key: string, params: Record<string, unknown>) => api.post(`/ai/flows/${encodeURIComponent(key)}/run`, params)
 
+// ===== Task Approval =====
+export const approveTask = (id: string) => api.post(`/ops/tasks/${id}/approve`)
+export const rejectTask = (id: string) => api.post(`/ops/tasks/${id}/reject`)
+
 export const chatWithAI = (data: Record<string, unknown>) =>
   api.post('/ai/chat', data, {
     timeout: 120000,          // LLM analysis takes 30-90s
