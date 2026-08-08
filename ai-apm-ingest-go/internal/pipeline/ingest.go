@@ -99,27 +99,10 @@ func (p *Pipeline) flushLoop() {
 // flushMetrics drains the in-memory aggregation maps and sends to MetricsWriter
 func (p *Pipeline) flushMetrics() {
 	p.mu.Lock()
-	metrics := p.metricsAgg
 	edges := p.edgesAgg
 	p.metricsAgg = make(map[metricsKey]*metricsValue)
 	p.edgesAgg = make(map[edgeKey]*edgeValue)
 	p.mu.Unlock()
-
-	for k, v := range metrics {
-		tb, _ := time.Parse("2006-01-02T15:04", k.timeBucket)
-		date := tb.Format("2006-01-02")
-		p.metricsWriter.AddMetric(&model.ServiceMetric{
-			TenantID:      k.tenantID,
-			ServiceName:   k.serviceName,
-			CallerService: k.callerService,
-			TimeBucket:    tb,
-			CallCount:     v.callCount,
-			ErrorCount:    v.errorCount,
-			DurationSumNs: v.durationSumNs,
-			DurationCount: v.durationCount,
-			Date:          date,
-		})
-	}
 
 	for k, v := range edges {
 		tb, _ := time.Parse("2006-01-02T15:04", k.timeBucket)

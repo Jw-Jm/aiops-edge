@@ -19,7 +19,6 @@ import (
 type MetricsWriter struct {
 	endpoint   string
 	mu         sync.Mutex
-	metricsBuf []*model.ServiceMetric
 	edgesBuf   []*model.TopologyEdge
 	batchSize  int
 	flushEvery time.Duration
@@ -31,9 +30,8 @@ type MetricsWriter struct {
 	// 待重试：kind+seq -> rows
 	retryPending map[string][]byte
 
-	// OnMetricsWritten / OnEdgesWritten 写入成功回调
-	OnMetricsWritten func(n int)
-	OnEdgesWritten   func(n int)
+	// OnEdgesWritten 写入成功回调
+	OnEdgesWritten func(n int)
 }
 
 // NewMetricsWriter creates a new MetricsWriter.
@@ -65,17 +63,6 @@ func NewMetricsWriter(host string, port int, walDir string) *MetricsWriter {
 	}
 	go w.flushLoop()
 	return w
-}
-
-// AddMetric adds a ServiceMetric to the batch buffer.
-func (w *MetricsWriter) AddMetric(m *model.ServiceMetric) {
-	w.mu.Lock()
-	w.metricsBuf = append(w.metricsBuf, m)
-	shouldFlush := len(w.metricsBuf) >= w.batchSize
-	w.mu.Unlock()
-	if shouldFlush {
-		w.flush()
-	}
 }
 
 // AddEdge adds a TopologyEdge to the batch buffer.
@@ -111,36 +98,19 @@ func (w *MetricsWriter) flushLoop() {
 
 func (w *MetricsWriter) flush() {
 	w.mu.Lock()
-	if len(w.metricsBuf) == 0 && len(w.edgesBuf) == 0 {
+	if len(w.edgesBuf) == 0 {
 		w.mu.Unlock()
 		return
 	}
-	metrics := w.metricsBuf
 	edges := w.edgesBuf
-	w.metricsBuf = make([]*model.ServiceMetric, 0, w.batchSize)
 	w.edgesBuf = make([]*model.TopologyEdge, 0, w.batchSize)
 	w.mu.Unlock()
 
-	if len(metrics) > 0 {
-		rows := w.serializeMetrics(metrics)
-		w.writeRetry("metric", rows, w.insertMetrics)
-	}
+	// metric_service_red 死表已停写（服务 RED 改由 ingest /metrics 暴露进 VM），仅保留 edge 写入。
 	if len(edges) > 0 {
 		rows := w.serializeEdges(edges)
 		w.writeRetry("edge", rows, w.insertEdges)
 	}
-}
-
-func (w *MetricsWriter) serializeMetrics(metrics []*model.ServiceMetric) []byte {
-	var buf bytes.Buffer
-	for _, m := range metrics {
-		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n",
-			m.TenantID, m.ServiceName, m.CallerService,
-			m.TimeBucket.Format("2006-01-02 15:04:05"),
-			m.CallCount, m.ErrorCount, m.DurationSumNs, m.DurationCount, m.Date,
-		)
-	}
-	return buf.Bytes()
 }
 
 func (w *MetricsWriter) serializeEdges(edges []*model.TopologyEdge) []byte {
@@ -185,9 +155,7 @@ func (w *MetricsWriter) countWritten(kind string, rows []byte) {
 			n++
 		}
 	}
-	if kind == "metric" && w.OnMetricsWritten != nil {
-		w.OnMetricsWritten(n)
-	} else if kind == "edge" && w.OnEdgesWritten != nil {
+	if kind == "edge" && w.OnEdgesWritten != nil {
 		w.OnEdgesWritten(n)
 	}
 }
@@ -201,13 +169,11 @@ func (w *MetricsWriter) flushRetry() {
 	w.mu.Unlock()
 	for key, rows := range pending {
 		kind := key[:strings.Index(key, "-")]
-		var insert func([]byte) error
-		if kind == "metric" {
-			insert = w.insertMetrics
-		} else {
-			insert = w.insertEdges
+		if kind != "edge" {
+			// metric 维度已停写（metric_service_red 死表），忽略旧 WAL/内存 metric 项
+			continue
 		}
-		if err := insert(rows); err != nil {
+		if err := w.insertEdges(rows); err != nil {
 			continue
 		}
 		w.confirm(kind, key, rows)
@@ -228,13 +194,6 @@ func (w *MetricsWriter) confirm(kind, key string, rows []byte) {
 			}
 		}
 	}
-}
-
-// insertMetrics 已停用：metric_service_red 是只写不读的死表。
-// 服务 RED 指标改由 ingest /metrics 暴露，经 VM 采集（VictoriaMetrics 为唯一指标库）。
-// 保留空实现以兼容调用链，但不再写 ClickHouse。
-func (w *MetricsWriter) insertMetrics(metrics []byte) error {
-	return nil
 }
 
 func (w *MetricsWriter) insertEdges(edges []byte) error {

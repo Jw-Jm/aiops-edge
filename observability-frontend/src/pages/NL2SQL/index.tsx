@@ -75,7 +75,7 @@ const NL2SQL: React.FC = () => {
           <Button size="large" type="primary" icon={<ThunderboltFilled />} onClick={handleTranslate} loading={translating}>翻译 SQL</Button>
         </Space.Compact>
         <Paragraph type="secondary" style={{ marginTop: 8, fontSize: 12 }}>
-          支持查询：observability.trace_spans（调用链）、service_topology（拓扑）、log_records（日志）、inspection_reports（报告）。SQL 生成后需人工确认再执行。
+          支持查询：observability.trace_spans（调用链）、service_topology（拓扑）、log_records（日志）。SQL 生成后需人工确认再执行。
         </Paragraph>
       </Card>
 

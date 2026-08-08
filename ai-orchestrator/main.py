@@ -1088,41 +1088,6 @@ def _ch_query_json(sql: str) -> list:
     return rows
 
 
-def _ch_query(sql: str, data: bytes = None) -> str:
-    """通过 ClickHouse HTTP 8123 执行 SQL。
-
-    - SELECT / DDL: GET ?query=...&default_format=TabSeparated
-    - INSERT: POST ?query=...&default_format=TabSeparated，body 为 TabSeparated 数据
-    """
-    import urllib.parse
-    import urllib.request
-    base = f"http://{_CH_HOST}:{_CH_PORT}/"
-    query = urllib.parse.quote(sql) + "&default_format=TabSeparated"
-    url = base + "?query=" + query
-    if data is not None:
-        req = urllib.request.Request(url, data=data,
-                                     headers={"Content-Type": "text/tab-separated-values"})
-    else:
-        req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.read().decode("utf-8", errors="replace")
-
-
-def _ensure_report_table():
-    """幂等建表。"""
-    try:
-        # 用 POST 执行 DDL（GET 方式在某些场景对 CREATE 返回 500）
-        import urllib.parse
-        import urllib.request
-        url = (f"http://{_CH_HOST}:{_CH_PORT}/?query="
-               + urllib.parse.quote(_REPORT_DDL) + "&default_format=TabSeparated")
-        req = urllib.request.Request(url, data=b"")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            resp.read()
-    except Exception as e:
-        print(f"[reports] 建表失败: {e}")
-
-
 def _extract_report_fields(content: str, service: str, filename: str) -> dict:
     """从自由文本报告中启发式抽取结构化字段（verdict / risk_score / summary / report_type）。"""
     low = content.lower()
@@ -1346,8 +1311,7 @@ _NL2SQL_SYSTEM = (
     "可用表：observability.trace_spans(span_id,parent_span_id,trace_id,service_name,start_time,"
     "duration_ns,is_error,response_status,peer_service), "
     "observability.service_topology(source_service,destination_service,calls,error_rate,p95_latency_ns,window), "
-    "observability.log_records(service_name,log_time,level,message,digest), "
-    "observability.inspection_reports(task_id,service_name,report_type,verdict,risk_score,summary,created_at). "
+    "observability.log_records(service_name,log_time,level,message,digest). "
     "只返回 SQL 本体，不要任何解释、注释或 markdown 代码块。"
 )
 

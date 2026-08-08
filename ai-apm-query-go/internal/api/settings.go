@@ -100,15 +100,11 @@ type K8sSettings struct {
 }
 
 var (
-	settings     *Settings
-	settingsMu   sync.RWMutex
-	settingsPath = "/tmp/observability-settings.json"
+	settings   *Settings
+	settingsMu sync.RWMutex
 )
 
 func init() {
-	if f := os.Getenv("SETTINGS_FILE"); f != "" {
-		settingsPath = f
-	}
 	settings = loadSettings()
 }
 

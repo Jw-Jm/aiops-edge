@@ -42,7 +42,6 @@ func main() {
 	defer writer.Close()
 
 	metricsWriter := clickhouse.NewMetricsWriter(*chHost, *chPort, walDir)
-	metricsWriter.OnMetricsWritten = func(n int) { met.AddMetricsWritten(int64(n)) }
 	metricsWriter.OnEdgesWritten = func(n int) { met.AddEdgesWritten(int64(n)) }
 	defer metricsWriter.Close()
 

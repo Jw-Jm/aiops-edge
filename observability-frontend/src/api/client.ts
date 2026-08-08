@@ -46,9 +46,7 @@ export const getTopology = (params?: Record<string, unknown>) => api.get('/topol
 export const getTopologyNodeDetail = (name: string, params?: Record<string, unknown>) => api.get(`/topology/node/${encodeURIComponent(name)}`, { params })
 
 // ===== Chat Sessions =====
-export const getChatSessions = () => api.get('/ai/sessions')
 export const getSession = (sid: string) => api.get(`/ai/session/${sid}`)
-export const deleteSession = (sid: string) => api.delete(`/ai/session/${sid}`)
 
 // ===== AI Skills / Agents =====
 export const listSkills = () => api.get('/ai/skills')
@@ -90,16 +88,8 @@ export const chatWithAI = (data: Record<string, unknown>) =>
     responseType: 'text',     // backend returns text/markdown, not JSON
   })
 
-// Infrastructure
-export const getInfrastructureNodes = () => api.get('/infrastructure/nodes')
-export const getInfrastructurePods = (namespace?: string) => api.get('/infrastructure/pods', { params: { namespace } })
-export const getInfrastructureDeployments = (namespace?: string) => api.get('/infrastructure/deployments', { params: { namespace } })
-export const getInfrastructureNamespaces = () => api.get('/infrastructure/namespaces')
-
 // LLM Settings
 export const getLLMSettings = () => api.get('/settings/llm')
-export const saveLLMSettings = (data: Record<string, unknown>) => api.post('/settings/llm', data)
-export const testLLMConnection = (data: Record<string, unknown>) => api.post('/settings/llm/test', data)
 
 // Auth
 export const login = (username: string, password: string) => api.post('/auth/login', { username, password })
@@ -119,9 +109,6 @@ export const resolveAlertEvent = (id: string) => api.post(`/alerts/events/${id}/
 // Alert → RCA (告警根因分析联动)
 export const rcaAlertAnalysis = (data: Record<string, unknown>) =>
   api.post('/ops/rca/alert', data, { timeout: 120000 })
-
-// DeepFlow
-export const getDeepFlowStatus = () => api.get('/deepflow/status')
 
 // Logs
 export const queryLogs = (params: Record<string, unknown>) => api.get('/logs/query', { params })
