@@ -161,8 +161,8 @@ ingest:
   walStorageClass: ""
   walStorage: 5Gi
   resources:
-    requests: { cpu: "200m", memory: "256Mi" }
-    limits: { cpu: "1", memory: "1Gi" }
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "2Gi" }
 
 aiOrchestrator:
   enabled: true
