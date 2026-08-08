@@ -10,16 +10,17 @@ import (
 
 // AlertRule 数据库实体。
 type AlertRule struct {
-	ID        string
-	Name      string
-	Service   string
-	Type      string
-	Metric    string
-	Condition string
-	Threshold float64
-	Duration  int
-	Severity  string
-	Enabled   bool
+	ID         string
+	Name       string
+	Service    string
+	Type       string
+	Metric     string
+	Condition  string
+	Threshold  float64
+	Duration   int
+	Severity   string
+	Enabled    bool
+	WebhookURL string
 }
 
 // AlertRuleDAO 告警规则数据访问（全量重建 + 加载）。
@@ -32,7 +33,7 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	rows, err := conn.Query(
-		"SELECT id, name, service, type, metric, cond, threshold, duration, severity, enabled FROM alert_rules")
+		"SELECT id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url FROM alert_rules")
 	if err != nil {
 		return nil, err
 	}
@@ -41,11 +42,13 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 	for rows.Next() {
 		var r AlertRule
 		var en int
+		var wh sql.NullString
 		if err := rows.Scan(&r.ID, &r.Name, &r.Service, &r.Type, &r.Metric,
-			&r.Condition, &r.Threshold, &r.Duration, &r.Severity, &en); err != nil {
+			&r.Condition, &r.Threshold, &r.Duration, &r.Severity, &en, &wh); err != nil {
 			return nil, err
 		}
 		r.Enabled = en == 1
+		r.WebhookURL = wh.String
 		out = append(out, r)
 	}
 	return out, nil
@@ -66,14 +69,14 @@ func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 		return err
 	}
 	stmt, err := tx.Prepare(
-		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for _, r := range rules {
 		if _, err := stmt.Exec(r.ID, r.Name, r.Service, r.Type, r.Metric,
-			r.Condition, r.Threshold, r.Duration, r.Severity, boolToInt(r.Enabled)); err != nil {
+			r.Condition, r.Threshold, r.Duration, r.Severity, boolToInt(r.Enabled), r.WebhookURL); err != nil {
 			return err
 		}
 	}
@@ -101,6 +104,7 @@ type AlertEvent struct {
 	AcknowledgedBy  string
 	ResolvedAt      string
 	ResolvedBy      string
+	Timeline        string
 }
 
 // AlertEventDAO 告警事件数据访问。
@@ -115,7 +119,7 @@ func (d *AlertEventDAO) LoadAll() ([]AlertEvent, error) {
 	rows, err := conn.Query(
 		`SELECT id, rule_id, rule_name, service, severity, message, value, threshold,
 		        timestamp, count, first_timestamp, last_timestamp, status,
-		        acknowledged_at, acknowledged_by, resolved_at, resolved_by
+		        acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline
 		 FROM alert_events`)
 	if err != nil {
 		return nil, err
@@ -124,10 +128,10 @@ func (d *AlertEventDAO) LoadAll() ([]AlertEvent, error) {
 	out := []AlertEvent{}
 	for rows.Next() {
 		var e AlertEvent
-		var ts, fts, lts, aat, rat sql.NullString
+		var ts, fts, lts, aat, rat, tl sql.NullString
 		if err := rows.Scan(&e.ID, &e.RuleID, &e.RuleName, &e.Service, &e.Severity,
 			&e.Message, &e.Value, &e.Threshold, &ts, &e.Count, &fts, &lts, &e.Status,
-			&aat, &e.AcknowledgedBy, &rat, &e.ResolvedBy); err != nil {
+			&aat, &e.AcknowledgedBy, &rat, &e.ResolvedBy, &tl); err != nil {
 			return nil, err
 		}
 		e.Timestamp = ts.String
@@ -135,6 +139,7 @@ func (d *AlertEventDAO) LoadAll() ([]AlertEvent, error) {
 		e.LastTimestamp = lts.String
 		e.AcknowledgedAt = aat.String
 		e.ResolvedAt = rat.String
+		e.Timeline = tl.String
 		out = append(out, e)
 	}
 	return out, nil
@@ -157,8 +162,8 @@ func (d *AlertEventDAO) ReplaceAll(events []AlertEvent) error {
 	stmt, err := tx.Prepare(
 		`INSERT INTO alert_events (id, rule_id, rule_name, service, severity, message, value, threshold,
 		        timestamp, count, first_timestamp, last_timestamp, status,
-		        acknowledged_at, acknowledged_by, resolved_at, resolved_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		        acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -167,7 +172,8 @@ func (d *AlertEventDAO) ReplaceAll(events []AlertEvent) error {
 		if _, err := stmt.Exec(e.ID, e.RuleID, e.RuleName, e.Service, e.Severity,
 			e.Message, e.Value, e.Threshold, nullStr(e.Timestamp), e.Count,
 			nullStr(e.FirstTimestamp), nullStr(e.LastTimestamp), e.Status,
-			nullStr(e.AcknowledgedAt), e.AcknowledgedBy, nullStr(e.ResolvedAt), e.ResolvedBy); err != nil {
+			nullStr(e.AcknowledgedAt), e.AcknowledgedBy, nullStr(e.ResolvedAt), e.ResolvedBy,
+			nullStr(e.Timeline)); err != nil {
 			return err
 		}
 	}

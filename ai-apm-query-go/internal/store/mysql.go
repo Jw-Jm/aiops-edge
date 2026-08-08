@@ -243,9 +243,15 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   duration INT DEFAULT 5,
   severity VARCHAR(16) DEFAULT 'warning',
   enabled TINYINT DEFAULT 1,
+  webhook_url VARCHAR(512) DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// 兼容已存在的 alert_rules 表：补 webhook_url 列（幂等）
+	if !hasColumn(conn, "alert_rules", "webhook_url") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN webhook_url VARCHAR(512) DEFAULT ''")
+	}
 
 	// alert_events 告警事件（从 /tmp JSON 迁 MySQL）
 	_, _ = conn.Exec(`
@@ -267,8 +273,14 @@ CREATE TABLE IF NOT EXISTS alert_events (
   acknowledged_by VARCHAR(64) DEFAULT '',
   resolved_at DATETIME DEFAULT NULL,
   resolved_by VARCHAR(64) DEFAULT '',
+  timeline TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// 兼容已存在的 alert_events 表：补 timeline 列（幂等）
+	if !hasColumn(conn, "alert_events", "timeline") {
+		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN timeline TEXT")
+	}
 
 	// alert_silences 告警静默（从 /tmp JSON 迁 MySQL）
 	_, _ = conn.Exec(`

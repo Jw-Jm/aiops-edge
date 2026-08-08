@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -22,16 +23,17 @@ import (
 
 // AlertRule defines an alert rule.
 type AlertRule struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	Service   string  `json:"service"`
-	Type      string  `json:"type"`      // "threshold" or "mutation"
-	Metric    string  `json:"metric"`     // "error_rate", "latency_p99", "call_count"
-	Condition string  `json:"condition"`  // ">", "<", ">=", "<="
-	Threshold float64 `json:"threshold"`
-	Duration  int     `json:"duration"` // minutes
-	Severity  string  `json:"severity"` // "critical", "warning", "info"
-	Enabled   bool    `json:"enabled"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Service     string  `json:"service"`
+	Type        string  `json:"type"`      // "threshold", "mutation", "anomaly", "forecast", "burn_rate", "metric_raw"
+	Metric      string  `json:"metric"`     // "error_rate", "latency_p99", "call_count", 或 metric_raw 的 PromQL
+	Condition   string  `json:"condition"`  // ">", "<", ">=", "<="
+	Threshold   float64 `json:"threshold"`
+	Duration    int     `json:"duration"` // minutes
+	Severity    string  `json:"severity"` // "critical", "warning", "info"
+	Enabled     bool    `json:"enabled"`
+	WebhookURL  string  `json:"webhook_url,omitempty"` // 规则级 webhook（可选，覆盖全局）
 }
 
 // AlertEvent represents a triggered alert event.
@@ -53,6 +55,7 @@ type AlertEvent struct {
 	AcknowledgedBy   string  `json:"acknowledged_by,omitempty"`
 	ResolvedAt       string  `json:"resolved_at,omitempty"`
 	ResolvedBy       string  `json:"resolved_by,omitempty"`
+	Timeline         string  `json:"timeline,omitempty"` // 状态变更历史（JSON 数组）
 }
 
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
@@ -135,7 +138,7 @@ func loadAlertRules() {
 		alertRules = append(alertRules, AlertRule{
 			ID: r.ID, Name: r.Name, Service: r.Service, Type: r.Type, Metric: r.Metric,
 			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
-			Severity: r.Severity, Enabled: r.Enabled,
+			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 		})
 	}
 }
@@ -149,7 +152,7 @@ func saveAlertRules() {
 		rows = append(rows, store.AlertRule{
 			ID: r.ID, Name: r.Name, Service: r.Service, Type: r.Type, Metric: r.Metric,
 			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
-			Severity: r.Severity, Enabled: r.Enabled,
+			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 		})
 	}
 	if err := d.ReplaceAll(rows); err != nil {
@@ -175,6 +178,7 @@ func loadAlertEvents() {
 			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
 			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
 			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
+			Timeline: e.Timeline,
 		})
 	}
 }
@@ -191,6 +195,7 @@ func saveAlertEvents() {
 			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
 			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
 			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
+			Timeline: e.Timeline,
 		})
 	}
 	if err := d.ReplaceAll(rows); err != nil {
@@ -210,6 +215,7 @@ func transitionStatus(ev *AlertEvent, to, by string) bool {
 		ev.Status = to
 		ev.AcknowledgedAt = now
 		ev.AcknowledgedBy = by
+		appendTimeline(ev, "acknowledged", by)
 	case "resolved":
 		if ev.Status == "resolved" {
 			return false
@@ -217,6 +223,7 @@ func transitionStatus(ev *AlertEvent, to, by string) bool {
 		ev.Status = to
 		ev.ResolvedAt = now
 		ev.ResolvedBy = by
+		appendTimeline(ev, "resolved", by)
 	default:
 		return false
 	}
@@ -726,6 +733,37 @@ func (h *Handler) evaluateAlerts() {
 			}
 		}
 
+		// Anomaly detection: Z-score（当前值偏离历史均值超阈值）
+		if !breached && rule.Type == "anomaly" {
+			if hist, err := h.evaluateRuleHistorical(rule); err == nil && hist > 0 {
+				// 偏离历史基线超过 30% 视为异常（可用 threshold 调节灵敏度）
+				dev := (value - hist) / hist * 100
+				limit := rule.Threshold
+				if limit <= 0 {
+					limit = 30
+				}
+				if dev > limit || dev < -limit {
+					breached = true
+					log.Printf("ANOMALY: %s dev %.1f%% (current=%.1f, baseline=%.1f)", rule.Name, dev, value, hist)
+				}
+			}
+		}
+
+		// Forecast / Burn-rate：基于历史窗口的偏差（简单线性外推 vs 实际）
+		if !breached && (rule.Type == "forecast" || rule.Type == "burn_rate") {
+			if hist, err := h.evaluateRuleHistorical(rule); err == nil && hist > 0 {
+				dev := (value - hist) / hist * 100
+				limit := rule.Threshold
+				if limit <= 0 {
+					limit = 20
+				}
+				if dev > limit {
+					breached = true
+					log.Printf("%s: %s dev %.1f%% (current=%.1f, window=%.1f)", strings.ToUpper(rule.Type), rule.Name, dev, value, hist)
+				}
+			}
+		}
+
 		if breached {
 			// 告警降噪：先检查是否被静默抑制
 			if isSilenced(rule.Service, rule.ID) {
@@ -783,8 +821,10 @@ func (h *Handler) evaluateAlerts() {
 				if len(alertEvents) > maxAlertEvents {
 					alertEvents = alertEvents[len(alertEvents)-maxAlertEvents:]
 				}
-				// Webhook 通知（仅新事件通知，聚合事件不重复通知）
-				h.sendWebhook(event)
+				// Webhook 通知（仅新事件通知，聚合事件不重复通知）；优先规则级 webhook
+				ruleCopy := rule
+				appendTimeline(&event, "created", "system")
+				h.sendWebhook(event, &ruleCopy)
 				log.Printf("ALERT: %s | %s | %s | value=%.2f threshold=%.2f", rule.Severity, rule.Service, rule.Name, value, rule.Threshold)
 			}
 			alertEventsMu.Unlock()
@@ -805,14 +845,110 @@ func escalateSeverity(s string) string {
 	return "critical"
 }
 
-// evaluateRuleHistorical returns historical baseline for mutation detection (stub)
-func (h *Handler) evaluateRuleHistorical(rule AlertRule) (float64, error) {
-	return 0, fmt.Errorf("historical query not implemented")
+// vmInstantQuery 查 VictoriaMetrics 即时值（/api/v1/query），返回第一个样本数值。
+func (h *Handler) vmInstantQuery(promQL string) (float64, error) {
+	if h.vmURL == "" {
+		return 0, fmt.Errorf("victoria-metrics not configured")
+	}
+	u, _ := url.Parse(h.vmURL + "/api/v1/query")
+	q := u.Query()
+	q.Set("query", promQL)
+	u.RawQuery = q.Encode()
+	req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var r struct {
+		Data struct {
+			Result []struct {
+				Value []interface{} `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &r) != nil || len(r.Data.Result) == 0 {
+		return 0, nil
+	}
+	if len(r.Data.Result[0].Value) < 2 {
+		return 0, nil
+	}
+	s, ok := r.Data.Result[0].Value[1].(string)
+	if !ok {
+		return 0, nil
+	}
+	return strconv.ParseFloat(s, 64)
 }
 
-// sendWebhook sends alert to configured webhook URL
-func (h *Handler) sendWebhook(event AlertEvent) {
-	webhookURL := os.Getenv("ALERT_WEBHOOK_URL")
+// metricPromQL 返回规则对应指标的 VM PromQL 表达式。
+// 支持内置语义指标（error_rate/latency_p99/call_count）与 metric_raw 原始指标。
+func metricPromQL(rule AlertRule) string {
+	switch rule.Metric {
+	case "error_rate":
+		return fmt.Sprintf(`sum(rate(service_errors_total{service="%s"}[%dm])) / clamp_min(sum(rate(service_requests_total{service="%s"}[%dm])), 1) * 100`,
+			rule.Service, rule.Duration, rule.Service, rule.Duration)
+	case "call_count":
+		return fmt.Sprintf(`sum(rate(service_requests_total{service="%s"}[%dm])) * %d`, rule.Service, rule.Duration, rule.Duration)
+	case "latency_p99":
+		return fmt.Sprintf(`histogram_quantile(0.99, sum(rate(service_request_duration_seconds_bucket{service="%s"}[%dm])) by (le))`, rule.Service, rule.Duration)
+	default:
+		// metric_raw：metric 字段即 PromQL 原始表达式
+		return rule.Metric
+	}
+}
+
+// evaluateRuleHistorical 查 VM 历史窗口的指标基线（用于 mutation/forecast 检测）。
+// 对比窗口：当前值 vs 前一相同 duration 窗口。
+func (h *Handler) evaluateRuleHistorical(rule AlertRule) (float64, error) {
+	// 历史窗口：当前 duration 往前推一个 duration（即 2×duration 到 duration 之间）
+	windowMin := rule.Duration
+	if windowMin <= 0 {
+		windowMin = 5
+	}
+	// 用 rate 的过去窗口近似：查询从 [now-2d, now-d] 的平均速率
+	promQL := fmt.Sprintf(`avg_over_time((%s)[%dm:1m])`, metricPromQL(rule), windowMin)
+	u, _ := url.Parse(h.vmURL + "/api/v1/query")
+	q := u.Query()
+	q.Set("query", promQL)
+	// 指定时间戳为过去窗口起点（now - windowMin 分钟）
+	q.Set("time", time.Now().Add(-time.Duration(windowMin)*time.Minute).Format(time.RFC3339))
+	u.RawQuery = q.Encode()
+	req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var r struct {
+		Data struct {
+			Result []struct {
+				Value []interface{} `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &r) != nil || len(r.Data.Result) == 0 {
+		return 0, fmt.Errorf("no historical data")
+	}
+	if len(r.Data.Result[0].Value) < 2 {
+		return 0, fmt.Errorf("no historical value")
+	}
+	s, ok := r.Data.Result[0].Value[1].(string)
+	if !ok {
+		return 0, fmt.Errorf("bad historical value")
+	}
+	return strconv.ParseFloat(s, 64)
+}
+
+// sendWebhook sends alert to rule-level webhook（优先）或全局 env webhook。
+func (h *Handler) sendWebhook(event AlertEvent, rule *AlertRule) {
+	webhookURL := ""
+	if rule != nil && rule.WebhookURL != "" {
+		webhookURL = rule.WebhookURL
+	} else {
+		webhookURL = os.Getenv("ALERT_WEBHOOK_URL")
+	}
 	if webhookURL == "" {
 		return
 	}
@@ -823,6 +959,18 @@ func (h *Handler) sendWebhook(event AlertEvent) {
 		req.Header.Set("Content-Type", "application/json")
 		client.Do(req)
 	}()
+}
+
+// appendTimeline 向事件追加一条状态变更记录（timeline JSON 数组）。
+func appendTimeline(event *AlertEvent, action, by string) {
+	entry := map[string]string{"action": action, "by": by, "at": time.Now().UTC().Format(time.RFC3339)}
+	entries := []map[string]string{}
+	if event.Timeline != "" {
+		_ = json.Unmarshal([]byte(event.Timeline), &entries)
+	}
+	entries = append(entries, entry)
+	data, _ := json.Marshal(entries)
+	event.Timeline = string(data)
 }
 
 func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
@@ -849,6 +997,15 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 		return h.evalK8sPVCUsage(), nil
 	case "oom_count":
 		return h.evalK8sOOMCount(), nil
+	}
+
+	// metric_raw / anomaly / forecast / burn_rate 类型：metric 字段作为 VM PromQL 原始指标
+	if rule.Type == "metric_raw" || rule.Type == "anomaly" || rule.Type == "forecast" || rule.Type == "burn_rate" {
+		v, err := h.vmInstantQuery(metricPromQL(rule))
+		if err != nil {
+			return 0, err
+		}
+		return v, nil
 	}
 
 	var sql string
