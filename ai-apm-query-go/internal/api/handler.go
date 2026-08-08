@@ -810,15 +810,19 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 			minutes = v
 		}
 	}
-	timeCond := fmt.Sprintf(" AND time_bucket >= now() - INTERVAL %d MINUTE", minutes)
+	timeCond := fmt.Sprintf(" AND start_time >= now() - INTERVAL %d MINUTE", minutes)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	// 边聚合：调用量、错误数、平均延迟(ns)
+	// 边聚合（真实 trace）：通过 parent_span_id 关联，子 span(s1) 的服务调用其父 span(s2) 的服务
 	edgeSQL := fmt.Sprintf(
-		"SELECT source_service, target_service, sum(call_count) as calls, sum(error_count) as errs, avg(avg_duration_ns) as avg_ns "+
-			"FROM observability.service_topology WHERE tenant_id='%s'%s GROUP BY source_service, target_service",
+		"SELECT s2.service_name AS source_service, s1.service_name AS target_service, "+
+			"count() AS calls, countIf(s1.is_error=1) AS errs, avg(s1.duration_ns) AS avg_ns "+
+			"FROM observability.trace_spans s1 "+
+			"INNER JOIN observability.trace_spans s2 ON s1.parent_span_id = s2.span_id "+
+			"WHERE s1.tenant_id='%s'%s AND s1.service_name != s2.service_name "+
+			"GROUP BY s2.service_name, s1.service_name ORDER BY calls DESC LIMIT 200",
 		tid, timeCond,
 	)
 	edgeBody, err := h.queryClickHouse(ctx, edgeSQL)
@@ -834,16 +838,11 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 节点聚合：作为 source 或 target 的总调用量、总错误、平均延迟
+	// 节点聚合（真实 trace）：按 service_name 聚合调用量、错误、平均延迟
 	nodeSQL := fmt.Sprintf(
-		"SELECT service, sum(calls) as calls, sum(errs) as errs, avg(avg_ns) as avg_ns FROM ("+
-			"SELECT source_service as service, sum(call_count) as calls, sum(error_count) as errs, avg(avg_duration_ns) as avg_ns "+
-			"FROM observability.service_topology WHERE tenant_id='%s'%s GROUP BY source_service "+
-			"UNION ALL "+
-			"SELECT target_service as service, sum(call_count) as calls, sum(error_count) as errs, avg(avg_duration_ns) as avg_ns "+
-			"FROM observability.service_topology WHERE tenant_id='%s'%s GROUP BY target_service"+
-			") GROUP BY service",
-		tid, timeCond, tid, timeCond,
+		"SELECT service_name AS service, count() AS calls, countIf(is_error=1) AS errs, avg(duration_ns) AS avg_ns "+
+			"FROM observability.trace_spans WHERE tenant_id='%s'%s GROUP BY service_name ORDER BY calls DESC LIMIT 200",
+		tid, timeCond,
 	)
 	nodeBody, err := h.queryClickHouse(ctx, nodeSQL)
 	if err != nil {
