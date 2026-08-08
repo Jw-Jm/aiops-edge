@@ -22,3 +22,27 @@ func TestDashboardStatsAggregation(t *testing.T) {
 		t.Fatalf("TopServices = %v, want 2 items", stats.TopServices)
 	}
 }
+
+// aggregateAlerts 应按 severity 与服务正确聚合告警计数。
+func TestAlertStatsAggregation(t *testing.T) {
+	byService := map[string]map[string]int{
+		"svc-a": {"critical": 2, "warning": 1},
+		"svc-b": {"warning": 3, "info": 4},
+	}
+	a := AggregateAlerts(byService)
+	if a.Total != 10 {
+		t.Fatalf("Total = %d, want 10", a.Total)
+	}
+	if a.Critical != 2 {
+		t.Fatalf("Critical = %d, want 2", a.Critical)
+	}
+	if a.Warning != 4 {
+		t.Fatalf("Warning = %d, want 4", a.Warning)
+	}
+	if a.Info != 4 {
+		t.Fatalf("Info = %d, want 4", a.Info)
+	}
+	if len(a.ByService) != 2 {
+		t.Fatalf("ByService len = %d, want 2", len(a.ByService))
+	}
+}

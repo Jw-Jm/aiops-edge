@@ -711,6 +711,61 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// P95 延迟
+	p95SQL := fmt.Sprintf("SELECT round(quantile(0.95)(duration_ns)/1000000, 2) FROM observability.trace_spans WHERE tenant_id='%s' AND date >= today()-1", tid)
+	if pb, err := h.queryClickHouse(ctx, p95SQL); err == nil {
+		if pr, perr := parseRows(pb); perr == nil && len(pr) > 0 {
+			if v, ferr := toFloat64(pr[0]["round(quantile(0.95)(duration_ns)/1000000, 2)"]); ferr == nil {
+				stats.LatencyP95 = v
+			}
+		}
+	}
+
+	// 近 24h 调用/错误趋势（按小时）
+	trendSQL := fmt.Sprintf(
+		"SELECT toString(toStartOfHour(start_time)) AS t, count() AS calls, countIf(is_error=1) AS errors "+
+			"FROM observability.trace_spans WHERE tenant_id='%s' AND date >= today()-1 "+
+			"GROUP BY t ORDER BY t LIMIT 24", tid)
+	if tb, err := h.queryClickHouse(ctx, trendSQL); err == nil {
+		if tr, perr := parseRows(tb); perr == nil {
+			for _, row := range tr {
+				tv, _ := row["t"].(string)
+				calls, _ := toInt64(row["calls"])
+				errs, _ := toInt64(row["errors"])
+				stats.Trend = append(stats.Trend, biz.TrendPoint{T: tv, Calls: calls, Errors: errs})
+			}
+		}
+	}
+
+	// TOP 错误服务分布
+	teSQL := fmt.Sprintf(
+		"SELECT service_name AS s, countIf(is_error=1) AS errors FROM observability.trace_spans "+
+			"WHERE tenant_id='%s' AND date >= today()-1 AND is_error=1 GROUP BY s ORDER BY errors DESC LIMIT 10", tid)
+	if tb, err := h.queryClickHouse(ctx, teSQL); err == nil {
+		if tr, perr := parseRows(tb); perr == nil {
+			for _, row := range tr {
+				svc, _ := row["s"].(string)
+				errs, _ := toInt64(row["errors"])
+				stats.TopErrors = append(stats.TopErrors, biz.ErrorItem{Service: svc, Errors: errs})
+			}
+		}
+	}
+
+	// 告警统计（读内存 alertEvents）
+	alertEventsMu.RLock()
+	alertAgg := make(map[string]map[string]int)
+	for _, ev := range alertEvents {
+		if ev.Status != "firing" {
+			continue
+		}
+		if alertAgg[ev.Service] == nil {
+			alertAgg[ev.Service] = map[string]int{}
+		}
+		alertAgg[ev.Service][ev.Severity]++
+	}
+	alertEventsMu.RUnlock()
+	stats.AlertStats = biz.AggregateAlerts(alertAgg)
+
 	respondJSON(w, http.StatusOK, stats)
 }
 
