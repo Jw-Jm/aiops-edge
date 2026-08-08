@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, message, Drawer } from 'antd'
-import { PlusOutlined, ReloadOutlined, DeleteOutlined, ThunderboltOutlined, ClusterOutlined } from '@ant-design/icons'
+import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, message, Drawer, Alert, Typography } from 'antd'
+import { PlusOutlined, ReloadOutlined, DeleteOutlined, ThunderboltOutlined, ClusterOutlined, SettingOutlined } from '@ant-design/icons'
+
+const { Text, Paragraph } = Typography
 import { listSnmpDevices, createSnmpDevice, deleteSnmpDevice, listSnmpInterfaces, collectSnmpDevice, SnmpDevice, SnmpInterface } from '../../api/client'
 
 const Snmp: React.FC = () => {
@@ -12,6 +14,7 @@ const Snmp: React.FC = () => {
   const [interfaces, setInterfaces] = useState<SnmpInterface[]>([])
   const [ifDevice, setIfDevice] = useState('')
   const [collecting, setCollecting] = useState<number | null>(null)
+  const [cfgDrawer, setCfgDrawer] = useState(false)
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -88,6 +91,7 @@ const Snmp: React.FC = () => {
 
   return (
     <Card title="SNMP 网络设备" extra={<Space>
+      <Button icon={<SettingOutlined />} onClick={() => setCfgDrawer(true)}>配置说明</Button>
       <Button icon={<ReloadOutlined />} onClick={fetch}>刷新</Button>
       <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>添加设备</Button>
     </Space>}>
@@ -113,6 +117,40 @@ const Snmp: React.FC = () => {
 
       <Drawer title={`${ifDevice} — 接口`} open={ifDrawer} onClose={() => setIfDrawer(false)} width={700}>
         <Table rowKey="id" columns={ifColumns} dataSource={interfaces} pagination={{ pageSize: 20 }} />
+      </Drawer>
+
+      <Drawer title="SNMP 采集配置说明" open={cfgDrawer} onClose={() => setCfgDrawer(false)} width={560}>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="四网段隔离环境：仅采集 K8s 管理网内可达的网络设备（上联交换机）" />
+        <Paragraph>
+          <Text strong>采集器配置</Text>（ai-orchestrator 环境变量）：
+        </Paragraph>
+        <Paragraph>
+          <pre style={{ background: '#1a1a1a', padding: 12, borderRadius: 8, fontSize: 12, color: '#7ec699' }}>
+{`SNMP_COLLECT_INTERVAL=60   # 轮询间隔(秒)
+SNMP_TIMEOUT=3             # 单次超时(秒)
+SNMP_COMMUNITY=public      # 默认只读 community`}
+          </pre>
+        </Paragraph>
+        <Paragraph>
+          <Text strong>交换机侧要求</Text>：
+          <ul>
+            <li>开启 SNMP 只读（v2c community 或 v3）</li>
+            <li>只允许管理网 CIDR 访问（ACL）</li>
+            <li>禁止 RW；community 不落库（从配置读）</li>
+          </ul>
+        </Paragraph>
+        <Paragraph>
+          <Text strong>添加设备</Text>：点击"添加设备"，填管理网可达的上联交换机 IP + community。
+        </Paragraph>
+        <Paragraph>
+          <Text strong>排障</Text>：
+          <ul>
+            <li>接口为空 → 检查 community/ACL</li>
+            <li>超时 → 确认管理网可达、调大 SNMP_TIMEOUT</li>
+          </ul>
+        </Paragraph>
+        <Paragraph type="secondary">完整配置见文档 <Text code>deploy/SNMP_IPMI_DEPLOYMENT.md</Text></Paragraph>
       </Drawer>
     </Card>
   )

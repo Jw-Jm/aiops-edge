@@ -122,7 +122,7 @@ nodeExporter:
 # ipmi-exporter — 每节点本地采集 IPMI 传感器（/dev/ipmi0，不走带外网）
 ipmiExporter:
   enabled: true
-  image: "aiops/ipmi-exporter:latest"
+  image: "ipmi-exporter:latest"
   collectInterval: "120"
 
 # ---------------------------------------------------------------------------

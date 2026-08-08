@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Button, Row, Col, Input, message } from 'antd'
-import { ReloadOutlined, HddOutlined } from '@ant-design/icons'
+import { Card, Table, Tag, Space, Button, Row, Col, Input, Drawer, Alert, Typography } from 'antd'
+import { ReloadOutlined, SettingOutlined } from '@ant-design/icons'
 import { listNodeHealth, listIpmiSensors, NodeHealthRow, IpmiSensor } from '../../api/client'
+
+const { Paragraph, Text } = Typography
 
 const COMP_MAP: Record<string, string> = {
   cpu: 'CPU', memory: '内存', disk: '磁盘', network: '网卡',
@@ -26,6 +28,7 @@ const Hardware: React.FC = () => {
   const [sensors, setSensors] = useState<IpmiSensor[]>([])
   const [loading, setLoading] = useState(false)
   const [node, setNode] = useState('')
+  const [cfgDrawer, setCfgDrawer] = useState(false)
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -80,6 +83,7 @@ const Hardware: React.FC = () => {
     <div>
       <Card title="服务器部件可用性" extra={<Space>
         <Input placeholder="节点名过滤" allowClear style={{ width: 180 }} onChange={e => setNode(e.target.value)} />
+        <Button icon={<SettingOutlined />} onClick={() => setCfgDrawer(true)}>配置说明</Button>
         <Button icon={<ReloadOutlined />} onClick={fetch}>刷新</Button>
       </Space>} style={{ marginBottom: 16 }}>
         <Table rowKey="node" columns={compCols('')} dataSource={nodeRows} loading={loading}
@@ -90,6 +94,44 @@ const Hardware: React.FC = () => {
         <Table rowKey={(r, i) => `${r.node_name}-${i}`} columns={sensorCols} dataSource={sensors} loading={loading}
           pagination={{ pageSize: 20, showTotal: (t: number) => `共 ${t} 条` }} />
       </Card>
+
+      <Drawer title="IPMI / 部件可用性采集配置说明" open={cfgDrawer} onClose={() => setCfgDrawer(false)} width={560}>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="四网段隔离：IPMI 用本地 /dev/ipmi0 采集（不走带外网），结果经管理网上报" />
+        <Paragraph>
+          <Text strong>ipmi-exporter（DaemonSet）</Text>：每 K8s 节点一台，privileged + hostPath <Text code>/dev/ipmi0</Text>，
+          用 <Text code>ipmitool sensor list</Text> 读 BMC 温度/风扇/电压/电源。
+        </Paragraph>
+        <Paragraph>
+          <Text strong>采集配置</Text>：
+          <pre style={{ background: '#1a1a1a', padding: 12, borderRadius: 8, fontSize: 12, color: '#7ec699' }}>
+{`ipmiExporter:
+  enabled: true
+  image: "ipmi-exporter:latest"
+  collectInterval: "120"   # 采集间隔(秒)`}
+          </pre>
+        </Paragraph>
+        <Paragraph>
+          <Text strong>服务器侧要求</Text>：
+          <ul>
+            <li>主板开启 IPMI（BMC）</li>
+            <li>内核 <Text code>ipmi_si</Text> 驱动加载，<Text code>/dev/ipmi0</Text> 可用</li>
+            <li>无需带外网 IP 可达（本地 KCS 接口）</li>
+          </ul>
+        </Paragraph>
+        <Paragraph>
+          <Text strong>部件可用性</Text>：聚合 node_exporter（OS 层 CPU/内存/磁盘/网卡）+ IPMI（温度/电源），
+          判定 CPU/内存/磁盘/网卡 的 healthy/degraded/fault 状态。
+        </Paragraph>
+        <Paragraph>
+          <Text strong>排障</Text>：
+          <ul>
+            <li>节点无传感器 → 该节点 <Text code>/dev/ipmi0</Text> 不可用（非物理机或驱动未加载）</li>
+            <li>全部无数据 → 检查 DaemonSet 是否 Running、privileged+hostPath 生效</li>
+          </ul>
+        </Paragraph>
+        <Paragraph type="secondary">完整配置见文档 <Text code>deploy/SNMP_IPMI_DEPLOYMENT.md</Text></Paragraph>
+      </Drawer>
     </div>
   )
 }

@@ -23,13 +23,15 @@ case "$TARGET" in
     build ai-apm-query-go query-api
     build ai-apm-ingest-go ingest-pipeline
     build ai-orchestrator ai-orchestrator
+    build ipmi-exporter ipmi-exporter
     ;;
   frontend)  build observability-frontend observability-frontend ;;
   query-api) build ai-apm-query-go query-api ;;
   ingest)    build ai-apm-ingest-go ingest-pipeline ;;
   orchestrator) build ai-orchestrator ai-orchestrator ;;
+  ipmi)      build ipmi-exporter ipmi-exporter ;;
   *)
-    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator)"
+    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/ipmi)"
     exit 1
     ;;
 esac
