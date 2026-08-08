@@ -28,6 +28,7 @@ import Tasks from './pages/Tasks'
 import Services from './pages/Services'
 import ServiceDetail from './pages/ServiceDetail'
 import Topology from './pages/Topology'
+import TopologyCatalog from './pages/TopologyCatalog'
 import Traces from './pages/Traces'
 import TraceDetail from './pages/TraceDetail'
 import Overview from './pages/Overview'
@@ -61,6 +62,7 @@ const menuGroups = [
     items: [
       { key: '/services', icon: <DatabaseOutlined />, label: '服务列表' },
       { key: '/topology', icon: <ApartmentOutlined />, label: '服务拓扑' },
+      { key: '/topology/catalog', icon: <ApartmentOutlined />, label: '拓扑目录' },
       { key: '/traces', icon: <NodeIndexOutlined />, label: '链路追踪' },
       { key: '/logs', icon: <FileSearchOutlined />, label: '日志查询' },
     ],
@@ -247,6 +249,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/services" element={<Services />} />
                 <Route path="/services/:name" element={<ServiceDetail />} />
                 <Route path="/topology" element={<Topology />} />
+                <Route path="/topology/catalog" element={<TopologyCatalog />} />
                 <Route path="/traces" element={<Traces />} />
                 <Route path="/traces/:traceId" element={<TraceDetail />} />
                 <Route path="/logs" element={<Logs />} />

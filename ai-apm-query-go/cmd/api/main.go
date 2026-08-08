@@ -42,6 +42,8 @@ func main() {
 		if adminHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost); err == nil {
 			_ = (&store.UserDAO{}).SeedAdmin(string(adminHash))
 		}
+		// 拓扑类型目录内置种子（幂等）
+		_ = store.SeedTopologyTypes()
 	}
 
 	mux := http.NewServeMux()
@@ -86,6 +88,16 @@ func main() {
 	mux.HandleFunc("/api/v1/topology/global", handler.GlobalTopology)
 	mux.HandleFunc("/api/v1/topology/node/", handler.TopologyNodeDetail)
 	mux.HandleFunc("/api/v1/topology/sync", handler.SyncTopologyFromK8s)
+	mux.HandleFunc("/api/v1/topology/sync-catalog", handler.SyncTopologyCatalog)
+	// Topology graph catalogue (typed property graph, aligned with ongrid)
+	mux.HandleFunc("/api/v1/topology/nodes", handler.TopologyNodesRouter)
+	mux.HandleFunc("/api/v1/topology/nodes/", handler.TopologyNodesRouter)
+	mux.HandleFunc("/api/v1/topology/relations", handler.TopologyRelationsRouter)
+	mux.HandleFunc("/api/v1/topology/relations/", handler.TopologyRelationsRouter)
+	mux.HandleFunc("/api/v1/topology/node-types", handler.TopologyNodeTypesRouter)
+	mux.HandleFunc("/api/v1/topology/node-types/", handler.TopologyNodeTypesRouter)
+	mux.HandleFunc("/api/v1/topology/relation-types", handler.TopologyRelationTypesRouter)
+	mux.HandleFunc("/api/v1/topology/relation-types/", handler.TopologyRelationTypesRouter)
 	mux.HandleFunc("/api/v1/data/sync", handler.SyncDataFromK8s)
 	mux.HandleFunc("/api/v1/logs/query", handler.QueryLogs)
 	mux.HandleFunc("/api/v1/logs/victorialogs", handler.ProxyVictoriaLogs)

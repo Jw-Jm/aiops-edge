@@ -108,6 +108,61 @@ CREATE TABLE IF NOT EXISTS clusters (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// topology_nodes 拓扑顶点（typed property graph，对齐 ongrid）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS topology_nodes (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  type VARCHAR(32) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  props_json TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_nodes_type_name (type, name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// topology_relations 拓扑有向边（src→dst, type 唯一）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS topology_relations (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  src_id BIGINT NOT NULL,
+  dst_id BIGINT NOT NULL,
+  type VARCHAR(64) NOT NULL,
+  props_json TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_relations_src_dst_type (src_id, dst_id, type),
+  KEY idx_relations_src_type (src_id, type),
+  KEY idx_relations_dst_type (dst_id, type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// topology_node_types 节点类型目录
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS topology_node_types (
+  name VARCHAR(32) PRIMARY KEY,
+  display_name VARCHAR(128) NOT NULL DEFAULT '',
+  display_name_en VARCHAR(128) NOT NULL DEFAULT '',
+  builtin TINYINT NOT NULL DEFAULT 0,
+  tier INT NOT NULL DEFAULT 99,
+  description TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// topology_relation_types 关系类型目录
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS topology_relation_types (
+  name VARCHAR(64) PRIMARY KEY,
+  display_name VARCHAR(128) NOT NULL DEFAULT '',
+  display_name_en VARCHAR(128) NOT NULL DEFAULT '',
+  builtin TINYINT NOT NULL DEFAULT 0,
+  propagates_failure TINYINT NOT NULL DEFAULT 0,
+  direction VARCHAR(16) NOT NULL DEFAULT 'src_to_dst',
+  semantics_tag VARCHAR(32) NOT NULL DEFAULT '',
+  description TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 }
 
 func env(key, def string) string {

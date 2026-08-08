@@ -126,6 +126,35 @@ export const getDeepFlowStatus = () => api.get('/deepflow/status')
 // Logs
 export const queryLogs = (params: Record<string, unknown>) => api.get('/logs/query', { params })
 
+// ===== 拓扑目录（typed property graph, aligned with ongrid）=====
+export interface TopologyNodeItem {
+  id: number; type: string; name: string; props_json?: string; created_at: string; updated_at: string
+}
+export interface TopologyRelationItem {
+  id: number; src_id: number; dst_id: number; type: string; props_json?: string; created_at: string
+}
+export interface TopologyNodeTypeItem {
+  name: string; display_name: string; display_name_en?: string; builtin: boolean; tier: number; description: string
+}
+export interface TopologyRelationTypeItem {
+  name: string; display_name: string; display_name_en?: string; builtin: boolean
+  propagates_failure: boolean; direction: string; semantics_tag: string; description: string
+}
+export const topoListNodes = (params?: Record<string, unknown>) => api.get('/topology/nodes', { params })
+export const topoCreateNode = (data: Record<string, unknown>) => api.post('/topology/nodes', data)
+export const topoUpdateNode = (id: number, data: Record<string, unknown>) => api.put(`/topology/nodes/${id}`, data)
+export const topoDeleteNode = (id: number) => api.delete(`/topology/nodes/${id}`)
+export const topoListRelations = (params?: Record<string, unknown>) => api.get('/topology/relations', { params })
+export const topoCreateRelation = (data: Record<string, unknown>) => api.post('/topology/relations', data)
+export const topoDeleteRelation = (id: number) => api.delete(`/topology/relations/${id}`)
+export const topoListNodeTypes = (params?: Record<string, unknown>) => api.get('/topology/node-types', { params })
+export const topoCreateNodeType = (data: Record<string, unknown>) => api.post('/topology/node-types', data)
+export const topoDeleteNodeType = (name: string) => api.delete(`/topology/node-types/${encodeURIComponent(name)}`)
+export const topoListRelationTypes = (params?: Record<string, unknown>) => api.get('/topology/relation-types', { params })
+export const topoCreateRelationType = (data: Record<string, unknown>) => api.post('/topology/relation-types', data)
+export const topoDeleteRelationType = (name: string) => api.delete(`/topology/relation-types/${encodeURIComponent(name)}`)
+export const topoSyncCatalog = () => api.post('/topology/sync-catalog')
+
 // ===== FlowEditor (self-built engine) =====
 export const listNodeTypes = () => api.get('/ai/flows/node-types')
 export const createFlow = (data: Record<string, unknown>) => api.post('/ai/flows', data)
