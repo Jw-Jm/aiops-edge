@@ -1,15 +1,15 @@
-{{- if .Values.vmagent.enabled }}
-# vmagent scrape 配置 — 抓 node-exporter(OS) + ingest(服务RED) + orchestrator
-# query-api 的 /metrics 为鉴权端点(401)，不作为 scrape 目标；ipmi-exporter 走 orchestrator 上报
+{{- if .Values.victoriaMetrics.enabled }}
+# VictoriaMetrics 内置 scrape 配置 — 抓 node-exporter(OS) + ingest(服务RED) + orchestrator
+# VM 单实例通过 -promscrape.config 直接抓取（组件最小化，无需 vmagent）
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: vmagent-config
-  namespace: {{ .Release.Namespace }}
+  name: vm-scrape-config
+  namespace: {{ .Values.namespace.observability }}
 data:
   scrape.yml: |
     global:
-      scrape_interval: {{ .Values.vmagent.scrapeInterval }}
+      scrape_interval: 15s
     scrape_configs:
       - job_name: node-exporter
         static_configs:

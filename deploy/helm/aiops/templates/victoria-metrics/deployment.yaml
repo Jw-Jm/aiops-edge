@@ -22,6 +22,7 @@ spec:
           args:
             - "-storageDataPath=/vmdata"
             - "-retentionPeriod=30d"
+            - "-promscrape.config=/etc/vm/scrape.yml"
           ports:
             - containerPort: 8428
               name: http
@@ -36,10 +37,16 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /vmdata
+            - name: scrape-config
+              mountPath: /etc/vm
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: vm-data
+        - name: scrape-config
+          configMap:
+            name: vm-scrape-config
 ---
 apiVersion: v1
 kind: Service
