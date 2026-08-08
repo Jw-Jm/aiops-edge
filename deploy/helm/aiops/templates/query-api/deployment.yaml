@@ -37,6 +37,17 @@ spec:
             - name: INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
+            - name: MYSQL_HOST
+              value: {{ .Values.queryApi.mysqlHost | default "mysql" | quote }}
+            - name: MYSQL_PORT
+              value: {{ .Values.queryApi.mysqlPort | default "3306" | quote }}
+            - name: MYSQL_USER
+              value: {{ .Values.queryApi.mysqlUser | default "root" | quote }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+            - name: MYSQL_DB
+              value: {{ .Values.queryApi.mysqlDb | default "aiops" | quote }}
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 10

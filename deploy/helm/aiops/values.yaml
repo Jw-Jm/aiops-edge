@@ -120,8 +120,10 @@ nodeExporter:
   image: "prom/node-exporter:v1.8.2"
 
 # ipmi-exporter — 每节点本地采集 IPMI 传感器（/dev/ipmi0，不走带外网）
+# 注意：本地 OrbStack K8s 对无 registry 前缀的本地镜像拉取受限，
+# 本机开发默认 disabled；生产环境（镜像 push 到 registry 或节点可用）再启用。
 ipmiExporter:
-  enabled: true
+  enabled: false
   image: "ipmi-exporter:latest"
   collectInterval: "120"
 

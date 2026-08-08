@@ -105,6 +105,14 @@ ipmitool sensor list        # 能读传感器（测试用）
 ./deploy/scripts/build-images.sh ipmi    # 构建 ipmi-exporter:latest
 ```
 
+> **镜像分发说明**：本地 OrbStack K8s 对**无 registry 前缀的本地镜像**拉取受限（`ipmi-exporter:latest` 会被解析到 docker.io 而失败）。因此：
+> - 本机开发默认 `ipmiExporter.enabled: false`（避免 ImagePullBackOff）
+> - **生产/真实 K8s 集群**：把镜像 push 到集群可访问的 registry（如 `registry.example.com/ipmi-exporter:latest`），修改 `values.yaml` 的 `image` 后再启用
+> ```bash
+> docker tag ipmi-exporter:latest registry.example.com/ipmi-exporter:latest
+> docker push registry.example.com/ipmi-exporter:latest
+> ```
+
 **Helm 部署开关**（`deploy/helm/aiops/values.yaml`）：
 
 ```yaml
@@ -112,8 +120,8 @@ nodeExporter:
   enabled: true          # 每节点采 OS 部件（CPU/内存/磁盘/网卡）
   image: "prom/node-exporter:v1.8.2"
 ipmiExporter:
-  enabled: true          # 每节点本地采 BMC 传感器
-  image: "ipmi-exporter:latest"
+  enabled: false         # 生产环境 push 镜像到 registry 后改 true
+  image: "ipmi-exporter:latest"   # 生产改为 registry 完整路径
   collectInterval: "120" # 采集间隔秒
 ```
 
