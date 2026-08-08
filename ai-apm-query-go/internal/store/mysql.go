@@ -61,6 +61,53 @@ CREATE TABLE IF NOT EXISTS users (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// service_catalog 服务目录
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS service_catalog (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  service_name VARCHAR(128) NOT NULL UNIQUE,
+  display_name VARCHAR(128) DEFAULT '',
+  description TEXT,
+  owner VARCHAR(128) DEFAULT '',
+  team VARCHAR(128) DEFAULT '',
+  tags VARCHAR(255) DEFAULT '',
+  status ENUM('active','maintenance','deprecated') DEFAULT 'active',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// devices 设备
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS devices (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  hostname VARCHAR(128) NOT NULL UNIQUE,
+  ip VARCHAR(64) DEFAULT '',
+  os VARCHAR(64) DEFAULT '',
+  cpu_cores INT DEFAULT 0,
+  memory_mb BIGINT DEFAULT 0,
+  status ENUM('online','offline','maintenance') DEFAULT 'online',
+  role VARCHAR(64) DEFAULT '',
+  location VARCHAR(128) DEFAULT '',
+  tags VARCHAR(255) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// clusters 集群
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS clusters (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(128) NOT NULL UNIQUE,
+  provider VARCHAR(64) DEFAULT '',
+  region VARCHAR(64) DEFAULT '',
+  version VARCHAR(64) DEFAULT '',
+  node_count INT DEFAULT 0,
+  status ENUM('active','degraded','down') DEFAULT 'active',
+  api_server VARCHAR(255) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 }
 
 func env(key, def string) string {
