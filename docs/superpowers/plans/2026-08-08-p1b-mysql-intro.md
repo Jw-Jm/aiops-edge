@@ -132,7 +132,8 @@ def migrate():
                 "CREATE TABLE IF NOT EXISTS schema_migrations "
                 "(version VARCHAR(64) PRIMARY KEY, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
             )
-            applied = {r["version"] for r in cur.execute("SELECT version FROM schema_migrations") or []}
+            cur.execute("SELECT version FROM schema_migrations")
+            applied = {r["version"] for r in cur.fetchall()}
             conn.commit()
             for path in sorted(glob.glob(os.path.join(os.path.dirname(__file__), "migrations", "*.sql"))):
                 version = os.path.basename(path).split("_")[0]
