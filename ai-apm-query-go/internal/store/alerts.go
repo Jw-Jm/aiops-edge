@@ -54,7 +54,8 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 	return out, nil
 }
 
-// ReplaceAll 全量重建规则表（事务内 DELETE + INSERT）。
+// ReplaceAll 全量同步规则表：逐行 upsert（ON DUPLICATE KEY UPDATE）避免 DELETE+INSERT 两阶段，
+// 再删除不在当前列表中的行。事务内保证原子性，多副本下不会互相清空。
 func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 	conn := GetDB()
 	if conn == nil {
@@ -65,18 +66,35 @@ func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("DELETE FROM alert_rules"); err != nil {
-		return err
-	}
 	stmt, err := tx.Prepare(
-		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url) " +
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+			"ON DUPLICATE KEY UPDATE name=VALUES(name), service=VALUES(service), type=VALUES(type), metric=VALUES(metric), " +
+			"cond=VALUES(cond), threshold=VALUES(threshold), duration=VALUES(duration), severity=VALUES(severity), enabled=VALUES(enabled), webhook_url=VALUES(webhook_url)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
+	ids := make(map[string]bool, len(rules))
 	for _, r := range rules {
+		ids[r.ID] = true
 		if _, err := stmt.Exec(r.ID, r.Name, r.Service, r.Type, r.Metric,
 			r.Condition, r.Threshold, r.Duration, r.Severity, boolToInt(r.Enabled), r.WebhookURL); err != nil {
+			return err
+		}
+	}
+	// 删除不在当前列表中的行（ID 不在 ids 中）
+	if len(ids) > 0 {
+		delIDs := make([]interface{}, 0, len(ids))
+		placeholders := ""
+		for id := range ids {
+			if placeholders != "" {
+				placeholders += ","
+			}
+			placeholders += "?"
+			delIDs = append(delIDs, id)
+		}
+		if _, err := tx.Exec("DELETE FROM alert_rules WHERE id NOT IN ("+placeholders+")", delIDs...); err != nil {
 			return err
 		}
 	}
@@ -145,7 +163,7 @@ func (d *AlertEventDAO) LoadAll() ([]AlertEvent, error) {
 	return out, nil
 }
 
-// ReplaceAll 全量重建事件表（事务内 DELETE + INSERT）。
+// ReplaceAll 全量同步事件表：逐行 upsert（避免 DELETE+INSERT），再删除不在列表中的行。
 func (d *AlertEventDAO) ReplaceAll(events []AlertEvent) error {
 	conn := GetDB()
 	if conn == nil {
@@ -156,24 +174,44 @@ func (d *AlertEventDAO) ReplaceAll(events []AlertEvent) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("DELETE FROM alert_events"); err != nil {
-		return err
-	}
 	stmt, err := tx.Prepare(
 		`INSERT INTO alert_events (id, rule_id, rule_name, service, severity, message, value, threshold,
 		        timestamp, count, first_timestamp, last_timestamp, status,
 		        acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE rule_id=VALUES(rule_id), rule_name=VALUES(rule_name), service=VALUES(service),
+		   severity=VALUES(severity), message=VALUES(message), value=VALUES(value), threshold=VALUES(threshold),
+		   timestamp=VALUES(timestamp), count=VALUES(count), first_timestamp=VALUES(first_timestamp),
+		   last_timestamp=VALUES(last_timestamp), status=VALUES(status), acknowledged_at=VALUES(acknowledged_at),
+		   acknowledged_by=VALUES(acknowledged_by), resolved_at=VALUES(resolved_at), resolved_by=VALUES(resolved_by),
+		   timeline=VALUES(timeline)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
+	ids := make(map[string]bool, len(events))
 	for _, e := range events {
+		ids[e.ID] = true
 		if _, err := stmt.Exec(e.ID, e.RuleID, e.RuleName, e.Service, e.Severity,
 			e.Message, e.Value, e.Threshold, nullStr(e.Timestamp), e.Count,
 			nullStr(e.FirstTimestamp), nullStr(e.LastTimestamp), e.Status,
 			nullStr(e.AcknowledgedAt), e.AcknowledgedBy, nullStr(e.ResolvedAt), e.ResolvedBy,
 			nullStr(e.Timeline)); err != nil {
+			return err
+		}
+	}
+	// 删除不在当前列表中的行（保留最多 N 条，防止无限增长）
+	if len(ids) > 0 {
+		delIDs := make([]interface{}, 0, len(ids))
+		placeholders := ""
+		for id := range ids {
+			if placeholders != "" {
+				placeholders += ","
+			}
+			placeholders += "?"
+			delIDs = append(delIDs, id)
+		}
+		if _, err := tx.Exec("DELETE FROM alert_events WHERE id NOT IN ("+placeholders+")", delIDs...); err != nil {
 			return err
 		}
 	}
@@ -221,7 +259,7 @@ func (d *AlertSilenceDAO) LoadAll() ([]AlertSilence, error) {
 	return out, nil
 }
 
-// ReplaceAll 全量重建静默表。
+// ReplaceAll 全量同步静默表：逐行 upsert + 删除差异行。
 func (d *AlertSilenceDAO) ReplaceAll(silences []AlertSilence) error {
 	conn := GetDB()
 	if conn == nil {
@@ -232,18 +270,33 @@ func (d *AlertSilenceDAO) ReplaceAll(silences []AlertSilence) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("DELETE FROM alert_silences"); err != nil {
-		return err
-	}
 	stmt, err := tx.Prepare(
-		"INSERT INTO alert_silences (id, service, rule_id, comment, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+		"INSERT INTO alert_silences (id, service, rule_id, comment, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?) " +
+			"ON DUPLICATE KEY UPDATE service=VALUES(service), rule_id=VALUES(rule_id), comment=VALUES(comment), " +
+			"created_at=VALUES(created_at), expires_at=VALUES(expires_at)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
+	ids := make(map[string]bool, len(silences))
 	for _, s := range silences {
+		ids[s.ID] = true
 		if _, err := stmt.Exec(s.ID, s.Service, s.RuleID, s.Comment,
 			nullStr(s.CreatedAt), nullStr(s.ExpiresAt)); err != nil {
+			return err
+		}
+	}
+	if len(ids) > 0 {
+		delIDs := make([]interface{}, 0, len(ids))
+		placeholders := ""
+		for id := range ids {
+			if placeholders != "" {
+				placeholders += ","
+			}
+			placeholders += "?"
+			delIDs = append(delIDs, id)
+		}
+		if _, err := tx.Exec("DELETE FROM alert_silences WHERE id NOT IN ("+placeholders+")", delIDs...); err != nil {
 			return err
 		}
 	}
