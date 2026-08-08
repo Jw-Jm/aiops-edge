@@ -1,5 +1,6 @@
 {{- if .Values.vmagent.enabled }}
-# vmagent scrape 配置 — 仅抓 node-exporter（ipmi-exporter 走 orchestrator 上报、ingest 无 prometheus 端点，均不作为目标）
+# vmagent scrape 配置 — 抓 node-exporter(OS) + ingest(服务RED) + orchestrator
+# query-api 的 /metrics 为鉴权端点(401)，不作为 scrape 目标；ipmi-exporter 走 orchestrator 上报
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -15,4 +16,14 @@ data:
           - targets: ['{{ .Values.nodeExporterTarget }}:9100']
             labels:
               job: node-exporter
+      - job_name: ingest
+        static_configs:
+          - targets: ['ingest:{{ .Values.ingestPort }}']
+            labels:
+              job: ingest
+      - job_name: orchestrator
+        static_configs:
+          - targets: ['ai-orchestrator:{{ .Values.orchestratorPort }}']
+            labels:
+              job: orchestrator
 {{- end }}
