@@ -147,62 +147,11 @@ func (h *Handler) SyncTopologyFromK8s(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. 平台逻辑调用依赖（source → target）→ 生成真实服务拓扑
-	deps := [][2]string{
-		{"frontend", "query-api"},
-		{"frontend", "ai-orchestrator"},
-		{"query-api", "ai-orchestrator"},
-		{"query-api", "clickhouse"},
-		{"query-api", "victoria-logs"},
-		{"query-api", "redis"},
-		{"ai-orchestrator", "clickhouse"},
-		{"ai-orchestrator", "redis"},
-		{"ai-orchestrator", "minio"},
-		{"ai-orchestrator", "victoria-metrics"},
-		{"ingest", "clickhouse"},
-		{"ingest", "minio"},
-		{"ingest", "redis"},
-		{"deepflow-server", "deepflow-app"},
-		{"deepflow-server", "deepflow-clickhouse"},
-		{"deepflow-server", "deepflow-mysql"},
-		{"deepflow-app", "deepflow-clickhouse"},
-		{"deepflow-agent", "deepflow-server"},
-		{"deepflow-app", "deepflow-server"},
-	}
-
-	now := time.Now().UTC()
-	date := now.Format("2006-01-02")
-	bucket := now.Truncate(time.Minute).Format("2006-01-02 15:04:05")
-	tid := "default"
-
-	// 4. 异步写入 service_topology（避免接口等待 ClickHouse HTTP 响应而超时）
-	values := []string{}
-	for _, d := range deps {
-		src, tgt := d[0], d[1]
-		if !svcSet[src] || !svcSet[tgt] {
-			continue
-		}
-		values = append(values, fmt.Sprintf("('%s','%s','%s','%s', 1, 0, 0, '%s')", tid, src, tgt, bucket, date))
-	}
-	expected := len(values)
-
-	if len(values) > 0 {
-		sql := "INSERT INTO observability.service_topology (tenant_id, source_service, target_service, time_bucket, call_count, error_count, avg_duration_ns, date) VALUES " +
-			strings.Join(values, ",")
-		go func(q string) {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := h.writeClickHouse(bgCtx, q); err != nil {
-				log.Printf("SyncTopology async insert error: %v", err)
-			} else {
-				log.Printf("SyncTopology async insert success: %d edges", expected)
-			}
-		}(sql)
-	}
-
+	// 收敛：拓扑主数据源为 trace_spans 实时聚合（GlobalTopology），service_topology 为归档。
+	// 本 handler 的硬编码调用依赖边（call_count=1）会覆盖 trace/DeepFlow 的真实指标，
+	// 故停用 service_topology 边写入（数据归属治理：收敛拓扑多写）。
 	respondJSON(w, http.StatusAccepted, map[string]interface{}{
-		"message":  "topology sync started",
-		"expected": expected,
+		"message":  "topology sync disabled (trace 聚合为主源)",
 		"services": len(svcSet),
 	})
 }
