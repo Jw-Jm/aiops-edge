@@ -25,7 +25,7 @@ const SEVERITY_FILTERS = [
 ]
 
 const Logs: React.FC = () => {
-  const [backend, setBackend] = useState<'victorialogs' | 'clickhouse'>('clickhouse')
+  const [backend, setBackend] = useState<'victorialogs' | 'clickhouse'>('victorialogs')
   const [service, setService] = useState('')
   const [keyword, setKeyword] = useState('')
   const [logsQuery, setLogsQuery] = useState('_time:15m')
