@@ -68,6 +68,21 @@ export const runFlow = (key: string, params: Record<string, unknown>) => api.pos
 // ===== Task Approval =====
 export const approveTask = (id: string) => api.post(`/ops/tasks/${id}/approve`)
 export const rejectTask = (id: string) => api.post(`/ops/tasks/${id}/reject`)
+export const listApprovalTasks = (params?: Record<string, unknown>) => api.get('/ops/tasks', { params })
+
+// ===== 审计日志 =====
+export const listAuditLogs = (params?: Record<string, unknown>) => api.get('/ops/audit-logs', { params })
+
+// ===== 知识库 =====
+export const listKnowledge = (params?: Record<string, unknown>) => api.get('/ai/knowledge', { params })
+export const addKnowledge = (data: Record<string, unknown>) => api.post('/ai/knowledge', data)
+export const deleteKnowledge = (id: number) => api.delete(`/ai/knowledge/${id}`)
+
+// ===== 规则管理 =====
+export const listRules = () => api.get('/ai/rules')
+export const saveRule = (data: Record<string, unknown>) => api.post('/ai/rules', data)
+export const deleteRule = (ruleKey: string) => api.delete(`/ai/rules/${encodeURIComponent(ruleKey)}`)
+export const toggleRule = (ruleKey: string) => api.post(`/ai/rules/${encodeURIComponent(ruleKey)}/toggle`)
 
 export const chatWithAI = (data: Record<string, unknown>) =>
   api.post('/ai/chat', data, {
