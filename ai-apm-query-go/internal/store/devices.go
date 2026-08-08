@@ -78,6 +78,26 @@ func (d *DeviceDAO) GetByHostname(hostname string) (*Device, error) {
 	return &dv, nil
 }
 
+// GetByID 按 ID 查设备。
+func (d *DeviceDAO) GetByID(id int64) (*Device, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	row := conn.QueryRow(
+		"SELECT id, hostname, ip, os, cpu_cores, memory_mb, status, role, location, tags, created_at, updated_at FROM devices WHERE id = ?",
+		id)
+	var dv Device
+	if err := row.Scan(&dv.ID, &dv.Hostname, &dv.IP, &dv.OS, &dv.CPUCores,
+		&dv.MemoryMB, &dv.Status, &dv.Role, &dv.Location, &dv.Tags, &dv.CreatedAt, &dv.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &dv, nil
+}
+
 // Create 新增设备。
 func (d *DeviceDAO) Create(dv *Device) (int64, error) {
 	conn := GetDB()

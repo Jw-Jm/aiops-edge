@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -28,6 +29,17 @@ func (h *Handler) DeviceRouter(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// /devices/{id}/metrics 子路由
+	if strings.HasSuffix(idStr, "/metrics") {
+		idNum := strings.TrimSuffix(idStr, "/metrics")
+		idM, err := strconv.ParseInt(idNum, 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", 400)
+			return
+		}
+		h.deviceMetrics(w, r, idM)
+		return
+	}
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", 400)
@@ -41,6 +53,48 @@ func (h *Handler) DeviceRouter(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
+}
+
+// deviceMetrics 返回设备实时指标（从 VM 查询 node-exporter，按 instance 匹配设备 IP）。
+func (h *Handler) deviceMetrics(w http.ResponseWriter, r *http.Request, id int64) {
+	d := &store.DeviceDAO{}
+	dev, err := d.GetByID(id)
+	if err != nil || dev == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "device not found"})
+		return
+	}
+	instance := dev.IP
+	if instance == "" {
+		instance = dev.Hostname
+	}
+	// 尝试设备 IP:9100，若无数据则 fallback 到通用 node-exporter
+	promQLs := map[string]string{
+		"cpu_usage":       fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{instance="%s:9100",mode="idle"}[5m])) * 100`, instance),
+		"memory_usage":    fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes{instance="%s:9100"} / node_memory_MemTotal_bytes{instance="%s:9100"})`, instance, instance),
+		"disk_usage":      fmt.Sprintf(`max(100 * (1 - node_filesystem_avail_bytes{instance="%s:9100",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{instance="%s:9100",mountpoint="/",fstype!~"tmpfs|overlay"}))`, instance, instance),
+		"load1":           fmt.Sprintf(`node_load1{instance="%s:9100"}`, instance),
+		"network_rx_bps":  fmt.Sprintf(`sum(rate(node_network_receive_bytes_total{instance="%s:9100"}[5m]))`, instance),
+		"network_tx_bps":  fmt.Sprintf(`sum(rate(node_network_transmit_bytes_total{instance="%s:9100"}[5m]))`, instance),
+		"process_count":   fmt.Sprintf(`node_processes{instance="%s:9100"}`, instance),
+		"up":              fmt.Sprintf(`up{instance="%s:9100"}`, instance),
+	}
+	metrics := make(map[string]float64)
+	for k, q := range promQLs {
+		v, err := h.vmInstantQuery(q)
+		if err == nil {
+			metrics[k] = v
+		}
+	}
+	// 补充设备元信息
+	metrics["cpu_cores"] = float64(dev.CPUCores)
+	metrics["memory_mb_total"] = float64(dev.MemoryMB)
+	status := 0.0
+	if metrics["up"] > 0 {
+		status = 1
+	}
+	respondJSON(w, 200, map[string]interface{}{
+		"device": dev.Hostname, "instance": instance, "metrics": metrics, "online": status > 0,
+	})
 }
 
 func (h *Handler) DeviceList(w http.ResponseWriter, r *http.Request) {
