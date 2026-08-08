@@ -57,6 +57,13 @@ type Pipeline struct {
 	edgesAgg      map[edgeKey]*edgeValue
 	stopCh        chan struct{}
 	doneCh        chan struct{}
+	// onServiceMetric 可选回调：每累加一次服务调用时通知外部（用于喂 Prometheus 服务 RED）。
+	onServiceMetric func(service string, isError bool, durationNs uint64)
+}
+
+// SetOnServiceMetric 注册服务 RED 回调（可选，用于暴露服务指标到 /metrics）。
+func (p *Pipeline) SetOnServiceMetric(fn func(service string, isError bool, durationNs uint64)) {
+	p.onServiceMetric = fn
 }
 
 // New creates a new Pipeline with the given span writer and metrics writer
@@ -246,6 +253,11 @@ func (p *Pipeline) extractMetrics(tenantID string, ctx *traceContext) {
 		}
 		mv.durationSumNs += info.durationNs
 		mv.durationCount++
+
+		// 服务 RED 注入：按 service 累计（喂 Prometheus /metrics 服务指标）
+		if p.onServiceMetric != nil {
+			p.onServiceMetric(info.serviceName, info.isError == 1, info.durationNs)
+		}
 
 		// Topology edges: parent-child relationship
 		if info.parentSpanID != "" {

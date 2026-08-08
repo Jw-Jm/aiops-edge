@@ -63,6 +63,7 @@ func main() {
 	}
 
 	pl := pipeline.New(writer, metricsWriter)
+	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics
 	defer pl.Close()
 
 	// DeepFlow data receiver

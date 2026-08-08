@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -19,13 +21,50 @@ type Metrics struct {
 	reqRejected    atomic.Int64 // 因鉴权/限流拒绝的请求
 	lastWriteOk    atomic.Int64 // 最近一次成功写入时间戳(秒)
 	lastWriteFail  atomic.Int64
+
+	// 服务 RED 标签化计数器（service → 累计值），供 vmagent 抓取进 VictoriaMetrics。
+	redMu     sync.Mutex
+	serviceRED map[string]*serviceREDEntry
+}
+
+// serviceREDEntry 单个服务的累计 RED 值。
+type serviceREDEntry struct {
+	reqs   uint64
+	errs   uint64
+	durSum float64 // 秒
+	durCnt uint64
 }
 
 // New 创建 Metrics 实例。
 func New() *Metrics {
 	m := &Metrics{}
 	m.lastWriteOk.Store(time.Now().Unix())
+	m.serviceRED = make(map[string]*serviceREDEntry)
 	return m
+}
+
+// AddServiceRED 累加一个服务的请求/错误/耗时。durationNs 为纳秒，内部转为秒。
+func (m *Metrics) AddServiceRED(service string, isError bool, durationNs uint64) {
+	m.redMu.Lock()
+	defer m.redMu.Unlock()
+	e, ok := m.serviceRED[service]
+	if !ok {
+		e = &serviceREDEntry{}
+		m.serviceRED[service] = e
+	}
+	e.reqs++
+	if isError {
+		e.errs++
+	}
+	e.durSum += float64(durationNs) / 1e9
+	e.durCnt++
+}
+
+// ResetServiceRED 清空服务 RED 计数器（周期性清零，配合 rate 使用）。
+func (m *Metrics) ResetServiceRED() {
+	m.redMu.Lock()
+	defer m.redMu.Unlock()
+	m.serviceRED = make(map[string]*serviceREDEntry)
 }
 
 func (m *Metrics) IncSpansReceived()   { m.spansReceived.Add(1) }
@@ -74,5 +113,27 @@ ai_ingest_last_write_fail_time %d
 		m.spansReceived.Load(), m.spansWritten.Load(), m.spansFailed.Load(),
 		m.logsReceived.Load(), m.metricsWritten.Load(), m.edgesWritten.Load(),
 		m.reqTotal.Load(), m.reqRejected.Load(),
-		m.lastWriteOk.Load(), m.lastWriteFail.Load())
+		m.lastWriteOk.Load(), m.lastWriteFail.Load()) + m.serviceREDSnapshot()
+}
+
+// serviceREDSnapshot 生成服务 RED 指标（Prometheus 文本格式）。
+func (m *Metrics) serviceREDSnapshot() string {
+	m.redMu.Lock()
+	defer m.redMu.Unlock()
+	var b strings.Builder
+	b.WriteString("# HELP service_requests_total Total requests per service.\n")
+	b.WriteString("# TYPE service_requests_total counter\n")
+	b.WriteString("# HELP service_errors_total Total errors per service.\n")
+	b.WriteString("# TYPE service_errors_total counter\n")
+	b.WriteString("# HELP service_request_duration_seconds_sum Sum of request duration in seconds per service.\n")
+	b.WriteString("# TYPE service_request_duration_seconds_sum counter\n")
+	b.WriteString("# HELP service_request_duration_seconds_count Count of requests per service.\n")
+	b.WriteString("# TYPE service_request_duration_seconds_count counter\n")
+	for svc, e := range m.serviceRED {
+		b.WriteString(fmt.Sprintf("service_requests_total{service=%q} %d\n", svc, e.reqs))
+		b.WriteString(fmt.Sprintf("service_errors_total{service=%q} %d\n", svc, e.errs))
+		b.WriteString(fmt.Sprintf("service_request_duration_seconds_sum{service=%q} %.9f\n", svc, e.durSum))
+		b.WriteString(fmt.Sprintf("service_request_duration_seconds_count{service=%q} %d\n", svc, e.durCnt))
+	}
+	return b.String()
 }
