@@ -8,8 +8,22 @@ WORKDIR /app
 # Docker convention: amd64 -> "amd64", arm64 -> "arm64" (no "aarch64" variant needed).
 ARG TARGETARCH
 # apt 切国内源 (清华 debian 源)，加速系统包安装
-RUN sed -i 's@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g; s@security.debian.org@mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
-    sed -i 's@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g; s@security.debian.org@mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list 2>/dev/null || true
+# 可靠覆盖：直接重写 debian.sources (DEB822) 与 sources.list (one-per-line) 两种格式，
+# 而非依赖 sed 正则匹配(匹配失败会静默回退官方源)。TARGETARCH 由 docker build 注入。
+ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
+RUN set -eux; \
+    DEBIAN_SRC=/etc/apt/sources.list.d/debian.sources; \
+    if [ -f "$DEBIAN_SRC" ]; then \
+      sed -i "s@deb.debian.org@${APT_MIRROR}@g; s@security.debian.org@${APT_MIRROR}@g" "$DEBIAN_SRC"; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i "s@deb.debian.org@${APT_MIRROR}@g; s@security.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list; \
+    fi; \
+    # 兜底：若 sed 未命中任何 deb.debian.org，直接以清华源重写 debian.sources
+    if [ -f "$DEBIAN_SRC" ] && ! grep -q "${APT_MIRROR}" "$DEBIAN_SRC"; then \
+      cp "$DEBIAN_SRC" "$DEBIAN_SRC.bak"; \
+      { echo "Types: deb"; echo "URIs: http://${APT_MIRROR}/debian/"; echo "Suites: bookworm bookworm-updates bookworm-backports"; echo "Components: main contrib non-free non-free-firmware"; echo "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg"; } > "$DEBIAN_SRC"; \
+    fi
 RUN apt-get update && apt-get install -y curl git procps iproute2 net-tools iputils-ping \
     sysstat gawk grep sed \
     && \
@@ -38,7 +52,11 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --tru
 RUN HF_ENDPOINT=https://hf-mirror.com python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5')" || \
     python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5')"
 # 2. ChromaDB onnx model (all-MiniLM-L6-v2 fallback, ~79MB) — pre-cache to avoid runtime download
-RUN python3 -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; \
+# 使用国内 HF 镜像 (hf-mirror.com) 加速模型下载，避免从国外源极慢下载
+RUN HF_ENDPOINT=https://hf-mirror.com python3 -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; \
+    ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider']); \
+    ef(['pre-cache'])" || \
+    python3 -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; \
     ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider']); \
     ef(['pre-cache'])" || echo "chromadb onnx cache skipped"
 

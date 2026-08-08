@@ -22,6 +22,7 @@ coverage/
 __pycache__/
 *.py[cod]
 .venv/
+.venv*/
 venv/
 
 # 环境与密钥（绝不入库）
