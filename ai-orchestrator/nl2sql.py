@@ -15,7 +15,6 @@ _ALLOWED_TABLES = {
     "observability.trace_spans",
     "observability.service_topology",
     "observability.log_records",
-    "observability.inspection_reports",
 }
 
 _FORBIDDEN_KEYWORDS = re.compile(

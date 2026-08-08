@@ -1048,16 +1048,16 @@ if not _minio.bucket_exists(BUCKET):
 
 
 def _upload_report(task_id: str, content: str, filename: str = "report.md", service: str = ""):
-    """Upload task report to MinIO, return object name. Also persist to ClickHouse."""
+    """Upload task report to MinIO, return object name. Also persist metadata to MySQL."""
     import io
     data = content.encode("utf-8")
     obj_name = f"{task_id}/{filename}"
     _minio.put_object(BUCKET, obj_name, io.BytesIO(data), len(data), content_type="text/markdown")
-    # 同步持久化到 ClickHouse（巡检报告历史）
+    # 同步持久化元数据到 MySQL reports（文件本体在 MinIO）
     try:
         _persist_inspection_report(task_id, service or "", content, filename)
     except Exception as e:
-        print(f"[reports] ClickHouse 持久化失败: {e}")
+        print(f"[reports] MySQL 持久化失败: {e}")
     return obj_name
 
 
@@ -1067,22 +1067,6 @@ def _upload_report(task_id: str, content: str, filename: str = "report.md", serv
 
 _CH_HOST = os.environ.get("CLICKHOUSE_HOST", "clickhouse-0.clickhouse.observability.svc.cluster.local")
 _CH_PORT = os.environ.get("CLICKHOUSE_PORT", "8123")
-
-_REPORT_DDL = """
-CREATE TABLE IF NOT EXISTS observability.inspection_reports (
-    task_id String,
-    service_name LowCardinality(String),
-    report_type LowCardinality(String),
-    verdict LowCardinality(String),
-    risk_score Float32,
-    summary String,
-    content String,
-    created_at DateTime
-) ENGINE = MergeTree
-PARTITION BY toYYYYMMDD(created_at)
-ORDER BY (service_name, created_at)
-TTL created_at + INTERVAL 90 DAY DELETE
-"""
 
 
 def _ch_query_json(sql: str) -> list:

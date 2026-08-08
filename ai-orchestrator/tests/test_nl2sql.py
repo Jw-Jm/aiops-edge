@@ -1,7 +1,7 @@
 from nl2sql import validate_sql, normalize_sql, Nl2SqlStore
 
 ALLOWED_TABLES = {"observability.trace_spans", "observability.service_topology",
-                  "observability.log_records", "observability.inspection_reports"}
+                  "observability.log_records"}
 
 
 def test_reject_insert():

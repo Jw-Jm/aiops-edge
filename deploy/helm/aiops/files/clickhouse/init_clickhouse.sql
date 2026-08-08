@@ -8,26 +8,6 @@
 CREATE DATABASE IF NOT EXISTS observability;
 
 -- -----------------------------------------------------------------------------
--- inspection_reports: 巡检报告
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS observability.inspection_reports
-(
-    `task_id` String,
-    `service_name` LowCardinality(String),
-    `report_type` LowCardinality(String),
-    `verdict` LowCardinality(String),
-    `risk_score` Float32,
-    `summary` String,
-    `content` String,
-    `created_at` DateTime
-)
-ENGINE = MergeTree
-PARTITION BY toYYYYMMDD(created_at)
-ORDER BY (service_name, created_at)
-TTL created_at + toIntervalDay(90)
-SETTINGS index_granularity = 8192;
-
--- -----------------------------------------------------------------------------
 -- log_records: 日志记录
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observability.log_records
