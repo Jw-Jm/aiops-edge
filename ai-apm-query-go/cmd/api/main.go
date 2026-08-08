@@ -34,9 +34,8 @@ func main() {
 		handler.SetVMURL(vmURL)
 	}
 	handler.StartAlertEvaluation()
-	api.InitK8sRules()
 
-	// MySQL：应用 users 表迁移 + 种子 admin（密码 admin123，失败不阻塞）
+	// MySQL：先建表（EnsureSchema），再种子数据，确保告警规则等落 MySQL 成功
 	store.EnsureSchema()
 	if db := store.GetDB(); db != nil {
 		if adminHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost); err == nil {
@@ -45,6 +44,7 @@ func main() {
 		// 拓扑类型目录内置种子（幂等）
 		_ = store.SeedTopologyTypes()
 	}
+	api.InitK8sRules()
 
 	mux := http.NewServeMux()
 

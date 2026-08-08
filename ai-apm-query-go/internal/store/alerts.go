@@ -32,7 +32,7 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	rows, err := conn.Query(
-		"SELECT id, name, service, type, metric, `condition`, threshold, duration, severity, enabled FROM alert_rules")
+		"SELECT id, name, service, type, metric, cond, threshold, duration, severity, enabled FROM alert_rules")
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 		return err
 	}
 	stmt, err := tx.Prepare(
-		"INSERT INTO alert_rules (id, name, service, type, metric, `condition`, threshold, duration, severity, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}

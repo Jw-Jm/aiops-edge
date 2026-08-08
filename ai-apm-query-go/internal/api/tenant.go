@@ -32,8 +32,11 @@ func loadTenants() {
 	d := &store.TenantDAO{}
 	rows, err := d.LoadAll()
 	if err != nil || len(rows) == 0 {
-		// default tenant
+		// default tenant（MySQL 空则初始化并持久化）
 		tenants = map[string]*Tenant{"default": {ID: "default", Name: "默认租户", QuotaAI: 0, Enabled: true}}
+		if err == nil {
+			_ = d.ReplaceAll([]store.Tenant{{ID: "default", Name: "默认租户", QuotaAI: 0, Enabled: true}})
+		}
 		return
 	}
 	tenants = make(map[string]*Tenant, len(rows))

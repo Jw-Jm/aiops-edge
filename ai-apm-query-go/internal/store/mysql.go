@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   service VARCHAR(128) DEFAULT '',
   type VARCHAR(32) DEFAULT 'threshold',
   metric VARCHAR(64) DEFAULT '',
-  condition VARCHAR(8) DEFAULT '>',
+  cond VARCHAR(8) DEFAULT '>',
   threshold DOUBLE DEFAULT 0,
   duration INT DEFAULT 5,
   severity VARCHAR(16) DEFAULT 'warning',
