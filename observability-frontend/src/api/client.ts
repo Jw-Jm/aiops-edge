@@ -170,4 +170,38 @@ export const getMe = () => api.get('/me')
 export const listReports = (params?: Record<string, unknown>) => api.get('/ops/reports/history', { params })
 export const reportTrend = (params?: Record<string, unknown>) => api.get('/ops/reports/trend', { params })
 
+// ===== 服务目录 =====
+export interface CatalogItem {
+  id: number; service_name: string; display_name: string; description: string
+  owner: string; team: string; tags: string; status: string
+}
+export const listCatalog = (params?: Record<string, unknown>) => api.get('/catalog/services', { params })
+export const createCatalog = (data: Record<string, unknown>) => api.post('/catalog/services', data)
+export const updateCatalog = (id: number, data: Record<string, unknown>) => api.put(`/catalog/services/${id}`, data)
+export const deleteCatalog = (id: number) => api.delete(`/catalog/services/${id}`)
+
+// ===== 设备管理 =====
+export interface DeviceItem {
+  id: number; hostname: string; ip: string; os: string; cpu_cores: number
+  memory_mb: number; status: string; role: string; location: string; tags: string
+}
+export const listDevices = (params?: Record<string, unknown>) => api.get('/devices', { params })
+export const createDevice = (data: Record<string, unknown>) => api.post('/devices', data)
+export const updateDevice = (id: number, data: Record<string, unknown>) => api.put(`/devices/${id}`, data)
+export const deleteDevice = (id: number) => api.delete(`/devices/${id}`)
+
+// ===== 集群管理 =====
+export interface ClusterItem {
+  id: number; name: string; provider: string; region: string; version: string
+  node_count: number; status: string; api_server: string
+}
+export interface ClusterNodeItem {
+  name: string; role: string; status: string; ip: string; os: string; cpu: string; memory: string; kubelet: string
+}
+export const listClusters = () => api.get('/clusters')
+export const syncClusters = () => api.post('/clusters/sync')
+export const updateCluster = (id: number, data: Record<string, unknown>) => api.put(`/clusters/${id}`, data)
+export const deleteCluster = (id: number) => api.delete(`/clusters/${id}`)
+export const listClusterNodes = (id: number) => api.get(`/clusters/${id}/nodes`)
+
 export default api
