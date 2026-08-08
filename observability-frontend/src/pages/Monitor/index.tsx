@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Row, Col, Card, Spin, Button } from 'antd'
+import AppEmpty from '../../components/AppEmpty'
 import api from '../../api/client'
 
 const PANELS = [
@@ -53,7 +54,7 @@ const Monitor: React.FC = () => {
                   {JSON.stringify(rows[p.key], null, 2)}
                 </pre>
               ) : (
-                <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>暂无数据（等待 VM 采集）</div>
+                <AppEmpty description="暂无数据" tip="等待 VM 采集数据" height={80} />
               )}
             </Card>
           </Col>
