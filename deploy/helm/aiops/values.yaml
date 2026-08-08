@@ -126,6 +126,16 @@ ipmiExporter:
   imagePullPolicy: "IfNotPresent"
   collectInterval: "120"
 
+# vmagent — 抓取 node-exporter 指标上报到 VictoriaMetrics（监控面板数据源）
+vmagent:
+  enabled: true
+  image: "victoriametrics/vmagent:v1.101.0"
+  scrapeInterval: "15s"
+  remoteWriteUrl: "http://victoria-metrics.observability.svc.cluster.local:8428/api/v1/write"
+
+# node-exporter 为 hostNetwork（hostPort 9100），需用节点 IP 抓取
+nodeExporterTarget: "192.168.139.2"
+
 # ---------------------------------------------------------------------------
 # 自研服务（镜像 tag 由 build-images.sh 构建，统一 :latest 本地镜像）
 # ---------------------------------------------------------------------------

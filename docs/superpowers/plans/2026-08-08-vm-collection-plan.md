@@ -4,18 +4,21 @@
 
 **Goal:** 部署 vmagent 抓取 node-exporter/ipmi-exporter/ingest 的 `/metrics` 到 VictoriaMetrics，让 `/monitor` 面板 PromQL 有数据。
 
-**Architecture:** 新增 vmagent Deployment（Helm），scrape_configs 指向 node-exporter(节点IP:9100)/ipmi-exporter/ingest，remoteWrite 到 `victoria-metrics:8428`。
+**Architecture:** 新增 vmagent Deployment（Helm），scrape_configs 仅抓 node-exporter(节点IP:9100)，remoteWrite 到 `victoria-metrics:8428`。
+
+> **核实结论（实现前已确认）**：ipmi-exporter 是"主动上报 orchestrator /api/v1/ipmi/ingest"模型，**无 Prometheus /metrics 端点**，不可 scrape；ingest 的 `/metrics` 是 `ProxyAI` 代理（非 Prometheus 指标）。`/monitor` 面板 PromQL 仅用 `node_cpu_seconds_total` 等 **node-exporter 指标**。故 vmagent 只需抓 node-exporter，设计更轻量。
 
 **Tech Stack:** Helm, vmagent (victoriametrics/vmagent:v1.101.0), VictoriaMetrics
 
 ## Global Constraints
 
-- vmagent 镜像用 `victoriametrics/vmagent:v1.101.0`（与现有 VM 版本一致）
-- node-exporter 是 hostNetwork DaemonSet → target 用节点 IP:9100（不能 ClusterIP Service）
+- vmagent 镜像用 `victoriametrics/vmagent:v1.101.0`（与现有 VM 版本一致；本地无此镜像，部署时需国内源 `docker.1ms.run/victoriametrics/vmagent:v1.101.0` 拉取后 tag）
+- node-exporter 是 hostNetwork DaemonSet（hostPort 9100）→ target 用节点 IP:9100（不能 ClusterIP Service）
 - remoteWrite URL: `http://victoria-metrics:8428/api/v1/write`
 - scrape interval 15s
 - 现有测试/构建不回归（前端 tsc+build、Go test）
 - 国内源约束：vmagent 镜像若本地无，需用国内 registry 或复用本地已有镜像
+- **只抓 node-exporter**（ipmi-exporter/ingest 无 prometheus 端点，不作为 scrape 目标）
 
 ---
 
@@ -64,16 +67,6 @@ data:
           - targets: ['{{ .Values.nodeExporterTarget }}:9100']
             labels:
               job: node-exporter
-      - job_name: ipmi-exporter
-        static_configs:
-          - targets: ['{{ .Values.ipmiExporterTarget }}:8080']
-            labels:
-              job: ipmi-exporter
-      - job_name: ingest
-        static_configs:
-          - targets: ['ingest:8080']
-            labels:
-              job: ingest
 {{- end }}
 ```
 
@@ -126,9 +119,8 @@ spec:
 在 `deploy/helm/aiops/values.yaml` 追加 target 占位（实施时用 `kubectl get nodes -o wide` 获取节点 IP 填入）：
 
 ```yaml
-# node-exporter/ipmi-exporter 为 hostNetwork，需用节点 IP 抓取
-nodeExporterTarget: 192.168.194.51   # 实施时替换为实际节点 IP
-ipmiExporterTarget: 192.168.194.51   # 实施时替换为实际节点 IP
+# node-exporter 为 hostNetwork，需用节点 IP 抓取（已确认节点 IP）
+nodeExporterTarget: 192.168.139.2
 ```
 
 - [ ] **Step 5: helm lint + template 验证**
