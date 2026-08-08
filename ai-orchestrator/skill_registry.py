@@ -21,6 +21,11 @@ class ToolDef:
     params: dict = field(default_factory=dict)  # param_name -> type
     category: str = "general"                   # metrics | trace | infra | vm | k8s | automation
     requires_approval: bool = False             # 是否需人工审批后才能执行
+    # 工具元数据模型（onrid 概念，仅数据模型借鉴）
+    cls: str = "safe"                           # Class: safe / mutating / dangerous
+    scope: str = "manager"                      # Scope: host / manager
+    when_to_use: str = ""                       # WhenToUse: 何时使用该工具
+    origin: str = "builtin"                     # Origin: builtin / custom
 
 
 class ToolRegistry:
@@ -29,10 +34,12 @@ class ToolRegistry:
     @classmethod
     def register(cls, name: str = None, description: str = "",
                  category: str = "general", requires_approval: bool = False,
-                 params: dict = None):
+                 params: dict = None, cls_: str = "safe", scope: str = "manager",
+                 when_to_use: str = "", origin: str = "builtin"):
         """装饰器: 注册工具函数
 
         params: param_name -> {"type","required","default","desc"}，供前端渲染执行表单。
+        cls_: Class 分级（safe/mutating/dangerous），scope（host/manager）。
         """
         def decorator(func):
             tool_name = name or func.__name__
@@ -41,6 +48,7 @@ class ToolRegistry:
                 func=func, category=category,
                 requires_approval=requires_approval,
                 params=params or {},
+                cls=cls_, scope=scope, when_to_use=when_to_use, origin=origin,
             )
             return func
         return decorator

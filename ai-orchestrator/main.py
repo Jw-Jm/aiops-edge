@@ -1353,6 +1353,7 @@ from nl2sql import validate_sql, normalize_sql, extract_sql_from_markdown, Nl2Sq
 from shell_ws import shell_ws
 from db_snmp import SNMPDeviceStore
 from snmp_collector import SNMPCollector
+import hardware_tools  # noqa: F401  注册 SNMP/IPMI/部件查询工具
 
 _nl2sql_store = Nl2SqlStore()
 _NL2SQL_SYSTEM = (
