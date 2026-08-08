@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
+// LLMProvider 响应实体。
 type LLMProvider struct {
 	ID           int    `json:"id"`
 	Name         string `json:"name"`
@@ -23,55 +24,27 @@ type LLMProvider struct {
 	CreatedAt    string `json:"created_at"`
 }
 
-func chQueryClickhouse(chHost, chPort, sql string) (string, error) {
-	resp, err := http.Post("http://"+chHost+":"+chPort+"/", "text/plain", strings.NewReader(sql))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(body)), nil
-}
-
-func chGetClickhouse(chHost, chPort, sql string) (string, error) {
-	resp, err := http.Get("http://" + chHost + ":" + chPort + "/?query=" + sql)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(body)), nil
-}
-
 func (h *Handler) ListLLMProviders(w http.ResponseWriter, r *http.Request) {
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-
-	data, err := chGetClickhouse(chHost, chPort,
-		"SELECT+id,name,type,base_url,default_model,cost,available,enabled,toString(created_at)+FROM+observability.llm_providers+ORDER+BY+id")
+	d := &store.LLMProviderDAO{}
+	list, err := d.List()
 	if err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
-
 	providers := []LLMProvider{}
-	if data != "" {
-		for _, line := range strings.Split(data, "\n") {
-			fields := strings.Split(line, "\t")
-			if len(fields) < 9 { continue }
-			id, _ := strconv.Atoi(fields[0])
-			available, _ := strconv.Atoi(fields[6])
-			enabled, _ := strconv.Atoi(fields[7])
-			providers = append(providers, LLMProvider{
-				ID: id, Name: fields[1], Type: fields[2], BaseURL: fields[3],
-				DefaultModel: fields[4], Cost: fields[5],
-				Available: available == 1, Enabled: enabled == 1,
-				APIKeyMasked: "sk-***",
-				CreatedAt: fields[8],
-			})
-		}
+	for _, p := range list {
+		providers = append(providers, LLMProvider{
+			ID:           int(p.ID),
+			Name:         p.Name,
+			Type:         p.Type,
+			BaseURL:      p.BaseURL,
+			DefaultModel: p.DefaultModel,
+			Cost:         p.Cost,
+			Available:    p.Available,
+			Enabled:      p.Enabled,
+			APIKeyMasked: "sk-***",
+			CreatedAt:    p.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
 	}
 	respondJSON(w, 200, map[string]interface{}{"providers": providers, "total": len(providers)})
 }
@@ -88,12 +61,6 @@ func (h *Handler) CreateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-	ensureProviderEncryptedColumn(chHost, chPort)
-
 	name, _ := p["name"].(string)
 	baseURL, _ := p["base_url"].(string)
 	model, _ := p["default_model"].(string)
@@ -105,47 +72,40 @@ func (h *Handler) CreateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 400, map[string]interface{}{"error": "name and base_url required"})
 		return
 	}
-	if typ == "" { typ = "openai_compatible" }
-	if cost == "" { cost = "人民币" }
-	if model == "" { model = "default" }
+	if typ == "" {
+		typ = "openai_compatible"
+	}
+	if cost == "" {
+		cost = "人民币"
+	}
+	if model == "" {
+		model = "default"
+	}
 
 	apiKeyHash := "****"
 	apiKeyEncrypted := ""
 	if apiKey != "" {
 		apiKeyHash = "sha256:" + sha256Hash(apiKey)[:16]
-		// 同时加密存储真实 key，供连接测试时解密
 		apiKeyEncrypted = encryptAPIKey(apiKey)
 	}
 
-	maxQ, _ := chGetClickhouse(chHost, chPort, "SELECT+coalesce(max(id),0)+FROM+observability.llm_providers")
-	newID := 1
-	if maxQ != "" {
-		n, _ := strconv.Atoi(maxQ)
-		newID = n + 1
-	}
-
-	safeName := strings.ReplaceAll(name, "'", "\\'")
-	safeURL := strings.ReplaceAll(baseURL, "'", "\\'")
-	safeModel := strings.ReplaceAll(model, "'", "\\'")
-	safeType := strings.ReplaceAll(typ, "'", "\\'")
-	safeCost := strings.ReplaceAll(cost, "'", "\\'")
-	safeKey := strings.ReplaceAll(apiKeyEncrypted, "'", "\\'")
-	now := time.Now().Format("2006-01-02 15:04:05")
-
-	sql := "INSERT INTO observability.llm_providers (id, name, type, base_url, default_model, cost, available, enabled, api_key_hash, api_key_encrypted, created_at) VALUES " +
-		"(" + strconv.Itoa(newID) + ", '" + safeName + "', '" + safeType + "', '" + safeURL + "', '" + safeModel + "', '" + safeCost + "', 1, 0, '" + apiKeyHash + "', '" + safeKey + "', '" + now + "')"
-	_, err := chQueryClickhouse(chHost, chPort, sql)
+	d := &store.LLMProviderDAO{}
+	id, err := d.Create(&store.LLMProvider{
+		Name: name, Type: typ, BaseURL: baseURL, DefaultModel: model,
+		Cost: cost, Available: true, Enabled: false,
+		APIKeyHash: apiKeyHash, APIKeyEncrypted: apiKeyEncrypted,
+	})
 	if err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
-
-	respondJSON(w, 201, map[string]interface{}{"id": newID, "message": "created"})
+	respondJSON(w, 201, map[string]interface{}{"id": id, "message": "created"})
 }
 
 func (h *Handler) UpdateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/settings/llm/providers/"), "/")[0]
-	if _, err := strconv.Atoi(idStr); err != nil {
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
 		respondJSON(w, 400, map[string]interface{}{"error": "invalid id"})
 		return
 	}
@@ -157,49 +117,48 @@ func (h *Handler) UpdateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
+	d := &store.LLMProviderDAO{}
+	existing, err := d.Get(id)
+	if err != nil || existing == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "provider not found"})
+		return
+	}
 
-	updates := []string{}
+	name, baseURL, model, cost := existing.Name, existing.BaseURL, existing.DefaultModel, existing.Cost
+	apiKeyHash, apiKeyEnc := existing.APIKeyHash, existing.APIKeyEncrypted
 	if v, ok := p["name"].(string); ok && v != "" {
-		updates = append(updates, "name='"+strings.ReplaceAll(v, "'", "\\'")+"'")
+		name = v
 	}
 	if v, ok := p["base_url"].(string); ok && v != "" {
-		updates = append(updates, "base_url='"+strings.ReplaceAll(v, "'", "\\'")+"'")
+		baseURL = v
 	}
 	if v, ok := p["default_model"].(string); ok && v != "" {
-		updates = append(updates, "default_model='"+strings.ReplaceAll(v, "'", "\\'")+"'")
+		model = v
 	}
 	if v, ok := p["cost"].(string); ok && v != "" {
-		updates = append(updates, "cost='"+strings.ReplaceAll(v, "'", "\\'")+"'")
+		cost = v
 	}
 	if v, ok := p["api_key"].(string); ok && v != "" {
-		updates = append(updates, "api_key_hash='sha256:"+sha256Hash(v)[:16]+"'")
-		enc := strings.ReplaceAll(encryptAPIKey(v), "'", "\\'")
-		updates = append(updates, "api_key_encrypted='"+enc+"'")
+		apiKeyHash = "sha256:" + sha256Hash(v)[:16]
+		apiKeyEnc = encryptAPIKey(v)
 	}
-	if len(updates) > 0 {
-		sql := "ALTER TABLE observability.llm_providers UPDATE " + strings.Join(updates, ", ") + " WHERE id=" + idStr
-		chQueryClickhouse(chHost, chPort, sql)
+
+	if err := d.Update(id, name, baseURL, model, cost, apiKeyHash, apiKeyEnc); err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
 	}
 	respondJSON(w, 200, map[string]interface{}{"message": "updated"})
 }
 
 func (h *Handler) DeleteLLMProvider(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/settings/llm/providers/"), "/")[0]
-	if _, err := strconv.Atoi(idStr); err != nil {
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
 		respondJSON(w, 400, map[string]interface{}{"error": "invalid id"})
 		return
 	}
-
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-	sql := "ALTER TABLE observability.llm_providers DELETE WHERE id=" + idStr
-	chQueryClickhouse(chHost, chPort, sql)
+	d := &store.LLMProviderDAO{}
+	_ = d.Delete(id)
 	respondJSON(w, 200, map[string]interface{}{"message": "deleted"})
 }
 
@@ -210,89 +169,67 @@ func (h *Handler) EnableLLMProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idStr := parts[0]
-	if _, err := strconv.Atoi(idStr); err != nil {
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
 		respondJSON(w, 400, map[string]interface{}{"error": "invalid id"})
 		return
 	}
 
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-
-	row, _ := chGetClickhouse(chHost, chPort,
-		"SELECT+name,base_url,default_model+FROM+observability.llm_providers+WHERE+id%3D"+idStr+"+LIMIT+1")
-	if row == "" {
+	d := &store.LLMProviderDAO{}
+	p, err := d.Get(id)
+	if err != nil || p == nil {
 		respondJSON(w, 404, map[string]interface{}{"error": "provider not found"})
-		return
-	}
-	fields := strings.Split(row, "\t")
-	if len(fields) < 3 {
-		respondJSON(w, 500, map[string]interface{}{"error": "invalid record"})
 		return
 	}
 
 	// 禁用所有, 启用当前
-	chQueryClickhouse(chHost, chPort, "ALTER TABLE observability.llm_providers UPDATE enabled=0 WHERE enabled=1")
-	chQueryClickhouse(chHost, chPort, "ALTER TABLE observability.llm_providers UPDATE enabled=1 WHERE id="+idStr)
+	if err := d.Enable(id); err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
+	}
 
-	// 同步到 settings，并同步该 provider 的真实 API key（修复：启用后仍用旧 provider key 的问题）
-	newKey := getProviderEncryptedKey(idStr)
+	// 同步到 settings，并同步该 provider 的真实 API key
+	newKey := ""
+	if p.APIKeyEncrypted != "" {
+		newKey = decryptAPIKey(p.APIKeyEncrypted)
+	}
 	settingsMu.Lock()
-	settings.LLM.Provider = fields[0]
-	settings.LLM.Model = fields[2]
-	settings.LLM.BaseURL = fields[1]
+	settings.LLM.Provider = p.Name
+	settings.LLM.Model = p.DefaultModel
+	settings.LLM.BaseURL = p.BaseURL
 	if newKey != "" {
 		settings.LLM.APIKey = encryptAPIKey(newKey)
 	}
 	settingsMu.Unlock()
 	saveSettings(settings)
 
-	respondJSON(w, 200, map[string]interface{}{"message": "enabled", "provider": fields[0]})
-}
-
-// ensureProviderEncryptedColumn 确保 llm_providers 表存在 api_key_encrypted 列（幂等）
-func ensureProviderEncryptedColumn(chHost, chPort string) {
-	chQueryClickhouse(chHost, chPort,
-		"ALTER TABLE observability.llm_providers ADD COLUMN IF NOT EXISTS api_key_encrypted String DEFAULT ''")
+	respondJSON(w, 200, map[string]interface{}{"message": "enabled", "provider": p.Name})
 }
 
 // getProviderName 返回指定 provider 的名称（用于连接测试显示）
 func getProviderName(providerID string) string {
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" {
-		chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local"
-	}
-	if chPort == "" {
-		chPort = "8123"
-	}
-	row, _ := chGetClickhouse(chHost, chPort,
-		"SELECT+name+FROM+observability.llm_providers+WHERE+id%3D"+providerID+"+LIMIT+1")
-	if row == "" {
+	id, err := strconv.ParseInt(providerID, 10, 64)
+	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(row)
+	d := &store.LLMProviderDAO{}
+	p, err := d.Get(id)
+	if err != nil || p == nil {
+		return ""
+	}
+	return p.Name
 }
 
 // getProviderEncryptedKey 读取指定 provider 的加密 API Key（用于连接测试），返回解密后的真实 key。
 func getProviderEncryptedKey(providerID string) string {
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" {
-		chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local"
-	}
-	if chPort == "" {
-		chPort = "8123"
-	}
-	row, _ := chGetClickhouse(chHost, chPort,
-		"SELECT+api_key_encrypted+FROM+observability.llm_providers+WHERE+id%3D"+providerID+"+LIMIT+1")
-	if row == "" {
+	id, err := strconv.ParseInt(providerID, 10, 64)
+	if err != nil {
 		return ""
 	}
-	// 列可能为空（旧数据无加密 key）
-	if strings.HasPrefix(row, "\\N") || strings.HasPrefix(row, "NULL") || strings.TrimSpace(row) == "" {
+	d := &store.LLMProviderDAO{}
+	p, err := d.Get(id)
+	if err != nil || p == nil || p.APIKeyEncrypted == "" {
 		return ""
 	}
-	return decryptAPIKey(strings.TrimSpace(row))
+	return decryptAPIKey(p.APIKeyEncrypted)
 }

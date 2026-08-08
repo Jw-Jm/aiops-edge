@@ -12,11 +12,12 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 var llmEncryptionKey = func() []byte {
@@ -116,10 +117,10 @@ func loadSettings() *Settings {
 		LLM: LLMSettings{Provider: "openai", Model: "gpt-4o", BaseURL: "https://api.openai.com/v1"},
 		K8s: K8sSettings{Enabled: true, AuthType: "ServiceAccount"},
 	}
-	if data, err := loadFromClickHouse("llm_settings"); err == nil && data != "" {
+	if data, err := loadFromStore("llm_settings"); err == nil && data != "" {
 		json.Unmarshal([]byte(data), &s.LLM)
 	}
-	if data, err := loadFromClickHouse("k8s_settings"); err == nil && data != "" {
+	if data, err := loadFromStore("k8s_settings"); err == nil && data != "" {
 		json.Unmarshal([]byte(data), &s.K8s)
 	}
 	return s
@@ -127,57 +128,25 @@ func loadSettings() *Settings {
 
 func saveSettings(s *Settings) error {
 	llmData, _ := json.Marshal(s.LLM)
-	saveToClickHouse("llm_settings", string(llmData))
+	saveToStore("llm_settings", string(llmData))
 	k8sData, _ := json.Marshal(s.K8s)
-	saveToClickHouse("k8s_settings", string(k8sData))
+	saveToStore("k8s_settings", string(k8sData))
 	return nil
 }
 
-func loadFromClickHouse(key string) (string, error) {
-	return loadFromClickHouseWithRetry(key, 3)
-}
-
-func loadFromClickHouseWithRetry(key string, retries int) (string, error) {
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-	urlStr := fmt.Sprintf("http://%s:%s/?query=SELECT+value+FROM+observability.platform_settings+FINAL+WHERE+key%%3D%%27%s%%27", chHost, chPort, key)
-
-	var lastErr error
-	for i := 0; i < retries; i++ {
-		if i > 0 {
-			time.Sleep(2 * time.Second) // ClickHouse 可能还在启动中
-		}
-		resp, err := http.Get(urlStr)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-		if len(lines) > 0 && lines[0] != "" {
-			return lines[0], nil
-		}
-		// 空结果 = 还没写入过 settings，不算错误
-		return "", fmt.Errorf("not found")
+// loadFromStore 从 MySQL platform_settings 读配置项（配置类从 CH 迁 MySQL）。
+func loadFromStore(key string) (string, error) {
+	d := &store.SettingDAO{}
+	v, err := d.Get(key)
+	if err != nil || v == "" {
+		return "", fmt.Errorf("not found: %v", err)
 	}
-	return "", lastErr
+	return v, nil
 }
 
-func saveToClickHouse(key, value string) error {
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-	escaped := strings.ReplaceAll(value, "'", "\\'")
-	query := fmt.Sprintf("INSERT INTO observability.platform_settings (key, value) VALUES ('%s', '%s')", key, escaped)
-	url := fmt.Sprintf("http://%s:%s/?query=%s", chHost, chPort, url.QueryEscape(query))
-	resp, err := http.Post(url, "text/plain", nil)
-	if err != nil { return err }
-	resp.Body.Close()
-	return nil
+func saveToStore(key, value string) error {
+	d := &store.SettingDAO{}
+	return d.Set(key, value)
 }
 
 // ═══════════════════════════════════════════════════════
@@ -197,75 +166,40 @@ type LLMConfigHistory struct {
 
 // SaveLLMHistory saves current config to history table and increments version.
 func saveLLMHistory(llm LLMSettings) {
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-
-	// Get current max version
-	verURL := fmt.Sprintf("http://%s:%s/?query=SELECT+coalesce(max(version),0)+FROM+observability.llm_config_history+FINAL+WHERE+provider%%3D%%27%s%%27", chHost, chPort, url.QueryEscape(llm.Provider))
-	ver := 0
-	if resp, err := http.Get(verURL); err == nil {
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		fmt.Sscanf(strings.TrimSpace(string(body)), "%d", &ver)
-	}
-	ver++
-
 	// Hash API Key (don't store raw)
 	apiKeyHash := "****"
 	if llm.APIKey != "" {
 		h := sha256Hash(llm.APIKey)
 		apiKeyHash = "sha256:" + h[:16]
 	}
-
-	escaped := strings.ReplaceAll(llm.BaseURL, "'", "\\'")
-	query := fmt.Sprintf("INSERT INTO observability.llm_config_history (version, provider, model, base_url, api_key_hash, comment) VALUES (%d, '%s', '%s', '%s', '%s', 'config save')",
-		ver, llm.Provider, llm.Model, escaped, apiKeyHash)
-	insURL := fmt.Sprintf("http://%s:%s/", chHost, chPort)
-	if resp, err := http.Post(insURL, "text/plain", bytes.NewBufferString(query)); err == nil {
-		resp.Body.Close()
-	}
+	d := &store.LLMConfigHistoryDAO{}
+	_ = d.Append(llm.Provider, llm.Model, llm.BaseURL, apiKeyHash, "", "config save")
 }
 
 // ListLLMHistory handles GET /api/v1/settings/llm/history
 func (h *Handler) ListLLMHistory(w http.ResponseWriter, r *http.Request) {
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-
-	qURL := fmt.Sprintf("http://%s:%s/?query=SELECT+version,provider,model,base_url,toString(created_at),operator,comment+FROM+observability.llm_config_history+ORDER+BY+version+DESC+LIMIT+20", chHost, chPort)
-	resp, err := http.Get(qURL)
-	if err != nil {
-		respondJSON(w, 500, map[string]interface{}{"error": "clickhouse unavailable"})
-		return
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-
 	// Get current config for comparison
 	settingsMu.RLock()
 	current := settings.LLM
 	settingsMu.RUnlock()
 
+	d := &store.LLMConfigHistoryDAO{}
+	rows, err := d.List(20)
+	if err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": "mysql unavailable"})
+		return
+	}
 	history := []LLMConfigHistory{}
-	for _, line := range lines {
-		if line == "" { continue }
-		fields := strings.Split(line, "\t")
-		if len(fields) < 7 { continue }
-		var v int
-		fmt.Sscanf(fields[0], "%d", &v)
+	for _, row := range rows {
 		history = append(history, LLMConfigHistory{
-			Version:   v,
-			Provider:  fields[1],
-			Model:     fields[2],
-			BaseURL:   fields[3],
-			CreatedAt: fields[4],
-			Operator:  fields[5],
-			Comment:   fields[6],
-			IsCurrent: fields[1] == current.Provider && fields[2] == current.Model && fields[3] == current.BaseURL,
+			Version:   int(row.Version),
+			Provider:  row.Provider,
+			Model:     row.Model,
+			BaseURL:   row.BaseURL,
+			CreatedAt: row.CreatedAt.Format("2006-01-02 15:04:05"),
+			Operator:  row.Operator,
+			Comment:   row.Comment,
+			IsCurrent: row.Provider == current.Provider && row.Model == current.Model && row.BaseURL == current.BaseURL,
 		})
 	}
 	respondJSON(w, 200, map[string]interface{}{"history": history, "total": len(history)})
@@ -279,46 +213,29 @@ func (h *Handler) RollbackLLMConfig(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 400, map[string]interface{}{"error": "invalid path"})
 		return
 	}
-	var ver int
+	var ver int64
 	fmt.Sscanf(parts[0], "%d", &ver)
 
-	chHost := os.Getenv("CLICKHOUSE_HOST")
-	chPort := os.Getenv("CLICKHOUSE_PORT")
-	if chHost == "" { chHost = "clickhouse-0.clickhouse.observability.svc.cluster.local" }
-	if chPort == "" { chPort = "8123" }
-
-	qURL := fmt.Sprintf("http://%s:%s/?query=SELECT+provider,model,base_url+FROM+observability.llm_config_history+WHERE+version%%3D%d+LIMIT+1", chHost, chPort, ver)
-	resp, err := http.Get(qURL)
-	if err != nil {
-		respondJSON(w, 500, map[string]interface{}{"error": "clickhouse unavailable"})
-		return
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	line := strings.TrimSpace(string(body))
-	if line == "" {
+	d := &store.LLMConfigHistoryDAO{}
+	row, err := d.GetVersion(ver)
+	if err != nil || row == nil {
 		respondJSON(w, 404, map[string]interface{}{"error": "version not found"})
-		return
-	}
-	fields := strings.Split(line, "\t")
-	if len(fields) < 3 {
-		respondJSON(w, 500, map[string]interface{}{"error": "invalid history record"})
 		return
 	}
 
 	// Restore provider/model/base_url, keep current API Key
 	settingsMu.Lock()
-	settings.LLM.Provider = fields[0]
-	settings.LLM.Model = fields[1]
-	settings.LLM.BaseURL = fields[2]
+	settings.LLM.Provider = row.Provider
+	settings.LLM.Model = row.Model
+	settings.LLM.BaseURL = row.BaseURL
 	settingsMu.Unlock()
 
 	saveSettings(settings)
 	respondJSON(w, 200, map[string]interface{}{
 		"message": "rolled back",
-		"provider": fields[0],
-		"model":    fields[1],
-		"base_url": fields[2],
+		"provider": row.Provider,
+		"model":    row.Model,
+		"base_url": row.BaseURL,
 	})
 }
 

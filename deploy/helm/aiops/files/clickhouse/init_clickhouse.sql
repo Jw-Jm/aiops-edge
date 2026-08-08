@@ -28,45 +28,6 @@ TTL created_at + toIntervalDay(90)
 SETTINGS index_granularity = 8192;
 
 -- -----------------------------------------------------------------------------
--- llm_config_history: LLM 配置变更历史
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS observability.llm_config_history
-(
-    `version` UInt32,
-    `provider` String,
-    `model` String,
-    `base_url` String,
-    `api_key_hash` String,
-    `operator` String,
-    `comment` String,
-    `created_at` DateTime DEFAULT now()
-)
-ENGINE = ReplacingMergeTree
-ORDER BY (provider, version)
-SETTINGS index_granularity = 8192;
-
--- -----------------------------------------------------------------------------
--- llm_providers: LLM 供应商配置
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS observability.llm_providers
-(
-    `id` UInt32,
-    `name` String,
-    `type` String,
-    `base_url` String,
-    `default_model` String,
-    `cost` String,
-    `available` UInt8,
-    `enabled` UInt8,
-    `api_key_hash` String,
-    `api_key_encrypted` String DEFAULT '',
-    `created_at` DateTime DEFAULT now()
-)
-ENGINE = MergeTree
-ORDER BY id
-SETTINGS index_granularity = 8192;
-
--- -----------------------------------------------------------------------------
 -- log_records: 日志记录
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observability.log_records
@@ -85,19 +46,6 @@ CREATE TABLE IF NOT EXISTS observability.log_records
 ENGINE = ReplacingMergeTree
 PARTITION BY date
 ORDER BY (tenant_id, service_name, date, timestamp, trace_id)
-SETTINGS index_granularity = 8192;
-
--- -----------------------------------------------------------------------------
--- platform_settings: 平台设置
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS observability.platform_settings
-(
-    `key` String,
-    `value` String,
-    `updated_at` DateTime DEFAULT now()
-)
-ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY key
 SETTINGS index_granularity = 8192;
 
 -- -----------------------------------------------------------------------------

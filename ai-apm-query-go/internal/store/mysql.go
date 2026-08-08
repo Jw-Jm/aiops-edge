@@ -163,6 +163,44 @@ CREATE TABLE IF NOT EXISTS topology_relation_types (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// platform_settings 平台设置（KV，从 CH 迁 MySQL；用 config_key 规避 key 保留字）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS platform_settings (
+  config_key VARCHAR(128) PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// llm_providers LLM Provider（从 CH 迁 MySQL）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS llm_providers (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(128) NOT NULL,
+  type VARCHAR(64) DEFAULT 'openai_compatible',
+  base_url VARCHAR(255) NOT NULL DEFAULT '',
+  default_model VARCHAR(128) DEFAULT '',
+  cost VARCHAR(64) DEFAULT '人民币',
+  available TINYINT DEFAULT 1,
+  enabled TINYINT DEFAULT 0,
+  api_key_hash VARCHAR(64) DEFAULT '',
+  api_key_encrypted TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// llm_config_history LLM 配置历史（从 CH 迁 MySQL）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS llm_config_history (
+  version BIGINT PRIMARY KEY,
+  provider VARCHAR(128) DEFAULT '',
+  model VARCHAR(128) DEFAULT '',
+  base_url VARCHAR(255) DEFAULT '',
+  api_key_hash VARCHAR(64) DEFAULT '',
+  operator VARCHAR(128) DEFAULT '',
+  comment VARCHAR(255) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 }
 
 func env(key, def string) string {
