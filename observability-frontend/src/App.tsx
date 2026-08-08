@@ -10,7 +10,7 @@ import {
   ApartmentOutlined, DatabaseOutlined, NodeIndexOutlined, CloudServerOutlined,
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
   DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
-  BookOutlined, ThunderboltFilled, TeamOutlined, ClusterOutlined, DesktopOutlined,
+  BookOutlined, ThunderboltFilled, TeamOutlined, ClusterOutlined, DesktopOutlined, HddOutlined,
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
 import ChatThread from './pages/AIChat/ChatThread'
@@ -43,6 +43,8 @@ import Reports from './pages/Reports'
 import Catalog from './pages/Catalog'
 import Devices from './pages/Devices'
 import Clusters from './pages/Clusters'
+import Snmp from './pages/SNMP'
+import Hardware from './pages/Hardware'
 
 const { Sider, Content, Header } = Layout
 
@@ -101,6 +103,8 @@ const menuGroups = [
       { key: '/catalog', icon: <ClusterOutlined />, label: '服务目录' },
       { key: '/devices', icon: <DesktopOutlined />, label: '设备管理' },
       { key: '/clusters', icon: <CloudServerOutlined />, label: '集群管理' },
+      { key: '/snmp', icon: <ClusterOutlined />, label: 'SNMP 网络设备' },
+      { key: '/hardware', icon: <HddOutlined />, label: '硬件健康' },
     ],
   },
   {
@@ -262,6 +266,8 @@ const AppLayout: React.FC = () => {
                 <Route path="/catalog" element={<Catalog />} />
                 <Route path="/devices" element={<Devices />} />
                 <Route path="/clusters" element={<Clusters />} />
+                <Route path="/snmp" element={<Snmp />} />
+                <Route path="/hardware" element={<Hardware />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
             </div>

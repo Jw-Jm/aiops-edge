@@ -204,4 +204,25 @@ export const updateCluster = (id: number, data: Record<string, unknown>) => api.
 export const deleteCluster = (id: number) => api.delete(`/clusters/${id}`)
 export const listClusterNodes = (id: number) => api.get(`/clusters/${id}/nodes`)
 
+// ===== SNMP 网络设备 =====
+export interface SnmpDevice {
+  id: number; hostname: string; ip: string; community: string; snmp_version: string
+  vendor: string; model: string; status: string; last_collect_at: string
+}
+export interface SnmpInterface {
+  id: number; device_id: number; if_index: number; if_name: string
+  if_oper_status: string; if_in_octets: number; if_out_octets: number; if_in_errors: number
+}
+export const listSnmpDevices = () => api.get('/snmp/devices')
+export const createSnmpDevice = (data: Record<string, unknown>) => api.post('/snmp/devices', data)
+export const deleteSnmpDevice = (id: number) => api.delete(`/snmp/devices/${id}`)
+export const listSnmpInterfaces = (id: number) => api.get(`/snmp/devices/${id}/interfaces`)
+export const collectSnmpDevice = (id: number) => api.post(`/snmp/devices/${id}/collect`)
+
+// ===== IPMI 硬件 + 部件可用性 =====
+export interface IpmiSensor { node_name: string; sensor_name: string; sensor_type: string; reading: string; status: string }
+export interface NodeHealthRow { node_name: string; component: string; status: string; updated_at: string }
+export const listIpmiSensors = (params?: Record<string, unknown>) => api.get('/ipmi/sensors', { params })
+export const listNodeHealth = (params?: Record<string, unknown>) => api.get('/node/health', { params })
+
 export default api
