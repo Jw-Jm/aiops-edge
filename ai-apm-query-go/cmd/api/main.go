@@ -10,7 +10,10 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/observability-platform/ai-apm-query-go/internal/api"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 func main() {
@@ -33,10 +36,24 @@ func main() {
 	handler.StartAlertEvaluation()
 	api.InitK8sRules()
 
+	// MySQL：应用 users 表迁移 + 种子 admin（密码 admin123，失败不阻塞）
+	store.EnsureSchema()
+	if db := store.GetDB(); db != nil {
+		if adminHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost); err == nil {
+			_ = (&store.UserDAO{}).SeedAdmin(string(adminHash))
+		}
+	}
+
 	mux := http.NewServeMux()
 
 	// Auth routes (no auth required)
 	mux.HandleFunc("/api/v1/auth/login", handler.Login)
+	mux.HandleFunc("/api/v1/login", handler.Login)
+
+	// User management (admin)
+	mux.HandleFunc("/api/v1/users", handler.RequireRole("admin", handler.UserRouter))
+	mux.HandleFunc("/api/v1/users/", handler.RequireRole("admin", handler.UserRouter))
+	mux.HandleFunc("/api/v1/me", handler.Me)
 
 	// Health (no auth required)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
