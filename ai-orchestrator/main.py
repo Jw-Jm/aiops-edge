@@ -1350,6 +1350,7 @@ async def toggle_rule(rule_key: str):
 # ═══════════════════════════════════════════════════════════════
 
 from nl2sql import validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore, new_item
+from shell_ws import shell_ws
 
 _nl2sql_store = Nl2SqlStore()
 _NL2SQL_SYSTEM = (
@@ -1456,6 +1457,10 @@ async def metrics():
 # ═══════════════════════════════════════════════════════════════
 #  Entry point (replaces server.py)
 # ═══════════════════════════════════════════════════════════════
+
+# WebShell WebSocket 端点
+app.add_api_websocket_route("/api/v1/shell/ws", shell_ws)
+
 
 if __name__ == "__main__":
     import uvicorn
