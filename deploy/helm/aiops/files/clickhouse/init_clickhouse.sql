@@ -88,26 +88,6 @@ ORDER BY (tenant_id, service_name, date, timestamp, trace_id)
 SETTINGS index_granularity = 8192;
 
 -- -----------------------------------------------------------------------------
--- metric_service_red: 服务 RED 指标
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS observability.metric_service_red
-(
-    `tenant_id` String,
-    `service_name` String,
-    `caller_service` String,
-    `time_bucket` DateTime,
-    `call_count` UInt64,
-    `error_count` UInt64,
-    `duration_sum_ns` UInt64,
-    `duration_count` UInt64,
-    `date` Date
-)
-ENGINE = ReplacingMergeTree
-PARTITION BY date
-ORDER BY (tenant_id, service_name, caller_service, date, time_bucket)
-SETTINGS index_granularity = 8192;
-
--- -----------------------------------------------------------------------------
 -- platform_settings: 平台设置
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observability.platform_settings

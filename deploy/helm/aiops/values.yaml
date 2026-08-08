@@ -72,16 +72,6 @@ redis:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "500m", memory: "512Mi" }
 
-chromadb:
-  enabled: true
-  external:
-    host: ""
-  image: "chromadb/chroma:0.5.5"
-  storageClass: ""
-  storage: 5Gi
-  resources:
-    requests: { cpu: "200m", memory: "512Mi" }
-    limits: { cpu: "2", memory: "2Gi" }
 
 minio:
   enabled: true

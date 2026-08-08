@@ -230,18 +230,10 @@ func (w *MetricsWriter) confirm(kind, key string, rows []byte) {
 	}
 }
 
+// insertMetrics 已停用：metric_service_red 是只写不读的死表。
+// 服务 RED 指标改由 ingest /metrics 暴露，经 VM 采集（VictoriaMetrics 为唯一指标库）。
+// 保留空实现以兼容调用链，但不再写 ClickHouse。
 func (w *MetricsWriter) insertMetrics(metrics []byte) error {
-	query := "INSERT INTO observability.metric_service_red FORMAT TabSeparated"
-	u := w.endpoint + "/?" + "query=" + url.QueryEscape(query)
-	resp, err := w.httpClient.Post(u, "text/plain", bytes.NewReader(metrics))
-	if err != nil {
-		return fmt.Errorf("http post: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, string(body))
-	}
 	return nil
 }
 
