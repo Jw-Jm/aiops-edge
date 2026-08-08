@@ -1351,6 +1351,8 @@ async def toggle_rule(rule_key: str):
 
 from nl2sql import validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore, new_item
 from shell_ws import shell_ws
+from db_snmp import SNMPDeviceStore
+from snmp_collector import SNMPCollector
 
 _nl2sql_store = Nl2SqlStore()
 _NL2SQL_SYSTEM = (
@@ -1457,6 +1459,65 @@ async def metrics():
 # ═══════════════════════════════════════════════════════════════
 #  Entry point (replaces server.py)
 # ═══════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+#  SNMP 设备与采集
+# ═══════════════════════════════════════════════════════════════
+
+_snmp_collector = SNMPCollector()
+
+
+@app.on_event("startup")
+async def _start_snmp_collector():
+    """后台启动 SNMP 采集调度（可降级，失败不阻塞）。"""
+    try:
+        asyncio.create_task(_snmp_collector.run_forever())
+    except Exception:
+        pass
+
+
+@app.get("/api/v1/snmp/devices")
+async def list_snmp_devices(active_only: bool = True):
+    return {"devices": SNMPDeviceStore().list(active_only=active_only)}
+
+
+@app.post("/api/v1/snmp/devices")
+async def add_snmp_device(body: dict = None):
+    b = body or {}
+    if not b.get("ip"):
+        raise HTTPException(400, "ip is required")
+    dev_id = SNMPDeviceStore().create({
+        "hostname": b.get("hostname", ""), "ip": b.get("ip"),
+        "community": b.get("community", "public"), "snmp_version": b.get("snmp_version", "v2c"),
+        "vendor": b.get("vendor", ""), "model": b.get("model", ""),
+        "location": b.get("location", ""), "status": b.get("status", "active"),
+    })
+    return {"ok": True, "id": dev_id}
+
+
+@app.delete("/api/v1/snmp/devices/{dev_id}")
+async def delete_snmp_device(dev_id: int):
+    SNMPDeviceStore().delete(dev_id)
+    return {"ok": True}
+
+
+@app.get("/api/v1/snmp/devices/{dev_id}/interfaces")
+async def list_snmp_interfaces(dev_id: int):
+    return {"interfaces": SNMPDeviceStore().list_interfaces(dev_id)}
+
+
+@app.post("/api/v1/snmp/devices/{dev_id}/collect")
+async def collect_snmp_device(dev_id: int):
+    """手动立即采集某设备接口。"""
+    devs = SNMPDeviceStore().list(active_only=False)
+    dev = next((d for d in devs if d.get("id") == dev_id), None)
+    if not dev:
+        raise HTTPException(404, "device not found")
+    data = _snmp_collector.collect_device(dev)
+    SNMPDeviceStore().save_interfaces(dev_id, data["interfaces"])
+    SNMPDeviceStore().touch_collect(dev_id)
+    return {"ok": True, "interfaces": len(data["interfaces"]), "sys_descr": data["sys_descr"]}
+
 
 # WebShell WebSocket 端点
 app.add_api_websocket_route("/api/v1/shell/ws", shell_ws)
