@@ -12,3 +12,5 @@ arq>=0.26
 httpx>=0.28
 pydantic>=2.0
 prometheus-client>=0.20
+pymysql>=1.1
+DBUtils>=3.0
