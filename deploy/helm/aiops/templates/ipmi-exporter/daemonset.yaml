@@ -1,0 +1,46 @@
+{{- if .Values.ipmiExporter.enabled }}
+# ipmi-exporter DaemonSet — 每节点本地采集 IPMI 传感器（/dev/ipmi0，不走带外网）
+# 用 ipmitool 读 BMC 硬件健康（温度/风扇/电压/电源），经管理网上报 ai-orchestrator
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ipmi-exporter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: ipmi-exporter
+    component: ipmi-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ipmi-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ipmi-exporter
+    spec:
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: ipmi-exporter
+          image: {{ .Values.ipmiExporter.image }}
+          securityContext:
+            privileged: true
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ORCHESTRATOR_URL
+              value: "http://ai-orchestrator:8000/api/v1/ipmi/ingest"
+            - name: COLLECT_INTERVAL
+              value: {{ .Values.ipmiExporter.collectInterval | quote }}
+          volumeMounts:
+            - name: ipmi
+              mountPath: /dev/ipmi0
+              readOnly: true
+      volumes:
+        - name: ipmi
+          hostPath:
+            path: /dev/ipmi0
+{{- end }}

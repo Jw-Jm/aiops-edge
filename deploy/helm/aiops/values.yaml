@@ -114,6 +114,17 @@ vmalert:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "200m", memory: "256Mi" }
 
+# node-exporter — 每节点采集服务器 OS 部件（CPU/内存/磁盘/网卡）
+nodeExporter:
+  enabled: true
+  image: "prom/node-exporter:v1.8.2"
+
+# ipmi-exporter — 每节点本地采集 IPMI 传感器（/dev/ipmi0，不走带外网）
+ipmiExporter:
+  enabled: true
+  image: "aiops/ipmi-exporter:latest"
+  collectInterval: "120"
+
 # ---------------------------------------------------------------------------
 # 自研服务（镜像 tag 由 build-images.sh 构建，统一 :latest 本地镜像）
 # ---------------------------------------------------------------------------
