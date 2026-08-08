@@ -42,3 +42,6 @@ secrets/
 # 日志
 *.log
 deploy/helm/aiops/charts/
+
+# 隔离 worktree 目录
+/.worktrees/
