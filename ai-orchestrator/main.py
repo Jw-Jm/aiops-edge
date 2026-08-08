@@ -1470,7 +1470,12 @@ _snmp_collector = SNMPCollector()
 
 @app.on_event("startup")
 async def _start_snmp_collector():
-    """后台启动 SNMP 采集调度（可降级，失败不阻塞）。"""
+    """启动初始化：应用 MySQL 迁移 + 后台 SNMP 采集调度（均可降级，失败不阻塞）。"""
+    try:
+        from db import migrate
+        migrate()
+    except Exception:
+        pass
     try:
         asyncio.create_task(_snmp_collector.run_forever())
     except Exception:
