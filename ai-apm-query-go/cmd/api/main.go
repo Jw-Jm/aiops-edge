@@ -55,6 +55,18 @@ func main() {
 	mux.HandleFunc("/api/v1/users/", handler.RequireRole("admin", handler.UserRouter))
 	mux.HandleFunc("/api/v1/me", handler.Me)
 
+	// Service catalog (read any, write admin)
+	mux.HandleFunc("/api/v1/catalog/services", handler.CatalogRouter)
+	mux.HandleFunc("/api/v1/catalog/services/", handler.CatalogRouter)
+
+	// Devices (read any, write admin)
+	mux.HandleFunc("/api/v1/devices", handler.DeviceRouter)
+	mux.HandleFunc("/api/v1/devices/", handler.DeviceRouter)
+
+	// Clusters (read any, write/sync admin)
+	mux.HandleFunc("/api/v1/clusters", handler.ClusterRouter)
+	mux.HandleFunc("/api/v1/clusters/", handler.ClusterRouter)
+
 	// Health (no auth required)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
