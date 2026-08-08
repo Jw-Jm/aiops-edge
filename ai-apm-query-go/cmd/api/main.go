@@ -18,7 +18,7 @@ import (
 
 func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
-	chHost := flag.String("ch-host", "clickhouse-0.clickhouse.observability.svc.cluster.local", "ClickHouse host")
+	chHost := flag.String("ch-host", "clickhouse.observability.svc.cluster.local", "ClickHouse host")
 	chPort := flag.Int("ch-port", 8123, "ClickHouse HTTP port")
 	flag.Parse()
 

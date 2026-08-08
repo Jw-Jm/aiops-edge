@@ -1065,7 +1065,7 @@ def _upload_report(task_id: str, content: str, filename: str = "report.md", serv
 #  ClickHouse 巡检报告持久化
 # ═══════════════════════════════════════════════════════════════
 
-_CH_HOST = os.environ.get("CLICKHOUSE_HOST", "clickhouse-0.clickhouse.observability.svc.cluster.local")
+_CH_HOST = os.environ.get("CLICKHOUSE_HOST", "clickhouse.observability.svc.cluster.local")
 _CH_PORT = os.environ.get("CLICKHOUSE_PORT", "8123")
 
 

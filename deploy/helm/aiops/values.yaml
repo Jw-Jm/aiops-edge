@@ -138,8 +138,8 @@ frontend:
 queryApi:
   enabled: true
   image: "query-api:latest"
-  # 以下 DNS 与代码硬编码一致（查询/告警/K8s/设置）
-  clickhouseHost: "clickhouse-0.clickhouse.observability.svc.cluster.local"
+  # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
+  clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   redisUrl: "redis.observability.svc.cluster.local:6379"
   victoriaLogsUrl: "http://victoria-logs.observability.svc.cluster.local:9428"
@@ -168,7 +168,7 @@ aiOrchestrator:
   image: "ai-orchestrator:latest"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   minioEndpoint: "minio.observability.svc.cluster.local:9000"
-  clickhouseHost: "clickhouse-0.clickhouse.observability.svc.cluster.local"
+  clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   llmMock: "true"
   dataStorageClass: ""
