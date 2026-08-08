@@ -18,12 +18,12 @@ spec:
       labels:
         app.kubernetes.io/name: ipmi-exporter
     spec:
-      hostNetwork: true
       tolerations:
         - operator: Exists
       containers:
         - name: ipmi-exporter
           image: {{ .Values.ipmiExporter.image }}
+          imagePullPolicy: {{ .Values.ipmiExporter.imagePullPolicy | default "IfNotPresent" }}
           securityContext:
             privileged: true
           env:
@@ -32,7 +32,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: ORCHESTRATOR_URL
-              value: "http://ai-orchestrator:8000/api/v1/ipmi/ingest"
+              value: "http://ai-orchestrator:8080/api/v1/ipmi/ingest"
             - name: COLLECT_INTERVAL
               value: {{ .Values.ipmiExporter.collectInterval | quote }}
           volumeMounts:
