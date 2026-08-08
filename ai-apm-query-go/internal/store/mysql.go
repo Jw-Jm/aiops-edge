@@ -201,6 +201,68 @@ CREATE TABLE IF NOT EXISTS llm_config_history (
   comment VARCHAR(255) DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// alert_rules 告警规则（从 /tmp JSON 迁 MySQL）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id VARCHAR(32) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL DEFAULT '',
+  service VARCHAR(128) DEFAULT '',
+  type VARCHAR(32) DEFAULT 'threshold',
+  metric VARCHAR(64) DEFAULT '',
+  condition VARCHAR(8) DEFAULT '>',
+  threshold DOUBLE DEFAULT 0,
+  duration INT DEFAULT 5,
+  severity VARCHAR(16) DEFAULT 'warning',
+  enabled TINYINT DEFAULT 1,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// alert_events 告警事件（从 /tmp JSON 迁 MySQL）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS alert_events (
+  id VARCHAR(32) PRIMARY KEY,
+  rule_id VARCHAR(32) DEFAULT '',
+  rule_name VARCHAR(255) DEFAULT '',
+  service VARCHAR(128) DEFAULT '',
+  severity VARCHAR(16) DEFAULT 'warning',
+  message TEXT,
+  value DOUBLE DEFAULT 0,
+  threshold DOUBLE DEFAULT 0,
+  timestamp DATETIME DEFAULT NULL,
+  count INT DEFAULT 1,
+  first_timestamp DATETIME DEFAULT NULL,
+  last_timestamp DATETIME DEFAULT NULL,
+  status VARCHAR(20) DEFAULT 'firing',
+  acknowledged_at DATETIME DEFAULT NULL,
+  acknowledged_by VARCHAR(64) DEFAULT '',
+  resolved_at DATETIME DEFAULT NULL,
+  resolved_by VARCHAR(64) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// alert_silences 告警静默（从 /tmp JSON 迁 MySQL）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS alert_silences (
+  id VARCHAR(32) PRIMARY KEY,
+  service VARCHAR(128) DEFAULT '',
+  rule_id VARCHAR(32) DEFAULT '',
+  comment VARCHAR(255) DEFAULT '',
+  created_at DATETIME DEFAULT NULL,
+  expires_at DATETIME DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// tenants 租户（从 /tmp JSON 迁 MySQL）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS tenants (
+  id VARCHAR(64) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL DEFAULT '',
+  quota_ai INT DEFAULT 0,
+  enabled TINYINT DEFAULT 1,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 }
 
 func env(key, def string) string {

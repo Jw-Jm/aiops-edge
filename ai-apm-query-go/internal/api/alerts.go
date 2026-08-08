@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 // AlertRule defines an alert rule.
@@ -69,11 +71,9 @@ type AggAlertEvent struct {
 var (
 	alertRules       []AlertRule
 	alertRulesMu     sync.RWMutex
-	alertRulesPath   = "/tmp/observability-alerts.json"
 
 	alertEvents       []AlertEvent
 	alertEventsMu     sync.RWMutex
-	alertEventsPath   = "/tmp/observability-alert-events.json"
 	maxAlertEvents    = 1000
 
 	// ── 告警降噪配置（借鉴 AlertManager 模式）──
@@ -84,7 +84,6 @@ var (
 	alertRepeatInterval  = 60 * time.Minute
 	alertSilences        []AlertSilence
 	alertSilencesMu      sync.RWMutex
-	alertSilencesPath    = "/tmp/observability-alert-silences.json"
 )
 
 // AlertSilence 表示一条告警静默规则（抑制指定服务/规则的告警一段时间）
@@ -98,15 +97,6 @@ type AlertSilence struct {
 }
 
 func init() {
-	if f := os.Getenv("ALERT_RULES_FILE"); f != "" {
-		alertRulesPath = f
-	}
-	if f := os.Getenv("ALERT_EVENTS_FILE"); f != "" {
-		alertEventsPath = f
-	}
-	if f := os.Getenv("ALERT_SILENCES_FILE"); f != "" {
-		alertSilencesPath = f
-	}
 	if v := os.Getenv("ALERT_GROUP_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			alertGroupInterval = d
@@ -128,55 +118,83 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-// ---- Persistence ----
+// ---- Persistence (MySQL，从 /tmp JSON 迁入) ----
 
 func loadAlertRules() {
-	data, err := os.ReadFile(alertRulesPath)
+	alertRulesMu.Lock()
+	defer alertRulesMu.Unlock()
+	d := &store.AlertRuleDAO{}
+	rows, err := d.LoadAll()
 	if err != nil {
+		log.Printf("loadAlertRules(mysql): %v", err)
 		alertRules = []AlertRule{}
 		return
 	}
-	if err := json.Unmarshal(data, &alertRules); err != nil {
-		log.Printf("loadAlertRules: %v", err)
-		alertRules = []AlertRule{}
+	alertRules = make([]AlertRule, 0, len(rows))
+	for _, r := range rows {
+		alertRules = append(alertRules, AlertRule{
+			ID: r.ID, Name: r.Name, Service: r.Service, Type: r.Type, Metric: r.Metric,
+			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
+			Severity: r.Severity, Enabled: r.Enabled,
+		})
 	}
 }
 
 func saveAlertRules() {
 	alertRulesMu.RLock()
 	defer alertRulesMu.RUnlock()
-	data, err := json.MarshalIndent(alertRules, "", "  ")
-	if err != nil {
-		log.Printf("saveAlertRules marshal: %v", err)
-		return
+	d := &store.AlertRuleDAO{}
+	rows := make([]store.AlertRule, 0, len(alertRules))
+	for _, r := range alertRules {
+		rows = append(rows, store.AlertRule{
+			ID: r.ID, Name: r.Name, Service: r.Service, Type: r.Type, Metric: r.Metric,
+			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
+			Severity: r.Severity, Enabled: r.Enabled,
+		})
 	}
-	if err := os.WriteFile(alertRulesPath, data, 0600); err != nil {
-		log.Printf("saveAlertRules write: %v", err)
+	if err := d.ReplaceAll(rows); err != nil {
+		log.Printf("saveAlertRules(mysql): %v", err)
 	}
 }
 
 func loadAlertEvents() {
-	data, err := os.ReadFile(alertEventsPath)
+	alertEventsMu.Lock()
+	defer alertEventsMu.Unlock()
+	d := &store.AlertEventDAO{}
+	rows, err := d.LoadAll()
 	if err != nil {
+		log.Printf("loadAlertEvents(mysql): %v", err)
 		alertEvents = []AlertEvent{}
 		return
 	}
-	if err := json.Unmarshal(data, &alertEvents); err != nil {
-		log.Printf("loadAlertEvents: %v", err)
-		alertEvents = []AlertEvent{}
+	alertEvents = make([]AlertEvent, 0, len(rows))
+	for _, e := range rows {
+		alertEvents = append(alertEvents, AlertEvent{
+			ID: e.ID, RuleID: e.RuleID, RuleName: e.RuleName, Service: e.Service,
+			Severity: e.Severity, Message: e.Message, Value: e.Value, Threshold: e.Threshold,
+			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
+			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
+			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
+		})
 	}
 }
 
 func saveAlertEvents() {
 	alertEventsMu.RLock()
 	defer alertEventsMu.RUnlock()
-	data, err := json.MarshalIndent(alertEvents, "", "  ")
-	if err != nil {
-		log.Printf("saveAlertEvents marshal: %v", err)
-		return
+	d := &store.AlertEventDAO{}
+	rows := make([]store.AlertEvent, 0, len(alertEvents))
+	for _, e := range alertEvents {
+		rows = append(rows, store.AlertEvent{
+			ID: e.ID, RuleID: e.RuleID, RuleName: e.RuleName, Service: e.Service,
+			Severity: e.Severity, Message: e.Message, Value: e.Value, Threshold: e.Threshold,
+			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
+			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
+			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
+		})
 	}
-	if err := os.WriteFile(alertEventsPath, data, 0600); err != nil {
-		log.Printf("saveAlertEvents write: %v", err)
+	if err := d.ReplaceAll(rows); err != nil {
+		log.Printf("saveAlertEvents(mysql): %v", err)
 	}
 }
 
@@ -206,26 +224,37 @@ func transitionStatus(ev *AlertEvent, to, by string) bool {
 }
 
 func loadAlertSilences() {
-	data, err := os.ReadFile(alertSilencesPath)
+	alertSilencesMu.Lock()
+	defer alertSilencesMu.Unlock()
+	d := &store.AlertSilenceDAO{}
+	rows, err := d.LoadAll()
 	if err != nil {
+		log.Printf("loadAlertSilences(mysql): %v", err)
 		alertSilences = []AlertSilence{}
 		return
 	}
-	if err := json.Unmarshal(data, &alertSilences); err != nil {
-		alertSilences = []AlertSilence{}
+	alertSilences = make([]AlertSilence, 0, len(rows))
+	for _, s := range rows {
+		alertSilences = append(alertSilences, AlertSilence{
+			ID: s.ID, Service: s.Service, RuleID: s.RuleID, Comment: s.Comment,
+			CreatedAt: s.CreatedAt, ExpiresAt: s.ExpiresAt,
+		})
 	}
 }
 
 func saveAlertSilences() {
 	alertSilencesMu.RLock()
 	defer alertSilencesMu.RUnlock()
-	data, err := json.MarshalIndent(alertSilences, "", "  ")
-	if err != nil {
-		log.Printf("saveAlertSilences marshal: %v", err)
-		return
+	d := &store.AlertSilenceDAO{}
+	rows := make([]store.AlertSilence, 0, len(alertSilences))
+	for _, s := range alertSilences {
+		rows = append(rows, store.AlertSilence{
+			ID: s.ID, Service: s.Service, RuleID: s.RuleID, Comment: s.Comment,
+			CreatedAt: s.CreatedAt, ExpiresAt: s.ExpiresAt,
+		})
 	}
-	if err := os.WriteFile(alertSilencesPath, data, 0600); err != nil {
-		log.Printf("saveAlertSilences write: %v", err)
+	if err := d.ReplaceAll(rows); err != nil {
+		log.Printf("saveAlertSilences(mysql): %v", err)
 	}
 }
 

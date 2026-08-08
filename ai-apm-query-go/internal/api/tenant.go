@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"sync"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 // Tenant represents a platform tenant
@@ -17,46 +18,40 @@ type Tenant struct {
 }
 
 var (
-	tenants     = make(map[string]*Tenant)
-	tenantsMu   sync.RWMutex
-	tenantsFile = "/tmp/observability-tenants.json"
+	tenants   = make(map[string]*Tenant)
+	tenantsMu sync.RWMutex
 )
 
 func init() {
-	if f := os.Getenv("TENANTS_FILE"); f != "" {
-		tenantsFile = f
-	}
 	loadTenants()
 }
 
 func loadTenants() {
-	data, err := os.ReadFile(tenantsFile)
-	if err != nil {
+	tenantsMu.Lock()
+	defer tenantsMu.Unlock()
+	d := &store.TenantDAO{}
+	rows, err := d.LoadAll()
+	if err != nil || len(rows) == 0 {
 		// default tenant
-		tenants["default"] = &Tenant{ID: "default", Name: "默认租户", QuotaAI: 0, Enabled: true}
+		tenants = map[string]*Tenant{"default": {ID: "default", Name: "默认租户", QuotaAI: 0, Enabled: true}}
 		return
 	}
-	var list []Tenant
-	if json.Unmarshal(data, &list) == nil {
-		for i := range list {
-			tenants[list[i].ID] = &list[i]
-		}
-	}
-	if len(tenants) == 0 {
-		tenants["default"] = &Tenant{ID: "default", Name: "默认租户", QuotaAI: 0, Enabled: true}
+	tenants = make(map[string]*Tenant, len(rows))
+	for i := range rows {
+		t := rows[i]
+		tenants[t.ID] = &Tenant{ID: t.ID, Name: t.Name, QuotaAI: t.QuotaAI, Enabled: t.Enabled}
 	}
 }
 
 func saveTenants() error {
-	list := make([]Tenant, 0, len(tenants))
+	tenantsMu.RLock()
+	defer tenantsMu.RUnlock()
+	d := &store.TenantDAO{}
+	list := make([]store.Tenant, 0, len(tenants))
 	for _, t := range tenants {
-		list = append(list, *t)
+		list = append(list, store.Tenant{ID: t.ID, Name: t.Name, QuotaAI: t.QuotaAI, Enabled: t.Enabled})
 	}
-	data, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(tenantsFile, data, 0600)
+	return d.ReplaceAll(list)
 }
 
 // ListTenants handles GET /api/v1/tenants
