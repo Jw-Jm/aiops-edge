@@ -10,7 +10,7 @@ import {
   ApartmentOutlined, DatabaseOutlined, NodeIndexOutlined, CloudServerOutlined,
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
   DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
-  BookOutlined, ThunderboltFilled,
+  BookOutlined, ThunderboltFilled, TeamOutlined,
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
 import ChatThread from './pages/AIChat/ChatThread'
@@ -37,6 +37,9 @@ import Audit from './pages/Audit'
 import Knowledge from './pages/Knowledge'
 import Rules from './pages/Rules'
 import NL2SQL from './pages/NL2SQL'
+import Users from './pages/Users'
+import Shell from './pages/Shell'
+import Reports from './pages/Reports'
 
 const { Sider, Content, Header } = Layout
 
@@ -90,15 +93,17 @@ const menuGroups = [
     ],
   },
   {
-    title: '集成',
+    title: '运维工具',
     items: [
-      { key: '/deepflow', icon: <CloudServerOutlined />, label: 'DeepFlow' },
+      { key: '/shell', icon: <CloudServerOutlined />, label: 'WebShell' },
+      { key: '/reports', icon: <FileSearchOutlined />, label: '报告中心' },
     ],
   },
   {
     title: '设置',
     items: [
       { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
+      { key: '/users', icon: <TeamOutlined />, label: '用户管理' },
     ],
   },
 ]
@@ -240,6 +245,9 @@ const AppLayout: React.FC = () => {
                 <Route path="/knowledge" element={<Knowledge />} />
                 <Route path="/rules" element={<Rules />} />
                 <Route path="/nl2sql" element={<NL2SQL />} />
+                <Route path="/shell" element={<Shell />} />
+                <Route path="/reports" element={<Reports />} />
+                <Route path="/users" element={<Users />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
             </div>

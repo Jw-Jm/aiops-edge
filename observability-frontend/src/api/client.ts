@@ -156,4 +156,18 @@ export const nl2sqlTranslate = (data: { question: string }) => api.post('/ai/nl2
 export const nl2sqlExecute = (id: string) => api.post(`/ai/nl2sql/${id}/execute`)
 export const nl2sqlGet = (id: string) => api.get(`/ai/nl2sql/${id}`)
 
+// ===== 用户管理 =====
+export interface UserItem {
+  id: number; username: string; display_name: string; role: string; email: string; status: number; created_at: string
+}
+export const listUsers = (params?: Record<string, unknown>) => api.get('/users', { params })
+export const createUser = (data: Record<string, unknown>) => api.post('/users', data)
+export const updateUser = (id: number, data: Record<string, unknown>) => api.put(`/users/${id}`, data)
+export const deleteUser = (id: number) => api.delete(`/users/${id}`)
+export const getMe = () => api.get('/me')
+
+// ===== 报告中心 =====
+export const listReports = (params?: Record<string, unknown>) => api.get('/ops/reports/history', { params })
+export const reportTrend = (params?: Record<string, unknown>) => api.get('/ops/reports/trend', { params })
+
 export default api
