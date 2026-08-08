@@ -44,6 +44,17 @@ spec:
               value: {{ .Values.aiOrchestrator.clickhousePort | quote }}
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
+            - name: MYSQL_HOST
+              value: {{ .Values.mysql.serviceName | default "mysql" | quote }}
+            - name: MYSQL_PORT
+              value: {{ .Values.mysql.port | default 3306 | quote }}
+            - name: MYSQL_USER
+              value: {{ .Values.mysql.user | default "root" | quote }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+            - name: MYSQL_DB
+              value: {{ .Values.mysql.database | default "aiops" | quote }}
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 20
