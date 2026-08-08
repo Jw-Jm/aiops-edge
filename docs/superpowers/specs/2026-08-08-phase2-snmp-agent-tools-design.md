@@ -1,21 +1,28 @@
-# 二期强化：SNMP 监控 + Agent 运维工具全量
+# 二期强化：SNMP（网络设备）+ IPMI（服务器硬件）+ Agent 运维工具全量
 
 **日期**: 2026-08-08
-**范围**: ai-orchestrator（Python, SNMP 采集 + agent 工具扩展）+ observability-frontend（React）+ MySQL
+**范围**: ai-orchestrator（Python, SNMP + IPMI 采集 + agent 工具扩展）+ observability-frontend（React）+ MySQL
 
 ## 1. 范围与决策（已确认）
 
 | 块 | 决策 |
 |----|------|
-| SNMP 采集器 | **Python pysnmp**，ai-orchestrator 内实现，定时轮询 |
-| SNMP 存储 | **MySQL**（设备/接口/指标，与 P1b 一致）|
-| SNMP 验证 | **可降级**（无设备不阻塞）+ **snmpsim 模拟器**测全链路 |
-| SNMP 凭据 | 不落库（参照 ongrid），存凭据名，实际密码从配置读取 |
-| Agent 工具 | 补齐**工具元数据模型**（Class 三级/Scope/WhenToUse/Origin）+ **网络设备查询工具** |
+| SNMP 采集器 | **Python pysnmp**，网络设备，定时轮询 |
+| IPMI 采集器 | **Python pyghmi**，服务器 BMC 硬件（温度/风扇/电压/电源），定时轮询 |
+| SNMP 存储 | **MySQL**（snmp_devices / network_interfaces）|
+| IPMI 存储 | **MySQL**（ipmi_devices / ipmi_sensors）|
+| 验证 | **可降级**（无设备不阻塞）+ **snmpsim 模拟器**（SNMP）+ **mock 单测**（IPMI）|
+| 凭据 | 不落库（SNMP community / IPMI BMC 账号），从配置读取 |
+| Agent 工具 | 补齐**工具元数据模型**（Class 三级/Scope/WhenToUse/Origin）+ **网络设备 + 硬件健康查询工具** |
 | IM 通道 | 跳过（用户已确认）|
+
+**两种协议定位**：
+- **SNMP** → 网络设备（交换机/路由器/防火墙）：接口流量、设备状态
+- **IPMI** → 服务器硬件（物理机 BMC）：温度、风扇、电压、电源、硬件健康
 
 **借鉴 ongrid 概念（不复制代码）**：
 - SNMP：只读 probe、OID 表、设备/接口数据模型、凭据不落库
+- IPMI：BMC 传感器轮询、凭据不落库
 - 工具：Class(safe/mutating/dangerous) 三级、Scope(host/manager)、WhenToUse、Origin
 
 ---
@@ -112,9 +119,76 @@ class SNMPCollector:
 
 ---
 
-## 3. Agent 运维工具全量
+## 3. IPMI 服务器硬件监控
 
-### 3.1 工具元数据模型扩展（参照 ongrid）
+### 3.1 数据模型（MySQL 新表）
+
+```sql
+-- IPMI BMC 设备（服务器硬件）
+CREATE TABLE IF NOT EXISTS ipmi_devices (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  hostname VARCHAR(128) NOT NULL,
+  bmc_ip VARCHAR(64) NOT NULL UNIQUE,       -- BMC 独立管理口 IP
+  username VARCHAR(64) DEFAULT '',           -- BMC 账号（密码从配置读取，不落库）
+  vendor VARCHAR(64) DEFAULT '',             -- 厂商（Dell/HP/Supermicro）
+  model VARCHAR(64) DEFAULT '',
+  status ENUM('active','disabled') DEFAULT 'active',
+  last_collect_at DATETIME NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- IPMI 传感器（温度/风扇/电压/电源）
+CREATE TABLE IF NOT EXISTS ipmi_sensors (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  device_id BIGINT NOT NULL,
+  sensor_name VARCHAR(128),
+  sensor_type VARCHAR(64),                   -- Temperature/Fan/Voltage/Power/Health
+  reading VARCHAR(64),                       -- 读数（含单位，如 "42 C"）
+  status VARCHAR(32),                        -- ok / warning / critical
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_device (device_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+### 3.2 采集器（ai-orchestrator, Python, pyghmi）
+
+`ipmi_collector.py`：
+- 用 `pyghmi.ipmi.command.Command` 连接 BMC（`bmc_ip`, `username`, `password`）
+- 采集 `get_sensor_reading()` 获取温度/风扇/电压/电源传感器
+- 定时轮询（复用 SNMP 采集器的调度框架，`IPMI_COLLECT_INTERVAL` 默认 120s）
+- **可降级**：无 BMC 设备或 pyghmi 不可用时跳过，不阻塞服务
+- 写库到 `ipmi_sensors`
+
+### 3.3 API 路由（ai-orchestrator/main.py）
+
+| 端点 | 方法 | 逻辑 |
+|------|------|------|
+| `/api/v1/ipmi/devices` | GET | BMC 设备列表 |
+| `/api/v1/ipmi/devices` | POST | 添加设备（账号名，密码从配置读）|
+| `/api/v1/ipmi/devices/{id}` | PUT/DELETE | 编辑/删除 |
+| `/api/v1/ipmi/devices/{id}/sensors` | GET | 设备传感器（温度/风扇/电压/电源）|
+| `/api/v1/ipmi/devices/{id}/collect` | POST | 手动立即采集 |
+
+### 3.4 前端（React）
+
+`/ipmi` 页：
+- BMC 设备列表（BMC IP/厂商/状态/最后采集）
+- 添加设备表单
+- 设备详情 → 传感器表格（温度/风扇/电压按类型分组，状态 Tag）
+
+### 3.5 验证
+
+- **可降级**：无 BMC 设备不阻塞
+- **mock 单测**：mock `pyghmi` 返回假传感器读数，验证采集→落库→API
+- 真实 BMC 由用户在环境配置后生效
+
+---
+
+## 4. Agent 运维工具全量
+
+### 4.1 工具元数据模型扩展（参照 ongrid）
 
 现有 `ToolDef`（name/desc/args/readonly）扩展为：
 
@@ -136,32 +210,33 @@ class ToolDef:
 - `mutating`：受控变更（需审批，等同现有 readonly=False 的 write 白名单）
 - `dangerous`：危险操作（禁止，除非明确审批）
 
-### 3.2 新增网络设备查询工具
+### 4.2 新增网络设备 + 硬件健康查询工具
 
 在 `flow_engine/nodes_aiops.py` 或工具注册处新增：
-- `snmp_query`：查设备接口/流量
+- `snmp_query`：查网络设备接口/流量
 - `snmp_health`：查设备 CPU/内存负载（若有）
+- `ipmi_health`：查服务器硬件健康（温度/风扇/电压/电源）
 
-### 3.3 工具列表 + 权限映射
+### 4.3 工具列表 + 权限映射
 
 工具注册时带 `cls`，前端 Skills 页展示 Class 标签，审批流按 Class 拦截。
 
 ---
 
-## 4. 依赖
+## 5. 依赖
 
-- ai-orchestrator：`pysnmp`、`snmpsim`（仅测试）
+- ai-orchestrator：`pysnmp`、`pyghmi`、`snmpsim`（仅测试）
 - 前端：无新增（复用 AntD/echarts）
-- MySQL：2 张新表（snmp_devices / network_interfaces）
+- MySQL：4 张新表（snmp_devices / network_interfaces / ipmi_devices / ipmi_sensors）
 
 ---
 
 ## 5. 测试
 
-- **Python**：`test_snmp_collector.py`（mock OID 响应 + 降级）、`test_tool_metadata.py`（工具 Class/Scope 元数据）
-- **集成**：snmpsim 模拟设备 → 采集器轮询 → 数据落库 → API 返回
+- **Python**：`test_snmp_collector.py`（mock OID 响应 + 降级）、`test_ipmi_collector.py`（mock pyghmi 传感器 + 降级）、`test_tool_metadata.py`（工具 Class/Scope 元数据）
+- **集成**：snmpsim 模拟网络设备 → SNMP 采集器轮询 → 数据落库 → API 返回；IPMI mock 采集 → 落库 → API
 - **前端**：`tsc --noEmit` + `npm run build`
-- **冒烟**：添加 SNMP 设备 → 手动采集 → 接口列表
+- **冒烟**：添加 SNMP/IPMI 设备 → 手动采集 → 接口/传感器列表
 
 ---
 
@@ -170,7 +245,8 @@ class ToolDef:
 | 风险 | 概率 | 影响 | 缓解 |
 |------|------|------|------|
 | 无真实 SNMP 设备 | 高 | 中 | snmpsim 模拟 + 可降级 |
-| pysnmp 版本兼容 | 中 | 中 | 固定版本 + mock 单测 |
+| 无真实 BMC/IPMI 设备 | 高 | 中 | mock pyghmi 单测 + 可降级 |
+| pysnmp/pyghmi 版本兼容 | 中 | 中 | 固定版本 + mock 单测 |
 | 凭据安全 | 低 | 高 | 不落库，配置读取 |
 | 工具 Class 改造破坏现有 | 中 | 中 | 保留 readonly 兼容，新增 cls 字段 |
 
@@ -179,7 +255,8 @@ class ToolDef:
 ## 7. 自审
 
 - [x] 无 TBD/TODO
-- [x] 范围聚焦：SNMP 完整 + agent 工具扩展（IM 跳过）
+- [x] 范围聚焦：SNMP + IPMI + agent 工具扩展（IM 跳过）
+- [x] 两类采集器互补：SNMP 管网络设备，IPMI 管服务器硬件
 - [x] 借鉴 ongrid 概念（OID 表/工具 Class/Scope），不复制代码
 - [x] 降级安全：无设备不阻塞
 - [x] 凭据不落库
