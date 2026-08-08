@@ -1085,6 +1085,25 @@ TTL created_at + INTERVAL 90 DAY DELETE
 """
 
 
+def _ch_query_json(sql: str) -> list:
+    """执行 SELECT 并以 JSONEachRow 返回 dict 列表（供 NL→SQL 结果展示）。"""
+    import urllib.parse
+    import urllib.request
+    import json as _json
+    url = (f"http://{_CH_HOST}:{_CH_PORT}/?query="
+           + urllib.parse.quote(sql) + "&default_format=JSONEachRow")
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=20) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    rows = []
+    for line in raw.splitlines():
+        if line.strip():
+            try:
+                rows.append(_json.loads(line))
+            except Exception:
+                pass
+    return rows
+
+
 def _ch_query(sql: str, data: bytes = None) -> str:
     """通过 ClickHouse HTTP 8123 执行 SQL。
 
@@ -1324,6 +1343,75 @@ async def toggle_rule(rule_key: str):
     from db_agents import RuleStore
     RuleStore().toggle(rule_key)
     return {"ok": True}
+
+
+# ═══════════════════════════════════════════════════════════════
+#  NL→ClickHouse SQL（生成-确认-执行 + 安全护栏）
+# ═══════════════════════════════════════════════════════════════
+
+from nl2sql import validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore, new_item
+
+_nl2sql_store = Nl2SqlStore()
+_NL2SQL_SYSTEM = (
+    "你是 ClickHouse SQL 专家。根据用户的中文查询意图，生成一条查询 AIOps 可观测性数据的 SQL。"
+    "只能 SELECT，禁止 INSERT/UPDATE/DELETE/DROP/ALTER/CREATE。"
+    "可用表：observability.trace_spans(span_id,parent_span_id,trace_id,service_name,start_time,"
+    "duration_ns,is_error,response_status,peer_service), "
+    "observability.service_topology(source_service,destination_service,calls,error_rate,p95_latency_ns,window), "
+    "observability.log_records(service_name,log_time,level,message,digest), "
+    "observability.inspection_reports(task_id,service_name,report_type,verdict,risk_score,summary,created_at). "
+    "只返回 SQL 本体，不要任何解释、注释或 markdown 代码块。"
+)
+
+
+@app.post("/api/v1/ai/nl2sql/translate")
+async def nl2sql_translate(body: dict = None):
+    b = body or {}
+    question = (b.get("question") or "").strip()
+    if not question:
+        raise HTTPException(400, "question is required")
+    try:
+        cfg = _get_brain().llm_config
+        sql_raw = _llm(cfg, _NL2SQL_SYSTEM, question, role="ClickHouse SQL 专家")
+    except Exception:
+        sql_raw = ""
+    sql_raw = extract_sql_from_markdown(sql_raw or "")
+    if not validate_sql(sql_raw):
+        return {"error": "生成的 SQL 未通过安全校验，请重试或简化查询",
+                "sql": sql_raw, "id": None, "pending": False}
+    sql = normalize_sql(sql_raw)
+    item = new_item(sql, question)
+    sid = _nl2sql_store.save(item)
+    return {"id": sid, "sql": sql, "explanation": question, "pending": True}
+
+
+@app.post("/api/v1/ai/nl2sql/{sid}/execute")
+async def nl2sql_execute(sid: str):
+    item = _nl2sql_store.get(sid)
+    if not item:
+        raise HTTPException(404, "not found")
+    if item.get("status") == "executed":
+        raise HTTPException(409, "already executed")
+    try:
+        rows = _ch_query_json(item["sql"])
+    except Exception as e:
+        return {"error": str(e), "columns": [], "rows": [], "count": 0}
+    columns = list(rows[0].keys()) if rows else []
+    try:
+        _audit_log(item.get("id", ""), "nl2sql", "user", "", item["sql"],
+                   "ok" if rows is not None else "fail", {"rows": len(rows)})
+    except Exception:
+        pass
+    _nl2sql_store.mark_executed(sid)
+    return {"columns": columns, "rows": rows, "count": len(rows)}
+
+
+@app.get("/api/v1/ai/nl2sql/{sid}")
+async def nl2sql_get(sid: str):
+    item = _nl2sql_store.get(sid)
+    if not item:
+        raise HTTPException(404, "not found")
+    return item
 
 
 @app.get("/api/v1/ops/export/chat/{sid}")
