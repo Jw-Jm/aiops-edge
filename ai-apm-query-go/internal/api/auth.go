@@ -21,20 +21,79 @@ var jwtSecret = func() []byte {
 	return []byte("observability-platform-secret")
 }()
 
-// generateJWT 生成标准 HS256 JWT，携带 sub(username) 与 role。
-func generateJWT(username, role string) string {
+// Scope 数据范围（三维：services/clusters/devices）。空=全量（admin）。
+type Scope struct {
+	Services []string `json:"services"`
+	Clusters []string `json:"clusters"`
+	Devices  []string `json:"devices"`
+}
+
+// IsFull 空 scope（或 nil）= 不限制 = 全量。
+func (s *Scope) IsFull() bool {
+	return s == nil || (len(s.Services) == 0 && len(s.Clusters) == 0 && len(s.Devices) == 0)
+}
+
+func (s *Scope) ContainsService(name string) bool {
+	if s == nil || len(s.Services) == 0 {
+		return true // 该维度未限定 => 全通过
+	}
+	for _, x := range s.Services {
+		if x == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scope) ContainsCluster(name string) bool {
+	if s == nil || len(s.Clusters) == 0 {
+		return true // 该维度未限定 => 全通过
+	}
+	for _, x := range s.Clusters {
+		if x == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scope) ContainsDevice(name string) bool {
+	if s == nil || len(s.Devices) == 0 {
+		return true // 该维度未限定 => 全通过
+	}
+	for _, x := range s.Devices {
+		if x == name {
+			return true
+		}
+	}
+	return false
+}
+
+// parseScope 解析 scope JSON 字符串。
+func parseScope(raw string) *Scope {
+	sc := &Scope{}
+	if raw == "" {
+		return sc
+	}
+	_ = json.Unmarshal([]byte(raw), sc)
+	return sc
+}
+
+// generateJWT 生成标准 HS256 JWT，携带 sub(username)、role 与 scope。
+func generateJWT(username, role, scope string) string {
 	claims := jwt.MapClaims{
-		"sub":  username,
-		"role": role,
-		"exp":  time.Now().Add(24 * time.Hour).Unix(),
+		"sub":   username,
+		"role":  role,
+		"scope": scope,
+		"exp":   time.Now().Add(24 * time.Hour).Unix(),
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := t.SignedString(jwtSecret)
 	return signed
 }
 
-// validateJWT 校验 JWT，返回 username、role 与是否有效。
-func validateJWT(tokenStr string) (string, string, bool) {
+// validateJWT 校验 JWT，返回 username、role、scope 与是否有效。
+func validateJWT(tokenStr string) (string, string, string, bool) {
 	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
@@ -42,15 +101,26 @@ func validateJWT(tokenStr string) (string, string, bool) {
 		return jwtSecret, nil
 	})
 	if err != nil || !t.Valid {
-		return "", "", false
+		return "", "", "", false
 	}
 	claims, ok := t.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", "", false
+		return "", "", "", false
 	}
 	username, _ := claims["sub"].(string)
 	role, _ := claims["role"].(string)
-	return username, role, true
+	scope, _ := claims["scope"].(string)
+	return username, role, scope, true
+}
+
+// currentScope 从请求提取当前用户的数据范围。
+func currentScope(r *http.Request) *Scope {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	_, _, scope, ok := validateJWT(token)
+	if !ok {
+		return &Scope{}
+	}
+	return parseScope(scope)
 }
 
 // Login 登录：查 MySQL users 表 + bcrypt 校验；MySQL 不可达降级 admin/admin123。
@@ -70,9 +140,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		u, err := (&store.UserDAO{}).GetByUsername(creds.Username)
 		if err == nil && u != nil && u.Status == 1 {
 			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(creds.Password)) == nil {
-				token := generateJWT(u.Username, u.Role)
+				token := generateJWT(u.Username, u.Role, u.Scope)
 				respondJSON(w, 200, map[string]interface{}{
-					"token": token, "username": u.Username, "role": u.Role, "display_name": u.DisplayName,
+					"token": token, "username": u.Username, "role": u.Role, "display_name": u.DisplayName, "scope": u.Scope,
 				})
 				return
 			}
@@ -82,7 +152,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// 2. MySQL 不可达降级：内置 admin/admin123（仅数据库故障路径）
 	if store.GetDB() == nil && creds.Username == "admin" && creds.Password == "admin123" {
 		respondJSON(w, 200, map[string]interface{}{
-			"token": generateJWT("admin", "admin"), "username": "admin", "role": "admin", "degraded": true,
+			"token": generateJWT("admin", "admin", ""), "username": "admin", "role": "admin", "degraded": true,
 		})
 		return
 	}
@@ -99,7 +169,7 @@ func isInternalRequest(r *http.Request) bool {
 func (h *Handler) RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		_, gotRole, ok := validateJWT(token)
+		_, gotRole, _, ok := validateJWT(token)
 		if !ok {
 			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 			return
@@ -134,7 +204,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 		// 其余所有请求必须带合法 JWT
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if _, _, ok := validateJWT(token); !ok {
+		if _, _, _, ok := validateJWT(token); !ok {
 			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 			return
 		}

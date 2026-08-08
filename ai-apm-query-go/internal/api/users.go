@@ -83,6 +83,7 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		DisplayName, Role, Email string
 		Status                   int
 		Password                 string
+		Scope                    string
 	}
 	json.Unmarshal(body, &req)
 	status := req.Status
@@ -97,11 +98,29 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 			newHash = &s
 		}
 	}
-	if err := (&store.UserDAO{}).Update(id, req.DisplayName, req.Role, req.Email, status, newHash); err != nil {
+	d := &store.UserDAO{}
+	if err := d.Update(id, req.DisplayName, req.Role, req.Email, status, newHash); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	// 可选：更新 scope（数据范围）
+	if bodyScope := getBodyField(body, "scope"); bodyScope != "" {
+		_ = d.UpdateScope(id, req.Scope)
+	}
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
+}
+
+// getBodyField 从原始 body 提取指定字段（用于区分未传与空值）。
+func getBodyField(body []byte, field string) string {
+	var m map[string]interface{}
+	if json.Unmarshal(body, &m) != nil {
+		return ""
+	}
+	v, ok := m[field].(string)
+	if !ok {
+		return ""
+	}
+	return v
 }
 
 // UserDelete DELETE /api/v1/users/{id} — 删除用户（admin）。
@@ -155,7 +174,7 @@ func (h *Handler) UserRouter(w http.ResponseWriter, r *http.Request) {
 // Me GET /api/v1/me — 当前登录用户信息。
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, role, ok := validateJWT(token)
+	username, role, scopeClaim, ok := validateJWT(token)
 	if !ok {
 		respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 		return
@@ -163,10 +182,10 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	u, _ := (&store.UserDAO{}).GetByUsername(username)
 	if u != nil {
 		respondJSON(w, 200, map[string]interface{}{
-			"username": u.Username, "role": u.Role, "display_name": u.DisplayName, "email": u.Email,
+			"username": u.Username, "role": u.Role, "display_name": u.DisplayName, "email": u.Email, "scope": u.Scope,
 		})
 		return
 	}
 	// 降级路径或用户不存在时返回 token 内信息
-	respondJSON(w, 200, map[string]interface{}{"username": username, "role": role})
+	respondJSON(w, 200, map[string]interface{}{"username": username, "role": role, "scope": scopeClaim})
 }

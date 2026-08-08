@@ -58,6 +58,18 @@ func (h *Handler) deviceList(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 200, map[string]interface{}{"devices": []store.Device{}, "total": 0, "error": err.Error()})
 		return
 	}
+	// scope 过滤：限定设备范围时，只返回授权设备（按 hostname）
+	sc := currentScope(r)
+	if !sc.IsFull() {
+		filtered := make([]store.Device, 0, len(items))
+		for _, d := range items {
+			if sc.ContainsDevice(d.Hostname) {
+				filtered = append(filtered, d)
+			}
+		}
+		items = filtered
+		total = len(filtered)
+	}
 	respondJSON(w, 200, map[string]interface{}{"devices": items, "total": total})
 }
 

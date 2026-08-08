@@ -60,6 +60,18 @@ func (h *Handler) catalogList(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 200, map[string]interface{}{"services": []store.ServiceCatalog{}, "total": 0, "error": err.Error()})
 		return
 	}
+	// scope 过滤：user 角色限定服务范围时，只返回授权服务
+	sc := currentScope(r)
+	if !sc.IsFull() {
+		filtered := make([]store.ServiceCatalog, 0, len(items))
+		for _, it := range items {
+			if sc.ContainsService(it.ServiceName) {
+				filtered = append(filtered, it)
+			}
+		}
+		items = filtered
+		total = len(filtered)
+	}
 	respondJSON(w, 200, map[string]interface{}{"services": items, "total": total})
 }
 

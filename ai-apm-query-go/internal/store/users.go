@@ -15,6 +15,7 @@ type User struct {
 	Role         string    `json:"role"`
 	Email        string    `json:"email"`
 	Status       int       `json:"status"`
+	Scope        string    `json:"scope"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -36,7 +37,7 @@ func (d *UserDAO) List(page, size int) ([]User, int, error) {
 		return nil, 0, err
 	}
 	rows, err := conn.Query(
-		"SELECT id, username, password_hash, display_name, role, email, status, created_at FROM users ORDER BY id LIMIT ? OFFSET ?",
+		"SELECT id, username, password_hash, display_name, role, email, status, scope, created_at FROM users ORDER BY id LIMIT ? OFFSET ?",
 		size, offset)
 	if err != nil {
 		return nil, 0, err
@@ -46,7 +47,7 @@ func (d *UserDAO) List(page, size int) ([]User, int, error) {
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-			&u.Role, &u.Email, &u.Status, &u.CreatedAt); err != nil {
+			&u.Role, &u.Email, &u.Status, &u.Scope, &u.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		users = append(users, u)
@@ -61,11 +62,11 @@ func (d *UserDAO) GetByUsername(username string) (*User, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		"SELECT id, username, password_hash, display_name, role, email, status, created_at FROM users WHERE username = ?",
+		"SELECT id, username, password_hash, display_name, role, email, status, scope, created_at FROM users WHERE username = ?",
 		username)
 	var u User
 	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-		&u.Role, &u.Email, &u.Status, &u.CreatedAt); err != nil {
+		&u.Role, &u.Email, &u.Status, &u.Scope, &u.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -81,11 +82,11 @@ func (d *UserDAO) GetByID(id int64) (*User, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		"SELECT id, username, password_hash, display_name, role, email, status, created_at FROM users WHERE id = ?",
+		"SELECT id, username, password_hash, display_name, role, email, status, scope, created_at FROM users WHERE id = ?",
 		id)
 	var u User
 	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-		&u.Role, &u.Email, &u.Status, &u.CreatedAt); err != nil {
+		&u.Role, &u.Email, &u.Status, &u.Scope, &u.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -125,6 +126,16 @@ func (d *UserDAO) Update(id int64, displayName, role, email string, status int, 
 			"UPDATE users SET display_name=?, role=?, email=?, status=? WHERE id=?",
 			displayName, role, email, status, id)
 	}
+	return err
+}
+
+// UpdateScope 仅更新用户的 scope（数据范围）。
+func (d *UserDAO) UpdateScope(id int64, scope string) error {
+	conn := GetDB()
+	if conn == nil {
+		return errors.New("mysql unavailable")
+	}
+	_, err := conn.Exec("UPDATE users SET scope=? WHERE id=?", scope, id)
 	return err
 }
 

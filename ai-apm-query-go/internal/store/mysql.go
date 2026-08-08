@@ -43,6 +43,21 @@ func GetDB() *sql.DB {
 	return db
 }
 
+// hasColumn 检查表是否存在指定列（幂等迁移辅助）。
+func hasColumn(conn *sql.DB, table, column string) bool {
+	if conn == nil {
+		return false
+	}
+	rows, err := conn.Query(
+		"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?",
+		table, column)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
+}
+
 // EnsureSchema 应用 users 表迁移并种子 admin 用户（幂等）。MySQL 不可达时静默。
 func EnsureSchema() {
 	conn := GetDB()
@@ -58,9 +73,16 @@ CREATE TABLE IF NOT EXISTS users (
   role ENUM('admin','user') NOT NULL DEFAULT 'user',
   email VARCHAR(128) DEFAULT '',
   status TINYINT DEFAULT 1,
+  scope VARCHAR(512) DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// 兼容已存在的 users 表：补 scope 列（幂等）
+	hasScope := hasColumn(conn, "users", "scope")
+	if !hasScope {
+		_, _ = conn.Exec("ALTER TABLE users ADD COLUMN scope VARCHAR(512) DEFAULT ''")
+	}
 
 	// service_catalog 服务目录
 	_, _ = conn.Exec(`
@@ -105,9 +127,15 @@ CREATE TABLE IF NOT EXISTS clusters (
   node_count INT DEFAULT 0,
   status ENUM('active','degraded','down') DEFAULT 'active',
   api_server VARCHAR(255) DEFAULT '',
+  kubeconfig TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// 兼容已存在的 clusters 表：补 kubeconfig 列（幂等）
+	if !hasColumn(conn, "clusters", "kubeconfig") {
+		_, _ = conn.Exec("ALTER TABLE clusters ADD COLUMN kubeconfig TEXT")
+	}
 
 	// topology_nodes 拓扑顶点（typed property graph，对齐 ongrid）
 	_, _ = conn.Exec(`

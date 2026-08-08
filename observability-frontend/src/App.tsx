@@ -11,6 +11,7 @@ import {
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
   DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
   BookOutlined, ThunderboltFilled, TeamOutlined, ClusterOutlined, DesktopOutlined, HddOutlined,
+  ApiOutlined, ControlOutlined,
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
 import ChatThread from './pages/AIChat/ChatThread'
@@ -46,6 +47,8 @@ import Devices from './pages/Devices'
 import Clusters from './pages/Clusters'
 import Snmp from './pages/SNMP'
 import Hardware from './pages/Hardware'
+import Mcp from './pages/Mcp'
+import Admin from './pages/Admin'
 
 const { Sider, Content, Header } = Layout
 
@@ -84,6 +87,13 @@ const menuGroups = [
       { key: '/approvals', icon: <SafetyCertificateOutlined />, label: '审批中心' },
       { key: '/audit', icon: <AuditOutlined />, label: '审计日志' },
       { key: '/nl2sql', icon: <ThunderboltFilled />, label: 'SQL 查询' },
+      { key: '/mcp', icon: <ApiOutlined />, label: 'MCP 工具' },
+    ],
+  },
+  {
+    title: '管理',
+    items: [
+      { key: '/admin', icon: <ControlOutlined />, label: '管理门户' },
     ],
   },
   {
@@ -271,6 +281,8 @@ const AppLayout: React.FC = () => {
                 <Route path="/clusters" element={<Clusters />} />
                 <Route path="/snmp" element={<Snmp />} />
                 <Route path="/hardware" element={<Hardware />} />
+                <Route path="/mcp" element={<Mcp />} />
+                <Route path="/admin" element={<Admin />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
             </div>

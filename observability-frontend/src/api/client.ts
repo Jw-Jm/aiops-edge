@@ -175,6 +175,7 @@ export const nl2sqlGet = (id: string) => api.get(`/ai/nl2sql/${id}`)
 // ===== 用户管理 =====
 export interface UserItem {
   id: number; username: string; display_name: string; role: string; email: string; status: number; created_at: string
+  scope?: string
 }
 export const listUsers = (params?: Record<string, unknown>) => api.get('/users', { params })
 export const createUser = (data: Record<string, unknown>) => api.post('/users', data)
@@ -240,5 +241,22 @@ export interface IpmiSensor { node_name: string; sensor_name: string; sensor_typ
 export interface NodeHealthRow { node_name: string; component: string; status: string; updated_at: string }
 export const listIpmiSensors = (params?: Record<string, unknown>) => api.get('/ipmi/sensors', { params })
 export const listNodeHealth = (params?: Record<string, unknown>) => api.get('/node/health', { params })
+
+// ===== MCP 工具目录 =====
+export const getMcpTools = () => api.get('/mcp/tools')
+export const callMcpTool = (name: string, args: Record<string, any>) => api.post('/mcp/call', { name, args })
+
+// ===== Admin: 用户 scope =====
+export interface ScopePayload {
+  services?: string[]
+  clusters?: string[]
+  devices?: string[]
+}
+export const updateUserScope = (id: number, data: Record<string, unknown>) => api.put(`/users/${id}`, data)
+
+// ===== Admin: 集群 kubeconfig 多集群 =====
+export const createCluster = (data: Record<string, unknown>) => api.post('/clusters', data)
+export const getClusterNamespaces = (id: number) => api.get(`/clusters/${id}/namespaces`)
+export const getClusterEvents = (id: number) => api.get(`/clusters/${id}/events`)
 
 export default api
