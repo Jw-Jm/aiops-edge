@@ -10,7 +10,7 @@ import {
   ApartmentOutlined, DatabaseOutlined, NodeIndexOutlined, CloudServerOutlined,
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
   DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
-  BookOutlined,
+  BookOutlined, ThunderboltFilled,
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
 import ChatThread from './pages/AIChat/ChatThread'
@@ -36,6 +36,7 @@ import Approvals from './pages/Approvals'
 import Audit from './pages/Audit'
 import Knowledge from './pages/Knowledge'
 import Rules from './pages/Rules'
+import NL2SQL from './pages/NL2SQL'
 
 const { Sider, Content, Header } = Layout
 
@@ -72,6 +73,7 @@ const menuGroups = [
       { key: '/alerts', icon: <AlertOutlined />, label: '告警中心' },
       { key: '/approvals', icon: <SafetyCertificateOutlined />, label: '审批中心' },
       { key: '/audit', icon: <AuditOutlined />, label: '审计日志' },
+      { key: '/nl2sql', icon: <ThunderboltFilled />, label: 'SQL 查询' },
     ],
   },
   {
@@ -237,6 +239,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/audit" element={<Audit />} />
                 <Route path="/knowledge" element={<Knowledge />} />
                 <Route path="/rules" element={<Rules />} />
+                <Route path="/nl2sql" element={<NL2SQL />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
             </div>

@@ -137,4 +137,23 @@ export const listFlowRuns = (id: string) => api.get(`/ai/flows/${encodeURICompon
 export const getFlowRun = (id: string, runId: string) => api.get(`/ai/flows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`)
 export const resumeFlowRun = (id: string, runId: string, approved: boolean) => api.post(`/ai/flows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/resume`, { approved })
 
+// ===== Dashboard =====
+export interface DashboardStats {
+  services: number; edges: number; total_calls: number; total_errors: number
+  error_rate: number; latency_p95: number
+  top_services: Array<{ service: string; calls: number; errors: number; lat_sum_ns: number; error_rate: number; avg_latency_ms: number }>
+  trend: Array<{ t: string; calls: number; errors: number }>
+  top_errors: Array<{ service: string; errors: number }>
+  alerts: {
+    total: number; critical: number; warning: number; info: number
+    by_service: Array<{ service: string; critical: number; warning: number; info: number; total: number }>
+  }
+}
+export const getDashboardStats = () => api.get<DashboardStats>('/dashboard/stats')
+
+// ===== NL2SQL =====
+export const nl2sqlTranslate = (data: { question: string }) => api.post('/ai/nl2sql/translate', data)
+export const nl2sqlExecute = (id: string) => api.post(`/ai/nl2sql/${id}/execute`)
+export const nl2sqlGet = (id: string) => api.get(`/ai/nl2sql/${id}`)
+
 export default api
