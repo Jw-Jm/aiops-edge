@@ -1519,6 +1519,48 @@ async def collect_snmp_device(dev_id: int):
     return {"ok": True, "interfaces": len(data["interfaces"]), "sys_descr": data["sys_descr"]}
 
 
+# ═══════════════════════════════════════════════════════════════
+#  IPMI（本地 /dev/ipmi0 上报）+ 部件可用性
+# ═══════════════════════════════════════════════════════════════
+
+from ipmi_ingest import IPMIStore
+from node_health import NodeHealthAggregator
+
+
+@app.post("/api/v1/ipmi/ingest")
+async def ipmi_ingest(body: dict = None):
+    """ipmi-exporter 上报节点传感器。可降级。"""
+    b = body or {}
+    node = b.get("node") or b.get("node_name")
+    if not node:
+        raise HTTPException(400, "node required")
+    sensors = b.get("sensors") or []
+    IPMIStore().ingest(node, sensors)
+    return {"ok": True, "count": len(sensors)}
+
+
+@app.get("/api/v1/ipmi/sensors")
+async def list_ipmi_sensors(node: str = "", sensor_type: str = ""):
+    return {"sensors": IPMIStore().query(node=node or None, sensor_type=sensor_type or None)}
+
+
+@app.get("/api/v1/node/health")
+async def list_node_health(node: str = ""):
+    return {"health": NodeHealthAggregator().query(node=node or None)}
+
+
+@app.post("/api/v1/node/health/aggregate")
+async def aggregate_node_health(body: dict = None):
+    """手动触发部件可用性聚合（mock node_exporter+IPMI 数据）。"""
+    b = body or {}
+    node = b.get("node") or b.get("node_name")
+    if not node:
+        raise HTTPException(400, "node required")
+    metrics = b.get("metrics") or {}
+    status = NodeHealthAggregator().aggregate(node, metrics)
+    return {"ok": True, "health": status}
+
+
 # WebShell WebSocket 端点
 app.add_api_websocket_route("/api/v1/shell/ws", shell_ws)
 
