@@ -9,7 +9,8 @@ import {
   RadarChartOutlined, FileSearchOutlined, ToolOutlined,
   ApartmentOutlined, DatabaseOutlined, NodeIndexOutlined, CloudServerOutlined,
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
-  DashboardOutlined, DeploymentUnitOutlined,
+  DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
+  BookOutlined,
 } from '@ant-design/icons'
 import AIChat from './pages/AIChat'
 import ChatThread from './pages/AIChat/ChatThread'
@@ -31,6 +32,10 @@ import Traces from './pages/Traces'
 import TraceDetail from './pages/TraceDetail'
 import Overview from './pages/Overview'
 import Monitor from './pages/Monitor'
+import Approvals from './pages/Approvals'
+import Audit from './pages/Audit'
+import Knowledge from './pages/Knowledge'
+import Rules from './pages/Rules'
 
 const { Sider, Content, Header } = Layout
 
@@ -65,12 +70,21 @@ const menuGroups = [
       { key: '/agents', icon: <RobotOutlined />, label: 'AI 助理' },
       { key: '/workflows', icon: <DeploymentUnitOutlined />, label: '工作流' },
       { key: '/alerts', icon: <AlertOutlined />, label: '告警中心' },
+      { key: '/approvals', icon: <SafetyCertificateOutlined />, label: '审批中心' },
+      { key: '/audit', icon: <AuditOutlined />, label: '审计日志' },
     ],
   },
   {
     title: '任务',
     items: [
       { key: '/tasks', icon: <ToolOutlined />, label: '任务工作台' },
+    ],
+  },
+  {
+    title: '智能资产',
+    items: [
+      { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
+      { key: '/rules', icon: <SettingOutlined />, label: '规则管理' },
     ],
   },
   {
@@ -219,6 +233,10 @@ const AppLayout: React.FC = () => {
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/alerts/incidents/:id" element={<IncidentDetail />} />
                 <Route path="/tasks" element={<Tasks />} />
+                <Route path="/approvals" element={<Approvals />} />
+                <Route path="/audit" element={<Audit />} />
+                <Route path="/knowledge" element={<Knowledge />} />
+                <Route path="/rules" element={<Rules />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
             </div>

@@ -305,6 +305,12 @@ async def ai_agent_create(body: dict = None):
         tools=b.get("tools", []), system_prompt_template=b.get("system_prompt_template", ""),
     )
     ExpertRegistry.save_custom_store()
+    # 同步到 MySQL AgentStore
+    try:
+        from db_agents import AgentStore
+        AgentStore().upsert(name, b.get("role", ""), b.get("goal", ""), b.get("backstory", ""), True, False)
+    except Exception:
+        pass
     return ExpertRegistry.get(name).__dict__
 
 @app.put("/api/v1/ai/agents/{name}")
@@ -317,12 +323,25 @@ async def ai_agent_update(name: str, body: dict = None):
     ok = ExpertRegistry.update(name, **fields)
     if not ok:
         raise HTTPException(404, "agent not found")
+    # 同步到 MySQL AgentStore
+    try:
+        from db_agents import AgentStore
+        e = ExpertRegistry.get(name)
+        AgentStore().upsert(name, e.role, e.goal, e.backstory, True, False)
+    except Exception:
+        pass
     return ExpertRegistry.get(name).__dict__
 
 @app.delete("/api/v1/ai/agents/{name}")
 async def ai_agent_delete(name: str):
     if not ExpertRegistry.delete(name):
         raise HTTPException(400, "cannot delete built-in or not found")
+    # 同步删除 MySQL AgentStore
+    try:
+        from db_agents import AgentStore
+        AgentStore().delete(name)
+    except Exception:
+        pass
     return {"deleted": name}
 
 # ═══════════════════════════════════════════════════════════════
@@ -649,6 +668,7 @@ async def approve_task(tid: str):
     except Exception as e:
         task["status"] = "failed"
         task["diagnosis"] = str(e)
+    _task_store.persist(tid)  # 审批结果落 MySQL
     return {"task": task}
 
 
@@ -664,6 +684,7 @@ async def reject_task(tid: str):
         if task.get("source") != "ai_chat":
             _get_brain().approve_and_resume(tid, approved=False)
     except: pass
+    _task_store.persist(tid)  # 拒绝结果落 MySQL
     return {"task": task}
 
 
@@ -1144,81 +1165,74 @@ def _extract_report_fields(content: str, service: str, filename: str) -> dict:
 
 
 def _persist_inspection_report(task_id: str, service: str, content: str, filename: str = "report.md"):
-    """将报告写入 ClickHouse inspection_reports 表。"""
-    _ensure_report_table()
+    """将报告写入 MySQL reports 表（ReportStore）。"""
+    from db_agents import ReportStore
     fields = _extract_report_fields(content, service, filename)
-    import datetime
-    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-    def esc(v: str) -> str:
-        return v.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
-
-    row = "\t".join([
-        esc(task_id), esc(service or "-"),
-        esc(fields["report_type"]), esc(fields["verdict"]),
-        f"{fields['risk_score']:.2f}", esc(fields["summary"]),
-        esc(content), now,
-    ]) + "\n"
-    # 显式指定 FORMAT TabSeparated（不能依赖 default_format，因为 INSERT ... VALUES 会强制 Values 解析）
-    sql = ("INSERT INTO observability.inspection_reports "
-           "(task_id, service_name, report_type, verdict, risk_score, summary, content, created_at) "
-           "FORMAT TabSeparated")
-    return _ch_query(sql, data=row.encode("utf-8"))
+    ReportStore().save({
+        "task_id": task_id, "service_name": service or "-",
+        "report_type": fields["report_type"], "verdict": fields["verdict"],
+        "risk_score": fields["risk_score"], "summary": fields["summary"],
+        "content": content,
+    })
+    return task_id
 
 
 # ── 巡检报告查询接口 ────────────────────────────────────────────
 
 @app.get("/api/v1/ops/reports/history")
 async def list_inspection_reports(service: str = "", limit: int = 50, offset: int = 0, report_type: str = ""):
-    """巡检报告历史列表（按时间倒序）。"""
-    _ensure_report_table()
-    where = []
-    if service:
-        where.append(f"service_name = '{service.replace(chr(39), chr(39)*2)}'")
-    if report_type:
-        where.append(f"report_type = '{report_type.replace(chr(39), chr(39)*2)}'")
-    wsql = (" WHERE " + " AND ".join(where)) if where else ""
+    """巡检报告历史列表（按时间倒序）。数据来自 MySQL reports 表。"""
+    from db_agents import ReportStore
     try:
-        rows = _ch_query(
-            f"SELECT task_id, service_name, report_type, verdict, risk_score, summary, created_at "
-            f"FROM observability.inspection_reports{wsql} "
-            f"ORDER BY created_at DESC LIMIT {int(limit)} OFFSET {int(offset)}"
-        )
+        page = (offset // limit) + 1 if limit else 1
+        result = ReportStore().list(service=service or None, page=page, size=limit)
     except Exception as e:
         return {"reports": [], "error": str(e)}
     reports = []
-    for line in rows.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 7:
-            continue
+    for r in result["items"]:
         reports.append({
-            "task_id": parts[0], "service_name": parts[1], "report_type": parts[2],
-            "verdict": parts[3], "risk_score": float(parts[4] or 0),
-            "summary": parts[5], "created_at": parts[6],
+            "task_id": r.get("task_id", ""), "service_name": r.get("service_name", ""),
+            "report_type": r.get("report_type", ""), "verdict": r.get("verdict", ""),
+            "risk_score": float(r.get("risk_score") or 0), "summary": r.get("summary", ""),
+            "created_at": r.get("created_at", ""),
         })
     return {"reports": reports, "count": len(reports)}
 
 
 @app.get("/api/v1/ops/reports/trend")
 async def inspection_report_trend(days: int = 14, report_type: str = "inspection"):
-    """巡检报告历史趋势：按天统计报告数与平均风险分。"""
-    _ensure_report_table()
+    """巡检报告历史趋势：按天统计报告数与平均风险分。数据来自 MySQL reports 表。"""
+    from db_agents import ReportStore
     try:
-        rows = _ch_query(
-            f"SELECT toDate(created_at) AS d, count() AS cnt, round(avg(risk_score),2) AS avg_risk "
-            f"FROM observability.inspection_reports "
-            f"WHERE report_type = '{report_type.replace(chr(39), chr(39)*2)}' "
-            f"AND created_at >= now() - INTERVAL {int(days)} DAY "
-            f"GROUP BY d ORDER BY d"
-        )
+        result = ReportStore().list(page=1, size=10000)
     except Exception as e:
         return {"trend": [], "error": str(e)}
-    trend = []
-    for line in rows.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 3:
+    import datetime
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=int(days))
+    daily: dict[str, dict] = {}
+    for r in result["items"]:
+        if r.get("report_type", "") != report_type:
             continue
-        trend.append({"date": parts[0], "count": int(parts[1] or 0), "avg_risk": float(parts[2] or 0)})
+        created = r.get("created_at")
+        if not created:
+            continue
+        try:
+            if isinstance(created, datetime.datetime):
+                dt = created
+            elif isinstance(created, str):
+                dt = datetime.datetime.strptime(str(created)[:19], "%Y-%m-%d %H:%M:%S")
+            else:
+                continue
+        except Exception:
+            continue
+        if dt < cutoff:
+            continue
+        day = dt.strftime("%Y-%m-%d")
+        d = daily.setdefault(day, {"count": 0, "sum_risk": 0.0})
+        d["count"] += 1
+        d["sum_risk"] += float(r.get("risk_score") or 0)
+    trend = [{"date": d, "count": v["count"], "avg_risk": round(v["sum_risk"] / v["count"], 2) if v["count"] else 0}
+             for d, v in sorted(daily.items())]
     return {"trend": trend}
 
 
@@ -1242,6 +1256,74 @@ async def list_reports():
         return {"reports": [{"name": o.object_name, "size": o.size, "last_modified": str(o.last_modified)} for o in objects]}
     except Exception as e:
         return {"reports": [], "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════
+#  审计日志 / 知识库 / 规则（MySQL 持久化）
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/ops/audit-logs")
+async def list_audit_logs(action: str = "", operator: str = "", service: str = "",
+                          page: int = 1, size: int = 50):
+    from db_audit import AuditStore
+    return AuditStore().query(page=page, size=size,
+                              action=action or None, operator=operator or None, service=service or None)
+
+
+@app.get("/api/v1/ai/knowledge")
+async def list_knowledge(q: str = "", page: int = 1, size: int = 50):
+    from db_agents import KnowledgeStore
+    ks = KnowledgeStore()
+    if q:
+        return ks.search(q)
+    return ks.list(page=page, size=size)
+
+
+@app.post("/api/v1/ai/knowledge")
+async def add_knowledge(body: dict = None):
+    from db_agents import KnowledgeStore
+    b = body or {}
+    kid = KnowledgeStore().add(b.get("title", ""), b.get("content", ""),
+                               b.get("source", "manual"), b.get("tags", ""), b.get("code_ref"))
+    return {"ok": True, "id": kid}
+
+
+@app.delete("/api/v1/ai/knowledge/{kid}")
+async def delete_knowledge(kid: int):
+    from db_agents import KnowledgeStore
+    KnowledgeStore().delete(kid)
+    return {"ok": True}
+
+
+@app.get("/api/v1/ai/rules")
+async def list_rules():
+    from db_agents import RuleStore
+    return {"rules": RuleStore().list()}
+
+
+@app.post("/api/v1/ai/rules")
+async def save_rule(body: dict = None):
+    from db_agents import RuleStore
+    b = body or {}
+    RuleStore().save(b.get("rule_key"), b.get("name", ""), b.get("kind", "metric"),
+                     b.get("severity", "warning"), b.get("enabled", True),
+                     b.get("scope_type", "global"), b.get("join_mode", "all"),
+                     b.get("conditions_json", {}), b.get("source_type", "custom"))
+    return {"ok": True}
+
+
+@app.delete("/api/v1/ai/rules/{rule_key}")
+async def delete_rule(rule_key: str):
+    from db_agents import RuleStore
+    RuleStore().delete(rule_key)
+    return {"ok": True}
+
+
+@app.post("/api/v1/ai/rules/{rule_key}/toggle")
+async def toggle_rule(rule_key: str):
+    from db_agents import RuleStore
+    RuleStore().toggle(rule_key)
+    return {"ok": True}
 
 
 @app.get("/api/v1/ops/export/chat/{sid}")

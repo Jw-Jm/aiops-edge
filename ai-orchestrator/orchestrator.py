@@ -223,22 +223,10 @@ def _now():
 
 def _audit_log(task_id: str, action: str, operator: str,
                target: str, command: str, result: str, detail: dict = None):
-    """写入 ClickHouse ops_audit 表 (通过 VL HTTP 接口)"""
+    """写入审计日志到 MySQL（AuditStore），失败静默不影响主流程。"""
     try:
-        import urllib.request
-        payload = json.dumps({
-            "event_time": _now(),
-            "task_id": task_id, "action": action, "operator": operator,
-            "target_service": target, "command": command, "result": result,
-            "detail": json.dumps(detail, ensure_ascii=False) if detail else "",
-        }).encode()
-        req = urllib.request.Request(
-            QUERY_API_VL,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=3)
+        from db_audit import AuditStore
+        AuditStore().log(action, operator, target, command, result, detail, task_id)
     except Exception:
         pass  # 审计日志失败不影响主流程
 
