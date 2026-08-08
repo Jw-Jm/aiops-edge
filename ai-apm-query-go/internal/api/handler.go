@@ -1158,6 +1158,89 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// LogAggregate handles GET /api/v1/logs/aggregate?service={name}&query={text}&minutes=60&interval=5
+// 按 interval 聚合日志量，并给出级别分布与服务 TOP。
+func (h *Handler) LogAggregate(w http.ResponseWriter, r *http.Request) {
+	tid := extractTenantID(r)
+	service := r.URL.Query().Get("service")
+	queryText := r.URL.Query().Get("query")
+	minutes := 60
+	interval := 5
+	if v := r.URL.Query().Get("minutes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			minutes = n
+		}
+	}
+	if v := r.URL.Query().Get("interval"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			interval = n
+		}
+	}
+	conditions := []string{fmt.Sprintf("tenant_id='%s'", tid)}
+	if service != "" {
+		conditions = append(conditions, fmt.Sprintf("service_name LIKE '%%%s%%'", service))
+	}
+	if queryText != "" {
+		conditions = append(conditions, fmt.Sprintf("body LIKE '%%%s%%'", queryText))
+	}
+	conditions = append(conditions, fmt.Sprintf("timestamp >= now() - INTERVAL %d MINUTE", minutes))
+	whereClause := strings.Join(conditions, " AND ")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	// 1. 时间序列（每 interval 的日志量）
+	trendSQL := fmt.Sprintf(
+		"SELECT toStartOfInterval(timestamp, INTERVAL %d MINUTE) AS bucket, count() AS cnt FROM observability.log_records WHERE %s GROUP BY bucket ORDER BY bucket",
+		interval, whereClause)
+	trendBody, err := h.queryClickHouse(ctx, trendSQL)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "aggregate failed")
+		return
+	}
+	trendRows, _ := parseRows(trendBody)
+	trend := []map[string]interface{}{}
+	for _, row := range trendRows {
+		trend = append(trend, map[string]interface{}{
+			"bucket": row["bucket"], "count": row["cnt"],
+		})
+	}
+
+	// 2. 级别分布
+	levelSQL := fmt.Sprintf(
+		"SELECT severity AS level, count() AS cnt FROM observability.log_records WHERE %s GROUP BY severity ORDER BY cnt DESC",
+		whereClause)
+	levelBody, err := h.queryClickHouse(ctx, levelSQL)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "aggregate failed")
+		return
+	}
+	levelRows, _ := parseRows(levelBody)
+	levels := []map[string]interface{}{}
+	for _, row := range levelRows {
+		levels = append(levels, map[string]interface{}{"level": row["level"], "count": row["cnt"]})
+	}
+
+	// 3. 服务 TOP
+	svcSQL := fmt.Sprintf(
+		"SELECT service_name AS service, count() AS cnt FROM observability.log_records WHERE %s GROUP BY service_name ORDER BY cnt DESC LIMIT 10",
+		whereClause)
+	svcBody, err := h.queryClickHouse(ctx, svcSQL)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "aggregate failed")
+		return
+	}
+	svcRows, _ := parseRows(svcBody)
+	services := []map[string]interface{}{}
+	for _, row := range svcRows {
+		services = append(services, map[string]interface{}{"service": row["service"], "count": row["cnt"]})
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"trend": trend, "levels": levels, "services": services, "minutes": minutes, "interval": interval,
+	})
+}
+
 // ProxyVictoriaLogs handles GET/POST /api/v1/logs/victorialogs
 func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 	// POST: insert logs

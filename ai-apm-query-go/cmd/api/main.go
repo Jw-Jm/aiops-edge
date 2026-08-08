@@ -100,6 +100,7 @@ func main() {
 	mux.HandleFunc("/api/v1/topology/relation-types/", handler.TopologyRelationTypesRouter)
 	mux.HandleFunc("/api/v1/data/sync", handler.SyncDataFromK8s)
 	mux.HandleFunc("/api/v1/logs/query", handler.QueryLogs)
+	mux.HandleFunc("/api/v1/logs/aggregate", handler.LogAggregate)
 	mux.HandleFunc("/api/v1/logs/victorialogs", handler.ProxyVictoriaLogs)
 	// Infrastructure (K8s)
 	mux.HandleFunc("/api/v1/infrastructure/nodes", handler.Nodes)

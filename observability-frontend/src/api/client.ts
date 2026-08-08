@@ -112,6 +112,7 @@ export const rcaAlertAnalysis = (data: Record<string, unknown>) =>
 
 // Logs
 export const queryLogs = (params: Record<string, unknown>) => api.get('/logs/query', { params })
+export const aggregateLogs = (params: Record<string, unknown>) => api.get('/logs/aggregate', { params })
 
 // ===== 拓扑目录（typed property graph, aligned with ongrid）=====
 export interface TopologyNodeItem {
