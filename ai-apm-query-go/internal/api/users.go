@@ -90,6 +90,20 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	if status == 0 {
 		status = 1
 	}
+	// 未提供的字段保留原值（部分更新）
+	d := &store.UserDAO{}
+	existing, _ := d.GetByID(id)
+	if existing != nil {
+		if req.DisplayName == "" {
+			req.DisplayName = existing.DisplayName
+		}
+		if req.Role == "" {
+			req.Role = existing.Role
+		}
+		if req.Email == "" {
+			req.Email = existing.Email
+		}
+	}
 	var newHash *string
 	if req.Password != "" {
 		h2, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -98,7 +112,6 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 			newHash = &s
 		}
 	}
-	d := &store.UserDAO{}
 	if err := d.Update(id, req.DisplayName, req.Role, req.Email, status, newHash); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
