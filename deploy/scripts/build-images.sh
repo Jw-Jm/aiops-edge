@@ -13,7 +13,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 REGISTRY="${IMAGE_REGISTRY:-}"
-TAG="${IMAGE_TAG:-latest}"
+# 镜像 tag 与 Chart.yaml 的 appVersion 对齐（默认 v1.0.0）。
+# 升级版本时：先改 Chart.yaml 的 appVersion，再用 IMAGE_TAG=vX.Y.Z 构建，保证"代码/版本/部署"一致。
+TAG="${IMAGE_TAG:-v1.0.0}"
 PLATFORM="${BUILD_PLATFORM:-}"
 
 # 本地镜像时（无 registry）不加前缀，K8s 直接用本地镜像；有 registry 时拼前缀

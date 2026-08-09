@@ -137,11 +137,13 @@ orchestratorPort: 8080
 nodeExporterTarget: ""
 
 # ---------------------------------------------------------------------------
-# 自研服务（镜像 tag 由 build-images.sh 构建，统一 :latest 本地镜像）
+# 自研服务（镜像 tag 版本化，默认 v1.0.0，与 build-images.sh 的 IMAGE_TAG 对齐。
+# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改此处镜像 tag ③ 重新 build-images.sh，
+# 保证"代码/版本/部署"一致可追溯）
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true
-  image: "observability-frontend:latest"
+  image: "observability-frontend:v1.0.0"
   nodePort: 30253
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
@@ -149,7 +151,7 @@ frontend:
 
 queryApi:
   enabled: true
-  image: "query-api:latest"
+  image: "query-api:v1.0.0"
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -161,7 +163,7 @@ queryApi:
 
 ingest:
   enabled: true
-  image: "ingest-pipeline:latest"
+  image: "ingest-pipeline:v1.0.0"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
@@ -176,7 +178,7 @@ ingest:
 
 aiOrchestrator:
   enabled: true
-  image: "ai-orchestrator:latest"
+  image: "ai-orchestrator:v1.0.0"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   minioEndpoint: "minio.observability.svc.cluster.local:9000"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
