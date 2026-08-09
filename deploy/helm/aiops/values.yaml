@@ -97,8 +97,10 @@ mysql:
     requests: { cpu: "200m", memory: "512Mi" }
     limits: { cpu: "1", memory: "1Gi" }
 
+# vmalert 已关闭：告警引擎为 query-api 内置 evaluateAlerts（真引擎）。
+# vmalert 原部署为空壳（无 rules volume、notifier 为空），属空转组件，关闭以省内存、消除伪双引擎。
 vmalert:
-  enabled: true
+  enabled: false
   image: "victoriametrics/vmalert:v1.101.0"
   resources:
     requests: { cpu: "50m", memory: "64Mi" }
