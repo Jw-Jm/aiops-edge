@@ -29,6 +29,12 @@ type MetricsWriter struct {
 	wal *WAL
 	// 待重试：kind+seq -> rows
 	retryPending map[string][]byte
+	// 无 WAL 时用内存递增序号生成唯一 key，避免所有批次用固定 key 互相覆盖丢数据
+	memSeq uint64
+
+	// 内存/重试上限（防止 ClickHouse 长时间不可用时 OOM）
+	maxBufferEdges  int   // 边缓冲最大条数，超限丢弃最旧
+	maxRetryBatches int   // 重试队列最大批次条数，超限丢弃最旧
 
 	// OnEdgesWritten 写入成功回调
 	OnEdgesWritten func(n int)
@@ -37,13 +43,15 @@ type MetricsWriter struct {
 // NewMetricsWriter creates a new MetricsWriter.
 func NewMetricsWriter(host string, port int, walDir string) *MetricsWriter {
 	w := &MetricsWriter{
-		endpoint:     fmt.Sprintf("http://%s:%d", host, port),
-		batchSize:    1024,
-		flushEvery:   10 * time.Second,
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
-		retryPending: make(map[string][]byte),
+		endpoint:        chEndpoint(host, port),
+		batchSize:       1024,
+		flushEvery:      10 * time.Second,
+		httpClient:      newCHHTTPClient(),
+		stopCh:          make(chan struct{}),
+		doneCh:          make(chan struct{}),
+		retryPending:    make(map[string][]byte),
+		maxBufferEdges:  10240,
+		maxRetryBatches: 500,
 	}
 	if walDir != "" {
 		wal, err := NewWAL(walDir)
@@ -66,8 +74,17 @@ func NewMetricsWriter(host string, port int, walDir string) *MetricsWriter {
 }
 
 // AddEdge adds a TopologyEdge to the batch buffer.
+// 内存保护：缓冲超过 maxBufferEdges 时丢弃最旧边并记日志，防 OOM。
 func (w *MetricsWriter) AddEdge(e *model.TopologyEdge) {
 	w.mu.Lock()
+	if w.maxBufferEdges > 0 && len(w.edgesBuf) >= w.maxBufferEdges {
+		copy(w.edgesBuf, w.edgesBuf[1:])
+		w.edgesBuf[len(w.edgesBuf)-1] = nil
+		w.edgesBuf = w.edgesBuf[:len(w.edgesBuf)-1]
+		w.mu.Unlock()
+		log.Printf("METRICWRITER: buffer full (%d), dropping oldest edge (backpressure)", w.maxBufferEdges)
+		return
+	}
 	w.edgesBuf = append(w.edgesBuf, e)
 	shouldFlush := len(w.edgesBuf) >= w.batchSize
 	w.mu.Unlock()
@@ -126,6 +143,7 @@ func (w *MetricsWriter) serializeEdges(edges []*model.TopologyEdge) []byte {
 }
 
 // writeRetry 写入数据，失败时进入重试队列并落 WAL。
+// 内存保护：重试队列超过 maxRetryBatches 时丢弃最旧（并 Ack 对应 WAL seq），防 OOM/磁盘打满。
 func (w *MetricsWriter) writeRetry(kind string, rows []byte, insert func([]byte) error) {
 	key := ""
 	if w.wal != nil {
@@ -134,17 +152,50 @@ func (w *MetricsWriter) writeRetry(kind string, rows []byte, insert func([]byte)
 		}
 	}
 	if key == "" {
-		key = fmt.Sprintf("%s-mem", kind)
+		// 无 WAL：用递增序号保证 key 唯一，避免固定 key 覆盖导致只重试最后一批
+		w.mu.Lock()
+		w.memSeq++
+		w.mu.Unlock()
+		key = fmt.Sprintf("%s-mem-%d", kind, w.memSeq)
 	}
-	w.mu.Lock()
-	w.retryPending[key] = rows
-	w.mu.Unlock()
+	w.addRetryLocked(key, rows)
 
 	if err := insert(rows); err != nil {
 		log.Printf("ClickHouse %s write failed (will retry): %v", kind, err)
 	} else {
 		w.confirm(kind, key, rows)
 		w.countWritten(kind, rows)
+	}
+}
+
+// addRetryLocked 将一批加入重试队列，超上限时丢弃最旧批次并 Ack WAL seq。
+func (w *MetricsWriter) addRetryLocked(key string, rows []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.retryPending[key] = rows
+	for len(w.retryPending) > w.maxRetryBatches {
+		var oldest string
+		first := true
+		for k := range w.retryPending {
+			if first || k < oldest {
+				oldest = k
+			}
+			first = false
+		}
+		if v, ok := w.retryPending[oldest]; ok {
+			delete(w.retryPending, oldest)
+			// 尝试解析 seq 推进 WAL ack（丢弃即视为确认，释放磁盘）
+			if w.wal != nil {
+				idx := strings.Index(oldest, "-")
+				if idx >= 0 {
+					var seq uint64
+					if _, err := fmt.Sscanf(oldest[idx+1:], "%d", &seq); err == nil && seq > 0 {
+						w.wal.Ack(seq)
+					}
+				}
+			}
+			log.Printf("METRICWRITER: retry queue full (%d), dropping oldest batch %s (%d bytes)", w.maxRetryBatches, oldest, len(v))
+		}
 	}
 }
 

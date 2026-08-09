@@ -1,4 +1,5 @@
 """arq worker — 异步诊断任务定义"""
+import os
 import time
 from arq import create_pool
 from arq.connections import RedisSettings, ArqRedis
@@ -64,7 +65,12 @@ async def shutdown(ctx):
 
 class WorkerSettings:
     functions = [diagnose_task]
-    redis_settings = RedisSettings(host="redis.observability.svc.cluster.local")
+    # Redis 地址/密码从环境变量注入（可移植，不写死本环境）；密码为 Secret 注入
+    redis_settings = RedisSettings(
+        host=os.environ.get("REDIS_HOST", "redis.observability.svc.cluster.local"),
+        port=int(os.environ.get("REDIS_PORT", "6379")),
+        password=os.environ.get("REDIS_PASSWORD") or None,
+    )
     max_jobs = 3           # 限制并发 LLM 调用
     job_timeout = 300      # 单个任务最长 5 分钟
     keep_result = 300      # 结果保留 5 分钟

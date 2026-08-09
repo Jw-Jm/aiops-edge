@@ -4,7 +4,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: node-exporter
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Values.namespace.observability }}
   labels:
     app.kubernetes.io/name: node-exporter
     component: node-exporter

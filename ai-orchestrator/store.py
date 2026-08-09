@@ -4,8 +4,14 @@
 在"整个任务写入"(dict[key] = task) 时同步到 MySQL ApprovalStore。
 字段级修改（dict[key][field]=v）由调用方在关键节点（审批/驳回/诊断完成）显式持久化。
 MySQL 不可用时静默降级为纯内存。
+
+内存保护：`_task_store` 有容量上限（MAX_TASKS），超过时丢弃最旧任务，
+防止长期运行内存无限增长（MySQL 已持久化，丢弃仅影响内存视图）。
 """
 from db_approval import ApprovalStore
+
+# 内存任务表上限（MySQL 持久化不受影响，仅内存视图裁剪）
+MAX_TASKS = 5000
 
 
 class _TaskStore(dict):
@@ -18,6 +24,13 @@ class _TaskStore(dict):
     def __setitem__(self, key, value):
         existed = key in self
         super().__setitem__(key, value)
+        # 内存保护：超过上限丢弃最旧任务（dict 保持插入顺序，首项最旧）
+        if not existed and len(self) > MAX_TASKS:
+            try:
+                oldest = next(iter(self))
+                super().__delitem__(oldest)
+            except Exception:
+                pass
         try:
             if existed:
                 self._approval.update(key, status=value.get("status", ""),

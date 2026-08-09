@@ -20,61 +20,86 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
-var llmEncryptionKey = func() []byte {
-	if k := os.Getenv("LLM_ENCRYPTION_KEY"); k != "" {
+// llmEncryptionKey 用于对 LLM API key 做 AES-256-GCM 加解密。必须通过
+// LLM_ENCRYPTION_KEY 环境变量显式注入（生产从 Secret 注入，至少 32 字节）。
+// 缺失时绝不退化为"明文存储/返回"。用 sync.Once 惰性求值，便于测试注入。
+var (
+	llmEncryptionKeyOnce sync.Once
+	llmEncryptionKey     []byte
+	llmEncryptionKeyErr  error
+)
+
+func getLLMEncryptionKey() ([]byte, error) {
+	llmEncryptionKeyOnce.Do(func() {
+		k := os.Getenv("LLM_ENCRYPTION_KEY")
+		if len(k) < 32 {
+			llmEncryptionKeyErr = fmt.Errorf("LLM_ENCRYPTION_KEY must be set and at least 32 bytes long (generate e.g. 'openssl rand -hex 32')")
+			return
+		}
 		// Pad or truncate to 32 bytes for AES-256
 		b := []byte(k)
 		key := make([]byte, 32)
 		copy(key, b)
-		return key
-	}
-	return nil // no encryption if key not set
-}()
+		llmEncryptionKey = key
+	})
+	return llmEncryptionKey, llmEncryptionKeyErr
+}
 
+// encryptAPIKey 用 AES-256-GCM 加密 API key。key 缺失时返回空串（由调用方拒绝保存），
+// 绝不返回明文。
 func encryptAPIKey(plaintext string) string {
-	if llmEncryptionKey == nil || plaintext == "" {
-		return plaintext
+	if plaintext == "" {
+		return ""
 	}
-	block, err := aes.NewCipher(llmEncryptionKey)
+	key, err := getLLMEncryptionKey()
 	if err != nil {
-		return plaintext
+		return ""
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return ""
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return plaintext
+		return ""
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return plaintext
+		return ""
 	}
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
 	return base64.StdEncoding.EncodeToString(ciphertext)
 }
 
+// decryptAPIKey 解密 API key。key 缺失或解密失败时返回空串，绝不返回密文/明文。
 func decryptAPIKey(encoded string) string {
-	if llmEncryptionKey == nil || encoded == "" {
-		return encoded
+	if encoded == "" {
+		return ""
+	}
+	key, kerr := getLLMEncryptionKey()
+	if kerr != nil {
+		return ""
 	}
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return encoded // not encrypted, return as-is
+		return ""
 	}
-	block, err := aes.NewCipher(llmEncryptionKey)
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		return encoded
+		return ""
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return encoded
+		return ""
 	}
 	nonceSize := gcm.NonceSize()
 	if len(ciphertext) < nonceSize {
-		return encoded
+		return ""
 	}
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return encoded
+		return ""
 	}
 	return string(plaintext)
 }
@@ -271,8 +296,11 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 // 仅供内部服务(ai-orchestrator)使用，返回解密后的真实 API Key。
 // 通过 X-Internal-Token 鉴权。
 func (h *Handler) GetInternalLLMSettings(w http.ResponseWriter, r *http.Request) {
-	// 鉴权：X-Internal-Token 必须匹配
-	if r.Header.Get("X-Internal-Token") != os.Getenv("INTERNAL_TOKEN") {
+	// 鉴权：X-Internal-Token 必须非空且匹配（INTERNAL_TOKEN 未配置时一律拒绝，
+	// 避免"空 token == 空 header"绕过）
+	internalToken := os.Getenv("INTERNAL_TOKEN")
+	got := r.Header.Get("X-Internal-Token")
+	if internalToken == "" || got == "" || got != internalToken {
 		respondJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "unauthorized"})
 		return
 	}
@@ -305,7 +333,15 @@ func (h *Handler) SaveLLMSettings(w http.ResponseWriter, r *http.Request) {
 		settings.LLM.Provider = llm.Provider
 	}
 	if llm.APIKey != "" {
-		settings.LLM.APIKey = encryptAPIKey(llm.APIKey)
+		enc := encryptAPIKey(llm.APIKey)
+		if enc == "" {
+			settingsMu.Unlock()
+			respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"error": "encryption key unavailable, cannot store API key safely",
+			})
+			return
+		}
+		settings.LLM.APIKey = enc
 	}
 	if llm.Model != "" {
 		settings.LLM.Model = llm.Model
@@ -432,7 +468,7 @@ func (h *Handler) ModelsLLM(w http.ResponseWriter, r *http.Request) {
 	baseURL := req["base_url"]
 	if apiKey == "" || baseURL == "" {
 		settingsMu.RLock()
-		if apiKey == "" { apiKey = settings.LLM.APIKey }
+		if apiKey == "" { apiKey = decryptAPIKey(settings.LLM.APIKey) }
 		if baseURL == "" { baseURL = settings.LLM.BaseURL }
 		settingsMu.RUnlock()
 	}
@@ -482,10 +518,13 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 	req, _ := http.NewRequest(r.Method, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	// Inject LLM config from settings into proxied request headers
+	// 注入 LLM 配置到被代理请求头。
+	// 安全：不再把解密后的明文 API Key 放进 X-LLM-API-Key 头（避免明文 key 在服务间
+	// HTTP 上传输）。orchestrator 检测不到该 header 时，会通过带 X-Internal-Token 的
+	// 内部接口 /api/v1/settings/llm/internal 自行拉取已保存配置（见 orchestrator
+	// _parse_llm_config / _fetch_saved_llm_config 回退逻辑）。
 	llmCfg := h.GetLLMConfig()
-	if llmCfg.APIKey != "" {
-		req.Header.Set("X-LLM-API-Key", llmCfg.APIKey)
+	if llmCfg.Model != "" {
 		req.Header.Set("X-LLM-Model", llmCfg.Model)
 		req.Header.Set("X-LLM-Base-URL", llmCfg.BaseURL)
 		req.Header.Set("X-LLM-Provider", llmCfg.Provider)
@@ -497,6 +536,12 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		if approver {
 			req.Header.Set("X-Internal-Approver", "1")
 		}
+	}
+	// 注入内部服务共享 token（仅当已配置），供 orchestrator 校验请求确实来自可信的
+	// query-api 代理（该代理已通过 AuthMiddleware 完成 JWT 鉴权与角色注入），
+	// 防止绕过 query-api 直连 orchestrator 伪造 X-Internal-Role/Approver。
+	if it := os.Getenv("INTERNAL_TOKEN"); it != "" {
+		req.Header.Set("X-Internal-Token", it)
 	}
 
 	// Use longer timeout for AI requests (full 14-node DAG with 5 LLM calls = 120-300s)

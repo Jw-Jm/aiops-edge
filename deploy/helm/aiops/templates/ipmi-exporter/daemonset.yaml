@@ -5,7 +5,7 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: ipmi-exporter
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Values.namespace.observability }}
   labels:
     app.kubernetes.io/name: ipmi-exporter
     component: ipmi-exporter

@@ -58,6 +58,7 @@ class AgentState(TypedDict):
 
     # execute
     approved: bool
+    human_approved: bool  # 写操作需人工审批；由 interrupt/approve 端点置 True
     execute_output: str
 
     # verify
@@ -86,10 +87,20 @@ from llm_mock import is_mock_enabled, mock_llm_response, should_skip_llm
 from llm_mock import mock_llm_decision, mock_coordinator_plan, mock_reviewer_result
 from dual_agent import parse_subtasks, run_subtasks, merge_review
 
+# 安全：LLM API key 仅存于进程内存单例（不经 AgentState/checkpoint 持久化）。
+# state 中的 llm_config 剔除 api_key 字段，节点调用 _llm 时若缺 key 从此处回填，
+# 避免明文 key 落入 LangGraph SqliteSaver checkpoint / 日志。
+_LLM_KEY_HOLDER = {"api_key": ""}
+
+
 def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家") -> str:
     if is_mock_enabled():
         return mock_llm_response(system_prompt + user_prompt)
-    if not cfg or not cfg.get("api_key"):
+    if not cfg:
+        return ""
+    # 安全：若 cfg 无明文 key（state 中已剔除），从进程内存单例回填
+    api_key = cfg.get("api_key") or _LLM_KEY_HOLDER.get("api_key", "")
+    if not api_key:
         return ""
     try:
         import os as _os
@@ -97,13 +108,17 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
         _os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
         _os.environ.setdefault("CREWAI_TELEMETRY_OPT_OUT", "true")
         # 关键: CrewAI 内部从环境变量读取 OPENAI_API_KEY/BASE_URL/MODEL，
-        # 必须显式设置（否则部分版本会报 "OPENAI_API_KEY is required" 或卡住）
-        _os.environ["OPENAI_API_KEY"] = cfg.get("api_key", "")
+        # 必须显式设置（否则部分版本会报 "OPENAI_API_KEY is required" 或卡住）。
+        # 安全：调用后立即清理，避免明文 key 常驻进程环境变量。
+        _prev_key = _os.environ.get("OPENAI_API_KEY")
+        _prev_base = _os.environ.get("OPENAI_BASE_URL")
+        _prev_model = _os.environ.get("OPENAI_MODEL")
+        _os.environ["OPENAI_API_KEY"] = api_key
         _os.environ["OPENAI_BASE_URL"] = cfg.get("base_url", "https://api.openai.com/v1")
         _os.environ["OPENAI_MODEL"] = cfg.get("model", "gpt-4o")
 
         from crewai import Agent, Task, Crew, LLM
-        llm = LLM(model=cfg["model"], api_key=cfg["api_key"],
+        llm = LLM(model=cfg["model"], api_key=api_key,
                    base_url=cfg["base_url"], provider=cfg.get("backend", "openai"), temperature=0.3)
         agent = Agent(role=role, goal=system_prompt, backstory="可观测性分析专家",
                        allow_delegation=False, verbose=False, llm=llm)
@@ -127,6 +142,14 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
                 return "[LLM 调用超时, 请稍后重试]"
         finally:
             executor.shutdown(wait=False)
+            # 清理本次调用设置的环境变量（恢复原值或删除），避免 key 常驻进程环境
+            for k, prev in (("OPENAI_API_KEY", _prev_key),
+                            ("OPENAI_BASE_URL", _prev_base),
+                            ("OPENAI_MODEL", _prev_model)):
+                if prev is None:
+                    _os.environ.pop(k, None)
+                else:
+                    _os.environ[k] = prev
     except Exception as e:
         return f"[LLM error: {e}]"
 
@@ -293,16 +316,19 @@ def node_collect(state: AgentState) -> dict:
         try: result["trace_data"] = query_traces(svc)[:3000]
         except: pass
     # K8sGPT — 快速失败不阻塞, timeout 5s
-    if cfg and cfg.get("api_key"):
+    # 安全：明文 key 不写入子进程 argv（ps 可见），改用临时环境变量传递。
+    api_key = _LLM_KEY_HOLDER.get("api_key", "")
+    if api_key and cfg:
         try:
             import shutil
             if shutil.which("k8sgpt"):
                 backend = cfg.get("backend", "openai")
-                subprocess.run(["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o"), "-p", cfg["api_key"],]
-                               + (["-u", cfg["base_url"]] if cfg.get("base_url","").replace("openai.com","") != "" else []),
-                               capture_output=True, text=True, timeout=5)
+                env = dict(os.environ)
+                env["OPENAI_API_KEY"] = api_key
+                subprocess.run(["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o")],
+                               capture_output=True, text=True, timeout=5, env=env)
                 r = subprocess.run(["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
-                                   capture_output=True, text=True, timeout=10)
+                                   capture_output=True, text=True, timeout=10, env=env)
                 if r.returncode == 0 and r.stdout.strip() and len(r.stdout.strip()) > 50:
                     result["k8sgpt_raw"] = r.stdout[:2000]
         except: pass
@@ -493,15 +519,30 @@ def node_wait_approval(state: AgentState) -> dict:
 
     approved = approval.get("approved", False) if isinstance(approval, dict) else False
     if not approved:
-        return {"approved": False, "messages": [f"[{_now()}] 执行计划被拒绝"], "final_response": "## 执行被拒绝\n\n人工审批未通过。"}
-    return {"approved": True, "messages": [f"[{_now()}] 审批通过, 开始执行"]}
+        return {"approved": False, "human_approved": False, "messages": [f"[{_now()}] 执行计划被拒绝"], "final_response": "## 执行被拒绝\n\n人工审批未通过。"}
+    # 人工审批通过 → 同时置 human_approved（允许写操作执行）
+    return {"approved": True, "human_approved": True, "messages": [f"[{_now()}] 审批通过, 开始执行"]}
 
 
 def node_execute(state: AgentState) -> dict:
-    """Execute K8s command via ShellCommandPolicy whitelist."""
+    """Execute K8s command via ShellCommandPolicy whitelist.
+
+    安全：只读命令可自动执行；写命令（EXEC_WRITE 白名单）必须经人工审批
+    （human_approved 由 node_wait_approval 的 interrupt 或 approve 端点设置），
+    否则不执行，防止 LLM 生成的写操作在无人工确认下自动落库/变更集群。
+    """
     script = state.get("script", "")
     if not script or not state.get("approved"):
         return {"execute_output": ""}
+    try:
+        from shell_policy import ShellPolicy
+        allowed, category = ShellPolicy().is_whitelisted_for_execute(script)
+    except Exception:
+        allowed, category = False, "not_whitelisted"
+    if not allowed:
+        return {"execute_output": "", "messages": [f"[{_now()}] 脚本不在可执行白名单内，已跳过执行"]}
+    if category == "write" and not state.get("human_approved"):
+        return {"execute_output": "", "messages": [f"[{_now()}] 检测到写操作，需人工审批后才执行（可在审批面板确认）"]}
     result = execute_shell(script, timeout=30)
     # 审计日志
     _audit_log(state.get("user_message", "")[:8], "execute", "auto",
@@ -787,17 +828,20 @@ class BrainOrchestrator:
     def set_llm_config(self, config: dict | None):
         if config is None:
             self.llm_config = None
+            _LLM_KEY_HOLDER["api_key"] = ""
             return
+        # 安全：明文 key 只存进程内存单例，不进 state/checkpoint
+        _LLM_KEY_HOLDER["api_key"] = config.get("api_key", "")
         self.llm_config = {
-            "api_key": config.get("api_key", ""),
+            # 剔除 api_key：state/checkpoint 只保留非敏感配置
             "model": config.get("model", "gpt-4o"),
             "base_url": config.get("base_url", "https://api.openai.com/v1"),
             "provider": config.get("provider", "openai"),
             "backend": config.get("backend", "openai"),
         }
-        os.environ["OPENAI_API_KEY"] = self.llm_config["api_key"]
-        os.environ["OPENAI_BASE_URL"] = self.llm_config["base_url"]
-        os.environ["OPENAI_MODEL"] = self.llm_config["model"]
+        # 安全：不再把 API Key 写入进程环境变量（避免常驻 env、泄漏到子进程/log）。
+        # LLM 调用时（_llm 内）按每次请求传入的 cfg + 内存单例 key 临时设置所需环境变量，
+        # 用完即走，避免跨请求/跨会话共享明文 key。
 
     def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default") -> str:
         """Run full DAG synchronously and return final_response text."""
@@ -817,7 +861,7 @@ class BrainOrchestrator:
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
             "similar_cases": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
-            "approved": True, "execute_output": "",
+            "approved": True, "human_approved": False, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
@@ -837,7 +881,7 @@ class BrainOrchestrator:
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
             "similar_cases": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
-            "approved": True, "execute_output": "",
+            "approved": True, "human_approved": False, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",

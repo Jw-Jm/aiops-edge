@@ -7,7 +7,8 @@ metadata:
   labels:
     app: redis
 spec:
-  replicas: {{ .Values.replicaCount }}
+  # 单写有状态组件固定 1 副本（共享 RWO PVC 不能扩副本，避免挂载失败/数据损坏）。
+  replicas: {{ .Values.statefulReplicaCount | default 1 }}
   selector:
     matchLabels:
       app: redis
@@ -23,15 +24,24 @@ spec:
           args:
             - "--appendonly"
             - "yes"
+            # 启用密码认证（从 aiops-secrets 注入），避免空口令 Redis 暴露
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: REDIS_PASSWORD
           ports:
             - containerPort: 6379
           readinessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 5
           livenessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
             initialDelaySeconds: 15
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}

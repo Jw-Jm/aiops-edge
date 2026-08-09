@@ -28,11 +28,19 @@ spec:
               value: {{ .Values.queryApi.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
               value: {{ .Values.queryApi.clickhousePort | quote }}
+            - name: CLICKHOUSE_USER
+              value: {{ .Values.clickhouse.user | default "default" | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
             - name: VICTORIA_METRICS_URL
               value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: JWT_SECRET }
+            - name: LLM_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: LLM_ENCRYPTION_KEY }
             - name: INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }

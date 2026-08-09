@@ -14,17 +14,22 @@ helm repo add deepflow https://deepflowio.github.io/deepflow >/dev/null 2>&1 || 
 helm repo update deepflow >/dev/null 2>&1 || true
 
 echo "=== [1/2] 部署 observability (自研 + 中间件) ==="
-# 本机开发默认密钥（生产环境务必用 values-prod.yaml 覆盖真实密钥）
+# 本机开发默认密钥（生产环境务必用 values-prod.yaml 覆盖真实密钥）。
+# 说明：jwtSecret / llmEncryptionKey 必须 >=32 字符（query-api 启动强校验，缺省会拒绝启动）。
+# 生成固定 32+ 字符的开发密钥，避免每次部署生成不同值导致 Secret 漂移。
+DEV_JWT="$(printf 'dev-jwt-%.32s' "$(openssl rand -hex 32 2>/dev/null || echo 0123456789abcdef0123456789abcdef)")"
+DEV_LLM_KEY="$(printf 'dev-llm-%.32s' "$(openssl rand -hex 32 2>/dev/null || echo 0123456789abcdef0123456789abcdef)")"
 helm upgrade --install aiops "$CHART_DIR" \
   --namespace observability --create-namespace \
   --set deepflow.enabled=false \
-  --set secrets.jwtSecret="dev-jwt-secret-change-me" \
+  --set secrets.jwtSecret="${DEV_JWT}" \
+  --set secrets.llmEncryptionKey="${DEV_LLM_KEY}" \
   --set secrets.internalToken="dev-internal-token" \
   --set secrets.ingestApiKey="dev-ingest-key" \
   --set secrets.clickhousePassword="dev-ch-pass" \
   --set secrets.redisPassword="dev-redis-pass" \
-  --set secrets.minioAccessKey="minioadmin" \
-  --set secrets.minioSecretKey="minioadmin123" \
+  --set secrets.minioAccessKey="aiopsdev" \
+  --set secrets.minioSecretKey="$(openssl rand -hex 16 2>/dev/null || echo aiopsdevsecret1234)" \
   --set secrets.mysqlRootPassword="dev-mysql-pass" \
   --wait \
   --timeout 15m

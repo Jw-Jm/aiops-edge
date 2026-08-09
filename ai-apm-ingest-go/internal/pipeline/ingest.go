@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -363,11 +362,8 @@ func extractAttributes(attrs interface{}) map[string]string {
 			case string:
 				result[attr.Key] = val
 			case float64:
-				if val == math.Trunc(val) {
-					result[attr.Key] = fmt.Sprintf("%.0f", val)
-				} else {
-					result[attr.Key] = fmt.Sprintf("%f", val)
-				}
+				// 用 strconv.FormatFloat('g', -1) 保留完整精度，避免 %f 丢失小数位
+				result[attr.Key] = strconv.FormatFloat(val, 'g', -1, 64)
 			case bool:
 				result[attr.Key] = fmt.Sprintf("%t", val)
 			case map[string]interface{}:

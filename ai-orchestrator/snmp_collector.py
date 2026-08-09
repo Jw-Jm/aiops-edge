@@ -14,6 +14,25 @@ _TIMEOUT = float(os.environ.get("SNMP_TIMEOUT", "3"))
 _SNMP_COMMUNITY = os.environ.get("SNMP_COMMUNITY", "public")
 
 
+def _run_async_coroutine(coro):
+    """安全地执行一个 asyncio 协程。
+
+    若当前已在运行中的事件循环（例如被 async run_forever 调用），直接 asyncio.run
+    会抛 RuntimeError。这里统一放到线程中执行 asyncio.run，避免阻塞/崩溃。
+    """
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            return executor.submit(asyncio.run, coro).result()
+        finally:
+            executor.shutdown(wait=False)
+    except RuntimeError:
+        # 无运行中的事件循环
+        return asyncio.run(coro)
+
+
 class OIDS:
     """SNMP 只读 OID 表（IF-MIB / UCD-SNMP-MIB）。"""
     SYS_DESCR = ".1.3.6.1.2.1.1.1.0"
@@ -59,7 +78,7 @@ class SNMPCollector:
                     results[str(name)] = str(val)
                 return results
 
-            return asyncio.run(_walk())
+            return _run_async_coroutine(_walk())
         except Exception:
             return {}
 

@@ -7,7 +7,8 @@ metadata:
   labels:
     app: minio
 spec:
-  replicas: {{ .Values.replicaCount }}
+  # 单写有状态组件固定 1 副本（共享 RWO PVC 不能扩副本，避免挂载失败/数据损坏）。
+  replicas: {{ .Values.statefulReplicaCount | default 1 }}
   selector:
     matchLabels:
       app: minio

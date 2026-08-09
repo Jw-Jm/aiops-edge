@@ -19,10 +19,14 @@ spec:
           args:
             - |
               echo "waiting for clickhouse..."
-              until clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --query 'SELECT 1' >/dev/null 2>&1; do sleep 5; done
+              until clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --password "$CH_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1; do sleep 5; done
               echo "clickhouse ready, running init sql..."
-              clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --multiquery < /init/init_clickhouse.sql
+              clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --password "$CH_PASSWORD" --multiquery < /init/init_clickhouse.sql
               echo "init done"
+          env:
+            - name: CH_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
           volumeMounts:
             - name: init-sql
               mountPath: /init

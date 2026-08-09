@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Card, Input, Button, Spin, message, Tag, Switch } from 'antd'
 import { SendOutlined } from '@ant-design/icons'
-import { getSession, approveTask, rejectTask } from '../../api/client'
+import { getSession, approveTask, rejectTask, TENANT_ID } from '../../api/client'
 
 interface ChatMessage {
   id: string
@@ -70,7 +70,7 @@ const ChatThread: React.FC = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Tenant-ID': 'default',
+          'X-Tenant-ID': TENANT_ID,
           Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
         },
         body: JSON.stringify({ message: text, stream: true, session_id: sessionId, dual_agent: dualAgent }),

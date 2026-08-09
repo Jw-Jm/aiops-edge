@@ -3,9 +3,13 @@
 # 用于正式生产环境部署时叠加：helm upgrade --install aiops . -f values-prod.yaml
 # 说明：本机(OrbStack)默认 values.yaml 已是"除副本数=1 外按生产标准"。
 #       部署到正式环境时，按需覆盖以下项。
+#
+# 重要：文件内所有 CHANGE_ME 为占位符，部署前必须替换为强随机值；
+#       query-api 因缺失 JWT_SECRET / LLM_ENCRYPTION_KEY 会拒绝启动（安全兜底）。
 # =============================================================================
 
-# 正式环境通常多副本（前提：有状态组件需改有状态方案或保持单写，谨慎扩）
+# 无状态服务（frontend/query-api/ingest/orchestrator）副本数。
+# 注意：有状态单写组件（mysql/clickhouse）固定用 statefulReplicaCount=1，不受此值影响。
 replicaCount: 2
 
 # 存储类：正式环境指定真实 SC（如云盘/企业 NFS），覆盖默认 ""
@@ -28,9 +32,21 @@ mysql:
 aiOrchestrator:
   llmMock: "false"
 
-# 密钥：正式环境必须显式注入（勿用默认占位）
+# 密钥：正式环境必须显式注入强随机值（勿用 CHANGE_ME / 弱默认值）。
+# 生成建议：
+#   jwtSecret:        openssl rand -hex 32
+#   llmEncryptionKey: openssl rand -hex 32   （至少 32 字节，用于 AES-256 加密 LLM key）
+#   internalToken:    openssl rand -hex 24
+#   ingestApiKey:     openssl rand -hex 24
+#   clickhousePassword / redisPassword / mysqlRootPassword: openssl rand -hex 16
+#   minioAccessKey（>=3 字符）/ minioSecretKey（>=8 字符）：强口令
 secrets:
   jwtSecret: "CHANGE_ME"
+  llmEncryptionKey: "CHANGE_ME"
   internalToken: "CHANGE_ME"
   ingestApiKey: "CHANGE_ME"
+  clickhousePassword: "CHANGE_ME"
+  redisPassword: "CHANGE_ME"
+  minioAccessKey: "CHANGE_ME"
+  minioSecretKey: "CHANGE_ME"
   mysqlRootPassword: "CHANGE_ME"

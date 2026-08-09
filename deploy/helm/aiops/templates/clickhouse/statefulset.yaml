@@ -8,7 +8,9 @@ metadata:
     app: clickhouse
 spec:
   serviceName: clickhouse
-  replicas: {{ .Values.replicaCount }}
+  # 单写有状态组件固定 1 副本（共享 RWO PVC 不能扩副本，避免数据损坏）。
+  # 如需多副本 HA，请改用专用有状态方案，勿直接放大此值。
+  replicas: {{ .Values.statefulReplicaCount | default 1 }}
   selector:
     matchLabels:
       app: clickhouse
@@ -17,6 +19,37 @@ spec:
       labels:
         app: clickhouse
     spec:
+      # init 容器基于 Secret 的 CLICKHOUSE_PASSWORD 动态生成含 sha256 密码的
+      # users.d 配置，杜绝"空密码 + 任意来源"裸奔。
+      initContainers:
+        - name: gen-ch-auth
+          image: {{ .Values.clickhouse.image }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /etc/clickhouse-server/users.d
+              # 计算密码 sha256（ClickHouse 支持 password_sha256_hex），写入 users.d
+              HASH=$(printf '%s' "$CH_PASSWORD" | sha256sum | awk '{print $1}')
+              cat > /etc/clickhouse-server/users.d/allow-remote.xml <<EOF
+              <clickhouse>
+                <users>
+                  <default>
+                    <password_sha256_hex>$HASH</password_sha256_hex>
+                    <networks>
+                      <ip>::/0</ip>
+                    </networks>
+                  </default>
+                </users>
+              </clickhouse>
+              EOF
+          env:
+            - name: CH_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
+          volumeMounts:
+            - name: users-d
+              mountPath: /etc/clickhouse-server/users.d
       containers:
         - name: clickhouse
           image: {{ .Values.clickhouse.image }}
@@ -27,25 +60,33 @@ spec:
               name: native
           readinessProbe:
             exec:
-              command: ["clickhouse-client", "--host", "127.0.0.1", "--query", "SELECT 1"]
+              command: ["clickhouse-client", "--host", "127.0.0.1", "--password", "$(CLICKHOUSE_PASSWORD)", "--query", "SELECT 1"]
             initialDelaySeconds: 20
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["clickhouse-client", "--host", "127.0.0.1", "--query", "SELECT 1"]
+              command: ["clickhouse-client", "--host", "127.0.0.1", "--password", "$(CLICKHOUSE_PASSWORD)", "--query", "SELECT 1"]
             initialDelaySeconds: 30
             periodSeconds: 15
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
           resources:
             {{- toYaml .Values.clickhouse.resources | nindent 12 }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/clickhouse
-            - name: remote-config
-              mountPath: /etc/clickhouse-server/users.d/allow-remote.xml
-              subPath: allow-remote.xml
+            - name: users-d
+              mountPath: /etc/clickhouse-server/users.d
+            - name: profiles-config
+              mountPath: /etc/clickhouse-server/users.d/profiles.xml
+              subPath: profiles.xml
               readOnly: true
       volumes:
-        - name: remote-config
+        - name: users-d
+          emptyDir: {}
+        - name: profiles-config
           configMap:
             name: clickhouse-remote
   volumeClaimTemplates:

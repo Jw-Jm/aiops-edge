@@ -8,6 +8,7 @@ CREATE DATABASE IF NOT EXISTS observability;
 
 -- -----------------------------------------------------------------------------
 -- log_records: 日志记录
+-- TTL 30 天（与 alert_events 一致），防止无限膨胀打满磁盘
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observability.log_records
 (
@@ -25,10 +26,12 @@ CREATE TABLE IF NOT EXISTS observability.log_records
 ENGINE = ReplacingMergeTree
 PARTITION BY date
 ORDER BY (tenant_id, service_name, date, timestamp, trace_id)
+TTL toDateTime(timestamp) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
 -- -----------------------------------------------------------------------------
 -- service_topology: 服务拓扑边
+-- TTL 30 天，防止无限膨胀
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observability.service_topology
 (
@@ -44,10 +47,12 @@ CREATE TABLE IF NOT EXISTS observability.service_topology
 ENGINE = ReplacingMergeTree
 PARTITION BY date
 ORDER BY (tenant_id, source_service, target_service, date, time_bucket)
+TTL toDateTime(time_bucket) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
 -- -----------------------------------------------------------------------------
 -- trace_spans: 调用链 span
+-- TTL 30 天，防止无限膨胀
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS observability.trace_spans
 (
@@ -79,6 +84,7 @@ CREATE TABLE IF NOT EXISTS observability.trace_spans
 ENGINE = ReplacingMergeTree
 PARTITION BY date
 ORDER BY (tenant_id, service_name, date, start_time, span_id)
+TTL toDateTime(start_time) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
 -- -----------------------------------------------------------------------------

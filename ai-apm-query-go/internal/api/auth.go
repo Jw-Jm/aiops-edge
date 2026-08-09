@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -14,12 +16,26 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
-var jwtSecret = func() []byte {
-	if s := os.Getenv("JWT_SECRET"); s != "" {
-		return []byte(s)
-	}
-	return []byte("observability-platform-secret")
-}()
+// jwtSecret 签名密钥。必须通过 JWT_SECRET 环境变量显式注入（生产从 Secret/KMS 注入）。
+// 缺失时 panic，绝不使用内置弱密钥（否则任何人都能伪造 admin token）。
+// 用 sync.Once 惰性初始化，便于测试注入（TestMain 设置 env 后首次调用才求值）。
+var (
+	jwtSecretOnce sync.Once
+	jwtSecret     []byte
+	jwtSecretErr  error
+)
+
+func getJWTSecret() ([]byte, error) {
+	jwtSecretOnce.Do(func() {
+		s := os.Getenv("JWT_SECRET")
+		if len(s) < 32 {
+			jwtSecretErr = fmt.Errorf("JWT_SECRET must be set and at least 32 chars long (generate e.g. 'openssl rand -hex 32')")
+			return
+		}
+		jwtSecret = []byte(s)
+	})
+	return jwtSecret, jwtSecretErr
+}
 
 // Scope 数据范围（三维：services/clusters/devices）。空=全量（admin）。
 type Scope struct {
@@ -88,17 +104,25 @@ func generateJWT(username, role, scope string) string {
 		"exp":   time.Now().Add(24 * time.Hour).Unix(),
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, _ := t.SignedString(jwtSecret)
+	secret, err := getJWTSecret()
+	if err != nil {
+		return ""
+	}
+	signed, _ := t.SignedString(secret)
 	return signed
 }
 
 // validateJWT 校验 JWT，返回 username、role、scope 与是否有效。
 func validateJWT(tokenStr string) (string, string, string, bool) {
+	secret, serr := getJWTSecret()
+	if serr != nil {
+		return "", "", "", false
+	}
 	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
-		return jwtSecret, nil
+		return secret, nil
 	})
 	if err != nil || !t.Valid {
 		return "", "", "", false
@@ -159,20 +183,24 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // isInternalRequest 仅信任带 X-Internal-Token 的服务间调用（已移除 IP 白名单免鉴权）。
+// 安全：只有当 INTERNAL_TOKEN 已显式配置时才启用内部放行分支；未配置时一律返回 false，
+// 避免"空 token == 空 header"的鉴权绕过。
 func isInternalRequest(r *http.Request) bool {
-	return r.Header.Get("X-Internal-Token") == os.Getenv("INTERNAL_TOKEN")
+	internalToken := os.Getenv("INTERNAL_TOKEN")
+	if internalToken == "" {
+		return false
+	}
+	got := r.Header.Get("X-Internal-Token")
+	if got == "" {
+		return false
+	}
+	return got == internalToken
 }
 
 // RequireRole 返回按角色拦截的处理器包装（admin 仅限 admin 角色）。
 func (h *Handler) RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		_, gotRole, _, ok := validateJWT(token)
-		if !ok {
-			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
-			return
-		}
-		if gotRole != role {
+		if !hasRole(r, role) {
 			respondJSON(w, 403, map[string]interface{}{"error": "forbidden"})
 			return
 		}
@@ -180,15 +208,29 @@ func (h *Handler) RequireRole(role string, next http.HandlerFunc) http.HandlerFu
 	}
 }
 
+// hasRole 判断请求携带的 JWT 是否具有指定角色（供 handler 内做细粒度权限校验）。
+func hasRole(r *http.Request, role string) bool {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	_, gotRole, _, ok := validateJWT(token)
+	if !ok {
+		return false
+	}
+	return gotRole == role
+}
+
 // AuthMiddleware 鉴权中间件：公开端点放行；内部服务（X-Internal-Token）放行；其余必须 JWT。
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// Public endpoints: health, login, OPTIONS, settings setup
+		// Public endpoints: health, login, OPTIONS
+		// 仅放行"读取 LLM 配置状态"的 GET /api/v1/settings/llm（返回的是加密后的配置，
+		// 不含明文 key，用于前端判断是否已配置）。所有写操作（POST/PUT 保存）、
+		// 以及敏感子路径（/internal、/providers、/test、/models、/history、rollback）
+		// 一律走 isInternalRequest 或 JWT 鉴权，防止未授权写入 LLM API key。
 		if path == "/health" || path == "/api/v1/health" ||
 			path == "/api/v1/auth/login" || path == "/api/v1/login" ||
-			strings.HasPrefix(path, "/api/v1/settings/llm") ||
+			(path == "/api/v1/settings/llm" && r.Method == http.MethodGet) ||
 			r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
 			return

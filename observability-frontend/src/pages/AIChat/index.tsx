@@ -22,7 +22,7 @@ import {
   SettingOutlined,
   DeleteOutlined, PlusOutlined, HistoryOutlined, MessageOutlined,
 } from '@ant-design/icons';
-import api from "../../api/client";
+import api, { TENANT_ID } from "../../api/client";
 import { getLLMSettings, approveTask, rejectTask } from '../../api/client';
 import { useNavigate } from 'react-router-dom';
 import { fmtLocalTime } from '../../utils/date';
@@ -158,7 +158,7 @@ const AIChat: React.FC = () => {
 
       const resp = await fetch(`${baseURL}/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': 'default', Authorization: api.defaults.headers.common['Authorization'] as string || '' },
+        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID, Authorization: api.defaults.headers.common['Authorization'] as string || '' },
         body: JSON.stringify({ intent: expert, service: '', message: text, stream: true, session_id: sessionId }),
         signal: controller.signal,
       });

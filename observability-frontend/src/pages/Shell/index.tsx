@@ -10,12 +10,32 @@ const { Text } = Typography
 const Shell: React.FC = () => {
   const termRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const termInstance = useRef<Terminal | null>(null)
+  const resizeHandler = useRef<(() => void) | null>(null)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState('')
+
+  // 清理上一次连接创建的终端/resize 监听/websocket，避免重复监听与内存泄漏
+  const cleanup = () => {
+    if (resizeHandler.current) {
+      window.removeEventListener('resize', resizeHandler.current)
+      resizeHandler.current = null
+    }
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+    if (termInstance.current) {
+      try { termInstance.current.dispose() } catch { /* ignore */ }
+      termInstance.current = null
+    }
+  }
 
   const connect = () => {
     if (!termRef.current) return
     setError('')
+
+    cleanup()
 
     // 清空并重建终端
     termRef.current.innerHTML = ''
@@ -25,6 +45,7 @@ const Shell: React.FC = () => {
       theme: { background: '#1a1a1a', foreground: '#e8e8e8' },
       convertEol: true,
     })
+    termInstance.current = term
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(termRef.current)
@@ -48,12 +69,14 @@ const Shell: React.FC = () => {
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(data)
     })
-    window.addEventListener('resize', () => fit.fit())
+    const onResize = () => fit.fit()
+    resizeHandler.current = onResize
+    window.addEventListener('resize', onResize)
   }
 
   useEffect(() => {
     connect()
-    return () => { wsRef.current?.close() }
+    return () => cleanup()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

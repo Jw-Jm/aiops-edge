@@ -1,8 +1,11 @@
 import axios from 'axios'
 
+// 租户 ID 从构建环境变量注入（可移植），默认单租户 'default'
+export const TENANT_ID = (import.meta.env.VITE_TENANT_ID as string) || 'default'
+
 const api = axios.create({
   baseURL: '/api/v1',
-  headers: { 'X-Tenant-ID': 'default' },
+  headers: { 'X-Tenant-ID': TENANT_ID },
   timeout: 15000,
 })
 

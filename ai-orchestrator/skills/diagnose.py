@@ -2,22 +2,71 @@
 
 提供 probe_http / probe_tcp / read_journal / tail_file 四个诊断工具，
 让 AI 能主动验证服务可用性、端口连通性与查看系统/应用日志。
+
+安全约束（防止 SSRF / 敏感文件读取）：
+- tail_file：可读路径限定在 SAFE_LOG_DIRS 白名单内，禁止系统敏感路径。
+- probe_http：仅允许 http/https，禁止内网/链路本地/元数据地址。
+- probe_tcp：禁止内网/链路本地地址（防内网端口扫描）。
 """
+import ipaddress
 import os
 import socket
 import subprocess
+import urllib.parse
 import urllib.request
 
 from skill_registry import SkillDef, SkillRegistry, ToolRegistry
 
 _INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
+# 可读日志目录白名单（env 可配置，换环境无需改代码）。生产默认允许 /var/log、/tmp。
+SAFE_LOG_DIRS = [d for d in os.environ.get("SAFE_LOG_DIRS", "/var/log,/tmp").split(",") if d]
+
+# 禁止探测的内网/链路本地网段（防 SSRF 与内网扫描）
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("169.254.169.254/32"),  # 云元数据
+    ipaddress.ip_network("169.254.0.0/16"),      # 链路本地
+    ipaddress.ip_network("10.0.0.0/8"),          # 内网
+    ipaddress.ip_network("172.16.0.0/12"),       # 内网
+    ipaddress.ip_network("192.168.0.0/16"),      # 内网
+    ipaddress.ip_network("127.0.0.0/8"),         # loopback
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),       # CGNAT
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),            # ULA
+    ipaddress.ip_network("fe80::/10"),           # 链路本地 IPv6
+]
+
+
+def _is_blocked_host(host: str) -> bool:
+    """判断 host 是否解析到被禁止的地址（内网/链路本地/元数据）。"""
+    try:
+        ips = socket.getaddrinfo(host, None)
+    except Exception:
+        return True  # 解析失败视为不可信
+    for info in ips:
+        ip = info[4][0]
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                return True
+    return False
+
 
 def probe_http(url: str = "", timeout: int = 5):
-    """HTTP 探测：请求指定 URL，返回状态码与耗时（服务可达性诊断）"""
+    """HTTP 探测：请求指定 URL，返回状态码与耗时（服务可达性诊断）。
+    仅允许 http/https，且禁止内网/链路本地/元数据地址（防 SSRF）。"""
     if not url:
         return "缺少 url 参数（如 http://query-api:8080/health）"
     try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return "仅允许 http/https 协议"
+        if _is_blocked_host(parsed.hostname or ""):
+            return "目标地址被安全策略禁止（内网/链路本地/云元数据）"
         start = __import__("time").time()
         req = urllib.request.Request(url, headers={"X-Tenant-ID": "default"})
         if _INTERNAL_TOKEN:
@@ -33,9 +82,12 @@ def probe_http(url: str = "", timeout: int = 5):
 
 
 def probe_tcp(host: str = "", port: int = 80, timeout: int = 3):
-    """TCP 端口探测：检测主机端口是否可达（连通性诊断）"""
+    """TCP 端口探测：检测主机端口是否可达（连通性诊断）。
+    禁止内网/链路本地/元数据地址（防内网端口扫描）。"""
     if not host:
         return "缺少 host 参数"
+    if _is_blocked_host(host):
+        return "目标地址被安全策略禁止（内网/链路本地/云元数据）"
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
         sock.close()
@@ -59,17 +111,25 @@ def read_journal(service: str = "", lines: int = 50):
 
 
 def tail_file(path: str = "", lines: int = 50):
-    """查看文件末尾 N 行（应用日志文件诊断）"""
+    """查看文件末尾 N 行（应用日志文件诊断）。
+    安全：仅允许读取 SAFE_LOG_DIRS 白名单内的日志目录，禁止系统敏感路径。"""
     if not path:
         return "缺少 path 参数"
     try:
+        real = os.path.realpath(path)
+        allowed = any(
+            os.path.commonpath([real, os.path.realpath(d)]) == os.path.realpath(d)
+            for d in SAFE_LOG_DIRS
+        ) if SAFE_LOG_DIRS else False
+        if not allowed:
+            return f"拒绝读取：路径不在可读日志目录白名单内（{SAFE_LOG_DIRS or '未配置'}）"
         out = subprocess.run(
-            ["tail", "-n", str(lines), path],
+            ["tail", "-n", str(lines), real],
             capture_output=True, text=True, timeout=10,
         )
         if out.returncode != 0:
             return f"读取失败: {out.stderr.strip()}"
-        return out.stdout if out.stdout.strip() else f"{path} 为空"
+        return out.stdout if out.stdout.strip() else f"{real} 为空"
     except Exception as e:
         return f"读取失败: {e}"
 

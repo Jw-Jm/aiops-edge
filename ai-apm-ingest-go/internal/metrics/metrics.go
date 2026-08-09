@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// maxServiceREDEntries 服务 RED 计数器条数上限，防止服务基数极端增长导致内存无界。
+const maxServiceREDEntries = 100000
+
 // Metrics 记录 ingest 自身的运行时指标，暴露为 Prometheus 文本格式。
 // 生产上可被 vmalert/prometheus 抓取用于采集健康度告警。
 type Metrics struct {
@@ -63,6 +66,11 @@ func (m *Metrics) AddServiceREDForCluster(cluster, service string, isError bool,
 	key := cluster + "\x00" + service
 	e, ok := m.serviceRED[key]
 	if !ok {
+		// 容量保护：超过 maxServiceREDEntries 时重建 map（丢弃全部已聚合值，作为
+		// Prometheus counter 会短暂归零但持续运行后恢复，避免极端服务基数导致 OOM）
+		if maxServiceREDEntries > 0 && len(m.serviceRED) >= maxServiceREDEntries {
+			m.serviceRED = make(map[string]*serviceREDEntry)
+		}
 		e = &serviceREDEntry{cluster: cluster}
 		m.serviceRED[key] = e
 	}

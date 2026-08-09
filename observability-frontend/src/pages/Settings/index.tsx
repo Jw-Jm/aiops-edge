@@ -62,8 +62,11 @@ const Settings: React.FC = () => {
   useEffect(() => {
     loadProviders()
     const host = window.location.hostname
-    const defaultDF = `http://${host}:30417`
-    const defaultGF = `http://${host}:32060`
+    // DeepFlow/Grafana 地址优先用构建环境变量（可移植），缺省用主机名+默认 NodePort
+    const envDF = (import.meta.env.VITE_DEEPFLOW_URL as string) || ''
+    const envGF = (import.meta.env.VITE_GRAFANA_URL as string) || ''
+    const defaultDF = envDF || `http://${host}:30417`
+    const defaultGF = envGF || `http://${host}:32060`
     const dfUrl = localStorage.getItem('deepflowUrl') || defaultDF
     const gfUrl = localStorage.getItem('grafanaUrl') || defaultGF
     dfForm.setFieldsValue({ url: dfUrl, grafana_url: gfUrl })
@@ -313,17 +316,20 @@ const Settings: React.FC = () => {
           if (vals.grafana_url) localStorage.setItem('grafanaUrl', vals.grafana_url)
           message.success('DeepFlow 配置已保存')
           checkDeepFlow(vals.url)
-        }} initialValues={{ url: `http://${window.location.hostname}:30417`, grafana_url: `http://${window.location.hostname}:32060` }}>
+        }} initialValues={{
+          url: (import.meta.env.VITE_DEEPFLOW_URL as string) || `http://${window.location.hostname}:30417`,
+          grafana_url: (import.meta.env.VITE_GRAFANA_URL as string) || `http://${window.location.hostname}:32060`,
+        }}>
           <Form.Item label="连接状态">
             <Tag color={dfStatus.includes('已连接') ? 'green' : 'orange'}>{dfStatus}</Tag>
           </Form.Item>
           <Form.Item name="url" label="DeepFlow Server 地址" rules={[{ required: true }]}>
-            <Input placeholder={`http://${window.location.hostname}:30417`} />
+            <Input placeholder={(import.meta.env.VITE_DEEPFLOW_URL as string) || `http://${window.location.hostname}:30417`} />
           </Form.Item>
           <Form.Item name="grafana_url" label="DeepFlow Grafana 地址">
-            <Input placeholder={`http://${window.location.hostname}:32060`} />
+            <Input placeholder={(import.meta.env.VITE_GRAFANA_URL as string) || `http://${window.location.hostname}:32060`} />
           </Form.Item>
-          <Form.Item label="默认账号"><Tag>admin / deepflow</Tag></Form.Item>
+          <Form.Item label="默认账号"><Tag>（在 DeepFlow 侧配置，勿硬编码凭据）</Tag></Form.Item>
           <Space>
             <Button type="primary" htmlType="submit" icon={<SaveOutlined />}>保存</Button>
             <Button onClick={() => { const url = dfForm.getFieldValue('url'); checkDeepFlow(url) }}>测试连接</Button>

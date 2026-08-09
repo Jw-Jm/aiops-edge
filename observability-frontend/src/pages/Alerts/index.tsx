@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons'
 import {
   getAlertRules, createAlertRule, updateAlertRule, deleteAlertRule,
-  getAlertEvents, rcaAlertAnalysis, listSLOs, SLOTarget,
+  getAlertEvents, rcaAlertAnalysis, listSLOs, SLOTarget, TENANT_ID,
 } from '../../api/client'
 import { fmtLocalTime } from '../../utils/date'
 
@@ -424,7 +424,7 @@ const AlertEventsTab: React.FC = () => {
     try {
       const res = await fetch(`/api/v1/ops/rca/alert/export?format=${fmt}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': 'default' },
+        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID },
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

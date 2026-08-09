@@ -6,6 +6,8 @@
 
 # 全局
 replicaCount: 1
+# 有状态单写组件（mysql/clickhouse）副本数，固定 1（共享 RWO PVC 不可扩副本）。
+statefulReplicaCount: 1
 namespace:
   observability: observability
   deepflow: deepflow
@@ -14,7 +16,10 @@ namespace:
 # 密钥（占位，实际用 values 文件 / --set 注入，不提交真实值，不入 git）
 # ---------------------------------------------------------------------------
 secrets:
+  # 生产必须注入强随机值（至少 32 字符/字节）。query-api 缺失 JWT_SECRET / LLM_ENCRYPTION_KEY
+  # 时启动即失败（panic），杜绝弱密钥。
   jwtSecret: ""
+  llmEncryptionKey: ""
   internalToken: ""
   ingestApiKey: ""
   clickhousePassword: ""

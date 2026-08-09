@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -73,12 +74,14 @@ func EstimateTimeToThreshold(slope, intercept float64, n, horizon int, threshold
 // instance 非空时按精确 instance 标签过滤（如 node-exporter 的 192.168.139.2:9100）。
 func capacityPromQL(metric, instance string) string {
 	// instPart：用于需要多 label 的维度，作为 ", instance=\"x\"" 追加进 {mode="idle", instance="x"}
+	// 安全：instance 来自用户输入，须转义 PromQL 标签值（\ 与 "），防 PromQL 注入。
 	instPart := ""
 	// instSel：用于只有 instance 一个 label 的维度，独立 {instance="x"}
 	instSel := ""
 	if instance != "" {
-		instPart = fmt.Sprintf(`, instance="%s"`, instance)
-		instSel = fmt.Sprintf(`{instance="%s"}`, instance)
+		esc := strings.ReplaceAll(strings.ReplaceAll(instance, `\`, `\\`), `"`, `\"`)
+		instPart = fmt.Sprintf(`, instance="%s"`, esc)
+		instSel = fmt.Sprintf(`{instance="%s"}`, esc)
 	}
 	switch metric {
 	case "cpu":

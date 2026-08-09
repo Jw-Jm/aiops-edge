@@ -1,6 +1,7 @@
 """MCP (Model Context Protocol) Server for observability tools"""
 import json
 import tools as agent_tools
+from execution_gate import check_tool_executable
 
 
 class MCPServer:
@@ -68,6 +69,18 @@ class MCPServer:
         if name not in self.tools:
             return json.dumps({"error": f"Tool not found: {name}"})
         tool = self.tools[name]
+        # 安全：execute_shell 是危险工具，MCP 路径必须经过 execution_gate 且已人工审批
+        # （approved=True）。MCP 端点本身不承载审批能力，这里强制拒绝未审批的 shell 执行，
+        # 防止通过 /api/v1/mcp/call 绕过审批闸门直接执行任意命令。
+        if name == "execute_shell":
+            try:
+                from skill_registry import ToolRegistry, ToolDef
+                td = ToolRegistry.get("execute_shell")
+                allowed, reason = check_tool_executable(td, approved=False)
+                if not allowed:
+                    return json.dumps({"error": f"execute_shell 需要人工审批后执行: {reason}"})
+            except Exception as e:
+                return json.dumps({"error": f"execute_shell 安全校验失败: {e}"})
         try:
             return tool["handler"](**args)
         except Exception as e:

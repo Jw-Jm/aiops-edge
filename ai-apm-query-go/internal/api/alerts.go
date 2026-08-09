@@ -91,29 +91,28 @@ func eventSignature(ruleID, service, detail string) string {
 // log_error_rate：错误日志占比；log_keyword：关键词命中数。
 // service/keyword 由用户输入拼入 SQL，须转义单引号防注入。
 func logMetricQuery(service, metric, keyword string) string {
-	svc := strings.ReplaceAll(service, "'", "''")
 	if metric == "log_error_rate" {
 		return fmt.Sprintf(
-			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE service_name='%s' AND timestamp >= now() - INTERVAL 5 MINUTE",
-			svc)
+			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE service_name=%s AND timestamp >= now() - INTERVAL 5 MINUTE",
+			chQuote(service))
 	}
-	kw := strings.ReplaceAll(keyword, "'", "''")
 	return fmt.Sprintf(
-		"SELECT count() FROM observability.log_records WHERE service_name='%s' AND body LIKE '%%%s%%' AND timestamp >= now() - INTERVAL 5 MINUTE",
-		svc, kw)
+		"SELECT count() FROM observability.log_records WHERE service_name=%s AND body LIKE %s AND timestamp >= now() - INTERVAL 5 MINUTE",
+		chQuote(service), chLike(keyword))
 }
 
 // traceMetricQuery 构造链路类规则的 CH 查询。
 // trace_latency：P99 延迟（ms）；trace_error_rate：错误率。
+// service 由用户输入拼入 SQL，须用 chQuote 转义防注入。
 func traceMetricQuery(service, metric string) string {
 	if metric == "trace_latency" {
 		return fmt.Sprintf(
-			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE service_name='%s' AND start_time >= now() - INTERVAL 5 MINUTE",
-			service)
+			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL 5 MINUTE",
+			chQuote(service))
 	}
 	return fmt.Sprintf(
-		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE service_name='%s' AND start_time >= now() - INTERVAL 5 MINUTE",
-		service)
+		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL 5 MINUTE",
+		chQuote(service))
 }
 
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
@@ -941,6 +940,14 @@ func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "service is required")
 		return
 	}
+	// 安全：含原始 PromQL/预测表达式的规则类型（metric_raw/anomaly/forecast）
+	// 仅限 admin 创建，防止任意用户注入任意 PromQL 执行（可读取集群内任意指标）。
+	if rule.Type == "metric_raw" || rule.Type == "anomaly" || rule.Type == "forecast" {
+		if !hasRole(r, "admin") {
+			respondError(w, http.StatusForbidden, "仅 admin 可创建原始 PromQL/预测类规则")
+			return
+		}
+	}
 	// burn_rate 规则：仅支持 error_rate 指标 + availability 型 SLO（否则静默永不触发）
 	if rule.Type == "burn_rate" {
 		if rule.Metric != "error_rate" {
@@ -1053,19 +1060,26 @@ func (h *Handler) vmInstantQuery(promQL string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }
 
+// promLabelVal 转义 PromQL 标签值中的 \ 与 "，防 PromQL 注入。
+func promLabelVal(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`)
+}
+
 // metricPromQL 返回规则对应指标的 VM PromQL 表达式。
 // 支持内置语义指标（error_rate/latency_p99/call_count）与 metric_raw 原始指标。
+// 安全：service 来自用户输入，拼入标签值前须转义，防 PromQL 注入。
 func metricPromQL(rule AlertRule) string {
+	svc := promLabelVal(rule.Service)
 	switch rule.Metric {
 	case "error_rate":
 		return fmt.Sprintf(`sum(rate(service_errors_total{service="%s"}[%dm])) / clamp_min(sum(rate(service_requests_total{service="%s"}[%dm])), 1) * 100`,
-			rule.Service, rule.Duration, rule.Service, rule.Duration)
+			svc, rule.Duration, svc, rule.Duration)
 	case "call_count":
-		return fmt.Sprintf(`sum(rate(service_requests_total{service="%s"}[%dm])) * %d`, rule.Service, rule.Duration, rule.Duration)
+		return fmt.Sprintf(`sum(rate(service_requests_total{service="%s"}[%dm])) * %d`, svc, rule.Duration, rule.Duration)
 	case "latency_p99":
-		return fmt.Sprintf(`histogram_quantile(0.99, sum(rate(service_request_duration_seconds_bucket{service="%s"}[%dm])) by (le))`, rule.Service, rule.Duration)
+		return fmt.Sprintf(`histogram_quantile(0.99, sum(rate(service_request_duration_seconds_bucket{service="%s"}[%dm])) by (le))`, svc, rule.Duration)
 	default:
-		// metric_raw：metric 字段即 PromQL 原始表达式
+		// metric_raw：metric 字段即 PromQL 原始表达式（仅限 admin 创建，见 createAlertRule 鉴权）
 		return rule.Metric
 	}
 }
@@ -1292,18 +1306,18 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 	switch rule.Metric {
 	case "error_rate":
 		sql = fmt.Sprintf(
-			"SELECT countIf(is_error=1) as errors, count() as total FROM observability.trace_spans WHERE service_name='%s' AND start_time >= now() - INTERVAL %d MINUTE",
-			rule.Service, duration,
+			"SELECT countIf(is_error=1) as errors, count() as total FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+			chQuote(rule.Service), duration,
 		)
 	case "latency_p99":
 		sql = fmt.Sprintf(
-			"SELECT quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE service_name='%s' AND start_time >= now() - INTERVAL %d MINUTE",
-			rule.Service, duration,
+			"SELECT quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+			chQuote(rule.Service), duration,
 		)
 	case "call_count":
 		sql = fmt.Sprintf(
-			"SELECT count() as cnt FROM observability.trace_spans WHERE service_name='%s' AND start_time >= now() - INTERVAL %d MINUTE",
-			rule.Service, duration,
+			"SELECT count() as cnt FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+			chQuote(rule.Service), duration,
 		)
 	default:
 		return 0, fmt.Errorf("unknown metric: %s", rule.Metric)

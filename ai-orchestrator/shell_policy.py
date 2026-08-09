@@ -37,6 +37,23 @@ class ShellPolicy:
                 return f"命令被拒绝: [{rule.category}] {rule.description}"
         return None
 
+    # Shell 拼接/重定向元字符。任何白名单命令若含这些字符，都说明它可能被
+    # 用于拼接/重定向/子 shell，一律拒绝，防止 `kubectl get pods; cat /etc/shadow`
+    # 这类"白名单子串 + 任意命令"的注入绕过。
+    # 说明：`>`/`<` 无条件拦截（无论后接空白还是 `/` 等路径字符），杜绝
+    # `kubectl get pods >/etc/shadow` 这类"白名单命令 + 重定向写任意文件"绕过。
+    SHELL_METACHARS = re.compile(
+        r"[;&|`]|\$\(|\b(?:&&|\|\|)\b|"
+        r"[\r\n]|[<>]",
+        re.IGNORECASE,
+    )
+
+    def check_shell_metachars(self, command: str) -> Optional[str]:
+        """检查是否含可导致 shell 拼接/重定向的元字符。命中则返回拒绝原因，否则 None。"""
+        if self.SHELL_METACHARS.search(command):
+            return "命令包含 shell 拼接/重定向元字符（; & | ` $() 换行 重定向），已拒绝"
+        return None
+
     # ═════════════════════════════════════════════════════════
     #  Execute whitelist (K8s operations — require approval)
     # ═════════════════════════════════════════════════════════

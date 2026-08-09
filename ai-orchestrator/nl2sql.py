@@ -35,8 +35,10 @@ def validate_sql(sql: str, allowed: set = _ALLOWED_TABLES) -> bool:
         return False
     if _FORBIDDEN_KEYWORDS.search(body):
         return False
-    # 表名白名单：出现的 observability.xxx 必须在允许集合内
-    for t in set(re.findall(r"\bobservability\.\w+", body)):
+    # 表名白名单：SQL 中出现的所有 "库.表" 引用，必须且只能命中允许集合。
+    # 禁止任何非 observability 库的表（如 system.*、default.*、其他库），
+    # 防止越权读取集群元数据/未知表。
+    for t in set(re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*", body)):
         if t not in allowed:
             return False
     return True

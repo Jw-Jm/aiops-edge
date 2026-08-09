@@ -639,15 +639,25 @@ async def run_task(tid: str):
     return {"task_id": tid, "status": "diagnosing"}
 
 
-@app.post("/api/v1/ops/tasks/{tid}/approve")
 def _require_approver(request: Request):
-    """审批权限校验：仅 admin 或已配置的审批人可操作。内部 header 由 query-api 注入。"""
+    """审批权限校验：仅 admin 或已配置的审批人可操作。
+
+    安全：X-Internal-Role / X-Internal-Approver 必须来自可信的 query-api 代理。
+    代理（query-api）在完成 JWT 鉴权与角色注入后，会附上 X-Internal-Token（与
+    INTERNAL_TOKEN 共享）。此处校验该 token，防止绕过 query-api 直连本服务伪造
+    header 提权。
+    """
+    expected = os.environ.get("INTERNAL_TOKEN", "")
+    got = request.headers.get("X-Internal-Token", "")
+    if not expected or got != expected:
+        raise HTTPException(403, "请求来源不可信（内部 token 校验失败）")
     role = request.headers.get("X-Internal-Role", "")
     is_approver = request.headers.get("X-Internal-Approver", "0") == "1"
     if role != "admin" and not is_approver:
         raise HTTPException(403, "仅管理员或审批人可操作")
 
 
+@app.post("/api/v1/ops/tasks/{tid}/approve")
 async def approve_task(tid: str, request: Request):
     _require_approver(request)
     if tid not in _task_store:
@@ -723,9 +733,6 @@ async def get_recovery_policy():
 async def put_recovery_policy(policy: dict, request: Request):
     """保存恢复白名单（需审批人/admin）。"""
     _require_approver(request)
-    from recovery_policy import set_policy
-    ok = set_policy(policy)
-    return {"ok": ok}
     from recovery_policy import set_policy
     ok = set_policy(policy)
     return {"ok": ok}
@@ -1163,16 +1170,24 @@ def _upload_report(task_id: str, content: str, filename: str = "report.md", serv
 
 _CH_HOST = os.environ.get("CLICKHOUSE_HOST", "clickhouse.observability.svc.cluster.local")
 _CH_PORT = os.environ.get("CLICKHOUSE_PORT", "8123")
+_CH_USER = os.environ.get("CLICKHOUSE_USER", "default")
+_CH_PASSWORD = os.environ.get("CLICKHOUSE_PASSWORD", "")
 
 
 def _ch_query_json(sql: str) -> list:
     """执行 SELECT 并以 JSONEachRow 返回 dict 列表（供 NL→SQL 结果展示）。"""
+    import base64
     import urllib.parse
     import urllib.request
     import json as _json
     url = (f"http://{_CH_HOST}:{_CH_PORT}/?query="
            + urllib.parse.quote(sql) + "&default_format=JSONEachRow")
-    with urllib.request.urlopen(urllib.request.Request(url), timeout=20) as resp:
+    req = urllib.request.Request(url)
+    if _CH_PASSWORD:
+        # Basic Auth（与 query-api/ingest 一致），避免 CH 裸奔
+        token = base64.b64encode(f"{_CH_USER}:{_CH_PASSWORD}".encode()).decode()
+        req.add_header("Authorization", f"Basic {token}")
+    with urllib.request.urlopen(req, timeout=20) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     rows = []
     for line in raw.splitlines():

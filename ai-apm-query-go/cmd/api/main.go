@@ -177,7 +177,12 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/shell/check", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/mcp/tools", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/mcp/call", handler.ProxyAI)
-	mux.HandleFunc("/api/v1/health", handler.ProxyAI)
+	// 安全：/api/v1/health 是公开健康端点，必须返回本服务自身状态，
+	// 绝不能接到 ProxyAI（否则会成为未鉴权代理入口，绕到 ai-orchestrator）。
+	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
 	// Ops tasks (AIOps Agent)
 	mux.HandleFunc("/api/v1/ops/", handler.ProxyAI)
 	// Prometheus metrics

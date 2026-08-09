@@ -1,18 +1,41 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 构建 4 个自研服务镜像（arm64，本机 OrbStack Docker）
-# 用法: ./build-images.sh [service]   # 省略则全量构建
+# 构建 4 个自研服务镜像。
+# 可移植性：registry 前缀 / tag / 平台 均可通过环境变量注入，不写死本环境。
+#   用法: ./build-images.sh [service]
+#   环境变量:
+#     IMAGE_REGISTRY  镜像仓库前缀（如 registry.example.com/aiops，默认空=本地）
+#     IMAGE_TAG       镜像标签（默认 latest）
+#     BUILD_PLATFORM  构建平台（默认当前架构；跨架构如 linux/amd64 可覆盖）
 # =============================================================================
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+REGISTRY="${IMAGE_REGISTRY:-}"
+TAG="${IMAGE_TAG:-latest}"
+PLATFORM="${BUILD_PLATFORM:-}"
+
+# 本地镜像时（无 registry）不加前缀，K8s 直接用本地镜像；有 registry 时拼前缀
+prefix() {
+  if [ -n "$REGISTRY" ]; then
+    echo "${REGISTRY}/${1}"
+  else
+    echo "$1"
+  fi
+}
+
 build() {
   local dir="$1" name="$2"
-  echo ">>> building $name from $dir"
-  # 用本地 tag（无 registry 前缀），OrbStack K8s 直接使用本地镜像
-  (cd "$ROOT/$dir" && docker build --platform linux/arm64 -t "$name:latest" .)
-  echo ">>> built $name"
+  local full
+  full="$(prefix "$name"):${TAG}"
+  echo ">>> building $full from $dir"
+  local platform_args=()
+  if [ -n "$PLATFORM" ]; then
+    platform_args=(--platform "$PLATFORM")
+  fi
+  (cd "$ROOT/$dir" && docker build "${platform_args[@]}" -t "$full" .)
+  echo ">>> built $full"
 }
 
 # 指定服务则只构建该服务

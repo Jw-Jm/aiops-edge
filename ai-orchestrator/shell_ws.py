@@ -51,7 +51,26 @@ def _audit_shell(operator: str, command: str, result: str):
         pass
 
 
+def _is_ws_authorized(ws: WebSocket) -> bool:
+    """WebShell 鉴权：必须携带可信的内部 token。
+
+    仅接受 query-api 代理（完成 JWT 鉴权后）注入的 X-Internal-Token；直接连本服务、
+    不带 token 或 token 不匹配的一律拒绝，防止绕过 query-api 直连执行白名单命令。
+    注：token 经 query 参数传递（websocket 无法自定义 header），由代理端注入。
+    """
+    expected = os.environ.get("INTERNAL_TOKEN", "")
+    if not expected:
+        return False
+    got = ws.query_params.get("token", "")
+    return got == expected
+
+
 async def shell_ws(ws: WebSocket):
+    if not _is_ws_authorized(ws):
+        await ws.accept()
+        await ws.send_text("❌ 未授权：缺少有效的内部令牌。\n")
+        await ws.close(code=1008)
+        return
     if not await _acquire_session():
         await ws.accept()
         await ws.send_text("❌ 并发会话数已达上限，请稍后再试。\n")
@@ -80,10 +99,21 @@ async def shell_ws(ws: WebSocket):
             if not cmd:
                 continue
 
+            # 0. 命令必须非空且不能过长（防超长输入）
+            if len(cmd) > 4096:
+                await ws.send_text("❌ 命令过长（>4096 字符）\n")
+                continue
+
             # 1. 危险命令拦截
             danger = _policy.check(cmd)
             if danger:
                 await ws.send_text(f"❌ {danger}\n")
+                continue
+
+            # 1.5 shell 拼接/重定向元字符拦截（防白名单子串 + 任意命令注入绕过）
+            meta = _policy.check_shell_metachars(cmd)
+            if meta:
+                await ws.send_text(f"❌ {meta}\n")
                 continue
 
             # 2. 执行白名单校验
@@ -93,13 +123,17 @@ async def shell_ws(ws: WebSocket):
                 continue
 
             # 3. 执行命令（只读/写白名单均执行；写入操作前已在白名单判定）
+            # cwd 从环境变量注入（可移植，不写死 /workspace）
+            workdir = os.environ.get("SHELL_CWD") or os.environ.get("HOME")
+            if not workdir or not os.path.isdir(workdir):
+                workdir = None
             last_activity = time.time()
             try:
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    cwd="/workspace" if os.path.isdir("/workspace") else None,
+                    cwd=workdir,
                 )
                 try:
                     out, _ = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT)

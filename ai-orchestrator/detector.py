@@ -28,6 +28,9 @@ class AnomalyFingerprint:
 class AnomalyDetector:
     """滑动窗口多算法异常检测器"""
 
+    # history 键上限：按 (service:metric) 无限增长会 OOM，超过时丢弃最久未更新的键。
+    MAX_KEYS = 20000
+
     DIMENSIONS = [
         # 资源层
         "cpu_usage", "memory_usage", "fd_count", "tcp_connections",
@@ -55,6 +58,12 @@ class AnomalyDetector:
         """持续喂数据，维护滑动窗口"""
         key = self._key(service, metric)
         if key not in self.history:
+            # 容量保护：超过 MAX_KEYS 时丢弃最久未更新的键（dict 保持插入顺序，首项最旧）
+            if self.MAX_KEYS > 0 and len(self.history) >= self.MAX_KEYS:
+                try:
+                    self.history.pop(next(iter(self.history)))
+                except Exception:
+                    pass
             self.history[key] = deque(maxlen=self.window_size)
         self.history[key].append(value)
 

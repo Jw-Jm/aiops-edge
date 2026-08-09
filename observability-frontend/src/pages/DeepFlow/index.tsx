@@ -7,11 +7,13 @@ const { Title, Text } = Typography
 
 // DeepFlow Grafana 地址：
 // 1. 优先读取设置页保存的 grafanaUrl (localStorage)
-// 2. 否则用当前平台主机名 + 默认端口 32060 (deepflow-grafana NodePort)
-//    这样浏览器访问 <主机>:30253 时，DeepFlow Grafana 自动指向 <主机>:32060，避免硬编码 localhost
+// 2. 否则用构建环境变量 VITE_GRAFANA_URL（可移植，无本环境写死）
+// 3. 再否则用当前平台主机名 + 默认端口 32060 (deepflow-grafana NodePort，可通过 VITE_ 覆盖)
 const getDFGrafanaUrl = () => {
   const saved = localStorage.getItem('grafanaUrl')
   if (saved) return saved
+  const envUrl = (import.meta.env.VITE_GRAFANA_URL as string) || ''
+  if (envUrl) return envUrl
   const host = window.location.hostname
   return `http://${host}:32060`
 }

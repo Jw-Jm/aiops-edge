@@ -46,9 +46,10 @@ func loadTenants() {
 	}
 }
 
+// saveTenants 将内存租户表持久化到 MySQL。
+// 注意：调用方必须已持有 tenantsMu 写锁（sync.RWMutex 不可重入，此处不再内部加锁，
+// 否则持有写锁时再取读锁会永久死锁）。
 func saveTenants() error {
-	tenantsMu.RLock()
-	defer tenantsMu.RUnlock()
 	d := &store.TenantDAO{}
 	list := make([]store.Tenant, 0, len(tenants))
 	for _, t := range tenants {
