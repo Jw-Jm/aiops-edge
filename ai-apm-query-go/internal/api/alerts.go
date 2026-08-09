@@ -83,6 +83,32 @@ func eventSignature(ruleID, service, detail string) string {
 	return ruleID + ":" + service + ":" + detail
 }
 
+// logMetricQuery 构造日志类规则的 CH 查询。
+// log_error_rate：错误日志占比；log_keyword：关键词命中数。
+func logMetricQuery(service, metric, keyword string) string {
+	if metric == "log_error_rate" {
+		return fmt.Sprintf(
+			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE service_name='%s' AND timestamp >= now() - INTERVAL 5 MINUTE",
+			service)
+	}
+	return fmt.Sprintf(
+		"SELECT count() FROM observability.log_records WHERE service_name='%s' AND body LIKE '%%%s%%' AND timestamp >= now() - INTERVAL 5 MINUTE",
+		service, keyword)
+}
+
+// traceMetricQuery 构造链路类规则的 CH 查询。
+// trace_latency：P99 延迟（ms）；trace_error_rate：错误率。
+func traceMetricQuery(service, metric string) string {
+	if metric == "trace_latency" {
+		return fmt.Sprintf(
+			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE service_name='%s' AND start_time >= now() - INTERVAL 5 MINUTE",
+			service)
+	}
+	return fmt.Sprintf(
+		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE service_name='%s' AND start_time >= now() - INTERVAL 5 MINUTE",
+		service)
+}
+
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
 type AggAlertEvent struct {
 	ID             string `json:"id"`
@@ -1086,6 +1112,25 @@ func appendTimeline(event *AlertEvent, action, by string) {
 	event.Timeline = string(data)
 }
 
+// evalCHQuery 执行 CH 查询并返回第一行第一个非空数值（供 log/trace 类型规则使用）。
+func (h *Handler) evalCHQuery(ctx context.Context, sql string) (float64, error) {
+	body, err := h.queryClickHouse(ctx, sql)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := parseRows(body)
+	if err != nil || len(rows) == 0 {
+		return 0, nil
+	}
+	row := rows[0]
+	for _, v := range row {
+		if f, err := toFloat64(v); err == nil {
+			return f, nil
+		}
+	}
+	return 0, nil
+}
+
 func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -1110,6 +1155,26 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 		return h.evalK8sPVCUsage(), nil
 	case "oom_count":
 		return h.evalK8sOOMCount(), nil
+	}
+
+	// log 类型：CH 日志查询（log_error_rate / log_keyword）
+	if rule.Type == "log" {
+		sql := logMetricQuery(rule.Service, rule.Metric, rule.Name)
+		v, err := h.evalCHQuery(ctx, sql)
+		if err != nil {
+			return 0, err
+		}
+		return v, nil
+	}
+
+	// trace_latency / trace_error_rate 类型：CH trace 查询
+	if rule.Type == "trace_latency" || rule.Type == "trace_error_rate" {
+		sql := traceMetricQuery(rule.Service, rule.Metric)
+		v, err := h.evalCHQuery(ctx, sql)
+		if err != nil {
+			return 0, err
+		}
+		return v, nil
 	}
 
 	// metric_raw / anomaly / forecast / burn_rate 类型：metric 字段作为 VM PromQL 原始指标

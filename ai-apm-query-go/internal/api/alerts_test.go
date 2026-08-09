@@ -1,9 +1,21 @@
 package api
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestLogTypeQuery 验证 log 类型规则构造 CH 日志查询
+func TestLogTypeQuery(t *testing.T) {
+	q := logMetricQuery("svc", "log_error_rate", "error")
+	if !strings.Contains(q, "log_records") {
+		t.Fatal("log query should target log_records")
+	}
+	if !strings.Contains(q, "severity") {
+		t.Fatal("log_error_rate should filter by severity")
+	}
+}
 
 // TestCooldownBlocksRepeat 验证 cooldown 冷却期内不重复告警
 func TestCooldownBlocksRepeat(t *testing.T) {
@@ -13,6 +25,17 @@ func TestCooldownBlocksRepeat(t *testing.T) {
 	}
 	if inCooldown(c, time.Now().Add(-20*time.Minute), time.Now()) {
 		t.Fatal("old trigger should not be in cooldown")
+	}
+}
+
+// TestTraceTypeQuery 验证 trace 类型规则构造 CH trace 查询
+func TestTraceTypeQuery(t *testing.T) {
+	q := traceMetricQuery("svc", "trace_latency")
+	if !strings.Contains(q, "trace_spans") {
+		t.Fatal("trace query should target trace_spans")
+	}
+	if !strings.Contains(q, "quantile") {
+		t.Fatal("trace_latency should use quantile")
 	}
 }
 
