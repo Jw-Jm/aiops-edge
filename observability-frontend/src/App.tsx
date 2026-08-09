@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, lazy, Suspense } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { Layout, Menu, ConfigProvider, theme, Space, Input, Tag, Avatar, Dropdown, Tooltip } from 'antd'
+import { Layout, Menu, ConfigProvider, theme, Space, Input, Tag, Avatar, Dropdown, Tooltip, Spin } from 'antd'
 import { useUIStore } from './store/uiStore'
 import CommandPalette from './components/CommandPalette'
 import AgentSidePanel from './components/AgentSidePanel'
@@ -13,42 +13,45 @@ import {
   BookOutlined, ThunderboltFilled, TeamOutlined, ClusterOutlined, DesktopOutlined, HddOutlined,
   ApiOutlined, ControlOutlined,
 } from '@ant-design/icons'
-import AIChat from './pages/AIChat'
-import ChatThread from './pages/AIChat/ChatThread'
-import Alerts from './pages/Alerts'
-import IncidentDetail from './pages/Alerts/IncidentDetail'
-import Skills from './pages/Skills'
-import Agents from './pages/Agents'
-import Workflows from './pages/Workflows'
-import WorkflowEditor from './pages/Workflows/Editor'
-import Settings from './pages/Settings'
-import DeepFlow from './pages/DeepFlow'
-import Login from './pages/Login'
-import Logs from './pages/Logs'
-import Tasks from './pages/Tasks'
-import Services from './pages/Services'
-import ServiceDetail from './pages/ServiceDetail'
-import Topology from './pages/Topology'
-import TopologyCatalog from './pages/TopologyCatalog'
-import Traces from './pages/Traces'
-import TraceDetail from './pages/TraceDetail'
-import Overview from './pages/Overview'
-import Monitor from './pages/Monitor'
-import Approvals from './pages/Approvals'
-import Audit from './pages/Audit'
-import Knowledge from './pages/Knowledge'
-import Rules from './pages/Rules'
-import NL2SQL from './pages/NL2SQL'
-import Users from './pages/Users'
-import Shell from './pages/Shell'
-import Reports from './pages/Reports'
-import Catalog from './pages/Catalog'
-import Devices from './pages/Devices'
-import Clusters from './pages/Clusters'
-import Snmp from './pages/SNMP'
-import Hardware from './pages/Hardware'
-import Mcp from './pages/Mcp'
-import Admin from './pages/Admin'
+import RequireAuth from './components/RequireAuth'
+
+// 懒加载页面（代码分割，减少首屏 bundle）
+const AIChat = lazy(() => import('./pages/AIChat'))
+const ChatThread = lazy(() => import('./pages/AIChat/ChatThread'))
+const Alerts = lazy(() => import('./pages/Alerts'))
+const IncidentDetail = lazy(() => import('./pages/Alerts/IncidentDetail'))
+const Skills = lazy(() => import('./pages/Skills'))
+const Agents = lazy(() => import('./pages/Agents'))
+const Workflows = lazy(() => import('./pages/Workflows'))
+const WorkflowEditor = lazy(() => import('./pages/Workflows/Editor'))
+const Settings = lazy(() => import('./pages/Settings'))
+const DeepFlow = lazy(() => import('./pages/DeepFlow'))
+const Login = lazy(() => import('./pages/Login'))
+const Logs = lazy(() => import('./pages/Logs'))
+const Tasks = lazy(() => import('./pages/Tasks'))
+const Services = lazy(() => import('./pages/Services'))
+const ServiceDetail = lazy(() => import('./pages/ServiceDetail'))
+const Topology = lazy(() => import('./pages/Topology'))
+const TopologyCatalog = lazy(() => import('./pages/TopologyCatalog'))
+const Traces = lazy(() => import('./pages/Traces'))
+const TraceDetail = lazy(() => import('./pages/TraceDetail'))
+const Overview = lazy(() => import('./pages/Overview'))
+const Monitor = lazy(() => import('./pages/Monitor'))
+const Approvals = lazy(() => import('./pages/Approvals'))
+const Audit = lazy(() => import('./pages/Audit'))
+const Knowledge = lazy(() => import('./pages/Knowledge'))
+const Rules = lazy(() => import('./pages/Rules'))
+const NL2SQL = lazy(() => import('./pages/NL2SQL'))
+const Users = lazy(() => import('./pages/Users'))
+const Shell = lazy(() => import('./pages/Shell'))
+const Reports = lazy(() => import('./pages/Reports'))
+const Catalog = lazy(() => import('./pages/Catalog'))
+const Devices = lazy(() => import('./pages/Devices'))
+const Clusters = lazy(() => import('./pages/Clusters'))
+const Snmp = lazy(() => import('./pages/SNMP'))
+const Hardware = lazy(() => import('./pages/Hardware'))
+const Mcp = lazy(() => import('./pages/Mcp'))
+const Admin = lazy(() => import('./pages/Admin'))
 
 const { Sider, Content, Header } = Layout
 
@@ -149,11 +152,6 @@ const AppLayout: React.FC = () => {
   const selectedKey = seg ? '/' + seg : '/'
   const currentLabel = allMenuItems.find(m => m.key === selectedKey)?.label || 'AIOps 智能运维平台'
 
-  useEffect(() => {
-    const token = localStorage.getItem('token')
-    if (!token) navigate('/login', { replace: true })
-  }, [navigate])
-
   // 时钟
   useEffect(() => {
     const tick = () => {
@@ -248,6 +246,7 @@ const AppLayout: React.FC = () => {
           {/* 内容 */}
           <Content style={{ margin: 16, minHeight: 'calc(100vh - 88px)' }}>
             <div style={{ background: darkMode ? '#121826' : '#fff', padding: 20, borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)', boxShadow: '0 8px 24px rgba(0,0,0,0.2)', minHeight: '100%' }}>
+              <Suspense fallback={<div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>}>
               <Routes>
                 <Route path="/" element={<Overview />} />
                 <Route path="/aichat" element={<AIChat />} />
@@ -285,6 +284,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/admin" element={<Admin />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
+              </Suspense>
             </div>
           </Content>
         </Layout>
@@ -298,7 +298,7 @@ const AppLayout: React.FC = () => {
 const App: React.FC = () => (
   <Routes>
     <Route path="/login" element={<Login />} />
-    <Route path="/*" element={<AppLayout />} />
+    <Route path="/*" element={<RequireAuth><AppLayout /></RequireAuth>} />
   </Routes>
 )
 
