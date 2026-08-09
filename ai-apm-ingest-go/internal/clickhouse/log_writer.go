@@ -86,22 +86,22 @@ func (w *LogWriter) flush() {
 func (w *LogWriter) insertBatch(records []*model.LogRecord) error {
 	var buf bytes.Buffer
 	for _, r := range records {
-		// Attributes as ClickHouse Map
+		// Attributes as ClickHouse Map；值先 escapeCH 转义 ' 再 escapeTSV 转义 \t\n 等
 		attrParts := make([]string, 0, len(r.Attributes))
 		for k, v := range r.Attributes {
-			attrParts = append(attrParts, fmt.Sprintf("'%s':'%s'", escapeCH(k), escapeCH(v)))
+			attrParts = append(attrParts, fmt.Sprintf("'%s':'%s'", escapeTSV(escapeCH(k)), escapeTSV(escapeCH(v))))
 		}
 		attrStr := "{" + strings.Join(attrParts, ",") + "}"
 
 		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.TenantID,
+			escapeTSV(r.TenantID),
 			r.Timestamp.Format("2006-01-02 15:04:05.000000000"),
-			r.ServiceName,
-			r.Severity,
-			r.Body,
-			attrStr,
-			r.TraceID,
-			r.SpanID,
+			escapeTSV(r.ServiceName),
+			escapeTSV(r.Severity),
+			escapeTSV(r.Body),
+			escapeTSV(attrStr),
+			escapeTSV(r.TraceID),
+			escapeTSV(r.SpanID),
 			r.TimeBucket,
 			r.Date,
 		)

@@ -124,28 +124,29 @@ func (w *Writer) flush() {
 	w.writeWithRetry(rows)
 }
 
-// serializeSpans 把 span 序列化为 TabSeparated 行。
+// serializeSpans 把 span 序列化为 TabSeparated 行。所有文本字段经 escapeTSV 转义，
+// 防止含 \t \n \r \\ 时行被拆裂/字段错位导致 ClickHouse 解析失败。
 func (w *Writer) serializeSpans(spans []*model.Span) []byte {
 	var buf bytes.Buffer
 	for _, s := range spans {
 		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t",
-			s.TenantID, s.TraceID, s.SpanID, s.ParentSpanID,
-			s.ServiceName, s.OperationName, s.SpanKind,
+			escapeTSV(s.TenantID), escapeTSV(s.TraceID), escapeTSV(s.SpanID), escapeTSV(s.ParentSpanID),
+			escapeTSV(s.ServiceName), escapeTSV(s.OperationName), escapeTSV(s.SpanKind),
 			s.StatusCode, s.StartTime.Format("2006-01-02 15:04:05.000000000"),
 			s.DurationNs,
 		)
 		attrParts := make([]string, 0, len(s.Attributes))
 		for k, v := range s.Attributes {
-			attrParts = append(attrParts, fmt.Sprintf("'%s':'%s'", escapeCH(k), escapeCH(v)))
+			attrParts = append(attrParts, fmt.Sprintf("'%s':'%s'", escapeTSV(escapeCH(k)), escapeTSV(escapeCH(v))))
 		}
 		attrStr := "{" + strings.Join(attrParts, ",") + "}"
-		fmt.Fprintf(&buf, "%s\t", attrStr)
+		fmt.Fprintf(&buf, "%s\t", escapeTSV(attrStr))
 
 		fmt.Fprintf(&buf, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
-			s.HTTPMethod, s.HTTPStatusCode, s.HTTPURL,
-			s.DBSystem, s.DBStatement,
-			s.RPCSystem,
-			s.ServiceInstanceID, s.K8sNamespace, s.K8sPodName,
+			escapeTSV(s.HTTPMethod), s.HTTPStatusCode, escapeTSV(s.HTTPURL),
+			escapeTSV(s.DBSystem), escapeTSV(s.DBStatement),
+			escapeTSV(s.RPCSystem),
+			escapeTSV(s.ServiceInstanceID), escapeTSV(s.K8sNamespace), escapeTSV(s.K8sPodName),
 			s.IsSlow, s.IsError,
 			s.StartTime.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
 			s.StartTime.Format("2006-01-02"),
@@ -261,6 +262,30 @@ func buildQueryParam(query string) string {
 
 func escapeCH(s string) string {
 	return strings.ReplaceAll(s, "'", "\\'")
+}
+
+// escapeTSV 按 ClickHouse TabSeparated 格式转义字段内容，防止含 \t \n \r \\ 时行被拆裂/字段错位。
+// 规则：\\ -> \\\\, \t -> \\t, \n -> \\n, \r -> \\r（ClickHouse TabSeparated 要求）。
+func escapeTSV(s string) string {
+	if !strings.ContainsAny(s, "\\\t\n\r") {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func (w *Writer) Close() {
