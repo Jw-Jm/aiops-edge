@@ -15,6 +15,19 @@ const METRICS = [
   { key: 'network', label: '网络带宽', unit: 'bps' },
 ]
 
+// 数值人性化：网络带宽 bps 换算为 Mbps/Gbps，其它指标按百分比显示
+function fmtValue(metric: string, v: number | undefined | null): string {
+  if (v === undefined || v === null || Number.isNaN(v)) return '—'
+  if (metric === 'network') {
+    const abs = Math.abs(v)
+    if (abs >= 1e9) return `${(v / 1e9).toFixed(2)} Gbps`
+    if (abs >= 1e6) return `${(v / 1e6).toFixed(2)} Mbps`
+    if (abs >= 1e3) return `${(v / 1e3).toFixed(1)} Kbps`
+    return `${v.toFixed(1)} bps`
+  }
+  return v.toFixed(1)
+}
+
 // 把 ETT 秒数格式化为可读字符串
 function formatETT(sec: number): string {
   if (sec <= 0) return '—'
@@ -188,7 +201,11 @@ const Capacity: React.FC = () => {
                 onClick={() => setMetric(m.key)}
                 style={{ borderRadius: 12, cursor: 'pointer', borderColor: isActive ? '#1677ff' : undefined }}
               >
-                <Statistic title={m.label} value={summary ? summary.current.toFixed(1) : '—'} suffix={m.unit} />
+                <Statistic
+                  title={m.label}
+                  value={summary ? fmtValue(m.key, summary.current) : '—'}
+                  suffix={m.key === 'network' ? '' : m.unit}
+                />
                 {summary ? (
                   <div style={{ color: summary.change_pct > 0 ? '#ff4d4f' : '#52c41a', fontSize: 12, marginTop: 4 }}>
                     {summary.change_pct > 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />} 环比 {Math.abs(summary.change_pct).toFixed(1)}%

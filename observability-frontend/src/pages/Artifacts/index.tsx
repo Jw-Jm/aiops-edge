@@ -4,6 +4,7 @@ import { Card, Table, Tag, Select, Button, Space, Typography, message } from 'an
 import { ReloadOutlined } from '@ant-design/icons'
 import { Artifact, listArtifacts } from '../../api/client'
 import AppEmpty from '../../components/AppEmpty'
+import { fmtLocalTime } from '../../utils/date'
 
 const { Text } = Typography
 
@@ -40,11 +41,14 @@ const Artifacts: React.FC = () => {
   useEffect(() => { load(typeFilter) }, [typeFilter])
 
   const statusColor = (s: string) => {
-    if (/done|approved|healthy|pass/i.test(s)) return 'green'
-    if (/waiting|queued|diagnosing|running|关注/i.test(s)) return 'orange'
-    if (/failed|rejected|异常/i.test(s)) return 'red'
+    if (/done|approved|healthy|pass|完成|已批准|正常/i.test(s)) return 'green'
+    if (/waiting|queued|diagnosing|running|关注|等待|诊断中|执行中/i.test(s)) return 'orange'
+    if (/failed|rejected|异常|失败|已拒绝/i.test(s)) return 'red'
     return 'default'
   }
+  // unknown / 空 状态统一展示为 '-'
+  const fmtStatus = (s: string) => (!s || s === 'unknown' || s === '-' ? '-' : s)
+  const fmtService = (s: string) => (!s || s === 'unknown' || s === '-' ? '-' : s)
 
   const columns = [
     {
@@ -60,10 +64,10 @@ const Artifacts: React.FC = () => {
       dataIndex: 'status',
       key: 'status',
       width: 110,
-      render: (s: string) => <Tag color={statusColor(s)}>{s || '-'}</Tag>,
+      render: (s: string) => <Tag color={statusColor(fmtStatus(s))}>{fmtStatus(s)}</Tag>,
     },
-    { title: '服务', dataIndex: 'service', key: 'service', width: 140, render: (s: string) => s || '-' },
-    { title: '时间', dataIndex: 'time', key: 'time', width: 180, render: (t: string) => (t ? String(t).slice(0, 19) : '-') },
+    { title: '服务', dataIndex: 'service', key: 'service', width: 140, render: (s: string) => fmtService(s) },
+    { title: '时间', dataIndex: 'time', key: 'time', width: 180, render: (t: string) => fmtLocalTime(t) },
     { title: '摘要', dataIndex: 'summary', key: 'summary', ellipsis: true },
     {
       title: '操作',

@@ -12,7 +12,7 @@ import {
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
   DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
   BookOutlined, ThunderboltFilled, TeamOutlined, ClusterOutlined, DesktopOutlined, HddOutlined,
-  ApiOutlined, ControlOutlined, LineChartOutlined,
+  ApiOutlined, ControlOutlined, LineChartOutlined, LogoutOutlined,
 } from '@ant-design/icons'
 import RequireAuth from './components/RequireAuth'
 
@@ -240,8 +240,8 @@ const AppLayout: React.FC = () => {
             <Space size={16} align="center">
               <Input
                 prefix={<SearchOutlined style={{ color: 'rgba(255,255,255,0.4)' }} />}
-                placeholder="全局搜索服务 / 日志 / 告警..."
-                style={{ width: 260, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6 }}
+                placeholder="搜索日志 / 服务 / 告警...（⌘K 全局导航）"
+                style={{ width: 280, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6 }}
                 onPressEnter={(e: any) => { const v = e.target.value.trim(); if (v) navigate(`/logs?q=${encodeURIComponent(v)}`) }}
               />
               <Tooltip title="告警中心">
@@ -251,7 +251,22 @@ const AppLayout: React.FC = () => {
               <Tooltip title={darkMode ? '切换浅色' : '切换深色'}>
                 <BulbOutlined style={{ fontSize: 16, color: darkMode ? '#faad14' : 'var(--text-muted)', cursor: 'pointer' }} onClick={toggleDark} />
               </Tooltip>
-              <Dropdown menu={{ items: [{ key: 'settings', label: '系统设置', onClick: () => navigate('/settings') }] }}>
+              <Dropdown
+                menu={{
+                  items: [
+                    { key: 'settings', icon: <SettingOutlined />, label: '系统设置', onClick: () => navigate('/settings') },
+                    { type: 'divider' },
+                    { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true, onClick: () => {
+                        localStorage.removeItem('token')
+                        localStorage.removeItem('username')
+                        localStorage.removeItem('display_name')
+                        localStorage.removeItem('role')
+                        navigate('/login')
+                        window.location.reload()
+                      } },
+                  ],
+                }}
+              >
                 <Space style={{ cursor: 'pointer' }}>
                   <Avatar size={28} style={{ background: 'linear-gradient(135deg, #1677ff, #722ed1)' }}>A</Avatar>
                   <DownOutlined style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }} />

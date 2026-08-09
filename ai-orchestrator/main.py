@@ -462,6 +462,24 @@ def _task_id() -> str:
     return hashlib.md5(str(uuid.uuid4()).encode()).hexdigest()[:12]
 
 
+def _infer_service(req, message: str = "", fallback: str = "") -> str:
+    """从请求或消息文本中推断服务名；取不到时返回 fallback（空串由前端兜底显示 '-'）。
+    避免将未知服务硬编码为 'unknown'，保证数据可读性。"""
+    svc = (getattr(req, "service", None) or "").strip()
+    if svc and svc != "unknown":
+        return svc
+    # 从消息/上下文里尝试提取常见服务标识（如 xxx-service / xxx-server / xxx-agent）
+    text = message or getattr(req, "context", "") or ""
+    for kw in ["service", "server", "agent", "api", "db", "redis", "mysql"]:
+        if kw in text:
+            # 取包含该关键词的最短子串，形如 "deepflow-server"
+            import re
+            m = re.search(r"[\w-]*" + kw + r"[\w-]*", text)
+            if m:
+                return m.group(0)
+    return fallback
+
+
 def _create_chat_suggestion_task(event: dict, req, thread_id: str):
     """AI Chat 生成操作建议后，自动创建一条待审批任务到任务工作台。
     人工在任务工作台点"通过"后才真正执行 script。"""
@@ -473,7 +491,7 @@ def _create_chat_suggestion_task(event: dict, req, thread_id: str):
         tid = _task_id()
         task = {
             "id": tid, "status": "waiting", "source": "ai_chat",
-            "service": req.service or "unknown",
+            "service": _infer_service(req, getattr(req, "message", "")),
             "context": f"[AI Chat] {req.message[:80]}",
             "diagnosis": event.get("final_response", "")[:5000],
             "plan": plan,
@@ -1206,13 +1224,22 @@ def _ch_query_json(sql: str) -> list:
 def _extract_report_fields(content: str, service: str, filename: str) -> dict:
     """从自由文本报告中启发式抽取结构化字段（verdict / risk_score / summary / report_type）。"""
     low = content.lower()
-    # 健康判定
+    # 健康判定：兼容中英文关键词，未命中时保持 unknown（前端统一兜底展示为 '-'）
     verdict = "unknown"
-    if any(k in low for k in ["异常", "高危", "严重", "中高风险", "高风险", "critical", "异常告警"]):
+    if any(k in low for k in [
+        "异常", "高危", "严重", "中高风险", "高风险", "异常告警",
+        "critical", "error", "failed", "unhealthy", "degraded",
+    ]):
         verdict = "异常"
-    elif any(k in low for k in ["关注", "中风险", "注意", "warning", "潜在风险"]):
+    elif any(k in low for k in [
+        "关注", "中风险", "注意", "潜在风险",
+        "warning", "warn", "attention", "concerning", "caution",
+    ]):
         verdict = "关注"
-    elif any(k in low for k in ["健康", "正常", "良好", "无异常", "ok"]):
+    elif any(k in low for k in [
+        "健康", "正常", "良好", "无异常", "稳定",
+        "ok", "healthy", "normal", "green", "all good", "no issue",
+    ]):
         verdict = "健康"
 
     # 风险分 0~1

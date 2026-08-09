@@ -33,20 +33,30 @@ export const chartTypeText: Record<string, string> = {
   line: '折线图', area: '面积图', bar: '柱状图', gauge: '仪表盘', table: '表格',
 }
 
+// 从 PromQL series 中提取可读的名称：优先取 service / instance / __name__ 标签，避免暴露 seriesN 占位符
+function seriesName(s: any, i: number): string {
+  const m = s?.metric || {}
+  const parts = [m.service, m.instance, m.job, m.host, m.node, m.__name__]
+    .filter((x): x is string => typeof x === 'string' && x !== '')
+  if (parts.length) return parts.join(' · ')
+  return `series${i}`
+}
+
 // query_range 结果 → echarts series 数据（line/area/bar）
 function buildOption(panel: DashboardPanel, series: any[]) {
   const xValues = series[0]?.values?.map((v: any[]) => new Date(v[0] * 1000).toLocaleTimeString()) || []
   const type = panel.chart_type === 'bar' ? 'bar' : panel.chart_type === 'area' ? 'line' : 'line'
   const isArea = panel.chart_type === 'area'
+  const names = series.map(seriesName)
   return {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis', textStyle: { fontSize: 12 } },
-    legend: { data: series.map((s, i) => s.metric?.service || `series${i}`), textStyle: { color: darkText }, top: 0 },
+    legend: { data: names, textStyle: { color: darkText }, top: 0 },
     grid: { left: 50, right: 20, top: 30, bottom: 30 },
     xAxis: { type: 'category', data: xValues, axisLabel: { color: '#999' }, axisLine: { lineStyle: { color: gridColor } } },
     yAxis: { type: 'value', axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: gridColor } } },
     series: series.map((s, i) => ({
-      name: s.metric?.service || `series${i}`,
+      name: names[i],
       type,
       smooth: true,
       data: s.values?.map((v: any[]) => Number(v[1])),
@@ -61,7 +71,7 @@ function buildGaugeOption(panel: DashboardPanel, series: any[]) {
   const latest = series.map((s, i) => {
     const vals = s.values?.map((v: any[]) => Number(v[1])) || []
     return {
-      name: s.metric?.service || `series${i}`,
+      name: seriesName(s, i),
       value: vals.length ? vals[vals.length - 1] : 0,
     }
   })
@@ -96,7 +106,7 @@ function tableRows(series: any[]) {
   return series.map((s, i) => {
     const vals = s.values?.map((v: any[]) => Number(v[1])) || []
     const last = vals.length ? vals[vals.length - 1] : null
-    return { name: s.metric?.service || `series${i}`, current: last, color: chartColors[i % chartColors.length] }
+    return { name: seriesName(s, i), current: last, color: chartColors[i % chartColors.length] }
   })
 }
 

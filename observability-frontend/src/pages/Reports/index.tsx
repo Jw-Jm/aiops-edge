@@ -1,15 +1,35 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Input, Select, Button, Empty, Row, Col, message } from 'antd'
+import { Card, Table, Tag, Space, Input, Select, Button, Empty, Row, Col, message, Tooltip } from 'antd'
 import { ReloadOutlined, DownloadOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import api from '../../api/client'
 import { listReports, reportTrend } from '../../api/client'
+import { fmtLocalTime } from '../../utils/date'
 
+// 兼容后端返回的中文 verdict 与英文 verdict：统一归一化
 const VERDICT_MAP: Record<string, { color: string; label: string }> = {
+  // 英文
   ok: { color: 'green', label: '正常' },
   warning: { color: 'orange', label: '警告' },
   critical: { color: 'red', label: '严重' },
+  // 中文（后端 _extract_report_fields 返回）
+  '健康': { color: 'green', label: '正常' },
+  '正常': { color: 'green', label: '正常' },
+  '关注': { color: 'orange', label: '警告' },
+  '警告': { color: 'orange', label: '警告' },
+  '异常': { color: 'red', label: '严重' },
+  '高危': { color: 'red', label: '严重' },
+  '严重': { color: 'red', label: '严重' },
 }
+
+const NORMALIZE_VERDICT: Record<string, string> = {
+  '健康': 'ok', '正常': 'ok', ok: 'ok', healthy: 'ok',
+  '关注': 'warning', '警告': 'warning', warning: 'warning',
+  '异常': 'critical', '高危': 'critical', '严重': 'critical', critical: 'critical',
+}
+
+// 风险分 0~1 浮点 → 百分比
+const riskPct = (v: number) => Math.round(Number(v || 0) * 100)
 
 const tooltipStyle = { background: '#1a1a1a', border: '1px solid #333', textStyle: { color: '#e8e8e8' } }
 
@@ -51,9 +71,9 @@ const Reports: React.FC = () => {
     } catch { message.warning('该报告无下载文件（仅元数据）') }
   }
 
-  // 风险分布（环形）
+  // 风险分布（环形）—— 先归一化 verdict 再统计，兼容中文/英文
   const riskDist = items.reduce((acc, r) => {
-    const v = r.verdict || 'ok'
+    const v = NORMALIZE_VERDICT[r.verdict] || 'ok'
     acc[v] = (acc[v] || 0) + 1
     return acc
   }, {} as Record<string, number>)
@@ -80,7 +100,7 @@ const Reports: React.FC = () => {
     grid: { left: 40, right: 20, top: 20, bottom: 30 },
     xAxis: { type: 'category', data: trendData.map((_, i) => i + 1), axisLabel: { color: '#999' } },
     yAxis: { type: 'value', max: 100, axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: '#1f1f1f' } } },
-    series: [{ name: '风险分', type: 'line', smooth: true, data: trendData.map(r => Math.round(Number(r.risk_score || 0) * 100)), itemStyle: { color: '#1677ff' }, areaStyle: { opacity: 0.15 } }],
+    series: [{ name: '风险分', type: 'line', smooth: true, data: trendData.map(r => riskPct(Number(r.risk_score || 0))), itemStyle: { color: '#1677ff' }, areaStyle: { opacity: 0.15 } }],
   }
 
   const filtered = items.filter(it =>
@@ -89,23 +109,32 @@ const Reports: React.FC = () => {
   const columns = [
     { title: '任务ID', dataIndex: 'task_id', key: 'task_id', width: 170, ellipsis: true },
     { title: '服务', dataIndex: 'service_name', key: 'service_name', width: 150,
-      render: (v: string) => v && v !== '-' ? <Tag color="blue">{v}</Tag> : '-' },
+      render: (v: string) => {
+        const svc = !v || v === 'unknown' || v === '-' ? null : v
+        return svc ? <Tag color="blue">{svc}</Tag> : '-'
+      } },
     { title: '类型', dataIndex: 'report_type', key: 'report_type', width: 100,
       render: (v: string) => {
         const map: Record<string, string> = { inspection: '巡检', diagnosis: '诊断', recovery: '恢复', analysis: '分析' }
         return map[v] || v || '-'
       } },
     { title: '结论', dataIndex: 'verdict', key: 'verdict', width: 90,
-      render: (v: string) => VERDICT_MAP[v] ? <Tag color={VERDICT_MAP[v].color}>{VERDICT_MAP[v].label}</Tag> : (v || '-') },
+      render: (v: string) => {
+        if (!v || v === 'unknown') return '-'
+        const norm = NORMALIZE_VERDICT[v]
+        const mapped = VERDICT_MAP[norm || v] || VERDICT_MAP[v]
+        return mapped ? <Tag color={mapped.color}>{mapped.label}</Tag> : v
+      } },
     { title: '风险分', dataIndex: 'risk_score', key: 'risk_score', width: 90,
       render: (v: number) => {
         // risk_score 为 0~1 浮点，×100 转百分比后按高/中/低分档
-        const pct = Math.round(Number(v || 0) * 100)
+        const pct = riskPct(Number(v || 0))
         const color = pct >= 70 ? 'red' : pct >= 40 ? 'orange' : 'green'
         return <Tag color={color}>{pct}%</Tag>
       } },
-    { title: '摘要', dataIndex: 'summary', key: 'summary', ellipsis: true },
-    { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 170 },
+    { title: '摘要', dataIndex: 'summary', key: 'summary', ellipsis: true,
+      render: (v: string) => v ? <Tooltip title={v}><span>{v}</span></Tooltip> : '-' },
+    { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (v: string) => fmtLocalTime(v) },
     { title: '操作', key: 'action', width: 80, fixed: 'right' as const,
       render: (_: unknown, r: ReportItem) => (
         <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(r)}>下载</Button>

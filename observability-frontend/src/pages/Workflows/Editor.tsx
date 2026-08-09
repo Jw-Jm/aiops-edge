@@ -579,14 +579,15 @@ const WorkflowEditor: React.FC = () => {
             fitView
             proOptions={{ hideAttribution: true }}
           >
-            <Background gap={20} />
-            <Controls />
+            <Background gap={20} color="#27272a" />
+            <Controls style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }} />
             <MiniMap
               nodeColor={(n) => {
                 const d = n.data as any
                 return d?.runStatus ? STATUS_STYLE[d.runStatus]?.border || '#1677ff' : '#3f3f46'
               }}
-              style={{ width: 180, height: 120 }}
+              maskColor="rgba(0,0,0,0.7)"
+              style={{ width: 180, height: 120, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}
             />
           </ReactFlow>
           {nodes.length === 0 && (

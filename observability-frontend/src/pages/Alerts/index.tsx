@@ -198,10 +198,18 @@ const AlertRulesTab: React.FC = () => {
       },
     },
     {
-      title: '指标', dataIndex: 'metric', key: 'metric', width: 120,
+      title: '指标', dataIndex: 'metric', key: 'metric', width: 160, ellipsis: true,
       render: (m: string) => {
-        const labels: Record<string, string> = { error_rate: '错误率', latency_p99: 'P99延迟', call_count: '调用量' }
-        return labels[m] || m
+        const labels: Record<string, string> = {
+          error_rate: '错误率', latency_p99: 'P99延迟', latency_p95: 'P95延迟',
+          call_count: '调用量', cpu_usage: 'CPU使用率', memory_usage: '内存使用率',
+          disk_usage: '磁盘使用率', network_in: '网络入带宽', network_out: '网络出带宽',
+          unavailable_replicas: '不可用副本数', pod_pending_minutes: 'Pod待调度时长',
+          pvc_usage_percent: 'PVC使用率', log_error_rate: '日志错误率',
+          log_keyword: '日志关键字', request_failed: '请求失败数',
+        }
+        const label = labels[m] || m
+        return <Tooltip title={`${label}（${m}）`}><span>{label}</span></Tooltip>
       },
     },
     {

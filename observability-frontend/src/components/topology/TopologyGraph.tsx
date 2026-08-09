@@ -351,13 +351,18 @@ export function TopologyGraph({
         <Background variant={BackgroundVariant.Dots} color="#27272a" gap={20} />
         <MiniMap
           nodeColor={(n) => MINIMAP_NODE_COLORS[(n.data as { type: string }).type] ?? '#a1a1aa'}
-          nodeStrokeColor="rgba(0,0,0,0.4)"
+          nodeStrokeColor="rgba(255,255,255,0.2)"
           nodeStrokeWidth={2}
           nodeBorderRadius={3}
           pannable
           zoomable
+          maskColor="rgba(0,0,0,0.7)"
+          style={{ background: '#18181b', border: '1px solid #27272a', borderRadius: 8 }}
         />
-        <Controls showInteractive={false} />
+        <Controls
+          showInteractive={false}
+          style={{ background: '#18181b', border: '1px solid #27272a', borderRadius: 8, color: '#a1a1aa' }}
+        />
       </ReactFlow>
       {/* 图例面板：节点类型颜色 + 边语义色 */}
       {legendData.length > 0 && (

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Button, Space, Typography, message, Input, Select, Popconfirm } from 'antd'
+import { Card, Table, Tag, Button, Space, Typography, message, Input, Select, Popconfirm, Tooltip } from 'antd'
 import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons'
 import api from '../../api/client'
+import { fmtLocalTime } from '../../utils/date'
 
 const { Text } = Typography
 
@@ -51,10 +52,16 @@ const Approvals: React.FC = () => {
     }
   }
 
+  // 任务/报告等列表项中 service 为 unknown/空/'-' 时统一展示为占位
+  const fmtService = (v?: string) => {
+    if (!v || v === 'unknown' || v === '-' || v.trim() === '') return '-'
+    return v
+  }
+
   const columns = [
     { title: '任务ID', dataIndex: 'id', key: 'id', width: 220, ellipsis: true },
     { title: '服务', dataIndex: 'service', key: 'service', width: 160,
-      render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
+      render: (v: string) => fmtService(v) !== '-' ? <Tag color="blue">{fmtService(v)}</Tag> : '-' },
     { title: '风险', dataIndex: 'risk_score', key: 'risk_score', width: 90,
       render: (v: number) => {
         // risk_score 后端为 0~1 浮点，统一 ×100 后与 Tasks 页同一标准分档
@@ -66,9 +73,11 @@ const Approvals: React.FC = () => {
       } },
     { title: '状态', dataIndex: 'status', key: 'status', width: 110,
       render: (v: string) => STATUS_MAP[v] ? <Tag color={STATUS_MAP[v].color}>{STATUS_MAP[v].label}</Tag> : v },
-    { title: '上下文', dataIndex: 'context', key: 'context', ellipsis: true },
-    { title: '诊断', dataIndex: 'diagnosis', key: 'diagnosis', ellipsis: true },
-    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180 },
+    { title: '上下文', dataIndex: 'context', key: 'context', ellipsis: true,
+      render: (v: string) => v ? <Tooltip title={v}><span>{v}</span></Tooltip> : '-' },
+    { title: '诊断', dataIndex: 'diagnosis', key: 'diagnosis', ellipsis: true,
+      render: (v: string) => v && v !== 'unknown' ? <Tooltip title={v}><span>{v}</span></Tooltip> : '-' },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180, render: (v: string) => fmtLocalTime(v) },
     { title: '操作', key: 'action', width: 160, fixed: 'right' as const,
       render: (_: unknown, r: Task) => r.status === 'waiting' ? (
         <Space>
