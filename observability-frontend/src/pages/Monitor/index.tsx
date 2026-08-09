@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Empty, Form, Input, InputNumber, Modal, Row, Select, Spin, Tag, Tooltip, message } from 'antd'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Button, Card, Empty, Form, Input, InputNumber, Modal, Select, Spin, Tag, Tooltip, message } from 'antd'
 import { PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { Responsive, WidthProvider, type Layout } from 'react-grid-layout'
@@ -56,8 +56,9 @@ const Monitor: React.FC = () => {
   const [editing, setEditing] = useState<DashboardPanel | null>(null)
   const [form] = Form.useForm()
   const [lgLayout, setLgLayout] = useState<Layout[]>([])
-  const [allLayouts, setAllLayouts] = useState<{ lg: Layout[]; md: Layout[]; sm: Layout[]; xs: Layout[] } | null>(null)
   const [saveLock, setSaveLock] = useState(false) // 拖拽/缩放中禁止并发保存
+  // ref 保存最新 lg 布局，避免 onDragStop 触发时闭包读到 stale 的 allLayouts
+  const lgLayoutRef = useRef<Layout[]>([])
 
   const loadPanels = async () => {
     try {
@@ -156,14 +157,14 @@ const Monitor: React.FC = () => {
     await refresh()
   }
 
-  // 拖拽/缩放结束后持久化布局（用 allLayouts.lg 的 24 列坐标），仅写有变化的面板
+  // 拖拽/缩放结束后持久化布局（用 lgLayoutRef 的 24 列坐标，避免 stale closure），仅写有变化的面板
   const persistLayout = async () => {
-    const layouts = allLayouts
-    if (!layouts || !layouts.lg || saveLock) return
+    const layouts = lgLayoutRef.current
+    if (!layouts || layouts.length === 0 || saveLock) return
     setSaveLock(true)
     try {
       await Promise.all(
-        layouts.lg.map(async (it) => {
+        layouts.map(async (it) => {
           const panel = panels.find((p) => String(p.id) === it.i)
           if (!panel) return
           const changed =
@@ -180,10 +181,13 @@ const Monitor: React.FC = () => {
     }
   }
 
-  // 拖动/缩放过程中同步布局（lg 为持久化基准）
-  const handleLayoutChange = (current: Layout[], all: any) => {
-    setAllLayouts(all)
-    if (current && current.length) setLgLayout(all?.lg || current)
+  // 拖动/缩放过程中同步布局（lg 为持久化基准）；同时更新 ref 供持久化读取
+  const handleLayoutChange = (current: Layout[], all: { [key: string]: Layout[] }) => {
+    const lg = all?.lg || current
+    if (lg && lg.length) {
+      setLgLayout(lg)
+      lgLayoutRef.current = lg
+    }
   }
 
   const sortedPanels = useMemo(() => [...panels].sort((a, b) => a.sort - b.sort), [panels])
