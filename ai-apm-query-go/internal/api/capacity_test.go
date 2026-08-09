@@ -132,6 +132,45 @@ func TestCapacityPromQL(t *testing.T) {
 	}
 }
 
+// CPU PromQL 必须带 mode="idle" filter（否则 rate 对所有 mode 求值，使用率错误）。
+func TestCapacityPromQLCPUIdleFilter(t *testing.T) {
+	got := capacityPromQL("cpu", "")
+	if !contains(got, `mode="idle"`) {
+		t.Fatalf("cpu PromQL must contain mode=\"idle\", got: %s", got)
+	}
+	// 带 instance 时 mode filter 与 instance 同时存在
+	gotInst := capacityPromQL("cpu", "node-1")
+	if !contains(gotInst, `mode="idle"`) || !contains(gotInst, `node-1`) {
+		t.Fatalf("cpu PromQL with instance must keep mode=\"idle\" and instance, got: %s", gotInst)
+	}
+}
+
+// 参数超上限 → 400（防内存放大与 int 溢出）。
+func TestCapacityForecastParamsOutOfRange(t *testing.T) {
+	h := &Handler{}
+	// horizon 超大
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/capacity/forecast?metric=cpu&horizon=5000", nil)
+	h.CapacityForecast(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("horizon=5000 code=%d, want 400", rec.Code)
+	}
+	// hours 超大
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/api/v1/capacity/forecast?metric=cpu&hours=1000", nil)
+	h.CapacityForecast(rec2, req2)
+	if rec2.Code != 400 {
+		t.Fatalf("hours=1000 code=%d, want 400", rec2.Code)
+	}
+	// step 过小
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest("GET", "/api/v1/capacity/forecast?metric=cpu&step=1", nil)
+	h.CapacityForecast(rec3, req3)
+	if rec3.Code != 400 {
+		t.Fatalf("step=1 code=%d, want 400", rec3.Code)
+	}
+}
+
 // 未知 metric 返回空串。
 func TestCapacityPromQLUnknown(t *testing.T) {
 	if got := capacityPromQL("bogus", ""); got != "" {

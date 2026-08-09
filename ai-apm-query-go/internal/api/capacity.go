@@ -73,7 +73,8 @@ func capacityPromQL(metric, instance string) string {
 	}
 	switch metric {
 	case "cpu":
-		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total%s[5m])) * 100`, inst)
+		// node_cpu_seconds_total 每个 mode 各一条 series，必须加 mode="idle" 才能正确计算使用率
+		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{mode="idle"%s}[5m])) * 100`, inst)
 	case "memory":
 		return fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes%s / node_memory_MemTotal_bytes%s)`, inst, inst)
 	case "disk":
@@ -105,6 +106,11 @@ func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
 	}
 	if hours <= 0 || step <= 0 || horizon <= 0 {
 		respondError(w, http.StatusBadRequest, "hours, step, horizon must be positive")
+		return
+	}
+	// 上限防护：防超大 horizon 内存放大、hours*3600 int 溢出、step 过小产生巨量数据点
+	if hours > 168 || step < 15 || step > 86400 || horizon > 1000 {
+		respondError(w, http.StatusBadRequest, "hours must be <=168, step in [15,86400], horizon <=1000")
 		return
 	}
 	if metric == "network" && thresholdStr == "" {
