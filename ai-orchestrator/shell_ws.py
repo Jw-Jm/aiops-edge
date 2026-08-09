@@ -40,6 +40,17 @@ async def _release_session():
             _active_sessions -= 1
 
 
+def _audit_shell(operator: str, command: str, result: str):
+    """记录 WebShell 命令执行审计到 MySQL（audit_logs），失败静默。"""
+    try:
+        from db_audit import AuditStore
+        AuditStore().log(action="shell_exec", operator=operator or "unknown",
+                         target="", command=command, result=result[:500],
+                         detail=None, task_id="shell")
+    except Exception:
+        pass
+
+
 async def shell_ws(ws: WebSocket):
     if not await _acquire_session():
         await ws.accept()
@@ -48,6 +59,8 @@ async def shell_ws(ws: WebSocket):
         return
 
     await ws.accept()
+    # 操作者身份（由 query-api 代理时经 query 参数传入，默认 shell-user）
+    _operator = ws.query_params.get("user", "") or "shell-user"
     last_activity = time.time()
     try:
         while True:
@@ -96,8 +109,10 @@ async def shell_ws(ws: WebSocket):
                     continue
                 text = out.decode(errors="replace") if out else ""
                 await ws.send_text(text if text else "（无输出）\n")
+                _audit_shell(_operator, cmd, text[:200])
             except Exception as e:
                 await ws.send_text(f"❌ 执行错误：{e}\n")
+                _audit_shell(_operator, cmd, f"ERROR: {e}")
     except WebSocketDisconnect:
         pass
     finally:
