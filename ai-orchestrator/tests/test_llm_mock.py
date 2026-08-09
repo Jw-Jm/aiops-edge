@@ -52,3 +52,24 @@ def test_mock_coordinator_plan_shape():
 def test_mock_reviewer_merges():
     out = mock_reviewer_result({"t1": {"conclusion": "a"}, "t2": {"conclusion": "b"}})
     assert isinstance(out, str) and "b" in out
+
+
+def test_mock_reviewer_empty():
+    out = mock_reviewer_result({})
+    assert isinstance(out, str) and "无子结论" in out
+
+
+def test_mock_decision_drives_run_tool_loop_end_to_end():
+    """mock 决策注入 run_tool_loop 应完整驱动循环：调一次工具→final。"""
+    from function_calling import run_tool_loop
+    from skill_registry import ToolRegistry
+    if not ToolRegistry.get("query_metrics"):
+        ToolRegistry.register(name="query_metrics", description="d",
+                              params={"service": {"type": "string", "required": False, "default": "", "desc": "s"}},
+                              cls_="safe")(lambda service="x": "ok")
+    tools = [ToolRegistry.get("query_metrics")]
+    res = run_tool_loop(mock_llm_decision, tools, "诊断服务")
+    assert res["tool_calls"] == 1
+    assert res["truncated"] is False
+    assert res["trace"][0]["tool"] == "query_metrics"
+    assert "mock" in res["final"]
