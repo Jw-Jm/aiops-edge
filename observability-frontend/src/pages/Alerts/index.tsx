@@ -35,6 +35,7 @@ interface AlertRule {
   baseline_seconds?: number   // anomaly 基线窗口（秒）
   anomaly_method?: string     // anomaly 检测方法：zscore|mad
   slo_id?: string             // burn_rate 引用的 SLO 目标 id
+  keyword?: string            // log_keyword 日志关键字（body LIKE '%keyword%'）
 }
 
 interface AlertEvent {
@@ -88,6 +89,7 @@ const AlertRulesTab: React.FC = () => {
   const [sloList, setSloList] = useState<SLOTarget[]>([])
   const [form] = Form.useForm()
   const ruleType = Form.useWatch('type', form)
+  const metricVal = Form.useWatch('metric', form)
 
   const fetchRules = useCallback(async () => {
     setLoading(true)
@@ -265,9 +267,18 @@ const AlertRulesTab: React.FC = () => {
             </Form.Item>
             <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}>
               <Select disabled={ruleType === 'burn_rate'} placeholder={ruleType === 'burn_rate' ? '烧毁率基于错误率' : '选择指标'}>
-                <Option value="error_rate">错误率</Option>
-                <Option value="latency_p99">P99 延迟</Option>
-                <Option value="call_count">调用量</Option>
+                {ruleType === 'log' ? (
+                  <>
+                    <Option value="log_error_rate">错误日志占比</Option>
+                    <Option value="log_keyword">日志关键字命中数</Option>
+                  </>
+                ) : (
+                  <>
+                    <Option value="error_rate">错误率</Option>
+                    <Option value="latency_p99">P99 延迟</Option>
+                    <Option value="call_count">调用量</Option>
+                  </>
+                )}
               </Select>
             </Form.Item>
           </div>
@@ -287,6 +298,11 @@ const AlertRulesTab: React.FC = () => {
               <InputNumber min={1} max={60} style={{ width: '100%' }} />
             </Form.Item>
           </div>
+          {ruleType === 'log' && metricVal === 'log_keyword' && (
+            <Form.Item name="keyword" label="日志关键字" rules={[{ required: true, message: '请输入日志关键字' }]} extra="匹配 body 含该关键字的日志条数（阈值即命中数）">
+              <Input placeholder="如 ERROR / OOM / timeout" />
+            </Form.Item>
+          )}
           {ruleType === 'anomaly' && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <Form.Item name="baseline_seconds" label="基线窗口(秒)" extra="历史序列时长，用于统计基线" initialValue={900}>
