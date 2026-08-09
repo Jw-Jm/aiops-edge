@@ -1,7 +1,8 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci 2>/dev/null || npm install
+# 国内源：避免直连 npmjs.org 超时
+RUN npm config set registry https://registry.npmmirror.com && (npm ci 2>/dev/null || npm install)
 COPY . .
 RUN npm run build
 
