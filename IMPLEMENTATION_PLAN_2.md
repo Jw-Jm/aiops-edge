@@ -156,8 +156,8 @@ G1 深色 zinc 极简 ｜ G2 聊天为第一入口 ｜ G3 状态胶囊+迷你图
                └──────────┬──────────────────┘
                           │ /api 反代
                ┌──────────▼──────────────────┐
-               │  query-api (Go) :8080         │◀─ MySQL(新增,P1b)
-               │ 查询/告警/K8s/设置/审批/审计      │
+               │  query-api (Go) :8080         │◀─ MySQL(平台基础数据)
+               │ 查询/告警/K8s/设置（只读审批/审计）│
                └───┬──────┬──────┬────────────┘
                    │      │      │
    ┌───────────────┘      │      └───────────────┐
@@ -223,11 +223,16 @@ G1 深色 zinc 极简 ｜ G2 聊天为第一入口 ｜ G3 状态胶囊+迷你图
 
 **目标**：知识库/代码索引/MCP 管理前端；审批中心 + 审计日志；**引入 MySQL 业务状态库**。
 **改动**：
-- `ai-orchestrator`：rag.py 补代码索引；审批/审计存储
-- **`query-api`：引入 MySQL**（审批/审计/Agent/规则/报告持久化，版本化迁移）
+- `ai-orchestrator`：rag.py 补代码索引；审批/审计/Agent/报告 **持久化到 MySQL**（`db_approval.py`/`db_audit.py`/`db_agents.py`，数据所有权在 AI 编排层）
+- `query-api`：**只读查询**这些业务表（审批/审计/Agent/报告/规则/报告），不写入
 - `observability-frontend/src/pages/`：新增 `/knowledge` `/mcp` `/approvals`
 **验收**：知识可检索；审批可批/拒并审计；MySQL 持久化生效。
 **回滚**：MySQL 迁移有版本化回滚；服务镜像回退。
+
+> **数据所有权契约（架构决策，2026-08-09 对齐）**：AI 业务数据由 `ai-orchestrator` 持久化（谁产生谁写），`query-api` 只读查询；平台基础数据由 `query-api` 持久化。
+> - `ai-orchestrator` 拥有（写）：`approval_tasks` / `audit_logs` / `agents` / `reports` / `knowledge` / `snmp` / `ipmi` 资产
+> - `query-api` 拥有（写）：`users` / `clusters` / `devices` / `topology_*` / `alert_*` / `platform_settings` / `llm_*` / `tenants`
+> 二者共用同一 MySQL `aiops` 库，职责分离，避免跨服务写权限冲突。
 
 ### P1c — flow 引擎 MVP
 
