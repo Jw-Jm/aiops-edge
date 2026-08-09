@@ -235,12 +235,25 @@ func loadAlertEvents() {
 		alertEvents = append(alertEvents, AlertEvent{
 			ID: e.ID, RuleID: e.RuleID, RuleName: e.RuleName, Service: e.Service,
 			Severity: e.Severity, Message: e.Message, Value: e.Value, Threshold: e.Threshold,
-			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
-			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
-			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
+			Timestamp: fromMySQLTime(e.Timestamp), Count: e.Count, FirstTimestamp: fromMySQLTime(e.FirstTimestamp),
+			LastTimestamp: fromMySQLTime(e.LastTimestamp), Status: e.Status, AcknowledgedAt: fromMySQLTime(e.AcknowledgedAt),
+			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: fromMySQLTime(e.ResolvedAt), ResolvedBy: e.ResolvedBy,
 			Timeline: e.Timeline, Investigation: e.Investigation, Signature: e.Signature,
 		})
 	}
+}
+
+// fromMySQLTime 把 MySQL datetime（2026-08-09 04:28:59）转回 RFC3339（2026-08-09T04:28:59Z）。
+// 解析失败或空串原样返回（兼容已是 RFC3339 的历史值）。
+func fromMySQLTime(s string) string {
+	if s == "" {
+		return ""
+	}
+	t, err := time.Parse("2006-01-02 15:04:05", s)
+	if err != nil {
+		return s
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func saveAlertEvents() {
@@ -753,6 +766,26 @@ func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
 	if rule.Service == "" {
 		respondError(w, http.StatusBadRequest, "service is required")
 		return
+	}
+	// burn_rate 规则：仅支持 error_rate 指标 + availability 型 SLO（否则静默永不触发）
+	if rule.Type == "burn_rate" {
+		if rule.Metric != "error_rate" {
+			respondError(w, http.StatusBadRequest, "burn_rate 规则仅支持 error_rate 指标")
+			return
+		}
+		if rule.SLOID != "" {
+			dao := &store.SLOTargetDAO{}
+			if slo, err := dao.Get(rule.SLOID); err != nil {
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			} else if slo == nil {
+				respondError(w, http.StatusBadRequest, "SLO 目标不存在")
+				return
+			} else if slo.SLOType != "availability" {
+				respondError(w, http.StatusBadRequest, "burn_rate 仅支持 availability 型 SLO（烧毁率基于错误预算）")
+				return
+			}
+		}
 	}
 
 	rule.ID = generateID()

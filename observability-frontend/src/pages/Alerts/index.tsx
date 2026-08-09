@@ -249,7 +249,9 @@ const AlertRulesTab: React.FC = () => {
           </Form.Item>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <Form.Item name="type" label="告警类型" rules={[{ required: true }]}>
-              <Select>
+              <Select onChange={(v: string) => {
+                if (v === 'burn_rate') form.setFieldValue('metric', 'error_rate')
+              }}>
                 <Option value="threshold">阈值告警</Option>
                 <Option value="mutation">突变告警</Option>
                 <Option value="anomaly">异常检测</Option>
@@ -262,7 +264,7 @@ const AlertRulesTab: React.FC = () => {
               </Select>
             </Form.Item>
             <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}>
-              <Select>
+              <Select disabled={ruleType === 'burn_rate'} placeholder={ruleType === 'burn_rate' ? '烧毁率基于错误率' : '选择指标'}>
                 <Option value="error_rate">错误率</Option>
                 <Option value="latency_p99">P99 延迟</Option>
                 <Option value="call_count">调用量</Option>
@@ -299,10 +301,10 @@ const AlertRulesTab: React.FC = () => {
             </div>
           )}
           {ruleType === 'burn_rate' && (
-            <Form.Item name="slo_id" label="SLO 目标" rules={[{ required: true, message: '请选择 SLO 目标' }]} extra="烧毁率基于所选 SLO 的错误预算">
-              <Select placeholder="选择 SLO 目标">
-                {sloList.filter((s) => s.enabled).map((s) => (
-                  <Option key={s.id} value={s.id}>{s.service} · {s.name} ({s.slo_type === 'latency' ? `${s.target}ms` : `${s.target}%`})</Option>
+            <Form.Item name="slo_id" label="SLO 目标" rules={[{ required: true, message: '请选择 SLO 目标' }]} extra="烧毁率基于所选 SLO 的错误预算（仅 availability 型）">
+              <Select placeholder="选择 availability 型 SLO 目标">
+                {sloList.filter((s) => s.enabled && s.slo_type === 'availability').map((s) => (
+                  <Option key={s.id} value={s.id}>{s.service} · {s.name} ({s.target}%)</Option>
                 ))}
               </Select>
             </Form.Item>

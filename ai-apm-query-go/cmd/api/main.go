@@ -29,14 +29,15 @@ func main() {
 		fmt.Sscanf(p, "%d", chPort)
 	}
 
+	// MySQL：先建表/迁移（EnsureSchema），再初始化 handler 加载规则，
+	// 确保 alert_rules 的新列（baseline_seconds 等）在 loadAlertRules 前已存在
+	store.EnsureSchema()
+
 	handler := api.NewHandler(*chHost, *chPort)
 	if vmURL := os.Getenv("VICTORIA_METRICS_URL"); vmURL != "" {
 		handler.SetVMURL(vmURL)
 	}
 	handler.StartAlertEvaluation()
-
-	// MySQL：先建表（EnsureSchema），再种子数据，确保告警规则等落 MySQL 成功
-	store.EnsureSchema()
 	if db := store.GetDB(); db != nil {
 		if adminHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost); err == nil {
 			_ = (&store.UserDAO{}).SeedAdmin(string(adminHash))
