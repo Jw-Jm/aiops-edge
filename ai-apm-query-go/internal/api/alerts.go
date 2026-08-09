@@ -194,6 +194,7 @@ func loadAlertRules() {
 			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 			Cooldown: r.Cooldown, Dampening: r.Dampening,
+			BaselineSeconds: r.BaselineSeconds, AnomalyMethod: r.AnomalyMethod, SLOID: r.SLOID,
 		})
 	}
 }
@@ -208,6 +209,7 @@ func saveAlertRules() {
 			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 			Cooldown: r.Cooldown, Dampening: r.Dampening,
+			BaselineSeconds: r.BaselineSeconds, AnomalyMethod: r.AnomalyMethod, SLOID: r.SLOID,
 		})
 	}
 	alertRulesMu.RUnlock()
@@ -861,7 +863,7 @@ func (h *Handler) evaluateAlerts() {
 		if !breached && rule.Type == "anomaly" {
 			if current, anom := h.evaluateRuleAnomaly(rule); anom {
 				breached = true
-				log.Printf("ANOMALY: %s current=%.2f (method=%s, threshold=%.1f)", rule.Name, current, rule.AnomalyMethod, rule.Threshold)
+				log.Printf("ANOMALY: %s current=%.2f (method=%s)", rule.Name, current, rule.AnomalyMethod)
 			}
 		}
 
@@ -1061,12 +1063,12 @@ func (h *Handler) evaluateRuleAnomaly(rule AlertRule) (float64, bool) {
 	}
 	current := series[len(series)-1]
 	hist := series[:len(series)-1]
-	score, anom := ComputeAnomaly(hist, current, method, rule.Threshold)
-	if rule.Threshold <= 0 {
+	threshold := rule.Threshold
+	if threshold <= 0 {
 		// 默认阈值：zscore=3 / mad=3.5
-		_, anom = ComputeAnomaly(hist, current, method, defaultAnomalyThreshold(method))
+		threshold = defaultAnomalyThreshold(method)
 	}
-	_ = score
+	_, anom := ComputeAnomaly(hist, current, method, threshold)
 	return current, anom
 }
 

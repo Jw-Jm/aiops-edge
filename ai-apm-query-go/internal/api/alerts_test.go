@@ -160,3 +160,73 @@ func TestEvaluateRuleAnomalyInsufficientData(t *testing.T) {
 		t.Fatalf("insufficient data should not trigger")
 	}
 }
+
+// TestEvaluateRuleAnomalyDefaultThreshold 验证 Threshold<=0 时用默认 zscore=3。
+func TestEvaluateRuleAnomalyDefaultThreshold(t *testing.T) {
+	var vals [][2]interface{}
+	for i := 0; i < 15; i++ {
+		v := "10"
+		if i == 14 {
+			v = "50" // 突刺，zscore≈4>3 应触发（默认阈值）
+		}
+		vals = append(vals, [2]interface{}{1710000000 + int64(i*60), v})
+	}
+	srv := mockVM(t, vals)
+	defer srv.Close()
+
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rule := AlertRule{Name: "anom4", Type: "anomaly", Service: "payments",
+		Metric: "error_rate", BaselineSeconds: 900, AnomalyMethod: "zscore", Threshold: 0}
+	_, breached := h.evaluateRuleAnomaly(rule)
+	if !breached {
+		t.Fatalf("default zscore threshold=3 should flag spike")
+	}
+}
+
+// TestEvaluateRuleAnomalyMADMethod 验证 MAD 方法路径。
+func TestEvaluateRuleAnomalyMADMethod(t *testing.T) {
+	// 基线含一个温和离群点，但 MAD 稳健；最后一点强突刺才触发
+	var vals [][2]interface{}
+	for i := 0; i < 15; i++ {
+		v := "10"
+		if i == 3 {
+			v = "25" // 温和离群，不触发
+		}
+		if i == 14 {
+			v = "50" // 强突刺触发
+		}
+		vals = append(vals, [2]interface{}{1710000000 + int64(i*60), v})
+	}
+	srv := mockVM(t, vals)
+	defer srv.Close()
+
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rule := AlertRule{Name: "anom5", Type: "anomaly", Service: "payments",
+		Metric: "error_rate", BaselineSeconds: 900, AnomalyMethod: "mad", Threshold: 3.5}
+	_, breached := h.evaluateRuleAnomaly(rule)
+	if !breached {
+		t.Fatalf("mad should flag strong spike (50)")
+	}
+}
+
+// TestEvaluateRuleAnomalyEmptyMethod 验证 AnomalyMethod 为空默认 zscore。
+func TestEvaluateRuleAnomalyEmptyMethod(t *testing.T) {
+	var vals [][2]interface{}
+	for i := 0; i < 15; i++ {
+		v := "10"
+		if i == 14 {
+			v = "50"
+		}
+		vals = append(vals, [2]interface{}{1710000000 + int64(i*60), v})
+	}
+	srv := mockVM(t, vals)
+	defer srv.Close()
+
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rule := AlertRule{Name: "anom6", Type: "anomaly", Service: "payments",
+		Metric: "error_rate", BaselineSeconds: 900, Threshold: 3} // AnomalyMethod 空
+	_, breached := h.evaluateRuleAnomaly(rule)
+	if !breached {
+		t.Fatalf("empty method should default to zscore and flag spike")
+	}
+}
