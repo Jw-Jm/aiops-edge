@@ -44,9 +44,6 @@ spec:
               value: {{ .Values.aiOrchestrator.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
-            - name: CLICKHOUSE_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
             - name: MYSQL_HOST

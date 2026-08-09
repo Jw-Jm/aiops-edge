@@ -30,9 +30,6 @@ spec:
               value: {{ .Values.queryApi.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
-            - name: CLICKHOUSE_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
             - name: VICTORIA_METRICS_URL
               value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
             - name: JWT_SECRET

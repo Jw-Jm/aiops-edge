@@ -29,9 +29,6 @@ spec:
               value: {{ .Values.ingest.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
-            - name: CLICKHOUSE_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
             # DeepFlow 同步：host 为空则禁用同步器
             - name: DEEPFLOW_CH_HOST
               value: {{ .Values.ingest.deepflowChHost | quote }}
