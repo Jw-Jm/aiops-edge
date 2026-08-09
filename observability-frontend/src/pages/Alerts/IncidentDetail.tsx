@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Card, Descriptions, Tag, Button, Spin, Timeline, Space, message } from 'antd'
-import { getAlertEventByID, ackAlertEvent, resolveAlertEvent, rcaAlertAnalysis } from '../../api/client'
+import { getAlertEventByID, ackAlertEvent, resolveAlertEvent, rcaAlertAnalysis, saveAlertInvestigation } from '../../api/client'
 import { fmtLocalTime } from '../../utils/date'
 
 const STATUS_COLOR: Record<string, string> = { firing: 'red', acknowledged: 'orange', resolved: 'green' }
@@ -17,7 +17,10 @@ const IncidentDetail: React.FC = () => {
     setLoading(true)
     try {
       const r = await getAlertEventByID(id!)
-      setEv(r?.data)
+      const data = r?.data
+      setEv(data)
+      // 若事件已有持久化的调查结果则直接展示
+      if (data?.investigation) setRca(data.investigation)
     } catch {
       message.error('加载告警失败')
     } finally {
@@ -57,9 +60,14 @@ const IncidentDetail: React.FC = () => {
         rule_id: ev.rule_id,
         rule_name: ev.rule_name,
       })
-      setRca(res?.data?.analysis || res?.data?.result || '无分析结果')
+      const analysis = res?.data?.analysis || res?.data?.result || '无分析结果'
+      setRca(analysis)
+      // 持久化调查结果到事件（刷新后仍保留）
+      try {
+        await saveAlertInvestigation(ev.id, analysis)
+      } catch { /* 持久化失败不影响展示 */ }
     } catch {
-      setRca('根因分析失败')
+      setRca('调查失败')
     }
   }
 
@@ -74,7 +82,7 @@ const IncidentDetail: React.FC = () => {
         <Tag color={STATUS_COLOR[ev.status] || 'blue'}>{ev.status}</Tag>
         <Button size="small" onClick={onAck} disabled={ev.status !== 'firing'}>确认</Button>
         <Button size="small" onClick={onResolve} disabled={ev.status === 'resolved'}>解决</Button>
-        <Button size="small" onClick={onRCA} type="primary">AI 根因分析</Button>
+        <Button size="small" onClick={onRCA} type="primary">调查</Button>
         <Button size="small" onClick={() => navigate('/alerts')}>返回</Button>
       </Space>
       <Descriptions column={2} size="small">

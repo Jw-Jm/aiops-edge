@@ -463,9 +463,34 @@ func (h *Handler) AlertEventRouter(w http.ResponseWriter, r *http.Request) {
 		h.AlertEventAck(w, r)
 	case strings.HasSuffix(p, "/resolve"):
 		h.AlertEventResolve(w, r)
+	case strings.HasSuffix(p, "/investigation"):
+		h.AlertEventInvestigation(w, r)
 	default:
 		h.AlertEventByID(w, r)
 	}
+}
+
+// AlertEventInvestigation handles POST /api/v1/alerts/events/{id}/investigation
+// 持久化该事件的调查结果（RCA 分析 JSON）。
+func (h *Handler) AlertEventInvestigation(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
+	id = strings.TrimSuffix(id, "/investigation")
+	id = strings.TrimRight(id, "/")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "event id required")
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Investigation string `json:"investigation"`
+	}
+	_ = json.Unmarshal(body, &req)
+	if req.Investigation == "" {
+		respondError(w, http.StatusBadRequest, "investigation required")
+		return
+	}
+	saveInvestigation(id, req.Investigation)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "event_id": id})
 }
 
 // AlertEventByID handles GET /api/v1/alerts/events/{id}

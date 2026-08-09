@@ -105,6 +105,8 @@ export const getAlertEvents = (params?: Record<string, unknown>) => api.get('/al
 export const getAlertEventByID = (id: string) => api.get(`/alerts/events/${id}`)
 export const ackAlertEvent = (id: string) => api.post(`/alerts/events/${id}/ack`)
 export const resolveAlertEvent = (id: string) => api.post(`/alerts/events/${id}/resolve`)
+export const saveAlertInvestigation = (id: string, investigation: string) =>
+  api.post(`/alerts/events/${id}/investigation`, { investigation })
 
 // Alert → RCA (告警根因分析联动)
 export const rcaAlertAnalysis = (data: Record<string, unknown>) =>
