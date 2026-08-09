@@ -66,3 +66,60 @@ func TestSpanIDStableAndUnique(t *testing.T) {
 	}
 	_ = time.Now()
 }
+
+func TestAssembleLogsErrorModeHighErr(t *testing.T) {
+	rng := rand.New(rand.NewSource(5))
+	logs := assembleLogs(1, []string{"payments"}, 100, 0.1, "error", rng)
+	if len(logs) != 100 {
+		t.Fatalf("expected 100 logs, got %d", len(logs))
+	}
+	// error 模式下大部分应为 ERROR/FATAL
+	errCnt := 0
+	for _, l := range logs {
+		if l.SeverityText == "ERROR" || l.SeverityText == "FATAL" {
+			errCnt++
+		}
+	}
+	if errCnt < 50 {
+		t.Fatalf("error mode should produce high error logs, got %d/100", errCnt)
+	}
+	// 每条日志带 service.name 属性
+	hasSvc := false
+	for _, a := range logs[0].Attributes {
+		if a["key"] == "service.name" {
+			hasSvc = true
+		}
+	}
+	if !hasSvc {
+		t.Fatal("log should carry service.name attribute")
+	}
+}
+
+func TestAssembleLogsSteadyLowErr(t *testing.T) {
+	rng := rand.New(rand.NewSource(6))
+	logs := assembleLogs(1, []string{"orders"}, 200, 0.05, "steady", rng)
+	errCnt := 0
+	for _, l := range logs {
+		if l.SeverityText == "ERROR" || l.SeverityText == "FATAL" {
+			errCnt++
+		}
+	}
+	// steady 模式错误比例应较低（~5% ± 容差）
+	if errCnt > 60 {
+		t.Fatalf("steady mode should have low error rate, got %d/200", errCnt)
+	}
+}
+
+func TestAssembleLogsFatalIncluded(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	logs := assembleLogs(1, []string{"checkout"}, 500, 0.9, "steady", rng)
+	fatalCnt := 0
+	for _, l := range logs {
+		if l.SeverityText == "FATAL" {
+			fatalCnt++
+		}
+	}
+	if fatalCnt == 0 {
+		t.Fatal("high error rate should include some FATAL logs")
+	}
+}
