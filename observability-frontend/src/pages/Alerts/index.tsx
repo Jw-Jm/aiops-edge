@@ -23,13 +23,15 @@ interface AlertRule {
   id: string
   name: string
   service: string
-  type: 'threshold' | 'mutation'
+  type: 'threshold' | 'mutation' | 'anomaly' | 'forecast' | 'burn_rate' | 'metric_raw' | 'log' | 'trace_latency' | 'trace_error_rate'
   metric: string
   condition: string
   threshold: number
   duration: number
   severity: 'critical' | 'warning' | 'info'
   enabled: boolean
+  cooldown?: number
+  dampening?: number
 }
 
 interface AlertEvent {
@@ -231,6 +233,13 @@ const AlertRulesTab: React.FC = () => {
               <Select>
                 <Option value="threshold">阈值告警</Option>
                 <Option value="mutation">突变告警</Option>
+                <Option value="anomaly">异常检测</Option>
+                <Option value="forecast">预测偏差</Option>
+                <Option value="burn_rate">燃尽率</Option>
+                <Option value="metric_raw">原始指标</Option>
+                <Option value="log">日志</Option>
+                <Option value="trace_latency">链路延迟</Option>
+                <Option value="trace_error_rate">链路错误率</Option>
               </Select>
             </Form.Item>
             <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}>
@@ -264,6 +273,14 @@ const AlertRulesTab: React.FC = () => {
               <Option value="info">信息 (Info)</Option>
             </Select>
           </Form.Item>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Form.Item name="cooldown" label="冷却(分钟)" tooltip="冷却期内不重复告警，0=不启用">
+              <InputNumber min={0} style={{ width: 140 }} placeholder="0" />
+            </Form.Item>
+            <Form.Item name="dampening" label="连续确认" tooltip="连续 N 次触发才告警，1=立即">
+              <InputNumber min={1} style={{ width: 140 }} placeholder="1" />
+            </Form.Item>
+          </div>
         </Form>
       </Modal>
     </Card>
