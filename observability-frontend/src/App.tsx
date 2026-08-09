@@ -50,6 +50,7 @@ const Reports = lazy(() => import('./pages/Reports'))
 const Catalog = lazy(() => import('./pages/Catalog'))
 const Devices = lazy(() => import('./pages/Devices'))
 const Clusters = lazy(() => import('./pages/Clusters'))
+const Infrastructure = lazy(() => import('./pages/Infrastructure'))
 const Snmp = lazy(() => import('./pages/SNMP'))
 const Hardware = lazy(() => import('./pages/Hardware'))
 const Mcp = lazy(() => import('./pages/Mcp'))
@@ -73,6 +74,7 @@ const menuGroups = [
       { key: '/topology/catalog', icon: <ApartmentOutlined />, label: '拓扑目录' },
       { key: '/traces', icon: <NodeIndexOutlined />, label: '链路追踪' },
       { key: '/logs', icon: <FileSearchOutlined />, label: '日志查询' },
+      { key: '/deepflow', icon: <CloudServerOutlined />, label: 'DeepFlow' },
     ],
   },
   {
@@ -121,6 +123,7 @@ const menuGroups = [
       { key: '/catalog', icon: <ClusterOutlined />, label: '服务目录' },
       { key: '/devices', icon: <DesktopOutlined />, label: '设备管理' },
       { key: '/clusters', icon: <CloudServerOutlined />, label: '集群管理' },
+      { key: '/infrastructure', icon: <ControlOutlined />, label: 'K8s 资源' },
       { key: '/snmp', icon: <ClusterOutlined />, label: 'SNMP 网络设备' },
       { key: '/hardware', icon: <HddOutlined />, label: '硬件健康' },
     ],
@@ -283,6 +286,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/catalog" element={<Catalog />} />
                 <Route path="/devices" element={<Devices />} />
                 <Route path="/clusters" element={<Clusters />} />
+                <Route path="/infrastructure" element={<Infrastructure />} />
                 <Route path="/snmp" element={<Snmp />} />
                 <Route path="/hardware" element={<Hardware />} />
                 <Route path="/mcp" element={<Mcp />} />
