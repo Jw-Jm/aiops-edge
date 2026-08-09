@@ -228,6 +228,25 @@ export const createSLO = (data: Record<string, unknown>) => api.post('/slo', dat
 export const updateSLO = (id: string, data: Record<string, unknown>) => api.put(`/slo/${id}`, data)
 export const deleteSLO = (id: string) => api.delete(`/slo/${id}`)
 
+// ===== Monitor 看板面板 =====
+export interface DashboardPanel {
+  id: string
+  title: string
+  query: string
+  chart_type: string   // line | bar | area | gauge | table
+  grid_x: number
+  grid_y: number
+  grid_w: number
+  grid_h: number
+  span: number
+  sort: number
+  enabled: boolean
+}
+export const listPanels = () => api.get('/dashboard/panels')
+export const createPanel = (data: Record<string, unknown>) => api.post('/dashboard/panels', data)
+export const updatePanel = (id: string, data: Record<string, unknown>) => api.put(`/dashboard/panels/${id}`, data)
+export const deletePanel = (id: string) => api.delete(`/dashboard/panels/${id}`)
+
 // ===== 集群管理 =====
 export interface ClusterItem {
   id: number; name: string; provider: string; region: string; version: string
