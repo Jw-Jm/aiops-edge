@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, InputNumber, Switch, message } from 'antd'
+import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, InputNumber, Switch, message, Popconfirm } from 'antd'
 import { PlusOutlined, ReloadOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
 import { listSLOs, createSLO, updateSLO, deleteSLO, SLOTarget } from '../../api/client'
 
@@ -33,18 +33,21 @@ const SLO: React.FC = () => {
   }
   const openEdit = (d: SLOTarget) => {
     setEditing(d)
-    form.setFieldsValue(d)
+    // 窗口字段以"天"为单位录入：编辑时把秒转天，保存时再转回秒
+    form.setFieldsValue({ ...d, window_seconds: Math.round((d.window_seconds || 0) / 86400) })
     setModalOpen(true)
   }
 
   const handleSave = async () => {
     const v = await form.validateFields()
     try {
+      // 窗口以天录入，落库为秒
+      const payload = { ...v, window_seconds: Math.round((v.window_seconds || 30) * 86400) }
       if (editing) {
-        await updateSLO(editing.id, v)
+        await updateSLO(editing.id, payload)
         message.success('已更新')
       } else {
-        await createSLO(v)
+        await createSLO(payload)
         message.success('已创建')
       }
       setModalOpen(false); fetch()
@@ -71,7 +74,9 @@ const SLO: React.FC = () => {
       render: (_: unknown, r: SLOTarget) => (
         <Space>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
-          <Button size="small" type="link" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r.id)}>删除</Button>
+          <Popconfirm title={`确定删除 SLO「${r.name}」？`} description="删除后烧毁率监控一并移除，不可恢复" onConfirm={() => handleDelete(r.id)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+            <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ) },
   ]
@@ -110,8 +115,8 @@ const SLO: React.FC = () => {
           <Form.Item name="target" label="目标值">
             <InputNumber min={0} step={0.1} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="window_seconds" label="SLO 窗口（秒，30天=2592000）">
-            <InputNumber min={60} step={86400} style={{ width: '100%' }} />
+          <Form.Item name="window_seconds" label="SLO 窗口（天）" extra="统计窗口，即多长时间内衡量是否达标（如 30 天）">
+            <InputNumber min={1} max={365} step={1} style={{ width: '100%' }} />
           </Form.Item>
           <Form.Item name="enabled" label="启用" valuePropName="checked">
             <Switch />

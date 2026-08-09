@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Button, Modal, Form, Input, message, Drawer } from 'antd'
+import { Card, Table, Tag, Space, Button, Modal, Form, Input, message, Drawer, Popconfirm } from 'antd'
 import { ReloadOutlined, DeleteOutlined, CloudSyncOutlined, ClusterOutlined, DatabaseOutlined } from '@ant-design/icons'
 import { listClusters, syncClusters, updateCluster, deleteCluster, listClusterNodes, ClusterItem, ClusterNodeItem } from '../../api/client'
 
@@ -71,7 +71,9 @@ const Clusters: React.FC = () => {
         <Space>
           <Button size="small" icon={<DatabaseOutlined />} onClick={() => openNodes(r)}>节点</Button>
           <Button size="small" onClick={() => openEdit(r)}>编辑</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r.id)}>删除</Button>
+          <Popconfirm title={`确定删除集群「${r.name}」？`} description="删除后集群节点数据将一并移除，不可恢复" onConfirm={() => handleDelete(r.id)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ) },
   ]

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Input, Button, Modal, Form, message, Typography, Select } from 'antd'
+import { Card, Table, Tag, Space, Input, Button, Modal, Form, message, Typography, Select, Popconfirm } from 'antd'
 import { PlusOutlined, SearchOutlined, ReloadOutlined, DeleteOutlined, CodeOutlined } from '@ant-design/icons'
 import api from '../../api/client'
 
@@ -73,7 +73,9 @@ const Knowledge: React.FC = () => {
     { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 180 },
     { title: '操作', key: 'action', width: 80, fixed: 'right' as const,
       render: (_: unknown, r: KnowledgeItem) => (
-        <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r.id)}>删除</Button>
+        <Popconfirm title={`确定删除知识条目「${r.title || r.id}」？`} description="删除后 AI 诊断将不再引用该知识，不可恢复" onConfirm={() => handleDelete(r.id)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+          <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+        </Popconfirm>
       ) },
   ]
 

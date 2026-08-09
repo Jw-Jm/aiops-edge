@@ -68,6 +68,12 @@ const WorkflowDetail: React.FC = () => {
 
   const statusColor = (s?: string) => s === 'success' || s === 'completed' ? 'green' : s === 'running' || s === 'pending' ? 'blue' : s === 'failed' ? 'red' : 'default'
 
+  // 运行状态英文 → 中文
+  const runStatusText = (s?: string) => ({
+    succeeded: '已成功', success: '已成功', completed: '已完成', failed: '已失败', running: '执行中',
+    pending: '等待中', waiting_approval: '待审批', cancelled: '已取消',
+  } as Record<string, string>)[s || ''] || s || '—'
+
   return (
     <div style={{ padding: 4 }}>
       <Space style={{ marginBottom: 16 }}>
@@ -125,7 +131,7 @@ const WorkflowDetail: React.FC = () => {
               children: (
                 <div>
                   <Space>
-                    <Tag color={statusColor(run.status)}>{run.status || '—'}</Tag>
+                    <Tag color={statusColor(run.status)}>{runStatusText(run.status)}</Tag>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>{run.triggered_at || run.run_id || ''}</Typography.Text>
                   </Space>
                   {run.result && <div style={{ fontSize: 12, marginTop: 4, whiteSpace: 'pre-wrap' }}>{String(run.result).slice(0, 200)}</div>}

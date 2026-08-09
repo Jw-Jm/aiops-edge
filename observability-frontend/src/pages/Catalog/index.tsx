@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, message } from 'antd'
+import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, message, Popconfirm } from 'antd'
 import { PlusOutlined, ReloadOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
 import { listCatalog, createCatalog, updateCatalog, deleteCatalog, CatalogItem } from '../../api/client'
 
@@ -71,7 +71,9 @@ const Catalog: React.FC = () => {
       render: (_: unknown, r: CatalogItem) => (
         <Space>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r.id)}>删除</Button>
+          <Popconfirm title={`确定删除服务「${r.display_name || r.service_name}」？`} description="删除后不可恢复" onConfirm={() => handleDelete(r.id)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ) },
   ]

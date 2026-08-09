@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Card, Col, Row, Tag, message, Spin, Button, Modal, Form, Input } from 'antd'
+import { Card, Col, Row, Tag, message, Spin, Button, Modal, Form, Input, Popconfirm } from 'antd'
 import { listAgents, createAgent, updateAgent, deleteAgent } from '../../api/client'
 
 interface AgentForm {
@@ -95,7 +95,9 @@ const Agents: React.FC = () => {
               extra={
                 <span>
                   <a onClick={() => openEdit(a)} style={{ color: '#60a5fa', marginRight: 8 }}>编辑</a>
-                  <a onClick={() => onDelete(a)} style={{ color: '#ef4444' }}>删除</a>
+                  <Popconfirm title={`确定删除助理「${a.name}」？`} description="删除后不可恢复" onConfirm={() => onDelete(a)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+                    <a style={{ color: '#ef4444' }}>删除</a>
+                  </Popconfirm>
                 </span>
               }
             >

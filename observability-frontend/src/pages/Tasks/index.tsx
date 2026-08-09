@@ -374,7 +374,7 @@ const Tasks: React.FC = () => {
             {selected.plan && (
               <>
                 <Paragraph><Text strong>执行计划</Text></Paragraph>
-                <pre style={{ fontSize: 12, background: '#f0f5ff', padding: 12, borderRadius: 6, maxHeight: 200, overflow: 'auto', whiteSpace: 'pre-wrap', border: '1px solid #d6e4ff' }}>
+                <pre style={{ fontSize: 12, background: 'var(--surface-2)', padding: 12, borderRadius: 6, maxHeight: 200, overflow: 'auto', whiteSpace: 'pre-wrap', border: '1px solid var(--border)', color: 'var(--text)' }}>
                   {selected.plan}
                 </pre>
               </>
@@ -382,7 +382,7 @@ const Tasks: React.FC = () => {
             {selected.report && (
               <>
                 <Paragraph><Text strong>执行报告</Text></Paragraph>
-                <pre style={{ fontSize: 12, background: selected.status === 'done' ? '#f6ffed' : '#fff7e6', padding: 12, borderRadius: 6, maxHeight: 200, overflow: 'auto', whiteSpace: 'pre-wrap', border: `1px solid ${selected.status === 'done' ? '#b7eb8f' : '#ffd591'}` }}>
+                <pre style={{ fontSize: 12, background: 'var(--surface-2)', padding: 12, borderRadius: 6, maxHeight: 200, overflow: 'auto', whiteSpace: 'pre-wrap', border: '1px solid var(--border)', color: 'var(--text)' }}>
                   {selected.report}
                 </pre>
               </>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, Switch, message, Typography } from 'antd'
+import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, Switch, message, Typography, Popconfirm } from 'antd'
 import { PlusOutlined, ReloadOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
 import api from '../../api/client'
 
@@ -89,13 +89,28 @@ const Rules: React.FC = () => {
     { title: '启用', dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (v: boolean, r: Rule) => <Switch size="small" checked={!!v} onChange={() => handleToggle(r)} /> },
     { title: '条件', dataIndex: 'conditions_json', key: 'conditions_json', ellipsis: true,
-      render: (v: any) => v ? <Text code style={{ fontSize: 11 }}>{typeof v === 'string' ? v : JSON.stringify(v)}</Text> : '-' },
+      render: (v: any) => {
+        if (!v) return '-'
+        // 解析条件 JSON 为可读的"指标 操作 阈值"摘要，降低原始 JSON 的理解门槛
+        let conds: any = v
+        if (typeof v === 'string') { try { conds = JSON.parse(v) } catch { return <Text code style={{ fontSize: 11 }}>{v}</Text> } }
+        const arr = Array.isArray(conds) ? conds : [conds]
+        const opText: Record<string, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=', ne: '≠', contains: '包含' }
+        const summary = arr
+          .filter((c: any) => c)
+          .map((c: any) => `${c.metric || c.field || c.name || ''} ${opText[c.op] || c.op || ''} ${c.threshold ?? c.value ?? ''}`)
+          .filter(Boolean)
+          .join(' 且 ')
+        return summary ? <Typography.Text style={{ fontSize: 12 }}>{summary}</Typography.Text> : <Text code style={{ fontSize: 11 }}>{typeof v === 'string' ? v : JSON.stringify(v)}</Text>
+      } },
     { title: '操作', key: 'action', width: 130, fixed: 'right' as const,
       render: (_: unknown, r: Rule) => (
         <Space>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
           {r.source_type !== 'builtin' && (
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r.rule_key)}>删除</Button>
+            <Popconfirm title={`确定删除规则「${r.name}」？`} description="删除后该规则不再生效，不可恢复" onConfirm={() => handleDelete(r.rule_key)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+              <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+            </Popconfirm>
           )}
         </Space>
       ) },

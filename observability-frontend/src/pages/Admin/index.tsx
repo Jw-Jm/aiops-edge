@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  Tabs, Table, Button, Form, Input, Select, Modal, message, Space, Tag, Typography,
+  Tabs, Table, Button, Form, Input, Select, Modal, message, Space, Tag, Typography, Popconfirm,
 } from 'antd'
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
@@ -235,7 +235,10 @@ function ClustersTab() {
                 <Button size="small" onClick={() => { form.setFieldsValue({ id: r.id, name: r.name, provider: r.provider, api_server: r.api_server }); setModal(true) }}>
                   编辑
                 </Button>
-                <Button size="small" danger onClick={async () => { await deleteCluster(r.id); fetchClusters() }}>删除</Button>
+                <Popconfirm title={`确定删除集群「${r.name}」？`} description="删除后不可恢复" okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
+                  onConfirm={async () => { await deleteCluster(r.id); fetchClusters() }}>
+                  <Button size="small" danger>删除</Button>
+                </Popconfirm>
               </Space>
             ),
           },

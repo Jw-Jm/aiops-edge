@@ -155,13 +155,16 @@ const ChatThread: React.FC = () => {
           </div>
         ))}
         {toolCards.map((t) => {
+          // agent_type / status 英文 → 中文，降低理解门槛
+          const agentText = { coordinator: '主控', subagent: '子 Agent', reviewer: '审阅', tool: '工具' }[t.agent_type || 'tool'] || t.agent_type || '工具'
           const tagColor = t.agent_type === 'coordinator' ? 'purple' : t.agent_type === 'reviewer' ? 'orange' : t.agent_type === 'subagent' ? 'blue' : 'default'
+          const statusText = t.status === 'success' ? '成功' : t.status === 'pending' ? '执行中' : t.status === 'error' ? '失败' : t.status || ''
           return (
             <div key={t.tool_call_id} style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', marginBottom: 6, background: 'var(--surface-2)', borderRadius: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Tag color={tagColor}>{t.agent_type || 'tool'}</Tag>
+                <Tag color={tagColor}>{agentText}</Tag>
                 <span style={{ fontSize: 12, color: 'var(--text)' }}>⚙️ {t.name}</span>
-                <span style={{ fontSize: 11, color: t.status === 'success' ? '#22c55e' : '#a1a1aa' }}>{t.status}</span>
+                <span style={{ fontSize: 11, color: t.status === 'success' ? '#22c55e' : '#a1a1aa' }}>{statusText}</span>
               </div>
               {t.agent_type === 'subagent' && t.tool_trace && t.tool_trace.length > 0 && (
                 <div style={{ marginLeft: 24, fontSize: 11, color: 'var(--text-muted)' }}>

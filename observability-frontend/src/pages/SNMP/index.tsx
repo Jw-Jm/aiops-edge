@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, message, Drawer, Alert, Typography } from 'antd'
+import { Card, Table, Tag, Space, Button, Modal, Form, Input, Select, message, Drawer, Alert, Typography, Popconfirm } from 'antd'
 import { PlusOutlined, ReloadOutlined, DeleteOutlined, ThunderboltOutlined, ClusterOutlined, SettingOutlined } from '@ant-design/icons'
 
 const { Text, Paragraph } = Typography
@@ -74,7 +74,9 @@ const Snmp: React.FC = () => {
         <Space>
           <Button size="small" icon={<ThunderboltOutlined />} loading={collecting === r.id} onClick={() => handleCollect(r.id)}>采集</Button>
           <Button size="small" onClick={() => openInterfaces(r)}>接口</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r.id)}>删除</Button>
+          <Popconfirm title={`确定删除 SNMP 设备「${r.hostname || r.ip}」？`} description="删除后采集配置一并移除，不可恢复" onConfirm={() => handleDelete(r.id)} okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ) },
   ]

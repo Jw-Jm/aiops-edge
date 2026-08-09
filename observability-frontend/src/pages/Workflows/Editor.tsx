@@ -18,7 +18,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import {
-  Layout, Button, Drawer, Modal, Tag, Input, InputNumber, Select, Space, message, Empty, Typography,
+  Layout, Button, Drawer, Modal, Tag, Input, InputNumber, Select, Space, message, Empty, Typography, Popconfirm,
 } from 'antd'
 import { SaveOutlined, PlayCircleOutlined, ArrowLeftOutlined, DeleteOutlined, HistoryOutlined, PlusOutlined } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -65,6 +65,12 @@ interface FlowNodeData {
 }
 
 type FlowNode = Node<FlowNodeData>
+
+// Run status → 中文标签（降低英文状态理解门槛）
+export const runStatusText: Record<string, string> = {
+  succeeded: '已成功', failed: '已失败', running: '执行中', pending: '等待中',
+  waiting_approval: '待审批', cancelled: '已取消',
+}
 
 // Run status → border color / node style
 const STATUS_STYLE: Record<string, { border: string; bg: string; color: string }> = {
@@ -125,7 +131,7 @@ function FlowNodeComponent({ data, selected }: NodeProps<FlowNode>) {
       <div style={{ fontSize: 12, color: '#f4f4f5', fontWeight: 600, textAlign: 'center' }}>{label}</div>
       {data.runStatus && (
         <div style={{ fontSize: 10, color: style?.color, textAlign: 'center', marginTop: 4 }}>
-          {data.runStatus}
+          {runStatusText[data.runStatus] || data.runStatus}
         </div>
       )}
       {/* Source handles: for multi-port nodes render named handles vertically; single 'next' on right */}
@@ -520,7 +526,7 @@ const WorkflowEditor: React.FC = () => {
           style={{ width: 320 }}
           placeholder="流程描述"
         />
-        {runStatus && <Tag color={runStatus === 'succeeded' ? 'green' : runStatus === 'failed' ? 'red' : runStatus === 'waiting_approval' ? 'orange' : 'blue'}>{runStatus}</Tag>}
+        {runStatus && <Tag color={runStatus === 'succeeded' ? 'green' : runStatus === 'failed' ? 'red' : runStatus === 'waiting_approval' ? 'orange' : 'blue'}>{runStatusText[runStatus] || runStatus}</Tag>}
         <Space style={{ marginLeft: 'auto' }}>
           <Button icon={<HistoryOutlined />} onClick={() => setRunsOpen(true)} disabled={!flowId}>运行记录</Button>
           <Button icon={<DeleteOutlined />} onClick={clearRunVisuals}>清除运行状态</Button>
@@ -599,7 +605,9 @@ const WorkflowEditor: React.FC = () => {
         width={400}
         extra={
           <Space>
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={deleteSelected}>删除节点</Button>
+            <Popconfirm title="确定删除选中节点？" description="删除后不可撤销" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={deleteSelected}>
+              <Button size="small" danger icon={<DeleteOutlined />}>删除节点</Button>
+            </Popconfirm>
           </Space>
         }
       >
@@ -703,10 +711,10 @@ const WorkflowEditor: React.FC = () => {
           <div key={r.id || r.run_id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
             <Space style={{ width: '100%', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12, color: 'var(--text)' }}>
-                {r.run_id || r.id} · {r.status}
+                {r.run_id || r.id} · {runStatusText[r.status] || r.status}
               </span>
               <Tag color={r.status === 'succeeded' ? 'green' : r.status === 'failed' ? 'red' : r.status === 'waiting_approval' ? 'orange' : 'blue'}>
-                {r.status}
+                {runStatusText[r.status] || r.status}
               </Tag>
             </Space>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>

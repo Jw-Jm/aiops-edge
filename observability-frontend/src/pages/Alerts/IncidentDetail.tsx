@@ -5,6 +5,7 @@ import { getAlertEventByID, ackAlertEvent, resolveAlertEvent, rcaAlertAnalysis, 
 import { fmtLocalTime } from '../../utils/date'
 
 const STATUS_COLOR: Record<string, string> = { firing: 'red', acknowledged: 'orange', resolved: 'green' }
+const STATUS_TEXT: Record<string, string> = { firing: '触发中', acknowledged: '已确认', resolved: '已解决' }
 
 const IncidentDetail: React.FC = () => {
   const { id } = useParams()
@@ -118,7 +119,7 @@ const IncidentDetail: React.FC = () => {
       style={{ background: 'var(--surface)', borderColor: 'var(--border)', borderRadius: 10 }}
     >
       <Space style={{ marginBottom: 16 }}>
-        <Tag color={STATUS_COLOR[ev.status] || 'blue'}>{ev.status}</Tag>
+        <Tag color={STATUS_COLOR[ev.status] || 'blue'}>{STATUS_TEXT[ev.status] || ev.status}</Tag>
         <Button size="small" onClick={onAck} disabled={ev.status !== 'firing'}>确认</Button>
         <Button size="small" onClick={onResolve} disabled={ev.status === 'resolved'}>解决</Button>
         <Button size="small" onClick={onRCA} type="primary">调查</Button>
@@ -134,12 +135,12 @@ const IncidentDetail: React.FC = () => {
         <Descriptions.Item label="消息">{ev.message}</Descriptions.Item>
       </Descriptions>
       <Timeline style={{ marginTop: 16 }}>
-        <Timeline.Item color="red">firing · {fmtLocalTime(ev.first_timestamp)}</Timeline.Item>
+        <Timeline.Item color="red">触发 · {fmtLocalTime(ev.first_timestamp)}</Timeline.Item>
         {ev.acknowledged_at && (
-          <Timeline.Item color="orange">acknowledged by {ev.acknowledged_by} · {fmtLocalTime(ev.acknowledged_at)}</Timeline.Item>
+          <Timeline.Item color="orange">已确认（{ev.acknowledged_by}）· {fmtLocalTime(ev.acknowledged_at)}</Timeline.Item>
         )}
         {ev.resolved_at && (
-          <Timeline.Item color="green">resolved by {ev.resolved_by} · {fmtLocalTime(ev.resolved_at)}</Timeline.Item>
+          <Timeline.Item color="green">已解决（{ev.resolved_by}）· {fmtLocalTime(ev.resolved_at)}</Timeline.Item>
         )}
       </Timeline>
       {rca && (
