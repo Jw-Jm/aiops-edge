@@ -86,11 +86,13 @@ func capacityPromQL(metric, instance string) string {
 		// instance 与 mode 必须在同一对大括号内（逗号分隔），不能嵌套大括号
 		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{mode="idle"%s}[5m])) * 100`, instPart)
 	case "memory":
-		return fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes%s / node_memory_MemTotal_bytes%s)`, instSel, instSel)
+		// avg 聚合所有节点/维度为单 series，避免 vmRangeQuery 拼接多条 series
+		return fmt.Sprintf(`avg(100 * (1 - node_memory_MemAvailable_bytes%s / node_memory_MemTotal_bytes%s))`, instSel, instSel)
 	case "disk":
 		return fmt.Sprintf(`avg(1 - node_filesystem_avail_bytes%s / node_filesystem_size_bytes%s) * 100`, instSel, instSel)
 	case "network":
-		return fmt.Sprintf(`rate(node_network_receive_bytes_total%s[5m]) + rate(node_network_transmit_bytes_total%s[5m])`, instSel, instSel)
+		// sum 聚合所有网卡接口为单 series（总带宽），避免 vmRangeQuery 拼接多网卡 series
+		return fmt.Sprintf(`sum(rate(node_network_receive_bytes_total%s[5m]) + rate(node_network_transmit_bytes_total%s[5m]))`, instSel, instSel)
 	}
 	return ""
 }
