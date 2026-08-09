@@ -11,7 +11,7 @@ import {
   BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
   DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
   BookOutlined, ThunderboltFilled, TeamOutlined, ClusterOutlined, DesktopOutlined, HddOutlined,
-  ApiOutlined, ControlOutlined,
+  ApiOutlined, ControlOutlined, LineChartOutlined,
 } from '@ant-design/icons'
 import RequireAuth from './components/RequireAuth'
 
@@ -39,6 +39,7 @@ const Traces = lazy(() => import('./pages/Traces'))
 const TraceDetail = lazy(() => import('./pages/TraceDetail'))
 const Overview = lazy(() => import('./pages/Overview'))
 const Monitor = lazy(() => import('./pages/Monitor'))
+const Capacity = lazy(() => import('./pages/Capacity'))
 const Approvals = lazy(() => import('./pages/Approvals'))
 const Audit = lazy(() => import('./pages/Audit'))
 const Knowledge = lazy(() => import('./pages/Knowledge'))
@@ -82,6 +83,7 @@ const menuGroups = [
     title: '监控',
     items: [
       { key: '/monitor', icon: <RadarChartOutlined />, label: '监控面板' },
+      { key: '/capacity', icon: <LineChartOutlined />, label: '容量预测' },
     ],
   },
   {
@@ -272,6 +274,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/traces/:traceId" element={<TraceDetail />} />
                 <Route path="/logs" element={<Logs />} />
                 <Route path="/monitor" element={<Monitor />} />
+                <Route path="/capacity" element={<Capacity />} />
                 <Route path="/deepflow" element={<DeepFlow />} />
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/alerts/incidents/:id" element={<IncidentDetail />} />
