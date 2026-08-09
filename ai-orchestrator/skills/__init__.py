@@ -11,11 +11,12 @@ from .rag_skill import register_rag_skill
 from .vm_ops import register_vm_skill
 from .alert_ops import register_alert_skill
 from .automation import register_automation_skill
+from .diagnose import register_diagnose_skill
 from .experts import register_experts
 
 
 def init_skills():
-    """注册全部 7 个标准 Skill"""
+    """注册全部标准 Skill"""
     register_observability_skill()
     register_infra_skill()
     register_rca_skill()
@@ -23,6 +24,7 @@ def init_skills():
     register_vm_skill()
     register_alert_skill()
     register_automation_skill()
+    register_diagnose_skill()
 
 
 def init_experts():
