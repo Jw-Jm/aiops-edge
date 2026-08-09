@@ -994,6 +994,14 @@ class BrainOrchestrator:
         reject = policy.check(script)
         if reject:
             return f"命令被安全策略拒绝: {reject}"
+        # 安全加固：拦截 shell 拼接/重定向元字符（防 `kubectl ...; cat /etc/shadow` 注入）
+        if mc := policy.check_shell_metachars(script):
+            return f"命令被安全策略拒绝: {mc}"
+        # 白名单强制：恢复/审批执行也必须落在可执行白名单（readonly/write）内，
+        # 防止绕过 whitelist 执行任意命令（如读任意文件、访问网络）。
+        allowed, category = policy.is_whitelisted_for_execute(script)
+        if not allowed:
+            return "命令不在可执行白名单内，已拒绝执行（可手动在控制台执行）"
         try:
             import subprocess, shlex
             # 逐行执行安全，避免注入

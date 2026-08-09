@@ -78,16 +78,16 @@ func main() {
 	mux.HandleFunc("/api/v1/me", handler.Me)
 
 	// Service catalog (read any, write admin)
-	mux.HandleFunc("/api/v1/catalog/services", handler.CatalogRouter)
-	mux.HandleFunc("/api/v1/catalog/services/", handler.CatalogRouter)
+	mux.HandleFunc("/api/v1/catalog/services", handler.RequireRoleForWrite("admin", handler.CatalogRouter))
+	mux.HandleFunc("/api/v1/catalog/services/", handler.RequireRoleForWrite("admin", handler.CatalogRouter))
 
 	// Devices (read any, write admin)
-	mux.HandleFunc("/api/v1/devices", handler.DeviceRouter)
-	mux.HandleFunc("/api/v1/devices/", handler.DeviceRouter)
+	mux.HandleFunc("/api/v1/devices", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
+	mux.HandleFunc("/api/v1/devices/", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
 
 	// Clusters (read any, write/sync admin)
-	mux.HandleFunc("/api/v1/clusters", handler.ClusterRouter)
-	mux.HandleFunc("/api/v1/clusters/", handler.ClusterRouter)
+	mux.HandleFunc("/api/v1/clusters", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
+	mux.HandleFunc("/api/v1/clusters/", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 
 	// Health (no auth required)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +177,12 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/shell/check", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/mcp/tools", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/mcp/call", handler.ProxyAI)
+	// Hardware / IPMI：代理到 ai-orchestrator（其上有 /ipmi/sensors、/node/health 等端点）。
+	// 经 AuthMiddleware 完成 JWT 鉴权，ProxyAI 注入内部 token，避免直连 orchestrator。
+	mux.HandleFunc("/api/v1/ipmi/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ipmi", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/node/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/node", handler.ProxyAI)
 	// 安全：/api/v1/health 是公开健康端点，必须返回本服务自身状态，
 	// 绝不能接到 ProxyAI（否则会成为未鉴权代理入口，绕到 ai-orchestrator）。
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {

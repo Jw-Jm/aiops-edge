@@ -218,6 +218,24 @@ func hasRole(r *http.Request, role string) bool {
 	return gotRole == role
 }
 
+// RequireRoleForWrite 仅在写方法（POST/PUT/PATCH/DELETE）上要求指定角色，
+// 读方法（GET/HEAD/OPTIONS）放行。用于"读开放、写需 admin"的资源路由
+// （服务目录/设备/集群），避免任意登录用户越权写。
+func (h *Handler) RequireRoleForWrite(role string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next(w, r)
+			return
+		}
+		if !hasRole(r, role) {
+			respondJSON(w, 403, map[string]interface{}{"error": "forbidden: requires admin"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 // AuthMiddleware 鉴权中间件：公开端点放行；内部服务（X-Internal-Token）放行；其余必须 JWT。
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -60,8 +60,10 @@ const Logs: React.FC = () => {
         if (severityFilter && !q.toLowerCase().includes(severityFilter.toLowerCase())) {
           q = `${q} ${severityFilter}`
         }
+        // 注意：axios 会对 params 自动 URL 编码，这里不要再手动 encodeURIComponent，
+        // 否则特殊字符（%、+、&）会被双重编码（% → %25）导致查询错误。
         const res = await api.get('/logs/victorialogs', {
-          params: { query: encodeURIComponent(q), limit: 100 },
+          params: { query: q, limit: 100 },
           timeout: 15000,
         })
         // VL returns JSONL (one JSON per line), parse accordingly

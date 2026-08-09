@@ -1,6 +1,57 @@
 package api
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// TestRequireRoleForWrite 验证写操作需 admin、读操作放行的越权修复。
+func TestRequireRoleForWrite(t *testing.T) {
+	h := &Handler{}
+	called := false
+	next := func(w http.ResponseWriter, r *http.Request) { called = true }
+
+	// GET（读）无需 token，放行
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+	h.RequireRoleForWrite("admin", next)(rec, req)
+	if !called {
+		t.Fatal("GET should be allowed without token")
+	}
+	called = false
+
+	// POST（写）无 token → 403
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/clusters", nil)
+	h.RequireRoleForWrite("admin", next)(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST without token: got %d, want 403", rec.Code)
+	}
+	if called {
+		t.Fatal("handler should not be called for unauthorized POST")
+	}
+
+	// POST（写）普通用户 token → 403
+	userTok := generateJWT("user1", "viewer", "")
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/clusters", nil)
+	req.Header.Set("Authorization", "Bearer "+userTok)
+	h.RequireRoleForWrite("admin", next)(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST as viewer: got %d, want 403", rec.Code)
+	}
+
+	// POST（写）admin token → 放行
+	adminTok := generateJWT("admin1", "admin", "")
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/clusters", nil)
+	req.Header.Set("Authorization", "Bearer "+adminTok)
+	h.RequireRoleForWrite("admin", next)(rec, req)
+	if !called {
+		t.Fatal("POST as admin should be allowed")
+	}
+}
 
 // TestValidateJWTStandard 验证真实 HS256 JWT 签发与校验。
 func TestValidateJWTStandard(t *testing.T) {

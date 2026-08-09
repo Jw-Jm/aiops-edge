@@ -52,14 +52,10 @@ func (h *Handler) Pods(w http.ResponseWriter, r *http.Request) {
 	if ns != "" && ns != "all" { path = fmt.Sprintf("/api/v1/namespaces/%s/pods", ns) }
 	data, err := k8sAPI(path)
 	if err != nil {
+		// K8s 不可达：返回空列表 + 错误说明（不伪造 Pod，避免误导展示不存在的资源）
 		respondJSON(w, 200, map[string]interface{}{
-			"pods": []map[string]interface{}{
-				{"name": "clickhouse-0", "namespace": "observability", "status": "Running", "restarts": 0},
-				{"name": "query-api-xxx", "namespace": "observability", "status": "Running", "restarts": 0},
-				{"name": "ai-orchestrator-xxx", "namespace": "observability", "status": "Running", "restarts": 0},
-				{"name": "otel-collector-xxx", "namespace": "observability", "status": "Running", "restarts": 0},
-			},
-			"mock":  true,
+			"pods":  []map[string]interface{}{},
+			"mock":  false,
 			"error": err.Error(),
 		})
 		return
@@ -73,12 +69,11 @@ func (h *Handler) Deployments(w http.ResponseWriter, r *http.Request) {
 	if ns != "" && ns != "all" { path = fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments", ns) }
 	data, err := k8sAPI(path)
 	if err != nil {
+		// K8s 不可达：返回空列表 + 错误说明（不伪造 Deployment）
 		respondJSON(w, 200, map[string]interface{}{
-			"deployments": []map[string]interface{}{
-				{"name": "query-api", "namespace": "observability", "replicas": 1, "ready": 1},
-			},
-			"mock":  true,
-			"error": err.Error(),
+			"deployments": []map[string]interface{}{},
+			"mock":        false,
+			"error":       err.Error(),
 		})
 		return
 	}
@@ -88,16 +83,11 @@ func (h *Handler) Deployments(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Namespaces(w http.ResponseWriter, r *http.Request) {
 	data, err := k8sAPI("/api/v1/namespaces")
 	if err != nil {
+		// K8s 不可达：返回空列表 + 错误说明（不伪造 namespace）
 		respondJSON(w, 200, map[string]interface{}{
-			"namespaces": []map[string]interface{}{
-				{"name": "default", "status": "Active"},
-				{"name": "observability", "status": "Active"},
-				{"name": "kube-system", "status": "Active"},
-				{"name": "kube-public", "status": "Active"},
-				{"name": "kube-node-lease", "status": "Active"},
-			},
-			"mock":  true,
-			"error": err.Error(),
+			"namespaces": []map[string]interface{}{},
+			"mock":       false,
+			"error":      err.Error(),
 		})
 		return
 	}

@@ -74,7 +74,8 @@ const WorkflowDetail: React.FC = () => {
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/workflows')}>返回</Button>
         <Typography.Title level={4} style={{ margin: 0 }}>{flow?.name || '工作流详情'}</Typography.Title>
         <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
-        <Button icon={<EditOutlined />} onClick={() => navigate(`/workflows/editor?flow=${encodeURIComponent(flow?.key || id || '')}`)}>编辑</Button>
+        {/* Editor 读取 ?id= 参数，这里用 id 保持一致，避免编辑页读不到流程 */}
+        <Button icon={<EditOutlined />} onClick={() => navigate(`/workflows/editor?id=${encodeURIComponent(flow?.id || id || '')}`)}>编辑</Button>
         <Button type="primary" icon={<PlayCircleOutlined />} onClick={() => setRunOpen(true)}>执行</Button>
       </Space>
 

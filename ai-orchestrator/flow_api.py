@@ -10,7 +10,9 @@ from flow_engine.noderegistry import node_registry
 from flow_engine.nodes_aiops import register_aiops_nodes
 
 
-router = APIRouter(prefix="/api/v1/ai/flows")
+# 用户自定义工作流 CRUD 使用 /api/v1/ai/workflows，避免与内置 DAG 描述
+# 端点 /api/v1/ai/flows（main.py 的 ai_flows/ai_flow_detail）冲突遮蔽。
+router = APIRouter(prefix="/api/v1/ai/workflows")
 _service = None
 
 

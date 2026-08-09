@@ -152,15 +152,16 @@ export const topoDeleteRelationType = (name: string) => api.delete(`/topology/re
 export const topoSyncCatalog = () => api.post('/topology/sync-catalog')
 
 // ===== FlowEditor (self-built engine) =====
-export const listNodeTypes = () => api.get('/ai/flows/node-types')
-export const createFlow = (data: Record<string, unknown>) => api.post('/ai/flows', data)
-export const updateFlow = (id: string, data: Record<string, unknown>) => api.put(`/ai/flows/${encodeURIComponent(id)}`, data)
-export const deleteFlow = (id: string) => api.delete(`/ai/flows/${encodeURIComponent(id)}`)
-export const toggleFlow = (id: string) => api.post(`/ai/flows/${encodeURIComponent(id)}/toggle`)
-export const runFlowAsync = (id: string, trigger: Record<string, unknown>) => api.post(`/ai/flows/${encodeURIComponent(id)}/run`, { trigger })
-export const listFlowRuns = (id: string) => api.get(`/ai/flows/${encodeURIComponent(id)}/runs`)
-export const getFlowRun = (id: string, runId: string) => api.get(`/ai/flows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`)
-export const resumeFlowRun = (id: string, runId: string, approved: boolean) => api.post(`/ai/flows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/resume`, { approved })
+// 用户自定义工作流 CRUD 走 /ai/workflows（内置 DAG 描述走 /ai/flows，路径分离避免冲突）
+export const listNodeTypes = () => api.get('/ai/workflows/node-types')
+export const createFlow = (data: Record<string, unknown>) => api.post('/ai/workflows', data)
+export const updateFlow = (id: string, data: Record<string, unknown>) => api.put(`/ai/workflows/${encodeURIComponent(id)}`, data)
+export const deleteFlow = (id: string) => api.delete(`/ai/workflows/${encodeURIComponent(id)}`)
+export const toggleFlow = (id: string) => api.post(`/ai/workflows/${encodeURIComponent(id)}/toggle`)
+export const runFlowAsync = (id: string, trigger: Record<string, unknown>) => api.post(`/ai/workflows/${encodeURIComponent(id)}/run`, { trigger })
+export const listFlowRuns = (id: string) => api.get(`/ai/workflows/${encodeURIComponent(id)}/runs`)
+export const getFlowRun = (id: string, runId: string) => api.get(`/ai/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`)
+export const resumeFlowRun = (id: string, runId: string, approved: boolean) => api.post(`/ai/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/resume`, { approved })
 
 // ===== Dashboard =====
 export interface DashboardStats {

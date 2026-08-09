@@ -424,7 +424,7 @@ const AlertEventsTab: React.FC = () => {
     try {
       const res = await fetch(`/api/v1/ops/rca/alert/export?format=${fmt}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID },
+        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID, Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

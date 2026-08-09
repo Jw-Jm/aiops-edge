@@ -40,7 +40,8 @@ const Reports: React.FC = () => {
 
   const handleDownload = async (item: ReportItem) => {
     try {
-      const r = await api.get(`/ops/reports/download/${item.task_id}`, { responseType: 'blob' })
+      // 对齐后端实际路由 /ops/reports/{task_id}/download（经 query-api 代理 + JWT）
+      const r = await api.get(`/ops/reports/${item.task_id}/download`, { responseType: 'blob' })
       const url = URL.createObjectURL(r.data)
       const a = document.createElement('a')
       a.href = url

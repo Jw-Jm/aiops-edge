@@ -20,8 +20,11 @@ from skills import init_skills, init_experts
 from orchestrator import describe_graph
 from flow_api import router as flow_router
 
-# 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭
+# 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
+# 注意：mock 模式下 NL2SQL/RCA 深度/AI 诊断返回的是模拟内容，生产环境必须关闭。
 os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
+if os.environ.get("LLM_MOCK", "").lower() in ("true", "1", "yes"):
+    print("[WARN] LLM_MOCK=true：AI 诊断/RCA/NL2SQL 将返回模拟内容，仅适用于本地演示；生产必须设 LLM_MOCK=false", flush=True)
 
 app = FastAPI(title="AIOps Orchestrator", version="5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -1057,15 +1060,16 @@ async def scan_anomalies(request: Request):
         name = svc.get("service_name", "")
         if not name:
             continue
-        # 对关键指标做检测
+        # 对关键指标做检测。
+        # error_rate 来自 query-api 的真实错误率（errors/calls*100），而非延迟估算。
         metrics_vals = {
-            "error_rate": float(svc.get("max_ms", 0)) / 100.0 if float(svc.get("avg_ms", 0)) > 0 else 0,
-            "p99_latency": float(svc.get("max_ms", 0)),
-            "request_rate": float(svc.get("traces", 0)),
+            "error_rate": float(svc.get("error_rate", 0) or 0),
+            "p99_latency": float(svc.get("max_ms", 0) or 0),
+            "request_rate": float(svc.get("traces", 0) or 0),
         }
         for metric, val in metrics_vals.items():
-            # feed 历史数据 (从 ClickHouse 历史查询或使用当前值填充)
-            detector.feed(name, metric, val)
+            # detect 内部会 feed 滑动窗口；此处不再显式 feed，避免同一数据点被
+            # 喂进窗口两次导致统计基线污染（异常检测失真）。
             results = detector.detect(name, metric, val)
             if results:
                 confirmed = detector.vote(results)

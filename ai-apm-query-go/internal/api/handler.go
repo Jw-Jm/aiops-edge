@@ -735,7 +735,7 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		"SELECT s2.service_name AS source_service, s1.service_name AS target_service, "+
 			"count() AS calls, countIf(s1.is_error=1) AS errs, avg(s1.duration_ns) AS avg_ns "+
 			"FROM observability.trace_spans s1 "+
-			"INNER JOIN observability.trace_spans s2 ON s1.parent_span_id = s2.span_id "+
+			"INNER JOIN observability.trace_spans s2 ON s1.parent_span_id = s2.span_id AND s2.tenant_id=s1.tenant_id "+
 			"WHERE s1.tenant_id=%s%s AND s1.service_name != s2.service_name "+
 			"GROUP BY s2.service_name, s1.service_name ORDER BY calls DESC LIMIT 200",
 		chQuote(tid), timeCond,

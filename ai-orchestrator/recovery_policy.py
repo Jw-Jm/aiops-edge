@@ -14,10 +14,9 @@ DEFAULT_POLICY = {
     "allow": [
         "kubectl rollout restart",
         "kubectl rollout undo",
-        "kubectl scale --replicas=",
+        "kubectl scale",
         "kubectl delete pod",
         "systemctl restart",
-        "curl -X POST",
     ],
     "deny": [
         "kubectl delete namespace",
@@ -90,8 +89,8 @@ def check_allowed(command: str) -> tuple:
     for d in deny:
         if d.lower() in cmd.lower():
             return False, f"命中禁止列表: {d}"
-    # 再查允许列表
+    # 再查允许列表（前缀匹配：命令须以 allow 项开头，避免"中间子串"误放行）
     for a in allow:
-        if a.lower() in cmd.lower():
+        if cmd.lower().startswith(a.lower()):
             return True, f"命中白名单: {a}"
     return False, "不在恢复白名单内"

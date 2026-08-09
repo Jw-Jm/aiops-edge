@@ -56,10 +56,18 @@ def get_service_list(tenant_id: str = "default") -> str:
     if isinstance(data, dict) and "data" in data:
         data = data["data"]
     if isinstance(data, list):
-        summary = [{"service_name": s.get("service_name"), "traces": s.get("traces", 0),
-                    "avg_ms": round(float(s.get("avg_ms", 0)), 1),
-                    "max_ms": round(float(s.get("max_ms", 0)), 1)}
-                   for s in data[:10]]
+        summary = []
+        for s in data[:10]:
+            calls = float(s.get("calls", s.get("traces", 0)) or 0)
+            errors = float(s.get("errors", s.get("error_count", 0)) or 0)
+            error_rate = round(errors / calls * 100, 2) if calls > 0 else 0.0
+            summary.append({
+                "service_name": s.get("service_name"),
+                "traces": int(calls),
+                "avg_ms": round(float(s.get("avg_ms", 0)), 1),
+                "max_ms": round(float(s.get("max_ms", 0)), 1),
+                "error_rate": error_rate,
+            })
         return json.dumps(summary, indent=2, ensure_ascii=False)
     return json.dumps(data, indent=2, ensure_ascii=False)[:4000]
 

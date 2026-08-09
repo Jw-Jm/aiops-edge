@@ -24,26 +24,26 @@ def _chain_graph():
     ], "edges": [{"id": "e1", "source": "c", "sourcePort": "next", "target": "s"}]}
 
 def test_node_types_endpoint(client):
-    r = client.get("/api/v1/ai/flows/node-types")
+    r = client.get("/api/v1/ai/workflows/node-types")
     assert r.status_code == 200
     assert any(t["type"] == "condition" for t in r.json()["node_types"])
 
 def test_crud_flow(client):
-    r = client.post("/api/v1/ai/flows", json={"name": "f", "description": "d", "graph": _chain_graph()})
+    r = client.post("/api/v1/ai/workflows", json={"name": "f", "description": "d", "graph": _chain_graph()})
     assert r.status_code == 201
     fid = r.json()["id"]
-    r2 = client.get(f"/api/v1/ai/flows/{fid}")
+    r2 = client.get(f"/api/v1/ai/workflows/{fid}")
     assert r2.status_code == 200 and r2.json()["name"] == "f"
-    r3 = client.put(f"/api/v1/ai/flows/{fid}", json={"name": "f2"})
+    r3 = client.put(f"/api/v1/ai/workflows/{fid}", json={"name": "f2"})
     assert r3.json()["name"] == "f2"
-    r4 = client.delete(f"/api/v1/ai/flows/{fid}")
+    r4 = client.delete(f"/api/v1/ai/workflows/{fid}")
     assert r4.status_code == 200
 
 def test_run_flow(client):
-    r = client.post("/api/v1/ai/flows", json={"name": "f", "description": "d", "graph": _chain_graph()})
+    r = client.post("/api/v1/ai/workflows", json={"name": "f", "description": "d", "graph": _chain_graph()})
     fid = r.json()["id"]
-    rr = client.post(f"/api/v1/ai/flows/{fid}/run", json={"trigger": {"service": "demo"}})
+    rr = client.post(f"/api/v1/ai/workflows/{fid}/run", json={"trigger": {"service": "demo"}})
     assert rr.status_code == 200
     run_id = rr.json()["run_id"]
-    dr = client.get(f"/api/v1/ai/flows/{fid}/runs/{run_id}")
+    dr = client.get(f"/api/v1/ai/workflows/{fid}/runs/{run_id}")
     assert dr.status_code == 200 and dr.json()["run"]["status"] == "succeeded"
