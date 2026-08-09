@@ -100,7 +100,7 @@ def register_vm_skill():
     if not ToolRegistry.get("vm_operate"):
         ToolRegistry.register(name="vm_operate",
                               description="对虚拟机执行运维操作 (restart/start/stop/migrate)，需人工审批",
-                              category="vm", requires_approval=True,
+                              category="vm", requires_approval=True, cls_="mutating",
                               params={"action": {"type": "string", "required": True, "default": "", "desc": "操作类型(restart/start/stop/migrate)"},
                                       "vm_name": {"type": "string", "required": True, "default": "", "desc": "虚拟机名"}})(vm_operate)
 

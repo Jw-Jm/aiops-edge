@@ -46,11 +46,12 @@ def make_tools_schema(tools: List[ToolDef]) -> List[dict]:
 
 
 def exec_tool_with_guard(tool: ToolDef, args: dict, whitelist: Set[str]) -> str:
-    """白名单校验 + 执行工具。mutating/dangerous/需审批/不在白名单一律拒绝。"""
-    if tool.requires_approval:
-        return f"[工具 {tool.name} 被拒绝]：该工具需要人工审批，function-calling 循环不自动执行。"
-    if tool.cls != "safe":
-        return f"[工具 {tool.name} 被拒绝]：工具等级 {tool.cls} 非 safe，循环白名单仅允许只读安全工具。"
+    """白名单校验 + 统一审批闸门 + 执行工具。mutating/dangerous/需审批/不在白名单一律拒绝。"""
+    from execution_gate import check_tool_executable
+    # 统一审批闸门：safe 直接执行；mutating/dangerous/需审批 → 拒绝（function-calling 循环永不自动审批）
+    allowed, reason = check_tool_executable(tool, approved=False)
+    if not allowed:
+        return f"[工具 {tool.name} 被拒绝]：{reason}，function-calling 循环不自动执行。"
     if tool.name not in whitelist:
         return f"[工具 {tool.name} 被拒绝]：不在 function-calling 白名单中。"
     try:
