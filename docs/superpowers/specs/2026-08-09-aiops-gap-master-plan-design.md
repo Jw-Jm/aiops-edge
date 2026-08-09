@@ -132,12 +132,25 @@
 
 | 批次 | 内容 | 依赖 | 预估 |
 |---|---|---|---|
-| **批 1** | A1 告警调查按钮 + A5 审批制恢复（AI 方案→审批→白名单执行）| 告警引擎 | 中 |
+| **批 1** | A1 告警自动调查 + A5 告警自动恢复 | 告警引擎 | 中 |
 | **批 2** | B1 4 重降噪 + B2 规则类型补齐 | 告警引擎 | 中 |
 | **批 3** | A2 function-calling + A3 双层 Agent | AI 编排 | 大 |
 | **批 4** | A4 异常检测统计 + B3 SLO 烧毁率 | 指标 | 中 |
 | **批 5** | B4 Monitor 看板 + C1 审批闸门 | 前端 + 治理 | 中 |
 | **批 6** | C2 Infrastructure + C3 产物中心 | 前端 | 小 |
+
+### 执行进度（2026-08-09 更新）
+
+| 批次 | 状态 | 对应 spec/plan |
+|---|---|---|
+| **批 1** | ✅ 完成（告警调查按钮 + 审批制恢复 + 白名单） | plan: `2026-08-09-batch1-alert-investigate-recover-plan.md` |
+| **批 2** | ✅ 完成（4 重降噪 + 规则类型 log/trace/burn_rate；后续补 log_keyword 关键字字段 + SQL 注入转义） | plan: `2026-08-09-batch2-noise-reduction-rule-types-plan.md` |
+| **批 3** | ✅ 完成（function-calling 工具循环 + Coordinator/子Agent/Reviewer 双层 Agent，mock 可测） | design/plan: `2026-08-09-batch3-*.md` |
+| **批 4** | ✅ 完成（zscore/MAD 异常检测 + SLO 目标管理 + burn_rate 多窗口烧毁率） | design/plan: `2026-08-09-batch4-*.md` |
+| **批 5** | ⏳ 待做（B4 Monitor 看板 + C1 审批闸门） | — |
+| **批 6** | ⏳ 待做（C2 Infrastructure + C3 产物中心） | — |
+
+**前置任务已完成**：服务 RED 指标采集打通（DeepFlow 真实流量 → DeepFlowSyncer → VM 服务 RED，多 k8s 环境 DEEPFLOW_CH_ENDPOINTS）+ loadgen 调试数据源（trace+日志，默认不部署）。
 
 ---
 
