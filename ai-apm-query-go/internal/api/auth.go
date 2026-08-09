@@ -123,7 +123,7 @@ func currentScope(r *http.Request) *Scope {
 	return parseScope(scope)
 }
 
-// Login 登录：查 MySQL users 表 + bcrypt 校验；MySQL 不可达降级 admin/admin123。
+// Login 登录：查 MySQL users 表 + bcrypt 校验；MySQL 不可达返回 503（禁止任何弱口令降级放行）。
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)

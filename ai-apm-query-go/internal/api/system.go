@@ -10,7 +10,8 @@ import (
 func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 	status := map[string]interface{}{
 		"cache":  GetCacheStats(),
-		"redis":  appCache.RedisPing(),
+		// Redis 已移除：缓存为纯内存实现（orchestrator 的 ARQ 任务队列才用 Redis）
+		"redis":  "in-memory",
 		"hpa":    getHPAStatus(),
 		"pods":   getPodCount(),
 	}
@@ -21,9 +22,9 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CacheStats(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 200, map[string]interface{}{
 		"cache": GetCacheStats(),
-		// Redis 已移除，缓存为纯内存实现（appCache 直接可用）
+		// Redis 已移除：缓存为纯内存实现（orchestrator 的 ARQ 任务队列才用 Redis）
 		"redis": map[string]interface{}{
-			"connected": appCache.RedisPing(),
+			"connected": true,
 			"url":       "in-memory",
 		},
 	})

@@ -1117,19 +1117,23 @@ from minio.error import S3Error
 
 _minio_access = os.environ.get("MINIO_ACCESS_KEY", "")
 _minio_secret = os.environ.get("MINIO_SECRET_KEY", "")
-if not _minio_access or not _minio_secret:
+_minio_enabled = bool(_minio_access and _minio_secret)
+if not _minio_enabled:
     print(
-        "[minio] WARNING: MINIO_ACCESS_KEY / MINIO_SECRET_KEY 未配置：产物上传不可用（生产必须通过 env/Secret 注入，禁止弱默认口令）",
+        "[minio] WARNING: MINIO_ACCESS_KEY / MINIO_SECRET_KEY 未配置：产物上传已禁用（生产必须通过 env/Secret 注入强口令，拒绝弱默认口令）",
         file=sys.stderr,
     )
-_minio = Minio(
-    os.environ.get("MINIO_ENDPOINT", "minio.observability.svc.cluster.local:9000"),
-    access_key=_minio_access or "minioadmin",
-    secret_key=_minio_secret or "minioadmin123",
-    secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-)
+# 仅当显式提供 MINIO 凭证时才初始化客户端；否则禁用（不静默用弱默认口令）
+_minio = None
+if _minio_enabled:
+    _minio = Minio(
+        os.environ.get("MINIO_ENDPOINT", "minio.observability.svc.cluster.local:9000"),
+        access_key=_minio_access,
+        secret_key=_minio_secret,
+        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
+    )
 BUCKET = "ops-reports"
-if not _minio.bucket_exists(BUCKET):
+if _minio is not None and not _minio.bucket_exists(BUCKET):
     _minio.make_bucket(BUCKET)
 
 
@@ -1138,7 +1142,13 @@ def _upload_report(task_id: str, content: str, filename: str = "report.md", serv
     import io
     data = content.encode("utf-8")
     obj_name = f"{task_id}/{filename}"
-    _minio.put_object(BUCKET, obj_name, io.BytesIO(data), len(data), content_type="text/markdown")
+    if _minio is not None:
+        try:
+            _minio.put_object(BUCKET, obj_name, io.BytesIO(data), len(data), content_type="text/markdown")
+        except Exception as e:
+            print(f"[reports] MinIO 上传失败: {e}")
+    else:
+        print(f"[reports] MinIO 未配置，跳过对象存储上传（仅持久化 MySQL 元数据）: {obj_name}")
     # 同步持久化元数据到 MySQL reports（文件本体在 MinIO）
     try:
         _persist_inspection_report(task_id, service or "", content, filename)
@@ -1304,6 +1314,8 @@ async def inspection_report_trend(days: int = 14, report_type: str = "inspection
 async def download_report(task_id: str):
     """Download task report from MinIO."""
     from fastapi.responses import StreamingResponse
+    if _minio is None:
+        raise HTTPException(503, "MinIO 未配置（需注入 MINIO_ACCESS_KEY/MINIO_SECRET_KEY）")
     try:
         obj = _minio.get_object(BUCKET, f"{task_id}/report.md")
         return StreamingResponse(obj.stream(), media_type="text/markdown",
@@ -1315,6 +1327,8 @@ async def download_report(task_id: str):
 @app.get("/api/v1/ops/reports")
 async def list_reports():
     """List all stored reports."""
+    if _minio is None:
+        return {"reports": [], "error": "MinIO 未配置（需注入 MINIO_ACCESS_KEY/MINIO_SECRET_KEY）"}
     try:
         objects = list(_minio.list_objects(BUCKET, recursive=True))
         return {"reports": [{"name": o.object_name, "size": o.size, "last_modified": str(o.last_modified)} for o in objects]}

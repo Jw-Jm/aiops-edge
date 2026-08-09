@@ -148,7 +148,6 @@ queryApi:
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
-  redisUrl: "redis.observability.svc.cluster.local:6379"
   victoriaLogsUrl: "http://victoria-logs.observability.svc.cluster.local:9428"
   victoriaMetricsUrl: "http://victoria-metrics.observability.svc.cluster.local:8428"
   resources:

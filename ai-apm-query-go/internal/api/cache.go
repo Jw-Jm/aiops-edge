@@ -141,10 +141,7 @@ func GetCacheStats() map[string]interface{} {
 	}
 }
 
-// RedisPing 兼容保留：Redis 已移除，返回内存缓存是否可用（总为 true）。
-func (c *Cache) RedisPing() bool {
-	return true
-}
+
 
 // BuildCacheKey creates a cache key from components
 func BuildCacheKey(parts ...string) string {

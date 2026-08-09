@@ -28,8 +28,6 @@ spec:
               value: {{ .Values.queryApi.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
               value: {{ .Values.queryApi.clickhousePort | quote }}
-            - name: REDIS_URL
-              value: {{ .Values.queryApi.redisUrl | quote }}
             - name: VICTORIA_METRICS_URL
               value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
             - name: JWT_SECRET

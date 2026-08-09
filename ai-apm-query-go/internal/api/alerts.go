@@ -1012,7 +1012,6 @@ func (h *Handler) deleteAlertRule(w http.ResponseWriter, r *http.Request, id str
 
 // ---- Alert Evaluation ----
 
-// StartAlertEvaluation starts the background alert evaluation loop.
 // vmInstantQuery 查 VictoriaMetrics 即时值（/api/v1/query），返回第一个样本数值。
 func (h *Handler) vmInstantQuery(promQL string) (float64, error) {
 	if h.vmURL == "" {
