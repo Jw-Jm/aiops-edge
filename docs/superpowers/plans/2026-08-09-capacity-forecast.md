@@ -124,9 +124,10 @@ func TestEstimateTimeToThresholdMiss(t *testing.T) {
 	}
 }
 
-// ETT：当前已超阈值（intercept 高、slope 负）→ 不返回达到（斜率下降不会在未来更超）。
+// ETT：斜率下降（slope=-1, intercept=90, 当前 x=9 处 y=81）但阈值较高（threshold=100），
+// 未来 x=10..19 的 y=80..71 全部 <100 → 返回 k=0 ok=false（下降趋势不会达到较高阈值）。
 func TestEstimateTimeToThresholdAlreadyBreachedSlopeDown(t *testing.T) {
-	k, ok := EstimateTimeToThreshold(-1, 90, 10, 10, 80)
+	k, ok := EstimateTimeToThreshold(-1, 90, 10, 10, 100)
 	if ok || k != 0 {
 		t.Fatalf("k=%v ok=%v, want k=0 ok=false (slope down, won't breach)", k, ok)
 	}
