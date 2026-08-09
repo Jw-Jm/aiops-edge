@@ -133,7 +133,8 @@ const Monitor: React.FC = () => {
     try {
       const values = await form.validateFields()
       if (editing) {
-        await updatePanel(editing.id, { ...values, enabled: editing.enabled })
+        // spread editing 保留 grid_x/y/w 位置（后端全量 Upsert，缺字段会被清零）
+        await updatePanel(editing.id, { ...editing, ...values, enabled: editing.enabled })
       } else {
         const maxY = lgLayout.reduce((m, it) => Math.max(m, it.y + it.h), 0)
         await createPanel({
@@ -174,7 +175,9 @@ const Monitor: React.FC = () => {
             it.x !== panel.grid_x || it.y !== panel.grid_y ||
             it.w !== panel.grid_w || it.h !== panel.grid_h
           if (!changed) return
-          await updatePanel(panel.id, { grid_x: it.x, grid_y: it.y, grid_w: it.w, grid_h: it.h })
+          // 必须 spread 整个 panel 保留 title/query/chart_type 等字段，
+          // 否则后端全量 Upsert 会把它们清空；只覆盖 grid 布局字段
+          await updatePanel(panel.id, { ...panel, grid_x: it.x, grid_y: it.y, grid_w: it.w, grid_h: it.h })
         }),
       )
     } catch {
