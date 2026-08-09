@@ -247,6 +247,20 @@ export const createPanel = (data: Record<string, unknown>) => api.post('/dashboa
 export const updatePanel = (id: string, data: Record<string, unknown>) => api.put(`/dashboard/panels/${id}`, data)
 export const deletePanel = (id: string) => api.delete(`/dashboard/panels/${id}`)
 
+// ===== 产物中心（C3） =====
+export interface Artifact {
+  type: string       // report | approval | flow_run
+  id: string
+  title: string
+  status: string
+  service: string
+  time: string
+  summary: string
+  detail_url: string
+}
+export const listArtifacts = (params?: { limit?: number; type_filter?: string }) =>
+  api.get('/ops/artifacts', { params })
+
 // ===== 集群管理 =====
 export interface ClusterItem {
   id: number; name: string; provider: string; region: string; version: string

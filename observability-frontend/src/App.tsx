@@ -47,6 +47,7 @@ const NL2SQL = lazy(() => import('./pages/NL2SQL'))
 const Users = lazy(() => import('./pages/Users'))
 const Shell = lazy(() => import('./pages/Shell'))
 const Reports = lazy(() => import('./pages/Reports'))
+const Artifacts = lazy(() => import('./pages/Artifacts'))
 const Catalog = lazy(() => import('./pages/Catalog'))
 const Devices = lazy(() => import('./pages/Devices'))
 const Clusters = lazy(() => import('./pages/Clusters'))
@@ -133,6 +134,7 @@ const menuGroups = [
     items: [
       { key: '/shell', icon: <CloudServerOutlined />, label: 'WebShell' },
       { key: '/reports', icon: <FileSearchOutlined />, label: '报告中心' },
+      { key: '/artifacts', icon: <ControlOutlined />, label: '产物中心' },
     ],
   },
   {
@@ -282,6 +284,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/nl2sql" element={<NL2SQL />} />
                 <Route path="/shell" element={<Shell />} />
                 <Route path="/reports" element={<Reports />} />
+                <Route path="/artifacts" element={<Artifacts />} />
                 <Route path="/users" element={<Users />} />
                 <Route path="/catalog" element={<Catalog />} />
                 <Route path="/devices" element={<Devices />} />
