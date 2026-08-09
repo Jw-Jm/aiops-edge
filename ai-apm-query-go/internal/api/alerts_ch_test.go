@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,13 +63,8 @@ func TestQueryAlertEventsParses(t *testing.T) {
 		if !strings.Contains(q, "ORDER BY last_timestamp DESC") {
 			t.Errorf("missing ORDER BY: %s", q)
 		}
-		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
-			{"id": "evt-2", "rule_id": "r2", "rule_name": "内存高", "service": "svc-b", "severity": "warning",
-				"message": "mem", "value": 85.0, "threshold": 80.0, "timestamp": "2026-08-09 12:00:00.000",
-				"count": 3, "first_timestamp": "2026-08-09 11:00:00.000", "last_timestamp": "2026-08-09 12:00:00.000",
-				"status": "firing", "acknowledged_at": nil, "acknowledged_by": "", "resolved_at": nil,
-				"resolved_by": "", "timeline": "", "investigation": "", "signature": "sig-2"},
-		})
+		// JSONEachRow 格式：每行一个 JSON 对象（非数组）
+		_, _ = w.Write([]byte(`{"id":"evt-2","rule_id":"r2","rule_name":"内存高","service":"svc-b","severity":"warning","message":"mem","value":85.0,"threshold":80.0,"timestamp":"2026-08-09 12:00:00.000","count":3,"first_timestamp":"2026-08-09 11:00:00.000","last_timestamp":"2026-08-09 12:00:00.000","status":"firing","acknowledged_at":null,"acknowledged_by":"","resolved_at":null,"resolved_by":"","timeline":"","investigation":"","signature":"sig-2"}`))
 	}))
 	defer srv.Close()
 	h := &Handler{chHost: srv.URL, chPort: 0, client: &http.Client{}}

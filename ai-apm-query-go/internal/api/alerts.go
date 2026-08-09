@@ -286,16 +286,21 @@ func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEv
 	if err != nil {
 		return nil, err
 	}
-	// JSONEachRow 解析；CH 空结果返回空 body，需容忍（返回空切片而非报错）
-	if len(bytes.TrimSpace(body)) == 0 {
+	// CH default_format=JSONEachRow：每行一个 JSON 对象（{...}\n{...}），需逐行解析；空结果容忍
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
 		return []AlertEvent{}, nil
 	}
-	var rows []map[string]interface{}
-	if err := json.Unmarshal(body, &rows); err != nil {
-		return nil, err
-	}
-	out := make([]AlertEvent, 0, len(rows))
-	for _, r := range rows {
+	var out []AlertEvent
+	for _, line := range bytes.Split(trimmed, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var r map[string]interface{}
+		if err := json.Unmarshal(line, &r); err != nil {
+			return nil, err
+		}
 		out = append(out, AlertEvent{
 			ID:             str(r["id"]),
 			RuleID:         str(r["rule_id"]),
