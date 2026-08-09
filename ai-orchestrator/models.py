@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     message: str = ""
     stream: bool = True
     session_id: Optional[str] = None
+    dual_agent: bool = False   # 批3: 双层 Agent 开关（默认关闭，零回归）
 
 
 class ShellCheckRequest(BaseModel):

@@ -150,7 +150,8 @@ async def ai_chat(req: ChatRequest, request: Request):
 
         def _run_stream():
             try:
-                for event in _get_brain().stream_sync(req.intent, req.service or "", req.message, thread_id):
+                for event in _get_brain().stream_sync(req.intent, req.service or "", req.message, thread_id,
+                                                      mode="dual" if req.dual_agent else "chat"):
                     # 捕获操作建议 → 自动创建待审批任务到任务工作台
                     if event.get("type") == "suggestion":
                         _create_chat_suggestion_task(event, req, thread_id)
