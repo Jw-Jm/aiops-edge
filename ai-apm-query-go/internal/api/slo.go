@@ -87,9 +87,8 @@ func (h *Handler) createSLO(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "name and service required")
 		return
 	}
-	if s.ID == "" {
-		s.ID = generateID()
-	}
+	// 创建时强制生成 id，忽略客户端注入的 id，避免覆盖已有目标
+	s.ID = generateID()
 	if s.SLOType == "" {
 		s.SLOType = "availability"
 	}
@@ -108,6 +107,16 @@ func (h *Handler) createSLO(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateSLO(w http.ResponseWriter, r *http.Request, id string) {
+	dao := &store.SLOTargetDAO{}
+	existing, err := dao.Get(id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		respondError(w, http.StatusNotFound, "slo target not found")
+		return
+	}
 	var s store.SLOTarget
 	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid body: "+err.Error())
@@ -123,7 +132,6 @@ func (h *Handler) updateSLO(w http.ResponseWriter, r *http.Request, id string) {
 	if s.WindowSeconds <= 0 {
 		s.WindowSeconds = 2592000
 	}
-	dao := &store.SLOTargetDAO{}
 	if err := dao.Upsert(s); err != nil {
 		respondError(w, http.StatusInternalServerError, "update slo: "+err.Error())
 		return

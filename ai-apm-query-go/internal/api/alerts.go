@@ -845,7 +845,12 @@ func (h *Handler) evaluateAlerts() {
 			continue
 		}
 
-		breached := checkCondition(value, rule.Condition, rule.Threshold)
+		// anomaly / burn_rate 有自己的统计/烧毁评估逻辑，不走外层 checkCondition（避免阈值语义冲突）。
+		// threshold / mutation / forecast / metric_raw 等用 checkCondition 判定。
+		breached := false
+		if rule.Type != "anomaly" && rule.Type != "burn_rate" {
+			breached = checkCondition(value, rule.Condition, rule.Threshold)
+		}
 
 		// Mutation detection: compare with historical window
 		if !breached && rule.Type == "mutation" {
@@ -884,7 +889,7 @@ func (h *Handler) evaluateAlerts() {
 
 		// Burn-rate：SLO 目标错误预算烧毁率（实际错误率 / 目标错误率）
 		if !breached && rule.Type == "burn_rate" {
-			if burn, ok := h.evaluateRuleBurnRate(rule); ok {
+			if burn, ok := h.evaluateRuleBurnRate(rule, value); ok {
 				breached = true
 				log.Printf("BURN_RATE: %s burn=%.1f (slo=%s)", rule.Name, burn, rule.SLOID)
 			}
@@ -1088,19 +1093,19 @@ func defaultAnomalyThreshold(method string) float64 {
 }
 
 // evaluateRuleBurnRate 按 SLO 目标计算当前错误率烧毁率，超阈值告警。
-// 烧毁率 = 实际错误率 / 目标错误率（目标错误率 = 1 - slo.target）。rule.Threshold 默认 14.4。
-func (h *Handler) evaluateRuleBurnRate(rule AlertRule) (float64, bool) {
+// errRate 为已评估的当前错误率（%）。烧毁率 = 实际错误率 / 目标错误率（目标错误率 = 1 - slo.target）。
+// rule.Threshold 默认 14.4。仅 error_rate 指标语义正确，其他 metric 返回 false。
+func (h *Handler) evaluateRuleBurnRate(rule AlertRule, errRate float64) (float64, bool) {
 	if rule.SLOID == "" {
+		return 0, false
+	}
+	// 烧毁率语义仅对 error_rate 有意义；call_count/latency_p99 等不能当作错误率
+	if rule.Metric != "error_rate" {
 		return 0, false
 	}
 	dao := &store.SLOTargetDAO{}
 	slo, err := dao.Get(rule.SLOID)
 	if err != nil || slo == nil {
-		return 0, false
-	}
-	// 当前错误率（%）：error_rate 即时值
-	errRate, err2 := h.vmInstantQuery(metricPromQL(rule))
-	if err2 != nil {
 		return 0, false
 	}
 	burn := ComputeBurnRate(errRate, slo.Target)
