@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -24,5 +26,63 @@ func TestQueryRangeMissingQuery(t *testing.T) {
 	h.QueryRange(rec, req)
 	if rec.Code != 400 {
 		t.Fatalf("code = %d, want 400 (missing query)", rec.Code)
+	}
+}
+
+func TestVMRangeQueryParsesSeries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data": map[string]interface{}{
+				"resultType": "matrix",
+				"result": []map[string]interface{}{
+					{"metric": map[string]interface{}{}, "values": [][2]interface{}{{1710000000, "1"}, {1710000060, "2"}, {1710000120, "3"}}},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	series, err := h.vmRangeQuery("sum(rate(x[5m]))", 1710000000, 1710000180, 60)
+	if err != nil {
+		t.Fatalf("vmRangeQuery error: %v", err)
+	}
+	if len(series) != 3 || series[0] != 1 || series[2] != 3 {
+		t.Fatalf("series = %v, want [1 2 3]", series)
+	}
+}
+
+func TestVMRangeQueryEmptyResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data":   map[string]interface{}{"resultType": "matrix", "result": []interface{}{}},
+		})
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	series, err := h.vmRangeQuery("x", 1, 100, 10)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(series) != 0 {
+		t.Fatalf("expected empty, got %v", series)
+	}
+}
+
+func TestVMRangeQueryErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	_, err := h.vmRangeQuery("x", 1, 100, 10)
+	if err == nil {
+		t.Fatalf("expected error on 500")
 	}
 }

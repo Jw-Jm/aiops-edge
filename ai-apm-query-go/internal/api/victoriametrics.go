@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -53,4 +55,59 @@ func (h *Handler) QueryRange(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+// vmRangeQuery 调 VM /api/v1/query_range 返回历史数值序列（供 zscore/MAD / SLO 烧毁率）。
+// start/end 为 Unix 秒，step 为采样步长（秒）。
+func (h *Handler) vmRangeQuery(promQL string, start, end int64, step int) ([]float64, error) {
+	if h.vmURL == "" {
+		return nil, fmt.Errorf("victoria-metrics not configured")
+	}
+	target := h.buildQueryRangeURL(promQL, fmt.Sprintf("%d", start), fmt.Sprintf("%d", end), fmt.Sprintf("%d", step))
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var vr struct {
+		Data struct {
+			Result []struct {
+				Values [][2]interface{} `json:"values"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &vr); err != nil {
+		return nil, err
+	}
+	var out []float64
+	for _, r := range vr.Data.Result {
+		for _, v := range r.Values {
+			if len(v) != 2 {
+				continue
+			}
+			// VM 返回 value 为字符串（如 "1.5"）或数字，统一转 float64
+			switch val := v[1].(type) {
+			case string:
+				var f float64
+				if _, err := fmt.Sscanf(val, "%f", &f); err == nil {
+					out = append(out, f)
+				}
+			case float64:
+				out = append(out, val)
+			case json.Number:
+				if f, err := val.Float64(); err == nil {
+					out = append(out, f)
+				}
+			}
+		}
+	}
+	return out, nil
 }
