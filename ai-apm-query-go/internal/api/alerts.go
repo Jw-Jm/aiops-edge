@@ -36,6 +36,9 @@ type AlertRule struct {
 	WebhookURL  string  `json:"webhook_url,omitempty"` // 规则级 webhook（可选，覆盖全局）
 	Cooldown    int     `json:"cooldown,omitempty"`   // 触发冷却（分钟）：冷却期内不重复告警
 	Dampening   int     `json:"dampening,omitempty"`  // 连续确认（次数）：连续 N 次 breach 才告警
+	BaselineSeconds int    `json:"baseline_seconds,omitempty"` // anomaly 基线窗口（秒）
+	AnomalyMethod   string `json:"anomaly_method,omitempty"`   // anomaly 检测方法：zscore|mad
+	SLOID           string `json:"slo_id,omitempty"`           // burn_rate 引用的 SLO 目标 id
 }
 
 // inCooldown 判断规则是否处于冷却期（距上次触发 < Cooldown 分钟）。
@@ -854,19 +857,11 @@ func (h *Handler) evaluateAlerts() {
 			}
 		}
 
-		// Anomaly detection: Z-score（当前值偏离历史均值超阈值）
+		// Anomaly detection: zscore/MAD 统计检测（当前值偏离历史序列均值/中位数）
 		if !breached && rule.Type == "anomaly" {
-			if hist, err := h.evaluateRuleHistorical(rule); err == nil && hist > 0 {
-				// 偏离历史基线超过 30% 视为异常（可用 threshold 调节灵敏度）
-				dev := (value - hist) / hist * 100
-				limit := rule.Threshold
-				if limit <= 0 {
-					limit = 30
-				}
-				if dev > limit || dev < -limit {
-					breached = true
-					log.Printf("ANOMALY: %s dev %.1f%% (current=%.1f, baseline=%.1f)", rule.Name, dev, value, hist)
-				}
+			if current, anom := h.evaluateRuleAnomaly(rule); anom {
+				breached = true
+				log.Printf("ANOMALY: %s current=%.2f (method=%s, threshold=%.1f)", rule.Name, current, rule.AnomalyMethod, rule.Threshold)
 			}
 		}
 
@@ -1035,6 +1030,51 @@ func metricPromQL(rule AlertRule) string {
 		// metric_raw：metric 字段即 PromQL 原始表达式
 		return rule.Metric
 	}
+}
+
+// ComputeBurnRate 计算烧毁率 = 实际错误率 / 目标错误率。targetPct 为 SLO 目标（如 99.9）。
+func ComputeBurnRate(errRatePct, targetPct float64) float64 {
+	targetErrPct := 100 - targetPct
+	if targetErrPct <= 0 {
+		return 0 // 100% SLO（无错误预算）不计算烧毁
+	}
+	return errRatePct / targetErrPct
+}
+
+// evaluateRuleAnomaly 拉 baseline 窗口的历史序列，用 zscore/MAD 统计检测当前值是否异常。
+// 数据不足（<3 点）时不误报。
+func (h *Handler) evaluateRuleAnomaly(rule AlertRule) (float64, bool) {
+	baseline := time.Duration(rule.BaselineSeconds) * time.Second
+	if baseline <= 0 {
+		baseline = 15 * time.Minute
+	}
+	end := time.Now().Unix()
+	start := end - int64(baseline.Seconds())
+	promQL := metricPromQL(rule)
+	series, err := h.vmRangeQuery(promQL, start, end, 60)
+	if err != nil || len(series) < 3 {
+		return 0, false // 数据不足或 VM 故障不误报
+	}
+	method := rule.AnomalyMethod
+	if method == "" {
+		method = "zscore"
+	}
+	current := series[len(series)-1]
+	hist := series[:len(series)-1]
+	score, anom := ComputeAnomaly(hist, current, method, rule.Threshold)
+	if rule.Threshold <= 0 {
+		// 默认阈值：zscore=3 / mad=3.5
+		_, anom = ComputeAnomaly(hist, current, method, defaultAnomalyThreshold(method))
+	}
+	_ = score
+	return current, anom
+}
+
+func defaultAnomalyThreshold(method string) float64 {
+	if method == "mad" {
+		return 3.5
+	}
+	return 3
 }
 
 // evaluateRuleHistorical 查 VM 历史窗口的指标基线（用于 mutation/forecast 检测）。

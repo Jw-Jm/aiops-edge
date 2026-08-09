@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -65,5 +68,95 @@ func TestDedupeSignature(t *testing.T) {
 	e3 := eventSignature("rule1", "svc", "svc-error:502")
 	if e1 == e3 {
 		t.Fatal("different signature should not dedupe")
+	}
+}
+
+func TestComputeBurnRate(t *testing.T) {
+	// SLO 99.9% → 目标错误率 0.1%；实际错误率 1.44% → burn_rate 14.4
+	br := ComputeBurnRate(1.44, 99.9)
+	if br < 14.3 || br > 14.5 {
+		t.Fatalf("burn_rate = %v, want ≈14.4", br)
+	}
+	// 无错误 → burn_rate 0
+	if ComputeBurnRate(0, 99.9) != 0 {
+		t.Fatalf("no error should burn 0")
+	}
+	// 100% SLO（目标错误率 0）→ burn_rate 0（避免除零）
+	if ComputeBurnRate(50, 100) != 0 {
+		t.Fatalf("100pct SLO should burn 0 (avoid div by zero)")
+	}
+}
+
+// mockVM 模拟 VM query_range 返回固定序列。
+func mockVM(t *testing.T, values [][2]interface{}) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data": map[string]interface{}{
+				"resultType": "matrix",
+				"result": []map[string]interface{}{
+					{"metric": map[string]interface{}{}, "values": values},
+				},
+			},
+		})
+	}))
+}
+
+// TestEvaluateRuleAnomalyZScore 验证 anomaly(zscore) 规则评估：平稳基线 + 突刺应触发。
+func TestEvaluateRuleAnomalyZScore(t *testing.T) {
+	// 基线 ~10，最后一点为突刺 50
+	var vals [][2]interface{}
+	for i := 0; i < 15; i++ {
+		v := "10"
+		if i == 14 {
+			v = "50"
+		}
+		vals = append(vals, [2]interface{}{1710000000 + int64(i*60), v})
+	}
+	srv := mockVM(t, vals)
+	defer srv.Close()
+
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rule := AlertRule{Name: "anom", Type: "anomaly", Service: "payments",
+		Metric: "error_rate", BaselineSeconds: 900, AnomalyMethod: "zscore", Threshold: 3}
+	value, breached := h.evaluateRuleAnomaly(rule)
+	if !breached {
+		t.Fatalf("anomaly zscore should trigger (current=50 vs baseline~10), value=%v", value)
+	}
+}
+
+// TestEvaluateRuleAnomalySteady 验证平稳基线不触发。
+func TestEvaluateRuleAnomalySteady(t *testing.T) {
+	var vals [][2]interface{}
+	for i := 0; i < 15; i++ {
+		vals = append(vals, [2]interface{}{1710000000 + int64(i*60), "10"})
+	}
+	srv := mockVM(t, vals)
+	defer srv.Close()
+
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rule := AlertRule{Name: "anom2", Type: "anomaly", Service: "payments",
+		Metric: "error_rate", BaselineSeconds: 900, AnomalyMethod: "zscore", Threshold: 3}
+	_, breached := h.evaluateRuleAnomaly(rule)
+	if breached {
+		t.Fatalf("steady baseline should NOT trigger anomaly")
+	}
+}
+
+// TestEvaluateRuleAnomalyInsufficientData 验证数据不足不误报。
+func TestEvaluateRuleAnomalyInsufficientData(t *testing.T) {
+	// 只有 2 个点（不足 3 个）
+	vals := [][2]interface{}{{1710000000, "10"}, {1710000060, "50"}}
+	srv := mockVM(t, vals)
+	defer srv.Close()
+
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rule := AlertRule{Name: "anom3", Type: "anomaly", Service: "payments",
+		Metric: "error_rate", BaselineSeconds: 900, AnomalyMethod: "zscore", Threshold: 3}
+	_, breached := h.evaluateRuleAnomaly(rule)
+	if breached {
+		t.Fatalf("insufficient data should not trigger")
 	}
 }

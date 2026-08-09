@@ -10,19 +10,22 @@ import (
 
 // AlertRule 数据库实体。
 type AlertRule struct {
-	ID         string
-	Name       string
-	Service    string
-	Type       string
-	Metric     string
-	Condition  string
-	Threshold  float64
-	Duration   int
-	Severity   string
-	Enabled    bool
-	WebhookURL string
-	Cooldown   int
-	Dampening  int
+	ID              string
+	Name            string
+	Service         string
+	Type            string
+	Metric          string
+	Condition       string
+	Threshold       float64
+	Duration        int
+	Severity        string
+	Enabled         bool
+	WebhookURL      string
+	Cooldown        int
+	Dampening       int
+	BaselineSeconds int    // anomaly 基线窗口（秒）
+	AnomalyMethod   string // anomaly 检测方法：zscore|mad
+	SLOID           string // burn_rate 引用的 SLO 目标 id
 }
 
 // AlertRuleDAO 告警规则数据访问（全量重建 + 加载）。
