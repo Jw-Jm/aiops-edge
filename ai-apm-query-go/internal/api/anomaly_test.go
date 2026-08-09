@@ -73,3 +73,21 @@ func TestMADRobustAgainstOutliers(t *testing.T) {
 		t.Fatalf("median point should not be anomalous despite outliers")
 	}
 }
+
+func TestMADCoreFormulaPath(t *testing.T) {
+	// 序列 {1,2,3,4,100}：median=3，devs={2,1,0,1,97}，mad=1（>0），真正走 1.4826*mad 核心公式
+	series := []float64{1, 2, 3, 4, 100}
+	// 离群点 100：score=|100-3|/(1.4826*1)≈65.4>3.5 应异常
+	score, anom := MAD(series, 100, 3.5)
+	if !anom {
+		t.Fatalf("100 should be anomalous via 1.4826 formula (score=%v)", score)
+	}
+	// 接近中位数 3：score≈0 应正常
+	if _, anom2 := MAD(series, 3, 3.5); anom2 {
+		t.Fatalf("median point should not be anomalous")
+	}
+	// 断言 score 数值符合 1.4826 公式（|100-3|/(1.4826*1)≈65.4）
+	if score < 60 || score > 70 {
+		t.Fatalf("score=%v, want ≈65.4 (verifies 1.4826*mad denominator)", score)
+	}
+}
