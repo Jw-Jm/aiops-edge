@@ -665,9 +665,10 @@ def node_reviewer(state):
 
 
 def node_summarize(state: AgentState) -> dict:
-    # If rejected, return reject message set by wait_approval
+    # If rejected / already set (dual mode reviewer), pass through final_response
     if state.get("final_response"):
-        return {"messages": [f"[{_now()}] 报告生成完成"]}
+        return {"final_response": state.get("final_response"),
+                "messages": [f"[{_now()}] 报告生成完成"]}
 
     intent = state.get("intent", "inspection")
     svc = state.get("service", "")
