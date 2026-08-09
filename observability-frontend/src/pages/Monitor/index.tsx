@@ -14,13 +14,16 @@ const chartColors = ['#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#13c2c2', '#72
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// 从面板 grid 字段构造 lg 24 列布局；旧数据（grid 全 0）用 sort/span 推导
+// 从面板 grid 字段构造 lg 24 列布局。
+// 位置有效性：grid_x>0 || grid_y>0 才用坐标（grid 全 0 表示未拖拽过的旧数据，用 sort/span 推导）。
+// 注意：旧数据 grid_w 可能非 0（=span），但 grid_x/grid_y 为 0，故不能用 grid_w>0 判断"有位置"。
 function buildLayout(panels: DashboardPanel[]): Layout[] {
   return panels.map((p) => {
     const w = p.grid_w > 0 ? p.grid_w : Math.min(Math.max(p.span || 6, 6), 24)
     const h = p.grid_h > 0 ? p.grid_h : 5
-    const x = p.grid_w > 0 ? p.grid_x : p.sort % 24
-    const y = p.grid_w > 0 ? p.grid_y : Math.floor(p.sort / 24)
+    const hasPos = p.grid_x > 0 || p.grid_y > 0
+    const x = hasPos ? p.grid_x : p.sort % 24
+    const y = hasPos ? p.grid_y : Math.floor(p.sort / 24)
     return { i: String(p.id), x, y, w, h, minW: 3, minH: 2 }
   })
 }
