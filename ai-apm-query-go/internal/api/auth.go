@@ -149,11 +149,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. MySQL 不可达降级：内置 admin/admin123（仅数据库故障路径）
-	if store.GetDB() == nil && creds.Username == "admin" && creds.Password == "admin123" {
-		respondJSON(w, 200, map[string]interface{}{
-			"token": generateJWT("admin", "admin", ""), "username": "admin", "role": "admin", "degraded": true,
-		})
+	// 2. 认证后端不可达：返回 503，禁止任何降级放行（安全：DB 故障不允许用内置弱口令登录）
+	if store.GetDB() == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
 		return
 	}
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +17,15 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/api"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
+
+// randomPassword 用 crypto/rand 生成 n 字节的十六进制随机密码（n*2 个字符）。
+func randomPassword(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "admin-" + hex.EncodeToString([]byte(fmt.Sprintf("%d", n)))
+	}
+	return hex.EncodeToString(b)
+}
 
 func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
@@ -41,7 +52,13 @@ func main() {
 	api.SetAlertCH(handler)
 	handler.StartAlertEvaluation()
 	if db := store.GetDB(); db != nil {
-		if adminHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost); err == nil {
+		// admin 初始密码从环境变量注入（生产必设）；未设置时生成随机强密码并打印一次性提示。
+		adminPW := os.Getenv("ADMIN_INITIAL_PASSWORD")
+		if adminPW == "" {
+			adminPW = randomPassword(16)
+			log.Printf("ADMIN_INITIAL_PASSWORD not set: generated random admin password (first login / reset only): %s", adminPW)
+		}
+		if adminHash, err := bcrypt.GenerateFromPassword([]byte(adminPW), bcrypt.DefaultCost); err == nil {
 			_ = (&store.UserDAO{}).SeedAdmin(string(adminHash))
 		}
 		// 拓扑类型目录内置种子（幂等）

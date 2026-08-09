@@ -1236,12 +1236,20 @@ func (h *Handler) StartLogShipper() {
 			log.Printf("[log-shipper] FATAL: cannot read K8s token: %v", err)
 			return
 		}
-		k8sAPI := "https://kubernetes.default.svc"
-		vlURL := "http://victoria-logs.observability.svc.cluster.local:9428/insert/jsonline"
+		k8sAPI := os.Getenv("K8S_API_URL")
+		if k8sAPI == "" {
+			k8sAPI = "https://kubernetes.default.svc"
+		}
+		vlURL := os.Getenv("VICTORIA_LOGS_URL")
+		if vlURL == "" {
+			vlURL = "http://victoria-logs.observability.svc.cluster.local:9428/insert/jsonline"
+		}
+		// K8s TLS 校验：默认开启；仅自建/演示环境可设 K8S_INSECURE_SKIP_VERIFY=true
+		insecure := strings.EqualFold(os.Getenv("K8S_INSECURE_SKIP_VERIFY"), "true")
 		httpClient := &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig:         &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig:         &tls.Config{InsecureSkipVerify: insecure},
 				MaxIdleConns:            20,
 				IdleConnTimeout:         30 * time.Second,
 			},

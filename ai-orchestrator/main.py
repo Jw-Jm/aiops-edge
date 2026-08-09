@@ -1115,10 +1115,17 @@ async def list_anomalies(service: str = "", metric: str = ""):
 from minio import Minio
 from minio.error import S3Error
 
+_minio_access = os.environ.get("MINIO_ACCESS_KEY", "")
+_minio_secret = os.environ.get("MINIO_SECRET_KEY", "")
+if not _minio_access or not _minio_secret:
+    print(
+        "[minio] WARNING: MINIO_ACCESS_KEY / MINIO_SECRET_KEY 未配置：产物上传不可用（生产必须通过 env/Secret 注入，禁止弱默认口令）",
+        file=sys.stderr,
+    )
 _minio = Minio(
     os.environ.get("MINIO_ENDPOINT", "minio.observability.svc.cluster.local:9000"),
-    access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
-    secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin123"),
+    access_key=_minio_access or "minioadmin",
+    secret_key=_minio_secret or "minioadmin123",
     secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
 )
 BUCKET = "ops-reports"

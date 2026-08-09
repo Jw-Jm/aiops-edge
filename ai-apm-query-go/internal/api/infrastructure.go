@@ -35,11 +35,10 @@ func init() {
 func (h *Handler) Nodes(w http.ResponseWriter, r *http.Request) {
 	data, err := k8sAPI("/api/v1/nodes")
 	if err != nil {
+		// K8s 不可达：返回空节点 + 错误说明（不伪造节点，避免误导）
 		respondJSON(w, 200, map[string]interface{}{
-			"nodes": []map[string]interface{}{
-				{"name": "minikube", "status": "Ready", "cpu": "4", "memory": "16Gi", "version": "v1.30.0"},
-			},
-			"mock":  true,
+			"nodes": []map[string]interface{}{},
+			"mock":  false,
 			"error": err.Error(),
 		})
 		return

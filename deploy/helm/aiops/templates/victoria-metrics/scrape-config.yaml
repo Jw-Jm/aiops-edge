@@ -11,11 +11,13 @@ data:
     global:
       scrape_interval: 15s
     scrape_configs:
+{{- if .Values.nodeExporterTarget }}
       - job_name: node-exporter
         static_configs:
           - targets: ['{{ .Values.nodeExporterTarget }}:9100']
             labels:
               job: node-exporter
+{{- end }}
       - job_name: ingest
         static_configs:
           - targets: ['ingest:{{ .Values.ingestPort }}']

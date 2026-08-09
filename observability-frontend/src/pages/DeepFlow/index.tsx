@@ -12,7 +12,7 @@ const { Title, Text } = Typography
 const getDFGrafanaUrl = () => {
   const saved = localStorage.getItem('grafanaUrl')
   if (saved) return saved
-  const host = window.location.hostname || '192.168.0.63'
+  const host = window.location.hostname
   return `http://${host}:32060`
 }
 

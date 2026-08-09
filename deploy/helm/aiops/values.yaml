@@ -19,8 +19,10 @@ secrets:
   ingestApiKey: ""
   clickhousePassword: ""
   redisPassword: ""
-  minioAccessKey: "minioadmin"
-  minioSecretKey: "minioadmin123"
+  # MinIO 凭证：生产必须通过 Secret/env 注入强口令，禁止使用弱默认值。
+  # 留空时 MinIO 组件使用镜像默认弱口令（minioadmin/minioadmin123）——仅限本地演示，生产务必覆盖。
+  minioAccessKey: ""
+  minioSecretKey: ""
   mysqlRootPassword: ""
 
 # ---------------------------------------------------------------------------
@@ -125,8 +127,9 @@ ipmiExporter:
 ingestPort: 8080
 orchestratorPort: 8080
 
-# node-exporter 为 hostNetwork（hostPort 9100），需用节点 IP 抓取
-nodeExporterTarget: "192.168.139.2"
+# node-exporter 为 hostNetwork（hostPort 9100），需用节点 IP 抓取。
+# 可移植性：必填项（填实际节点 IP），为空则不抓取 node-exporter（演示可省略）。
+nodeExporterTarget: ""
 
 # ---------------------------------------------------------------------------
 # 自研服务（镜像 tag 由 build-images.sh 构建，统一 :latest 本地镜像）

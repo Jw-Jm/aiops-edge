@@ -61,7 +61,7 @@ const Settings: React.FC = () => {
 
   useEffect(() => {
     loadProviders()
-    const host = window.location.hostname || '192.168.0.63'
+    const host = window.location.hostname
     const defaultDF = `http://${host}:30417`
     const defaultGF = `http://${host}:32060`
     const dfUrl = localStorage.getItem('deepflowUrl') || defaultDF
@@ -313,15 +313,15 @@ const Settings: React.FC = () => {
           if (vals.grafana_url) localStorage.setItem('grafanaUrl', vals.grafana_url)
           message.success('DeepFlow 配置已保存')
           checkDeepFlow(vals.url)
-        }} initialValues={{ url: `http://${window.location.hostname || '192.168.0.63'}:30417`, grafana_url: `http://${window.location.hostname || '192.168.0.63'}:32060` }}>
+        }} initialValues={{ url: `http://${window.location.hostname}:30417`, grafana_url: `http://${window.location.hostname}:32060` }}>
           <Form.Item label="连接状态">
             <Tag color={dfStatus.includes('已连接') ? 'green' : 'orange'}>{dfStatus}</Tag>
           </Form.Item>
           <Form.Item name="url" label="DeepFlow Server 地址" rules={[{ required: true }]}>
-            <Input placeholder={`http://${window.location.hostname || '192.168.0.63'}:30417`} />
+            <Input placeholder={`http://${window.location.hostname}:30417`} />
           </Form.Item>
           <Form.Item name="grafana_url" label="DeepFlow Grafana 地址">
-            <Input placeholder={`http://${window.location.hostname || '192.168.0.63'}:32060`} />
+            <Input placeholder={`http://${window.location.hostname}:32060`} />
           </Form.Item>
           <Form.Item label="默认账号"><Tag>admin / deepflow</Tag></Form.Item>
           <Space>
@@ -339,7 +339,7 @@ const Settings: React.FC = () => {
           <Tag color="green">已连接</Tag>
         </Space>
         <div style={{ color: '#666', fontSize: 13, marginTop: 8 }}>
-          当前平台运行在单节点 Kubernetes 集群（192.168.0.63）中，通过 In-Cluster ServiceAccount 自动获取集群资源。
+          当前平台运行在 Kubernetes 集群中，通过 In-Cluster ServiceAccount 自动获取集群资源。
         </div>
       </Card>
 
