@@ -33,7 +33,11 @@ def parse_subtasks(raw: str) -> list:
 
 
 def _expert_tools(expert_registry, task_type: str) -> list:
-    """获取某子任务类型对应专家的工具列表。"""
+    """获取某子任务类型对应专家的工具列表。
+
+    无 expert_registry（或专家未匹配到工具）时，退化为白名单内全部已注册只读工具，
+    保证真实 LLM 也能看到可用工具 schema，而不只是硬编码的 mock。
+    """
     name = None
     if expert_registry:
         matched = expert_registry.match_intent(task_type)
@@ -51,7 +55,11 @@ def _expert_tools(expert_registry, task_type: str) -> list:
         if t not in seen:
             seen.add(t)
             dedup.append(t)
-    return [ToolRegistry.get(t) for t in dedup if ToolRegistry.get(t)]
+    resolved = [ToolRegistry.get(t) for t in dedup if ToolRegistry.get(t)]
+    # 退化为白名单内全部已注册只读工具（当无专家工具或全部为空时）
+    if not resolved:
+        resolved = [t for t in ToolRegistry.list_all() if t.name in WHITELIST_READONLY and t.cls == "safe"]
+    return resolved
 
 
 def run_subtask(subtask: dict, llm_decision, expert_registry, on_tool=None) -> dict:
