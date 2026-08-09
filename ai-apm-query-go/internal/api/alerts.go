@@ -144,9 +144,8 @@ func loadAlertRules() {
 }
 
 func saveAlertRules() {
+	// 锁内只快照，释放锁后再写 MySQL，避免长时间持有 RLock 阻塞 listAlertRules
 	alertRulesMu.RLock()
-	defer alertRulesMu.RUnlock()
-	d := &store.AlertRuleDAO{}
 	rows := make([]store.AlertRule, 0, len(alertRules))
 	for _, r := range alertRules {
 		rows = append(rows, store.AlertRule{
@@ -155,6 +154,9 @@ func saveAlertRules() {
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 		})
 	}
+	alertRulesMu.RUnlock()
+
+	d := &store.AlertRuleDAO{}
 	if err := d.ReplaceAll(rows); err != nil {
 		log.Printf("saveAlertRules(mysql): %v", err)
 	}
@@ -184,9 +186,8 @@ func loadAlertEvents() {
 }
 
 func saveAlertEvents() {
+	// 锁内快照，锁外写 MySQL，避免长时间持有锁阻塞读
 	alertEventsMu.RLock()
-	defer alertEventsMu.RUnlock()
-	d := &store.AlertEventDAO{}
 	rows := make([]store.AlertEvent, 0, len(alertEvents))
 	for _, e := range alertEvents {
 		rows = append(rows, store.AlertEvent{
@@ -198,6 +199,9 @@ func saveAlertEvents() {
 			Timeline: e.Timeline,
 		})
 	}
+	alertEventsMu.RUnlock()
+
+	d := &store.AlertEventDAO{}
 	if err := d.ReplaceAll(rows); err != nil {
 		log.Printf("saveAlertEvents(mysql): %v", err)
 	}
@@ -250,9 +254,8 @@ func loadAlertSilences() {
 }
 
 func saveAlertSilences() {
+	// 锁内快照，锁外写 MySQL
 	alertSilencesMu.RLock()
-	defer alertSilencesMu.RUnlock()
-	d := &store.AlertSilenceDAO{}
 	rows := make([]store.AlertSilence, 0, len(alertSilences))
 	for _, s := range alertSilences {
 		rows = append(rows, store.AlertSilence{
@@ -260,6 +263,9 @@ func saveAlertSilences() {
 			CreatedAt: s.CreatedAt, ExpiresAt: s.ExpiresAt,
 		})
 	}
+	alertSilencesMu.RUnlock()
+
+	d := &store.AlertSilenceDAO{}
 	if err := d.ReplaceAll(rows); err != nil {
 		log.Printf("saveAlertSilences(mysql): %v", err)
 	}
