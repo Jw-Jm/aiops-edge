@@ -21,9 +21,10 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CacheStats(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 200, map[string]interface{}{
 		"cache": GetCacheStats(),
+		// Redis 已移除，缓存为纯内存实现（appCache 直接可用）
 		"redis": map[string]interface{}{
 			"connected": appCache.RedisPing(),
-			"url":       appCache.redisURL,
+			"url":       "in-memory",
 		},
 	})
 }

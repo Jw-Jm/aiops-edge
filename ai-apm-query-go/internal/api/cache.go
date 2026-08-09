@@ -4,37 +4,30 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Simple in-memory cache with TTL (Redis-compatible API, falls back to memory)
+// Simple in-memory cache with TTL。
+// 架构说明：原实现含伪 Redis 死代码（redisGet 恒空、redisSet 空体、RedisPing 走错误协议），
+// Redis 从未被真正使用。已移除 Redis 相关代码与组件，纯内存缓存（低内存、无外部依赖、可移植）。
 type CacheEntry struct {
-	Value      string
-	ExpiresAt  time.Time
+	Value     string
+	ExpiresAt time.Time
 }
 
 type Cache struct {
 	mu    sync.RWMutex
 	store map[string]*CacheEntry
-	redisURL string
 }
 
 var appCache *Cache
 
 func init() {
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis.observability.svc.cluster.local:6379"
-	}
 	appCache = &Cache{
-		store:    make(map[string]*CacheEntry),
-		redisURL: redisURL,
+		store: make(map[string]*CacheEntry),
 	}
 	// Start cleanup goroutine
 	go appCache.cleanupLoop()
@@ -43,12 +36,6 @@ func init() {
 func (c *Cache) Get(key string) (string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
-	// Try Redis first
-	if val := c.redisGet(key); val != "" {
-		return val, true
-	}
-	
 	entry, ok := c.store[key]
 	if !ok || time.Now().After(entry.ExpiresAt) {
 		return "", false
@@ -60,22 +47,6 @@ func (c *Cache) Set(key, value string, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.store[key] = &CacheEntry{Value: value, ExpiresAt: time.Now().Add(ttl)}
-	// Also try Redis
-	c.redisSet(key, value, ttl)
-}
-
-func (c *Cache) redisGet(key string) string {
-	if c.redisURL == "" { return "" }
-	client := &http.Client{Timeout: 1 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s/GET/%s", c.redisURL, key))
-	if err != nil { return "" }
-	defer resp.Body.Close()
-	// Simple Redis HTTP proxy - if redis-cli available
-	return ""
-}
-
-func (c *Cache) redisSet(key, value string, ttl time.Duration) {
-	// Redis write is best-effort
 }
 
 func (c *Cache) cleanupLoop() {
@@ -170,17 +141,9 @@ func GetCacheStats() map[string]interface{} {
 	}
 }
 
-// RedisPing tests Redis connectivity
+// RedisPing 兼容保留：Redis 已移除，返回内存缓存是否可用（总为 true）。
 func (c *Cache) RedisPing() bool {
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s/ping", c.redisURL))
-	if err != nil {
-		log.Printf("Redis ping failed: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return strings.Contains(string(body), "PONG") || resp.StatusCode == 200
+	return true
 }
 
 // BuildCacheKey creates a cache key from components

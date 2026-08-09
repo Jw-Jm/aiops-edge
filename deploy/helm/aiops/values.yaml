@@ -60,6 +60,8 @@ victoriaLogs:
     requests: { cpu: "200m", memory: "512Mi" }
     limits: { cpu: "1", memory: "1Gi" }
 
+# Redis：query-api 缓存为纯内存实现（原 redisGet/redisSet 为伪死代码，query-api 不依赖 Redis）。
+# 但 ai-orchestrator 的 ARQ 后台任务队列（tasks.py）依赖 Redis，故保留组件。
 redis:
   enabled: true
   external:
