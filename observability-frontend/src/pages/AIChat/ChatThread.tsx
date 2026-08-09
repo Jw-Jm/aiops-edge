@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Card, Input, Button, Spin, message, Tag } from 'antd'
+import { Card, Input, Button, Spin, message, Tag, Switch } from 'antd'
 import { SendOutlined } from '@ant-design/icons'
 import { getSession, approveTask, rejectTask } from '../../api/client'
 
@@ -28,6 +28,7 @@ const ChatThread: React.FC = () => {
   const [toolCards, setToolCards] = useState<ToolCard[]>([])
   const [approval, setApproval] = useState<{ task_id: string; plan: string; script: string; risk_score: number; risk_reason: string } | null>(null)
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [dualAgent, setDualAgent] = useState(false)   // 批3: 双层 Agent 开关
 
   // 进入路由回放历史
   useEffect(() => {
@@ -72,7 +73,7 @@ const ChatThread: React.FC = () => {
           'X-Tenant-ID': 'default',
           Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
         },
-        body: JSON.stringify({ message: text, stream: true, session_id: sessionId }),
+        body: JSON.stringify({ message: text, stream: true, session_id: sessionId, dual_agent: dualAgent }),
       })
       const reader = resp.body?.getReader()
       if (!reader) return
@@ -190,6 +191,10 @@ const ChatThread: React.FC = () => {
           </div>
         )}
         {loading && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>🤖 {progressText}</div>}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <Switch size="small" checked={dualAgent} onChange={setDualAgent} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>双层 Agent（Coordinator/子Agent/Reviewer）</span>
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <Input.TextArea
