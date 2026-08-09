@@ -78,6 +78,8 @@ class AgentState(TypedDict):
 # ═══════════════════════════════════════════════════════════════
 
 from llm_mock import is_mock_enabled, mock_llm_response, should_skip_llm
+from llm_mock import mock_llm_decision, mock_coordinator_plan, mock_reviewer_result
+from dual_agent import parse_subtasks, run_subtasks, merge_review
 
 def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家") -> str:
     if is_mock_enabled():
@@ -604,6 +606,51 @@ def node_memorize(state: AgentState) -> dict:
     return {"messages": [f"[{_now()}] 案例未入库 (verify_pass={state.get('verify_pass')})"]}
 
 
+def node_coordinator(state):
+    """双层 Agent - Coordinator：拆解用户意图为子任务列表。"""
+    cfg = state.get("llm_config")
+    user_msg = state.get("user_message", "")
+    context = (state.get("services_data", "") + state.get("alert_data", ""))[:2000]
+    raw = ""
+    if should_skip_llm(cfg) or is_mock_enabled():
+        raw = json.dumps(mock_coordinator_plan(), ensure_ascii=False)
+    else:
+        raw = _llm(cfg, "你是任务协调器。把用户请求拆解为可并行执行的子任务，"
+                         "输出 JSON 数组，每项含 task_id/task_type/target_service/query。"
+                         "task_type 限 diagnosis/inspection/ops/query。只输出 JSON。",
+                   f"用户请求:「{user_msg}」\n上下文:\n{context}", "Coordinator")
+    subtasks = parse_subtasks(raw)
+    if not subtasks:
+        subtasks = [{"task_id": "t1", "task_type": "diagnosis",
+                     "target_service": state.get("service", ""), "query": user_msg}]
+    return {"subtasks": subtasks, "messages": [f"[{_now()}] Coordinator 拆解为 {len(subtasks)} 个子任务"]}
+
+
+def node_subagent(state):
+    """双层 Agent - 子 Agent：并行跑每个子任务的 function-calling 循环。"""
+    subtasks = state.get("subtasks") or []
+    if not subtasks:
+        return {"sub_results": {}}
+    sub_results = run_subtasks(subtasks, mock_llm_decision, ExpertRegistry)
+    return {"sub_results": sub_results,
+            "messages": [f"[{_now()}] {len(sub_results)} 个子 Agent 完成"]}
+
+
+def node_reviewer(state):
+    """双层 Agent - Reviewer：合并审查全部子结论，输出最终报告。"""
+    cfg = state.get("llm_config")
+    sub_results = state.get("sub_results") or {}
+    if should_skip_llm(cfg) or is_mock_enabled():
+        final = mock_reviewer_result(sub_results)
+    else:
+        parts = "\n\n".join(f"[{tid}]({r.get('task_type', '')}): {r.get('conclusion', '')[:500]}"
+                            for tid, r in sub_results.items())
+        final = _llm(cfg, "你是结果审查员。合并子 Agent 结论，校验依据与冲突，输出最终诊断报告。",
+                     f"子结论:\n{parts}", "Reviewer")
+    return {"review_result": final, "final_response": final,
+            "messages": [f"[{_now()}] Reviewer 审查完成"]}
+
+
 def node_summarize(state: AgentState) -> dict:
     # If rejected, return reject message set by wait_approval
     if state.get("final_response"):
@@ -655,6 +702,8 @@ def build_graph(checkpointer=None, mode: str = "full"):
         ("collect", node_collect), ("clean", node_clean), ("rca", node_rca),
         ("rag", node_rag),
         ("crewai", node_crewai), ("holmes", node_holmes),
+        ("coordinator", node_coordinator), ("subagent", node_subagent),
+        ("reviewer", node_reviewer),
         ("plan", node_plan), ("risk", node_risk),
         ("wait_approval", node_wait_approval),
         ("execute", node_execute), ("verify", node_verify),
@@ -674,6 +723,12 @@ def build_graph(checkpointer=None, mode: str = "full"):
         # 只做 1 次 LLM 分析，script 操作建议在 stream_sync 中从分析结果提取
         builder.add_edge("rag", "crewai")
         builder.add_edge("crewai", "summarize")
+    elif mode == "dual":
+        # 双层 Agent 路径: collect→clean→rca→rag→coordinator→subagent→reviewer→summarize
+        builder.add_edge("rag", "coordinator")
+        builder.add_edge("coordinator", "subagent")
+        builder.add_edge("subagent", "reviewer")
+        builder.add_edge("reviewer", "summarize")
     else:
         # 完整路径
         builder.add_edge("rag", "crewai")
@@ -710,6 +765,7 @@ class BrainOrchestrator:
         # 双图: chat_graph 用于交互式 Chat (精简快速)，graph 用于完整运维任务
         self.graph = build_graph(checkpointer=self.checkpointer, mode="full")
         self.chat_graph = build_graph(checkpointer=self.checkpointer, mode="chat")
+        self.dual_graph = build_graph(checkpointer=self.checkpointer, mode="dual")
         # 初始化 Skill Registry
         from skill_registry import _init_defaults
         _init_defaults()
@@ -757,7 +813,7 @@ class BrainOrchestrator:
         except Exception as e:
             return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
 
-    def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default"):
+    def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default", mode: str = "chat"):
         if not service: service = self._detect_service()
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
@@ -773,13 +829,14 @@ class BrainOrchestrator:
         config = {"configurable": {"thread_id": thread_id}}
         step_names = {"collect": "数据采集", "clean": "数据清洗", "rca": "根因分析", "rag": "案例匹配",
                       "crewai": "CrewAI 分析", "holmes": "Trace 分析",
+                      "coordinator": "Coordinator 拆解", "subagent": "子Agent 分析", "reviewer": "Reviewer 审查",
                       "plan": "生成方案", "risk": "风险评估", "summarize": "汇总报告"}
         try:
             yield {"type": "progress", "node": "start", "text": "分析开始", "step": 0, "total": 8}
             step_num = 0
             suggestion = {}
-            # 交互式 Chat 使用精简 chat_graph，只做 1 次 LLM 分析，快速响应
-            graph = getattr(self, "chat_graph", self.graph)
+            # 交互式 Chat 使用精简 chat_graph；dual 模式用双层 Agent 图
+            graph = getattr(self, "dual_graph" if mode == "dual" else "chat_graph", self.graph)
             for step in graph.stream(initial, config):
                 node_name = list(step.keys())[0] if step else "unknown"
                 node_data = step.get(node_name, {}) if step else {}
