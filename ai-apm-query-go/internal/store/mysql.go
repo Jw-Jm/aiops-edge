@@ -327,44 +327,8 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 		}
 	}
 
-	// alert_events 告警事件（从 /tmp JSON 迁 MySQL）
-	_, _ = conn.Exec(`
-CREATE TABLE IF NOT EXISTS alert_events (
-  id VARCHAR(32) PRIMARY KEY,
-  rule_id VARCHAR(32) DEFAULT '',
-  rule_name VARCHAR(255) DEFAULT '',
-  service VARCHAR(128) DEFAULT '',
-  severity VARCHAR(16) DEFAULT 'warning',
-  message TEXT,
-  value DOUBLE DEFAULT 0,
-  threshold DOUBLE DEFAULT 0,
-  timestamp DATETIME DEFAULT NULL,
-  count INT DEFAULT 1,
-  first_timestamp DATETIME DEFAULT NULL,
-  last_timestamp DATETIME DEFAULT NULL,
-  status VARCHAR(20) DEFAULT 'firing',
-  acknowledged_at DATETIME DEFAULT NULL,
-  acknowledged_by VARCHAR(64) DEFAULT '',
-  resolved_at DATETIME DEFAULT NULL,
-  resolved_by VARCHAR(64) DEFAULT '',
-  timeline TEXT,
-  investigation TEXT,
-  signature VARCHAR(128) DEFAULT '',
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
-
-	// 兼容已存在的 alert_events 表：补 timeline 列（幂等）
-	if !hasColumn(conn, "alert_events", "timeline") {
-		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN timeline TEXT")
-	}
-	// 兼容已存在的 alert_events 表：补 signature 列（幂等）
-	if !hasColumn(conn, "alert_events", "signature") {
-		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN signature VARCHAR(128) DEFAULT ''")
-	}
-	// 兼容已存在的 alert_events 表：补 investigation 列（幂等）
-	if !hasColumn(conn, "alert_events", "investigation") {
-		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN investigation TEXT")
-	}
+	// 告警事件已迁移到 ClickHouse（observability.alert_events，ReplacingMergeTree + TTL，见 init_clickhouse.sql），
+	// MySQL 侧不再创建 alert_events 表（历史数据可清理）。
 
 	// alert_silences 告警静默（从 /tmp JSON 迁 MySQL）
 	_, _ = conn.Exec(`

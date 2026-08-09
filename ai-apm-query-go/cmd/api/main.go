@@ -37,6 +37,8 @@ func main() {
 	if vmURL := os.Getenv("VICTORIA_METRICS_URL"); vmURL != "" {
 		handler.SetVMURL(vmURL)
 	}
+	// 注入 CH 连接供告警事件持久化（必须先于评估引擎启动）
+	api.SetAlertCH(handler)
 	handler.StartAlertEvaluation()
 	if db := store.GetDB(); db != nil {
 		if adminHash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost); err == nil {

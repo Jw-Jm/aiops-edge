@@ -137,6 +137,10 @@ var (
 	alertEventsMu     sync.RWMutex
 	maxAlertEvents    = 1000
 
+	// alertCH: 告警事件持久化用的 ClickHouse 访问（由 main 建 Handler 后注入）。
+	// 告警事件属时序数据，CH 列式存储 + TTL 管理生命周期，适配大数据量。
+	alertCH *Handler
+
 	// ── 告警降噪配置（借鉴 AlertManager 模式）──
 	// groupInterval: 同一 (service, rule_id) 在此窗口内合并为一条事件，降低重复告警
 	// repeatInterval: 同一规则持续触发超过该时长仍不恢复 → 升级一条事件
@@ -177,6 +181,171 @@ func generateID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// SetAlertCH 由 main 建 Handler 后注入，供告警事件持久化读写 ClickHouse。
+// 注入后立即从 CH 重载告警事件到内存态（init 阶段 CH 未就绪，此处才是真正加载）。
+func SetAlertCH(h *Handler) {
+	alertCH = h
+	loadAlertEvents()
+}
+
+// toCHTime 把 RFC3339 转成 ClickHouse DateTime64(3) 格式；空串返回空（由调用方写 NULL）。
+func toCHTime(s string) string {
+	if s == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	return t.UTC().Format("2006-01-02 15:04:05.000")
+}
+
+// fromCHTime 把 CH datetime 串转回 RFC3339；空串原样返回。
+func fromCHTime(s string) string {
+	if s == "" {
+		return ""
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05.000", "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return s
+}
+
+// insertAlertEvents 批量 INSERT 告警事件到 ClickHouse（TabSeparated）。
+// version 用当前纳秒时间戳，确保同 id 新版本被 ReplacingMergeTree 保留。
+func (h *Handler) insertAlertEvents(events []AlertEvent) error {
+	var buf strings.Builder
+	buf.WriteString(`INSERT INTO observability.alert_events (id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, version) VALUES `)
+	version := uint64(time.Now().UnixNano())
+	for i, e := range events {
+		if i > 0 {
+			buf.WriteString(",")
+		}
+		date := ""
+		if t, err := time.Parse(time.RFC3339, e.LastTimestamp); err == nil {
+			date = t.UTC().Format("2006-01-02")
+		}
+		buf.WriteString(fmt.Sprintf("('%s','%s','%s','%s','%s','%s',%v,%v,%s,%d,%s,%s,'%s',%s,'%s',%s,'%s','%s','%s','%s',%d%s)",
+			escCH(e.ID), escCH(e.RuleID), escCH(e.RuleName), escCH(e.Service), escCH(e.Severity), escCH(e.Message),
+			e.Value, e.Threshold,
+			chTimeVal(e.Timestamp), e.Count,
+			chTimeVal(e.FirstTimestamp), chTimeVal(e.LastTimestamp),
+			escCH(e.Status),
+			chTimeVal(e.AcknowledgedAt), escCH(e.AcknowledgedBy),
+			chTimeVal(e.ResolvedAt), escCH(e.ResolvedBy),
+			escCH(e.Timeline), escCH(e.Investigation), escCH(e.Signature),
+			version,
+			dateVal(date),
+		))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return h.writeClickHouse(ctx, buf.String())
+}
+
+// chTimeVal 返回 CH datetime 字面量；空串写 NULL。
+func chTimeVal(s string) string {
+	v := toCHTime(s)
+	if v == "" {
+		return "NULL"
+	}
+	return fmt.Sprintf("'%s'", v)
+}
+
+// dateVal 返回 CH date 字面量；空串写 today。
+func dateVal(d string) string {
+	if d == "" {
+		return fmt.Sprintf("'%s'", time.Now().UTC().Format("2006-01-02"))
+	}
+	return fmt.Sprintf("'%s'", d)
+}
+
+// queryAlertEvents 从 CH 查告警事件；service 非空按服务过滤，limit 限定返回条数。
+// 返回按 last_timestamp 倒序的最新事件（内存态高并发读缓存）。
+func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEvent, error) {
+	where := ""
+	args := []interface{}{}
+	if service != "" {
+		where = " WHERE service = ?"
+		args = append(args, service)
+	}
+	if limit <= 0 {
+		limit = maxAlertEvents
+	}
+	if offset <= 0 {
+		offset = 0
+	}
+	sql := "SELECT id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature FROM observability.alert_events" + where + " ORDER BY last_timestamp DESC LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	body, err := h.queryClickHouse(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	// JSONEachRow 解析
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]AlertEvent, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, AlertEvent{
+			ID:             str(r["id"]),
+			RuleID:         str(r["rule_id"]),
+			RuleName:       str(r["rule_name"]),
+			Service:        str(r["service"]),
+			Severity:       str(r["severity"]),
+			Message:        str(r["message"]),
+			Value:          f64(r["value"]),
+			Threshold:      f64(r["threshold"]),
+			Timestamp:      fromCHTime(str(r["timestamp"])),
+			Count:          int(f64(r["count"])),
+			FirstTimestamp: fromCHTime(str(r["first_timestamp"])),
+			LastTimestamp:  fromCHTime(str(r["last_timestamp"])),
+			Status:         str(r["status"]),
+			AcknowledgedAt: fromCHTime(str(r["acknowledged_at"])),
+			AcknowledgedBy: str(r["acknowledged_by"]),
+			ResolvedAt:     fromCHTime(str(r["resolved_at"])),
+			ResolvedBy:     str(r["resolved_by"]),
+			Timeline:       str(r["timeline"]),
+			Investigation:  str(r["investigation"]),
+			Signature:      str(r["signature"]),
+		})
+	}
+	return out, nil
+}
+
+// escCH 转义 ClickHouse VALUES 字符串字面量中的反斜杠与单引号。
+func escCH(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `'`, `\'`)
+}
+
+// str 把 JSON 值安全转 string（nil → 空串）。
+func str(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// f64 把 JSON 值安全转 float64。
+func f64(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	default:
+		return 0
+	}
 }
 
 // ---- Persistence (MySQL，从 /tmp JSON 迁入) ----
@@ -229,24 +398,18 @@ func saveAlertRules() {
 func loadAlertEvents() {
 	alertEventsMu.Lock()
 	defer alertEventsMu.Unlock()
-	d := &store.AlertEventDAO{}
-	rows, err := d.LoadAll()
-	if err != nil {
-		log.Printf("loadAlertEvents(mysql): %v", err)
+	// 从 ClickHouse 加载最近事件到内存态（高并发读缓存；持久真源为 CH）
+	if alertCH == nil {
 		alertEvents = []AlertEvent{}
 		return
 	}
-	alertEvents = make([]AlertEvent, 0, len(rows))
-	for _, e := range rows {
-		alertEvents = append(alertEvents, AlertEvent{
-			ID: e.ID, RuleID: e.RuleID, RuleName: e.RuleName, Service: e.Service,
-			Severity: e.Severity, Message: e.Message, Value: e.Value, Threshold: e.Threshold,
-			Timestamp: fromMySQLTime(e.Timestamp), Count: e.Count, FirstTimestamp: fromMySQLTime(e.FirstTimestamp),
-			LastTimestamp: fromMySQLTime(e.LastTimestamp), Status: e.Status, AcknowledgedAt: fromMySQLTime(e.AcknowledgedAt),
-			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: fromMySQLTime(e.ResolvedAt), ResolvedBy: e.ResolvedBy,
-			Timeline: e.Timeline, Investigation: e.Investigation, Signature: e.Signature,
-		})
+	rows, err := alertCH.queryAlertEvents("", 0, maxAlertEvents)
+	if err != nil {
+		log.Printf("loadAlertEvents(clickhouse): %v", err)
+		alertEvents = []AlertEvent{}
+		return
 	}
+	alertEvents = rows
 }
 
 // fromMySQLTime 把 MySQL datetime（2026-08-09 04:28:59）转回 RFC3339（2026-08-09T04:28:59Z）。
@@ -263,24 +426,21 @@ func fromMySQLTime(s string) string {
 }
 
 func saveAlertEvents() {
-	// 锁内快照，锁外写 MySQL，避免长时间持有锁阻塞读
-	alertEventsMu.RLock()
-	rows := make([]store.AlertEvent, 0, len(alertEvents))
-	for _, e := range alertEvents {
-		rows = append(rows, store.AlertEvent{
-			ID: e.ID, RuleID: e.RuleID, RuleName: e.RuleName, Service: e.Service,
-			Severity: e.Severity, Message: e.Message, Value: e.Value, Threshold: e.Threshold,
-			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
-			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
-			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
-			Timeline: e.Timeline, Investigation: e.Investigation, Signature: e.Signature,
-		})
+	// 锁内快照，锁外写 ClickHouse（批量 INSERT），避免长时间持有锁阻塞读。
+	// CH ReplacingMergeTree 按 version 去重并保留最新版本，全量 INSERT 幂等，
+	// 不会像旧 MySQL ReplaceAll 那样删除未列出行；生命周期由 CH TTL 管理。
+	if alertCH == nil {
+		return
 	}
+	alertEventsMu.RLock()
+	rows := make([]AlertEvent, 0, len(alertEvents))
+	rows = append(rows, alertEvents...)
 	alertEventsMu.RUnlock()
-
-	d := &store.AlertEventDAO{}
-	if err := d.ReplaceAll(rows); err != nil {
-		log.Printf("saveAlertEvents(mysql): %v", err)
+	if len(rows) == 0 {
+		return
+	}
+	if err := alertCH.insertAlertEvents(rows); err != nil {
+		log.Printf("saveAlertEvents(clickhouse): %v", err)
 	}
 }
 

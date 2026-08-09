@@ -81,3 +81,39 @@ ENGINE = ReplacingMergeTree
 PARTITION BY date
 ORDER BY (tenant_id, service_name, date, start_time, span_id)
 SETTINGS index_granularity = 8192;
+
+-- -----------------------------------------------------------------------------
+-- alert_events: 告警事件（大容量场景用 CH 列式存储；query-api 为写入者）
+-- ReplacingMergeTree(version) 按 id 去重并保留最新状态；TTL 管理生命周期
+-- 替代原 MySQL alert_events + 内存态 maxAlertEvents=1000 手工裁剪
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS observability.alert_events
+(
+    `id` String,
+    `rule_id` String,
+    `rule_name` String,
+    `service` String,
+    `severity` String,
+    `message` String,
+    `value` Float64,
+    `threshold` Float64,
+    `timestamp` DateTime64(3),
+    `count` UInt32,
+    `first_timestamp` DateTime64(3),
+    `last_timestamp` DateTime64(3),
+    `status` String,
+    `acknowledged_at` DateTime64(3),
+    `acknowledged_by` String,
+    `resolved_at` DateTime64(3),
+    `resolved_by` String,
+    `timeline` String,
+    `investigation` String,
+    `signature` String,
+    `version` UInt64,
+    `date` Date
+)
+ENGINE = ReplacingMergeTree(version)
+PARTITION BY date
+ORDER BY (service, rule_id, id)
+TTL last_timestamp + INTERVAL 30 DAY
+SETTINGS index_granularity = 8192;
