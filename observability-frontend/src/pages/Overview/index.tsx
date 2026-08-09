@@ -100,7 +100,7 @@ const Overview: React.FC = () => {
           <ThunderboltOutlined style={{ fontSize: 28 }} />
           <div>
             <div style={{ fontSize: 20, fontWeight: 700 }}>AIOps 智能运维平台</div>
-            <div style={{ fontSize: 13, opacity: 0.9 }}>全栈可观测 · AI 诊断 · 智能告警 · NL→SQL</div>
+            <div style={{ fontSize: 13, opacity: 0.9 }}>全栈可观测 · AI 诊断 · 智能告警 · SQL 查询</div>
           </div>
         </Space>
         <Space style={{ position: 'absolute', right: 24, bottom: 20 }}>

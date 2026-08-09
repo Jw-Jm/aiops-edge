@@ -26,8 +26,8 @@ const Services: React.FC = () => {
 
   const columns = [
     { title: '服务名称', dataIndex: 'service_name', key: 'name', width: 220, render: (n: string) => <a onClick={() => setSelected(n)}>{n}</a> },
-    { title: 'Traces', dataIndex: 'traces', key: 'traces', width: 110, align: 'right' as const, sorter: (a: Record<string, unknown>, b: Record<string, unknown>) => Number(a.traces) - Number(b.traces) },
-    { title: 'Spans', dataIndex: 'spans', key: 'spans', width: 110, align: 'right' as const, sorter: (a: Record<string, unknown>, b: Record<string, unknown>) => Number(a.spans) - Number(b.spans) },
+    { title: '调用链', dataIndex: 'traces', key: 'traces', width: 110, align: 'right' as const, sorter: (a: Record<string, unknown>, b: Record<string, unknown>) => Number(a.traces) - Number(b.traces) },
+    { title: 'Span 数', dataIndex: 'spans', key: 'spans', width: 110, align: 'right' as const, sorter: (a: Record<string, unknown>, b: Record<string, unknown>) => Number(a.spans) - Number(b.spans) },
     { title: '平均延迟 (ms)', dataIndex: 'avg_ms', key: 'avg_ms', width: 130, align: 'right' as const, render: (v: number) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{(v || 0).toFixed(1)}</span> },
     { title: '最大延迟 (ms)', dataIndex: 'max_ms', key: 'max_ms', width: 130, align: 'right' as const, render: (v: number) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{(v || 0).toFixed(1)}</span> },
   ]

@@ -228,7 +228,13 @@ const AppLayout: React.FC = () => {
           <Header style={{ background: darkMode ? '#0d1526' : '#fff', padding: '0 24px', borderBottom: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 56, lineHeight: '56px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <span style={{ fontSize: 16, fontWeight: 600, color: darkMode ? 'rgba(255,255,255,0.92)' : '#000' }}>{currentLabel}</span>
-              <Tag color="blue" style={{ marginLeft: 4 }}>生产环境</Tag>
+              {/* 环境标签从构建变量注入（可移植）：生产 VITE_ENV=production 显示"生产环境"，默认"演示环境" */}
+              {(() => {
+                const env = (import.meta.env.VITE_ENV as string) || 'demo'
+                const envMap: Record<string, [string, string]> = { production: ['生产环境', 'blue'], staging: ['预发环境', 'purple'], demo: ['演示环境', 'green'] }
+                const [text, color] = envMap[env] || ['演示环境', 'green']
+                return <Tag color={color} style={{ marginLeft: 4 }}>{text}</Tag>
+              })()}
             </div>
             <Space size={16} align="center">
               <Input

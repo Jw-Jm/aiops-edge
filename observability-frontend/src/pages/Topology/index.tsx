@@ -158,6 +158,7 @@ const Topology: React.FC = () => {
     setNodes(nr.data?.items || [])
     setRelations(rr.data?.items || [])
     setRelationTypes(rtr.data?.items || [])
+    return (nr.data?.items?.length || 0) > 0
     // 合并 trace 实时指标（error_rate/latency_ms/health）到节点，按服务名
     const m: Record<string, NodeMetric> = {}
     const tn = gt?.data?.nodes || []
@@ -177,8 +178,10 @@ const Topology: React.FC = () => {
     setLoading(true)
     try {
       await fetchCatalog()
-      // 目录为空时（或强制同步时）从 trace 聚合自动填充
-      if (forceSync || nodes.length === 0) {
+      // 目录为空时（或强制同步时）从 trace 聚合自动填充；
+      // 用 fetchCatalog 的实际返回判断空态（避免用可能滞后的 nodes state）
+      const hasNodes = await fetchCatalog()
+      if (forceSync || !hasNodes) {
         await topoSyncCatalog()
         await fetchCatalog()
       }
