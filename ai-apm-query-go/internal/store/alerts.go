@@ -21,6 +21,8 @@ type AlertRule struct {
 	Severity   string
 	Enabled    bool
 	WebhookURL string
+	Cooldown   int
+	Dampening  int
 }
 
 // AlertRuleDAO 告警规则数据访问（全量重建 + 加载）。
@@ -33,7 +35,7 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	rows, err := conn.Query(
-		"SELECT id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url FROM alert_rules")
+		"SELECT id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url, cooldown, dampening FROM alert_rules")
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +46,7 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 		var en int
 		var wh sql.NullString
 		if err := rows.Scan(&r.ID, &r.Name, &r.Service, &r.Type, &r.Metric,
-			&r.Condition, &r.Threshold, &r.Duration, &r.Severity, &en, &wh); err != nil {
+			&r.Condition, &r.Threshold, &r.Duration, &r.Severity, &en, &wh, &r.Cooldown, &r.Dampening); err != nil {
 			return nil, err
 		}
 		r.Enabled = en == 1
@@ -67,10 +69,10 @@ func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 	}
 	defer tx.Rollback()
 	stmt, err := tx.Prepare(
-		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url) " +
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url, cooldown, dampening) " +
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
 			"ON DUPLICATE KEY UPDATE name=VALUES(name), service=VALUES(service), type=VALUES(type), metric=VALUES(metric), " +
-			"cond=VALUES(cond), threshold=VALUES(threshold), duration=VALUES(duration), severity=VALUES(severity), enabled=VALUES(enabled), webhook_url=VALUES(webhook_url)")
+			"cond=VALUES(cond), threshold=VALUES(threshold), duration=VALUES(duration), severity=VALUES(severity), enabled=VALUES(enabled), webhook_url=VALUES(webhook_url), cooldown=VALUES(cooldown), dampening=VALUES(dampening)")
 	if err != nil {
 		return err
 	}
@@ -79,7 +81,7 @@ func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 	for _, r := range rules {
 		ids[r.ID] = true
 		if _, err := stmt.Exec(r.ID, r.Name, r.Service, r.Type, r.Metric,
-			r.Condition, r.Threshold, r.Duration, r.Severity, boolToInt(r.Enabled), r.WebhookURL); err != nil {
+			r.Condition, r.Threshold, r.Duration, r.Severity, boolToInt(r.Enabled), r.WebhookURL, r.Cooldown, r.Dampening); err != nil {
 			return err
 		}
 	}

@@ -34,6 +34,24 @@ type AlertRule struct {
 	Severity    string  `json:"severity"` // "critical", "warning", "info"
 	Enabled     bool    `json:"enabled"`
 	WebhookURL  string  `json:"webhook_url,omitempty"` // 规则级 webhook（可选，覆盖全局）
+	Cooldown    int     `json:"cooldown,omitempty"`   // 触发冷却（分钟）：冷却期内不重复告警
+	Dampening   int     `json:"dampening,omitempty"`  // 连续确认（次数）：连续 N 次 breach 才告警
+}
+
+// inCooldown 判断规则是否处于冷却期（距上次触发 < Cooldown 分钟）。
+func inCooldown(rule AlertRule, lastTrigger time.Time, now time.Time) bool {
+	if rule.Cooldown <= 0 {
+		return false
+	}
+	return now.Sub(lastTrigger) < time.Duration(rule.Cooldown)*time.Minute
+}
+
+// shouldAlertAfterDampening 判断连续 breach 次数是否达到 dampening 阈值。
+func shouldAlertAfterDampening(rule AlertRule, streak int) bool {
+	if rule.Dampening <= 1 {
+		return true
+	}
+	return streak >= rule.Dampening
 }
 
 // AlertEvent represents a triggered alert event.
@@ -146,6 +164,7 @@ func loadAlertRules() {
 			ID: r.ID, Name: r.Name, Service: r.Service, Type: r.Type, Metric: r.Metric,
 			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
+			Cooldown: r.Cooldown, Dampening: r.Dampening,
 		})
 	}
 }
@@ -159,6 +178,7 @@ func saveAlertRules() {
 			ID: r.ID, Name: r.Name, Service: r.Service, Type: r.Type, Metric: r.Metric,
 			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
+			Cooldown: r.Cooldown, Dampening: r.Dampening,
 		})
 	}
 	alertRulesMu.RUnlock()
@@ -779,6 +799,10 @@ func (h *Handler) evaluateAlerts() {
 	copy(rules, alertRules)
 	alertRulesMu.RUnlock()
 
+	// 记录每条规则最近触发时间（cooldown 冷却）与连续 breach 次数（dampening）
+	lastRuleTrigger := make(map[string]time.Time)
+	ruleStreak := make(map[string]int)
+
 	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
@@ -845,6 +869,19 @@ func (h *Handler) evaluateAlerts() {
 			now := time.Now().UTC()
 			nowStr := now.Format(time.RFC3339)
 
+			// cooldown 触发冷却：冷却期内不重复告警（即使窗口外）
+			if t, ok := lastRuleTrigger[rule.ID]; ok && inCooldown(rule, t, now) {
+				continue
+			}
+
+			// dampening 连续确认：连续 breach 次数未达阈值则暂不告警
+			ruleStreak[rule.ID]++
+			if !shouldAlertAfterDampening(rule, ruleStreak[rule.ID]) {
+				log.Printf("ALERT_DAMPENED: %s | %s (streak=%d/%d)", rule.Service, rule.Name, ruleStreak[rule.ID], rule.Dampening)
+				continue
+			}
+			lastRuleTrigger[rule.ID] = now
+
 			alertEventsMu.Lock()
 			// 时间窗口聚合 + dedupe：窗口内已有同 (service, rule_id, signature) 事件则只更新计数/时间，不新增（降噪）
 			sig := eventSignature(rule.ID, rule.Service, rule.Metric)
@@ -903,6 +940,9 @@ func (h *Handler) evaluateAlerts() {
 			alertEventsMu.Unlock()
 
 			saveAlertEvents()
+		} else {
+			// 未 breach：重置连续计数（dampening）
+			ruleStreak[rule.ID] = 0
 		}
 	}
 }

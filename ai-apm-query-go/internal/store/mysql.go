@@ -249,13 +249,21 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   severity VARCHAR(16) DEFAULT 'warning',
   enabled TINYINT DEFAULT 1,
   webhook_url VARCHAR(512) DEFAULT '',
+  cooldown INT DEFAULT 0,
+  dampening INT DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 
-	// 兼容已存在的 alert_rules 表：补 webhook_url 列（幂等）
+	// 兼容已存在的 alert_rules 表：补 webhook_url/cooldown/dampening 列（幂等）
 	if !hasColumn(conn, "alert_rules", "webhook_url") {
 		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN webhook_url VARCHAR(512) DEFAULT ''")
+	}
+	if !hasColumn(conn, "alert_rules", "cooldown") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN cooldown INT DEFAULT 0")
+	}
+	if !hasColumn(conn, "alert_rules", "dampening") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN dampening INT DEFAULT 0")
 	}
 
 	// alert_events 告警事件（从 /tmp JSON 迁 MySQL）
