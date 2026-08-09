@@ -27,12 +27,13 @@ type Metrics struct {
 	serviceRED map[string]*serviceREDEntry
 }
 
-// serviceREDEntry 单个服务的累计 RED 值。
+// serviceREDEntry 单个 (cluster, service) 的累计 RED 值。
 type serviceREDEntry struct {
-	reqs   uint64
-	errs   uint64
-	durSum float64 // 秒
-	durCnt uint64
+	cluster string // 所属 k8s 环境/集群，多环境接入时区分
+	reqs    uint64
+	errs    uint64
+	durSum  float64 // 秒
+	durCnt  uint64
 }
 
 // New 创建 Metrics 实例。
@@ -43,14 +44,27 @@ func New() *Metrics {
 	return m
 }
 
-// AddServiceRED 累加一个服务的请求/错误/耗时。durationNs 为纳秒，内部转为秒。
+// AddServiceRED 累加一个服务的请求/错误/耗时（默认 cluster="default"）。
+// durationNs 为纳秒，内部转为秒。兼容 OTLP 单环境路径。
 func (m *Metrics) AddServiceRED(service string, isError bool, durationNs uint64) {
+	m.AddServiceREDForCluster("default", service, isError, durationNs)
+}
+
+// AddServiceREDForCluster 按 (cluster, service) 累加服务 RED，多 k8s 环境接入时用 cluster 区分。
+func (m *Metrics) AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64) {
+	if cluster == "" {
+		cluster = "default"
+	}
+	if service == "" {
+		service = "unknown"
+	}
 	m.redMu.Lock()
 	defer m.redMu.Unlock()
-	e, ok := m.serviceRED[service]
+	key := cluster + "\x00" + service
+	e, ok := m.serviceRED[key]
 	if !ok {
-		e = &serviceREDEntry{}
-		m.serviceRED[service] = e
+		e = &serviceREDEntry{cluster: cluster}
+		m.serviceRED[key] = e
 	}
 	e.reqs++
 	if isError {
@@ -129,11 +143,17 @@ func (m *Metrics) serviceREDSnapshot() string {
 	b.WriteString("# TYPE service_request_duration_seconds_sum counter\n")
 	b.WriteString("# HELP service_request_duration_seconds_count Count of requests per service.\n")
 	b.WriteString("# TYPE service_request_duration_seconds_count counter\n")
-	for svc, e := range m.serviceRED {
-		b.WriteString(fmt.Sprintf("service_requests_total{service=%q} %d\n", svc, e.reqs))
-		b.WriteString(fmt.Sprintf("service_errors_total{service=%q} %d\n", svc, e.errs))
-		b.WriteString(fmt.Sprintf("service_request_duration_seconds_sum{service=%q} %.9f\n", svc, e.durSum))
-		b.WriteString(fmt.Sprintf("service_request_duration_seconds_count{service=%q} %d\n", svc, e.durCnt))
+	for key, e := range m.serviceRED {
+		// key = cluster+"\x00"+service
+		parts := strings.Split(key, "\x00")
+		svc := "unknown"
+		if len(parts) == 2 {
+			svc = parts[1]
+		}
+		b.WriteString(fmt.Sprintf("service_requests_total{cluster=%q, service=%q} %d\n", e.cluster, svc, e.reqs))
+		b.WriteString(fmt.Sprintf("service_errors_total{cluster=%q, service=%q} %d\n", e.cluster, svc, e.errs))
+		b.WriteString(fmt.Sprintf("service_request_duration_seconds_sum{cluster=%q, service=%q} %.9f\n", e.cluster, svc, e.durSum))
+		b.WriteString(fmt.Sprintf("service_request_duration_seconds_count{cluster=%q, service=%q} %d\n", e.cluster, svc, e.durCnt))
 	}
 	return b.String()
 }
