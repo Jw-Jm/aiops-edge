@@ -383,3 +383,17 @@ func TestCapacityInstances(t *testing.T) {
 		t.Fatalf("instances=%v, want [192.168.139.2:9100]", resp.Instances)
 	}
 }
+
+// VM 返回非 200 → vmInstanceLabels 应报错（不静默返回空列表）。
+func TestVMInstanceLabelsErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"status":"error","error":"bad query"}`))
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	_, err := h.vmInstanceLabels(`up{job="node-exporter"}`)
+	if err == nil {
+		t.Fatalf("expected error on non-200, got nil")
+	}
+}

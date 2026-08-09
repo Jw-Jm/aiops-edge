@@ -253,6 +253,10 @@ func (h *Handler) vmInstanceLabels(promQL string) ([]string, error) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	// 显式检查状态码：VM 错误响应可能带 JSON body，若跳过会静默吞掉 500 错误
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("VM query returned %d: %s", resp.StatusCode, string(body)[:min(len(body), 200)])
+	}
 	var r struct {
 		Data struct {
 			Result []struct {
