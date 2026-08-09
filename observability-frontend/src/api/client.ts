@@ -213,6 +213,21 @@ export const createDevice = (data: Record<string, unknown>) => api.post('/device
 export const updateDevice = (id: number, data: Record<string, unknown>) => api.put(`/devices/${id}`, data)
 export const deleteDevice = (id: number) => api.delete(`/devices/${id}`)
 
+// ===== SLO 目标管理 =====
+export interface SLOTarget {
+  id: string
+  name: string
+  service: string
+  slo_type: string        // availability | latency
+  target: number          // 如 99.9
+  window_seconds: number
+  enabled: boolean
+}
+export const listSLOs = () => api.get('/slo')
+export const createSLO = (data: Record<string, unknown>) => api.post('/slo', data)
+export const updateSLO = (id: string, data: Record<string, unknown>) => api.put(`/slo/${id}`, data)
+export const deleteSLO = (id: string) => api.delete(`/slo/${id}`)
+
 // ===== 集群管理 =====
 export interface ClusterItem {
   id: number; name: string; provider: string; region: string; version: string

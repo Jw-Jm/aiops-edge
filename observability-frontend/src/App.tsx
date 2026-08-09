@@ -20,6 +20,7 @@ const AIChat = lazy(() => import('./pages/AIChat'))
 const ChatThread = lazy(() => import('./pages/AIChat/ChatThread'))
 const Alerts = lazy(() => import('./pages/Alerts'))
 const IncidentDetail = lazy(() => import('./pages/Alerts/IncidentDetail'))
+const SLO = lazy(() => import('./pages/SLO'))
 const Skills = lazy(() => import('./pages/Skills'))
 const Agents = lazy(() => import('./pages/Agents'))
 const Workflows = lazy(() => import('./pages/Workflows'))
@@ -88,6 +89,7 @@ const menuGroups = [
       { key: '/agents', icon: <RobotOutlined />, label: 'AI 助理' },
       { key: '/workflows', icon: <DeploymentUnitOutlined />, label: '工作流' },
       { key: '/alerts', icon: <AlertOutlined />, label: '告警中心' },
+      { key: '/slo', icon: <RadarChartOutlined />, label: 'SLO 管理' },
       { key: '/approvals', icon: <SafetyCertificateOutlined />, label: '审批中心' },
       { key: '/audit', icon: <AuditOutlined />, label: '审计日志' },
       { key: '/nl2sql', icon: <ThunderboltFilled />, label: 'SQL 查询' },
@@ -268,6 +270,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/deepflow" element={<DeepFlow />} />
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/alerts/incidents/:id" element={<IncidentDetail />} />
+                <Route path="/slo" element={<SLO />} />
                 <Route path="/tasks" element={<Tasks />} />
                 <Route path="/approvals" element={<Approvals />} />
                 <Route path="/audit" element={<Audit />} />

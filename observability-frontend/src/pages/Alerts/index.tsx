@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons'
 import {
   getAlertRules, createAlertRule, updateAlertRule, deleteAlertRule,
-  getAlertEvents, rcaAlertAnalysis,
+  getAlertEvents, rcaAlertAnalysis, listSLOs, SLOTarget,
 } from '../../api/client'
 import { fmtLocalTime } from '../../utils/date'
 
@@ -32,6 +32,9 @@ interface AlertRule {
   enabled: boolean
   cooldown?: number
   dampening?: number
+  baseline_seconds?: number   // anomaly 基线窗口（秒）
+  anomaly_method?: string     // anomaly 检测方法：zscore|mad
+  slo_id?: string             // burn_rate 引用的 SLO 目标 id
 }
 
 interface AlertEvent {
@@ -82,7 +85,9 @@ const AlertRulesTab: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null)
+  const [sloList, setSloList] = useState<SLOTarget[]>([])
   const [form] = Form.useForm()
+  const ruleType = Form.useWatch('type', form)
 
   const fetchRules = useCallback(async () => {
     setLoading(true)
@@ -98,6 +103,11 @@ const AlertRulesTab: React.FC = () => {
   }, [])
 
   useEffect(() => { fetchRules() }, [fetchRules])
+
+  // 拉取 SLO 目标（burn_rate 规则下拉引用）
+  useEffect(() => {
+    listSLOs().then((res) => setSloList(res.data?.data || [])).catch(() => setSloList([]))
+  }, [])
 
   const openCreateModal = () => {
     setEditingRule(null)
@@ -266,6 +276,28 @@ const AlertRulesTab: React.FC = () => {
               <InputNumber min={1} max={60} style={{ width: '100%' }} />
             </Form.Item>
           </div>
+          {ruleType === 'anomaly' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              <Form.Item name="baseline_seconds" label="基线窗口(秒)" extra="历史序列时长，用于统计基线" initialValue={900}>
+                <InputNumber min={60} step={60} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item name="anomaly_method" label="检测方法" initialValue="zscore">
+                <Select>
+                  <Option value="zscore">Z-Score（均值+标准差）</Option>
+                  <Option value="mad">MAD（中位数稳健）</Option>
+                </Select>
+              </Form.Item>
+            </div>
+          )}
+          {ruleType === 'burn_rate' && (
+            <Form.Item name="slo_id" label="SLO 目标" rules={[{ required: true, message: '请选择 SLO 目标' }]} extra="烧毁率基于所选 SLO 的错误预算">
+              <Select placeholder="选择 SLO 目标">
+                {sloList.filter((s) => s.enabled).map((s) => (
+                  <Option key={s.id} value={s.id}>{s.service} · {s.name} ({s.slo_type === 'latency' ? `${s.target}ms` : `${s.target}%`})</Option>
+                ))}
+              </Select>
+            </Form.Item>
+          )}
           <Form.Item name="severity" label="严重级别" rules={[{ required: true }]}>
             <Select style={{ width: 200 }}>
               <Option value="critical">严重 (Critical)</Option>
