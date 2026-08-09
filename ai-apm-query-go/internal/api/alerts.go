@@ -229,7 +229,7 @@ func (h *Handler) insertAlertEvents(events []AlertEvent) error {
 		if t, err := time.Parse(time.RFC3339, e.LastTimestamp); err == nil {
 			date = t.UTC().Format("2006-01-02")
 		}
-		buf.WriteString(fmt.Sprintf("('%s','%s','%s','%s','%s','%s',%v,%v,%s,%d,%s,%s,'%s',%s,'%s',%s,'%s','%s','%s','%s',%d%s)",
+		buf.WriteString(fmt.Sprintf("('%s','%s','%s','%s','%s','%s',%v,%v,%s,%d,%s,%s,'%s',%s,'%s',%s,'%s','%s','%s','%s',%d,%s)",
 			escCH(e.ID), escCH(e.RuleID), escCH(e.RuleName), escCH(e.Service), escCH(e.Severity), escCH(e.Message),
 			e.Value, e.Threshold,
 			chTimeVal(e.Timestamp), e.Count,
@@ -286,7 +286,10 @@ func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEv
 	if err != nil {
 		return nil, err
 	}
-	// JSONEachRow 解析
+	// JSONEachRow 解析；CH 空结果返回空 body，需容忍（返回空切片而非报错）
+	if len(bytes.TrimSpace(body)) == 0 {
+		return []AlertEvent{}, nil
+	}
 	var rows []map[string]interface{}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return nil, err
