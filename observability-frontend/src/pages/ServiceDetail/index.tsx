@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Card, Spin, Descriptions, Statistic, Row, Col, Typography } from 'antd'
+import AppEmpty from '../../components/AppEmpty'
 import ReactECharts from 'echarts-for-react'
 import { getServiceDetail } from '../../api/client'
 import { fmtLocalHM } from '../../utils/date'
@@ -83,13 +84,19 @@ const ServiceDetail: React.FC<{ name?: string }> = ({ name: nameProp }) => {
         <Col span={6}><Card size="small" styles={{ body: { padding: '16px 20px' } }}><Statistic title="错误率" value={`${data.length > 0 ? ((totalErrors / Math.max(totalCalls, 1)) * 100).toFixed(2) : 0}%`} valueStyle={{ color: totalErrors > 0 ? '#ff4d4f' : '#52c41a' }} /></Card></Col>
         <Col span={6}><Card size="small" styles={{ body: { padding: '16px 20px' } }}><Statistic title="平均延迟" value={`${avgDuration.toFixed(1)} ms`} valueStyle={{ color: '#722ed1' }} /></Card></Col>
       </Row>
-      <Row gutter={[12, 12]}>
-        <Col xs={24} md={12}><Card size="small" title="每分钟调用量" styles={{ body: { background: '#121826' } }}><ReactECharts option={callsOption} style={{ height: 240 }} theme="dark" /></Card></Col>
-        <Col xs={24} md={12}><Card size="small" title="每分钟错误数" styles={{ body: { background: '#121826' } }}><ReactECharts option={errorOption} style={{ height: 240 }} theme="dark" /></Card></Col>
-      </Row>
-      <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
-        <Col span={24}><Card size="small" title="平均延迟趋势" styles={{ body: { background: '#121826' } }}><ReactECharts option={durationOption} style={{ height: 240 }} theme="dark" /></Card></Col>
-      </Row>
+      {data.length === 0 && !loading ? (
+        <AppEmpty description={`暂无「${name}」的链路指标数据`} tip="确认服务名拼写正确且链路追踪数据已写入" />
+      ) : (
+        <>
+          <Row gutter={[12, 12]}>
+            <Col xs={24} md={12}><Card size="small" title="每分钟调用量" styles={{ body: { background: '#121826' } }}><ReactECharts option={callsOption} style={{ height: 240 }} theme="dark" /></Card></Col>
+            <Col xs={24} md={12}><Card size="small" title="每分钟错误数" styles={{ body: { background: '#121826' } }}><ReactECharts option={errorOption} style={{ height: 240 }} theme="dark" /></Card></Col>
+          </Row>
+          <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
+            <Col span={24}><Card size="small" title="平均延迟趋势" styles={{ body: { background: '#121826' } }}><ReactECharts option={durationOption} style={{ height: 240 }} theme="dark" /></Card></Col>
+          </Row>
+        </>
+      )}
     </Spin>
   )
 }

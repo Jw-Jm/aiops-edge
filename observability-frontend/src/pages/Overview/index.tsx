@@ -46,18 +46,29 @@ const Overview: React.FC = () => {
     ],
   }
 
-  // 错误分布柱状图
+  // 错误分布柱状图（y 轴为服务名，左侧需留足空间防裁剪）
   const errorsOption = {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis', ...tooltipStyle },
-    grid: { left: 50, right: 20, top: 20, bottom: 30 },
+    grid: { left: 110, right: 20, top: 20, bottom: 30, containLabel: false },
     xAxis: { type: 'value', axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: gridColor } } },
-    yAxis: { type: 'category', data: (stats?.top_errors || []).map(e => e.service).reverse(), axisLabel: { color: '#ccc', fontSize: 11 } },
+    yAxis: {
+      type: 'category',
+      data: (stats?.top_errors || []).map(e => e.service).reverse(),
+      axisLabel: { color: '#ccc', fontSize: 11 },
+      inverse: false,
+    },
     series: [{ name: '错误数', type: 'bar', data: (stats?.top_errors || []).map(e => e.errors).reverse(), itemStyle: { color: '#ff4d4f', borderRadius: [0, 4, 4, 0] }, barWidth: 14 }],
   }
 
   // 告警环形图
+  // 当某个级别告警为 0 时保留该项并以淡灰色展示，避免出现「全红环」等视觉误导。
   const alerts = stats?.alerts || { total: 0, critical: 0, warning: 0, info: 0, by_service: [] }
+  const alertSeriesData = [
+    { value: alerts.critical, name: '严重', itemStyle: { color: alerts.critical > 0 ? '#ff4d4f' : '#3a3a3a' } },
+    { value: alerts.warning,  name: '警告', itemStyle: { color: alerts.warning  > 0 ? '#faad14' : '#3a3a3a' } },
+    { value: alerts.info,     name: '信息', itemStyle: { color: alerts.info     > 0 ? '#1677ff' : '#3a3a3a' } },
+  ]
   const alertOption = {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'item', ...tooltipStyle },
@@ -65,19 +76,15 @@ const Overview: React.FC = () => {
     series: [{
       type: 'pie', radius: ['45%', '70%'], center: ['50%', '44%'],
       avoidLabelOverlap: false, label: { show: false }, emphasis: { label: { show: true, color: '#fff' } },
-      data: [
-        { value: alerts.critical, name: '严重', itemStyle: { color: '#ff4d4f' } },
-        { value: alerts.warning, name: '警告', itemStyle: { color: '#faad14' } },
-        { value: alerts.info, name: '信息', itemStyle: { color: '#1677ff' } },
-      ],
+      data: alertSeriesData,
     }],
   }
 
-  // TOP 服务调用量条形图
+  // TOP 服务调用量条形图（与 TOP 错误服务对称布局）
   const topSvcOption = {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis', ...tooltipStyle },
-    grid: { left: 50, right: 20, top: 20, bottom: 30 },
+    grid: { left: 110, right: 20, top: 20, bottom: 30, containLabel: false },
     xAxis: { type: 'value', axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: gridColor } } },
     yAxis: { type: 'category', data: (stats?.top_services || []).slice(0, 10).map(s => s.service).reverse(), axisLabel: { color: '#ccc', fontSize: 11 } },
     series: [{ name: '调用量', type: 'bar', data: (stats?.top_services || []).slice(0, 10).map(s => s.calls).reverse(), itemStyle: { color: '#1677ff', borderRadius: [0, 4, 4, 0] }, barWidth: 12 }],

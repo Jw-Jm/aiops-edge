@@ -1,6 +1,7 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Menu, ConfigProvider, theme, Space, Input, Tag, Avatar, Dropdown, Tooltip, Spin } from 'antd'
+import zhCN from 'antd/locale/zh_CN'
 import { useUIStore } from './store/uiStore'
 import CommandPalette from './components/CommandPalette'
 import AgentSidePanel from './components/AgentSidePanel'
@@ -193,7 +194,7 @@ const AppLayout: React.FC = () => {
   }
 
   return (
-    <ConfigProvider theme={{ algorithm: darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm, token: darkMode ? darkToken : { colorPrimary: '#1677ff', borderRadius: 8 } }}>
+    <ConfigProvider locale={zhCN} theme={{ algorithm: darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm, token: darkMode ? darkToken : { colorPrimary: '#1677ff', borderRadius: 8 } }}>
       <Layout style={{ minHeight: '100vh' }}>
         {/* 侧边栏 */}
         <Sider collapsible collapsed={collapsed} onCollapse={toggleCollapsed} width={230} theme="dark"

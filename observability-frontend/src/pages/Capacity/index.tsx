@@ -96,12 +96,19 @@ const Capacity: React.FC = () => {
   const [instances, setInstances] = useState<string[]>([])
   const [data, setData] = useState<CapacityForecast | null>(null)
   const [loading, setLoading] = useState(false)
+  // 全部 metric 的当前值缓存：避免非选中 metric 卡一直显示「—」，
+  // 初次进入并发查 4 个 metric 的当前快照，切换 metric 时也刷新对应条目
+  const [summaries, setSummaries] = useState<Record<string, { current: number; change_pct: number } | null>>({})
 
   const load = async () => {
     setLoading(true)
     try {
       const r = await getCapacityForecast({ metric, hours, horizon, instance: instance || undefined })
-      setData(r?.data || null)
+      const d = r?.data || null
+      setData(d)
+      if (d) {
+        setSummaries((prev) => ({ ...prev, [metric]: { current: d.current, change_pct: d.change_pct } }))
+      }
     } catch {
       setData(null)
     } finally {
@@ -120,6 +127,30 @@ const Capacity: React.FC = () => {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metric, hours, horizon, instance])
+
+  // 初次进入时并发拉所有 metric 当前快照，让 4 张卡片都有数值可显示
+  useEffect(() => {
+    let cancelled = false
+    const fetchAll = async () => {
+      const results = await Promise.all(
+        METRICS.map(async (m) => {
+          // network 必须带 threshold，其它 metric 后端有默认值
+          const threshold = m.key === 'network' ? 1_000_000 : undefined
+          try {
+            const r = await getCapacityForecast({ metric: m.key, hours, horizon, instance: instance || undefined, threshold })
+            const d = r?.data
+            return d ? ([m.key, { current: d.current, change_pct: d.change_pct }] as const) : ([m.key, null] as const)
+          } catch {
+            return [m.key, null] as const
+          }
+        }),
+      )
+      if (!cancelled) setSummaries(Object.fromEntries(results))
+    }
+    fetchAll()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div>
@@ -144,22 +175,31 @@ const Capacity: React.FC = () => {
 
       {/* 维度切换 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        {METRICS.map((m) => (
-          <Col span={6} key={m.key}>
-            <Card
-              hoverable
-              onClick={() => setMetric(m.key)}
-              style={{ borderRadius: 12, cursor: 'pointer', borderColor: metric === m.key ? '#1677ff' : undefined }}
-            >
-              <Statistic title={m.label} value={metric === m.key && data ? data.current.toFixed(1) : '—'} suffix={m.unit} />
-              {metric === m.key && data ? (
-                <div style={{ color: data.change_pct > 0 ? '#ff4d4f' : '#52c41a', fontSize: 12, marginTop: 4 }}>
-                  {data.change_pct > 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />} 环比 {Math.abs(data.change_pct).toFixed(1)}%
-                </div>
-              ) : null}
-            </Card>
-          </Col>
-        ))}
+        {METRICS.map((m) => {
+          // 选中 metric 显示完整统计；其他 metric 显示缓存的 current 快照（初次进入会并发拉取）
+          const isActive = metric === m.key
+          const summary = isActive && data
+            ? { current: data.current, change_pct: data.change_pct }
+            : summaries[m.key]
+          return (
+            <Col span={6} key={m.key}>
+              <Card
+                hoverable
+                onClick={() => setMetric(m.key)}
+                style={{ borderRadius: 12, cursor: 'pointer', borderColor: isActive ? '#1677ff' : undefined }}
+              >
+                <Statistic title={m.label} value={summary ? summary.current.toFixed(1) : '—'} suffix={m.unit} />
+                {summary ? (
+                  <div style={{ color: summary.change_pct > 0 ? '#ff4d4f' : '#52c41a', fontSize: 12, marginTop: 4 }}>
+                    {summary.change_pct > 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />} 环比 {Math.abs(summary.change_pct).toFixed(1)}%
+                  </div>
+                ) : (
+                  <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>加载中…</div>
+                )}
+              </Card>
+            </Col>
+          )
+        })}
       </Row>
 
       <Spin spinning={loading}>
