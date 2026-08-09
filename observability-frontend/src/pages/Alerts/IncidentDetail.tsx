@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Card, Descriptions, Tag, Button, Spin, Timeline, Space, message } from 'antd'
-import { getAlertEventByID, ackAlertEvent, resolveAlertEvent, rcaAlertAnalysis, saveAlertInvestigation } from '../../api/client'
+import { getAlertEventByID, ackAlertEvent, resolveAlertEvent, rcaAlertAnalysis, saveAlertInvestigation, genRecoveryPlan, approveTask, rejectTask } from '../../api/client'
 import { fmtLocalTime } from '../../utils/date'
 
 const STATUS_COLOR: Record<string, string> = { firing: 'red', acknowledged: 'orange', resolved: 'green' }
@@ -12,6 +12,8 @@ const IncidentDetail: React.FC = () => {
   const [ev, setEv] = useState<any>(null)
   const [rca, setRca] = useState('')
   const [loading, setLoading] = useState(true)
+  const [recovery, setRecovery] = useState<{ task_id: string; plan: string; script: string; status: string } | null>(null)
+  const [recoveryLoading, setRecoveryLoading] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -70,6 +72,43 @@ const IncidentDetail: React.FC = () => {
       setRca('调查失败')
     }
   }
+  const onRecovery = async () => {
+    if (!ev) return
+    setRecoveryLoading(true)
+    try {
+      const res = await genRecoveryPlan({
+        service: ev.service || 'kubernetes',
+        diagnosis: rca,
+        investigation: rca,
+      })
+      setRecovery(res?.data)
+      message.info('恢复方案已生成，请审核')
+    } catch {
+      message.error('生成恢复方案失败')
+    } finally {
+      setRecoveryLoading(false)
+    }
+  }
+  const onApproveRecovery = async () => {
+    if (!recovery?.task_id) return
+    try {
+      await approveTask(recovery.task_id)
+      setRecovery({ ...recovery, status: 'done' })
+      message.success('恢复方案已审批并执行')
+    } catch {
+      message.error('审批失败（可能无权限）')
+    }
+  }
+  const onRejectRecovery = async () => {
+    if (!recovery?.task_id) return
+    try {
+      await rejectTask(recovery.task_id)
+      setRecovery({ ...recovery, status: 'rejected' })
+      message.warning('已拒绝恢复方案')
+    } catch {
+      message.error('拒绝失败')
+    }
+  }
 
   if (loading) return <Spin />
   if (!ev) return <div style={{ color: 'var(--text-muted)' }}>未找到告警</div>
@@ -83,6 +122,7 @@ const IncidentDetail: React.FC = () => {
         <Button size="small" onClick={onAck} disabled={ev.status !== 'firing'}>确认</Button>
         <Button size="small" onClick={onResolve} disabled={ev.status === 'resolved'}>解决</Button>
         <Button size="small" onClick={onRCA} type="primary">调查</Button>
+        <Button size="small" loading={recoveryLoading} onClick={onRecovery} disabled={ev.status === 'resolved'}>恢复</Button>
         <Button size="small" onClick={() => navigate('/alerts')}>返回</Button>
       </Space>
       <Descriptions column={2} size="small">
@@ -105,6 +145,23 @@ const IncidentDetail: React.FC = () => {
       {rca && (
         <Card size="small" style={{ marginTop: 12, background: 'var(--surface-2)' }}>
           <pre style={{ color: 'var(--text)', whiteSpace: 'pre-wrap' }}>{rca}</pre>
+        </Card>
+      )}
+      {recovery && (
+        <Card size="small" title="恢复方案（待审核）" style={{ marginTop: 12, borderColor: recovery.status === 'done' ? '#52c41a' : undefined }}
+          extra={
+            recovery.status === 'pending' ? (
+              <Space>
+                <Button size="small" type="primary" onClick={onApproveRecovery}>审批通过并执行</Button>
+                <Button size="small" danger onClick={onRejectRecovery}>拒绝</Button>
+              </Space>
+            ) : (
+              <Tag color={recovery.status === 'done' ? 'green' : 'red'}>{recovery.status === 'done' ? '已执行' : '已拒绝'}</Tag>
+            )
+          }>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{recovery.plan}</pre>
+          {recovery.status === 'done' && <div style={{ color: '#52c41a', marginTop: 8 }}>恢复操作已执行（经审批）</div>}
+          {recovery.status === 'rejected' && <div style={{ color: '#ff4d4f', marginTop: 8 }}>恢复方案已拒绝，未执行任何操作</div>}
         </Card>
       )}
     </Card>
