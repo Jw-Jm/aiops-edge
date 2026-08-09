@@ -186,9 +186,9 @@ const AlertRulesTab: React.FC = () => {
           forecast: ['预测', 'geekblue'],
           burn_rate: ['烧毁率', 'red'],
           metric_raw: ['原始表达式', 'gold'],
-          log_presence: ['日志出现', 'cyan'],
-          log_pattern: ['日志模式', 'magenta'],
-          metric: ['指标', 'green'],
+          log: ['日志', 'cyan'],
+          trace_latency: ['链路延迟', 'magenta'],
+          trace_error_rate: ['链路错误率', 'green'],
         }
         const [text, color] = typeMap[t] || [t, 'default']
         return <Tag color={color}>{text}</Tag>

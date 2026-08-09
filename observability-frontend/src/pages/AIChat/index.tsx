@@ -126,8 +126,9 @@ const AIChat: React.FC = () => {
     try { await api.delete(`/ai/session/${sid}`); setSessions(p => p.filter(s => s.session_id !== sid)); if (activeSession === sid) newSession(); } catch {}
   };
 
-  const handleSend = async () => {
-    const text = input.trim();
+  const handleSend = async (presetInput?: string) => {
+    // 支持建议问题等直接传参发送（避免 setInput 异步批处理导致读取到旧值）
+    const text = (presetInput ?? input).trim();
     if (!text) return;
 
     const userMsg: ChatMessage = {
@@ -357,7 +358,7 @@ const AIChat: React.FC = () => {
                   '数据库连接数为什么增长？',
                 ].map((q) => (
                   <Button key={q} size="small" style={{ borderRadius: 16 }}
-                    onClick={() => { setExpert('diagnosis'); setInput(q); handleSend(); }}>
+                    onClick={() => { setExpert('diagnosis'); setInput(q); handleSend(q); }}>
                     {q}
                   </Button>
                 ))}
@@ -567,7 +568,7 @@ const AIChat: React.FC = () => {
           <Button
             type="primary"
             icon={<SendOutlined />}
-            onClick={handleSend}
+            onClick={() => handleSend()}
             loading={loading}
             disabled={!input.trim()}
             size="large"

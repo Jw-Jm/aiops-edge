@@ -365,10 +365,10 @@ const Tasks: React.FC = () => {
               <Col span={6}><Text type='secondary'>服务</Text><br /><Text strong>{selected.service || '-'}</Text></Col>
               <Col span={6}><Text type='secondary'>状态</Text><br /><Tag color={STATUS_MAP[selected.status]?.color}>{STATUS_MAP[selected.status]?.label}</Tag></Col>
               <Col span={6}><Text type='secondary'>来源</Text><br /><Tag>{(SOURCE_TAGS[selected.source] || {}).label || selected.source}</Tag></Col>
-              <Col span={6}><Text type='secondary'>风险</Text><br /><Text>{'⭐'.repeat(Math.min(selected.risk_score || 0, 5)) || '-'}</Text></Col>
+              <Col span={6}><Text type='secondary'>风险</Text><br /><Text>{(selected.risk_score ? `${(selected.risk_score * 100).toFixed(0)}%` : '-')}</Text></Col>
             </Row>
             <Paragraph><Text strong>诊断分析</Text></Paragraph>
-            <pre style={{ fontSize: 12, background: '#f5f5f5', padding: 12, borderRadius: 6, maxHeight: 200, minHeight: 60, overflow: 'auto', whiteSpace: 'pre-wrap', color: selected.diagnosis ? '#333' : '#999', margin: 0 }}>
+            <pre style={{ fontSize: 12, background: 'var(--surface-2)', padding: 12, borderRadius: 6, maxHeight: 200, minHeight: 60, overflow: 'auto', whiteSpace: 'pre-wrap', color: selected.diagnosis ? 'var(--text)' : 'var(--text-muted)', margin: 0 }}>
               {selected.diagnosis || '（该任务尚未生成诊断结果，可点击"手动诊断"触发）'}
             </pre>
             {selected.plan && (

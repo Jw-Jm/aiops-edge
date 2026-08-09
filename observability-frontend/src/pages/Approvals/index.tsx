@@ -57,11 +57,12 @@ const Approvals: React.FC = () => {
       render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
     { title: '风险', dataIndex: 'risk_score', key: 'risk_score', width: 90,
       render: (v: number) => {
-        const n = Number(v || 0)
-        if (n <= 0) return <Text type="secondary">—</Text>
-        const color = n >= 70 ? 'red' : n >= 40 ? 'orange' : 'green'
-        const label = n >= 70 ? '高' : n >= 40 ? '中' : '低'
-        return <Tag color={color}>{label}（{Math.round(n)}）</Tag>
+        // risk_score 后端为 0~1 浮点，统一 ×100 后与 Tasks 页同一标准分档
+        const pct = Number(v || 0) * 100
+        if (pct <= 0) return <Text type="secondary">—</Text>
+        const color = pct >= 70 ? 'red' : pct >= 40 ? 'orange' : 'green'
+        const label = pct >= 70 ? '高' : pct >= 40 ? '中' : '低'
+        return <Tag color={color}>{label}（{Math.round(pct)}%）</Tag>
       } },
     { title: '状态', dataIndex: 'status', key: 'status', width: 110,
       render: (v: string) => STATUS_MAP[v] ? <Tag color={STATUS_MAP[v].color}>{STATUS_MAP[v].label}</Tag> : v },
@@ -78,7 +79,9 @@ const Approvals: React.FC = () => {
           >
             <Button size="small" type="primary" icon={<CheckOutlined />}>批准</Button>
           </Popconfirm>
-          <Button size="small" danger icon={<CloseOutlined />} onClick={() => doDecide(r.id, false)}>驳回</Button>
+          <Popconfirm title="确认驳回？" description="驳回后该任务将标记为已拒绝，不会执行" onConfirm={() => doDecide(r.id, false)} okText="驳回" cancelText="取消" okButtonProps={{ danger: true }}>
+            <Button size="small" danger icon={<CloseOutlined />}>驳回</Button>
+          </Popconfirm>
         </Space>
       ) : <Text type="secondary">—</Text> },
   ]

@@ -54,11 +54,10 @@ const Logs: React.FC = () => {
     try {
       if (backend === 'victorialogs') {
         // 时间/级别/搜索词结构化组合（时间预设与级别过滤不再改写用户输入的 logsQuery，
-        // 避免状态错乱与非法 LogsQL）。用户输入优先，预设作为默认时间兜底。
+        // 避免状态错乱与非法 LogsQL）。三者用独立 if 组合，互不阻塞。
         let q = logsQuery.trim()
         if (!q.includes('_time:')) q = `_time:${timePreset}m${q ? ' ' + q : ''}`
-        else if (severityFilter && !q.includes(severityFilter)) q = `${q} ${severityFilter}`
-        else if (severityFilter) q = `${q} ${severityFilter}`
+        if (severityFilter && !q.includes(severityFilter)) q = `${q} ${severityFilter}`
         // 注意：axios 会对 params 自动 URL 编码，这里不要再手动 encodeURIComponent，
         // 否则特殊字符（%、+、&）会被双重编码（% → %25）导致查询错误。
         const res = await api.get('/logs/victorialogs', {

@@ -80,7 +80,7 @@ const Reports: React.FC = () => {
     grid: { left: 40, right: 20, top: 20, bottom: 30 },
     xAxis: { type: 'category', data: trendData.map((_, i) => i + 1), axisLabel: { color: '#999' } },
     yAxis: { type: 'value', max: 100, axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: '#1f1f1f' } } },
-    series: [{ name: '风险分', type: 'line', smooth: true, data: trendData.map(r => r.risk_score), itemStyle: { color: '#1677ff' }, areaStyle: { opacity: 0.15 } }],
+    series: [{ name: '风险分', type: 'line', smooth: true, data: trendData.map(r => Math.round(Number(r.risk_score || 0) * 100)), itemStyle: { color: '#1677ff' }, areaStyle: { opacity: 0.15 } }],
   }
 
   const filtered = items.filter(it =>
@@ -99,9 +99,10 @@ const Reports: React.FC = () => {
       render: (v: string) => VERDICT_MAP[v] ? <Tag color={VERDICT_MAP[v].color}>{VERDICT_MAP[v].label}</Tag> : (v || '-') },
     { title: '风险分', dataIndex: 'risk_score', key: 'risk_score', width: 90,
       render: (v: number) => {
-        const n = Number(v || 0)
-        const color = n >= 70 ? 'red' : n >= 40 ? 'orange' : 'green'
-        return <Tag color={color}>{n}</Tag>
+        // risk_score 为 0~1 浮点，×100 转百分比后按高/中/低分档
+        const pct = Math.round(Number(v || 0) * 100)
+        const color = pct >= 70 ? 'red' : pct >= 40 ? 'orange' : 'green'
+        return <Tag color={color}>{pct}%</Tag>
       } },
     { title: '摘要', dataIndex: 'summary', key: 'summary', ellipsis: true },
     { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 170 },
