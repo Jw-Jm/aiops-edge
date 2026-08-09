@@ -265,6 +265,29 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 	if !hasColumn(conn, "alert_rules", "dampening") {
 		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN dampening INT DEFAULT 0")
 	}
+	// 批4: anomaly 基线窗口 / 检测方法 / SLO 引用（幂等）
+	if !hasColumn(conn, "alert_rules", "baseline_seconds") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN baseline_seconds INT DEFAULT 900")
+	}
+	if !hasColumn(conn, "alert_rules", "anomaly_method") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN anomaly_method VARCHAR(16) DEFAULT 'zscore'")
+	}
+	if !hasColumn(conn, "alert_rules", "slo_id") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN slo_id VARCHAR(64) DEFAULT ''")
+	}
+
+	// slo_targets SLO 目标（availability/latency，burn_rate 规则引用）
+	conn.Exec(`CREATE TABLE IF NOT EXISTS slo_targets (
+		id VARCHAR(64) PRIMARY KEY,
+		name VARCHAR(128) NOT NULL,
+		service VARCHAR(128) NOT NULL,
+		slo_type VARCHAR(32) DEFAULT 'availability',
+		target DECIMAL(10,4) NOT NULL DEFAULT 99.9,
+		window_seconds INT DEFAULT 2592000,
+		enabled TINYINT DEFAULT 1,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	)`)
 
 	// alert_events 告警事件（从 /tmp JSON 迁 MySQL）
 	_, _ = conn.Exec(`
