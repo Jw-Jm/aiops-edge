@@ -1,5 +1,12 @@
 package api
 
+import (
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+)
+
 // LinearRegression 用最小二乘对 (x=0..n-1, y) 拟合 y = intercept + slope*x。
 // n<2 或分母为 0 时返回 (0, mean(series))。
 func LinearRegression(series []float64) (slope, intercept float64) {
@@ -56,4 +63,166 @@ func EstimateTimeToThreshold(slope, intercept float64, n, horizon int, threshold
 		}
 	}
 	return 0, false
+}
+
+// capacityPromQL 返回指定资源维度的 range 查询 PromQL。未知 metric 返回空串。
+func capacityPromQL(metric, instance string) string {
+	inst := ""
+	if instance != "" {
+		inst = fmt.Sprintf(`{instance="%s"}`, instance)
+	}
+	switch metric {
+	case "cpu":
+		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total%s[5m])) * 100`, inst)
+	case "memory":
+		return fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes%s / node_memory_MemTotal_bytes%s)`, inst, inst)
+	case "disk":
+		return fmt.Sprintf(`avg(1 - node_filesystem_avail_bytes%s / node_filesystem_size_bytes%s) * 100`, inst, inst)
+	case "network":
+		return fmt.Sprintf(`rate(node_network_receive_bytes_total%s[5m]) + rate(node_network_transmit_bytes_total%s[5m])`, inst, inst)
+	}
+	return ""
+}
+
+// CapacityForecast 处理 GET /api/v1/capacity/forecast。
+// 参数：metric(cpu|memory|disk|network)、instance、hours、step、horizon、threshold。
+func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	metric := q.Get("metric")
+	instance := q.Get("instance")
+	hours := parseIntDefault(q.Get("hours"), 24)
+	step := parseIntDefault(q.Get("step"), 300)
+	horizon := parseIntDefault(q.Get("horizon"), 12)
+	thresholdStr := q.Get("threshold")
+
+	if metric == "" {
+		respondError(w, http.StatusBadRequest, "metric is required")
+		return
+	}
+	if capacityPromQL(metric, "") == "" {
+		respondError(w, http.StatusBadRequest, "invalid metric, must be cpu|memory|disk|network")
+		return
+	}
+	if hours <= 0 || step <= 0 || horizon <= 0 {
+		respondError(w, http.StatusBadRequest, "hours, step, horizon must be positive")
+		return
+	}
+	if metric == "network" && thresholdStr == "" {
+		respondError(w, http.StatusBadRequest, "threshold is required for network")
+		return
+	}
+	threshold := 80.0
+	if thresholdStr != "" {
+		v, err := strconv.ParseFloat(thresholdStr, 64)
+		if err != nil || v <= 0 {
+			respondError(w, http.StatusBadRequest, "invalid threshold")
+			return
+		}
+		threshold = v
+	}
+
+	end := time.Now().Unix()
+	start := end - int64(hours*3600)
+	series, err := h.vmRangeQuery(capacityPromQL(metric, instance), start, end, step)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	n := len(series)
+	if n == 0 {
+		// 无历史数据：返回空历史/预测，前端展示"暂无数据"
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"metric": metric, "instance": instance, "threshold": threshold,
+			"current": 0, "change_pct": 0, "timestamps": []int64{}, "history": []float64{},
+			"forecasts": map[string]interface{}{
+				"linear": map[string]interface{}{"values": []float64{}, "ett_seconds": 0, "within_horizon": false, "already_breached": false},
+				"ewma":   map[string]interface{}{"values": []float64{}, "ett_seconds": 0, "within_horizon": false, "already_breached": false},
+			},
+		})
+		return
+	}
+
+	// 历史 + 预测完整时间戳
+	now := time.Now().Unix()
+	timestamps := make([]int64, 0, n+horizon)
+	base := now - int64(n-1)*int64(step)
+	for i := 0; i < n+horizon; i++ {
+		timestamps = append(timestamps, base+int64(i)*int64(step))
+	}
+
+	current := series[n-1]
+	// change_pct：对比 24h 前同相位（step 为秒，86400/step 即 24h 的样本数），
+	// 数据不足 24h 时降级为对比近端均值（最后 10% 样本）——避免受周期峰谷/早期异常点影响。
+	changePct := 0.0
+	phaseStep := 86400 / step
+	var baseVal float64
+	if n > phaseStep+1 && series[n-1-phaseStep] != 0 {
+		baseVal = series[n-1-phaseStep]
+	} else {
+		startIdx := n - n/10
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		sum := 0.0
+		for i := startIdx; i < n; i++ {
+			sum += series[i]
+		}
+		if startIdx < n {
+			baseVal = sum / float64(n-startIdx)
+		}
+	}
+	if baseVal != 0 {
+		changePct = (current - baseVal) / baseVal * 100
+	}
+
+	// 线性回归预测：全窗口最小二乘，输出预测曲线 + ETT
+	slope, intercept := LinearRegression(series)
+	linearValues := make([]float64, horizon)
+	for k := 1; k <= horizon; k++ {
+		linearValues[k-1] = intercept + slope*float64(n-1+k)
+	}
+	linearETT, linearHit := EstimateTimeToThreshold(slope, intercept, n, horizon, threshold)
+	linearBreached := current >= threshold
+
+	// 真实 EWMA 预测：平滑序列末值 + 末段平滑斜率外推（而非全窗口回归）。
+	// EWMA 体现"近期趋势持续"且对噪声平滑，与外推起点严格贴合。
+	smoothed := EWMA(series, 0.3)
+	ewmaTail := smoothed
+	if len(smoothed) > 4 {
+		ewmaTail = smoothed[len(smoothed)-4:]
+	}
+	ewmaSlope, _ := LinearRegression(ewmaTail)
+	ewmaBase := smoothed[n-1]
+	ewmaValues := make([]float64, horizon)
+	for k := 1; k <= horizon; k++ {
+		ewmaValues[k-1] = ewmaBase + ewmaSlope*float64(k)
+	}
+	// ETT 与外推直线一致：直线 y=ewmaSlope*x + b 过点 (n-1, ewmaBase) → b=ewmaBase-ewmaSlope*(n-1)
+	ewmaETT, ewmaHit := EstimateTimeToThreshold(ewmaSlope, ewmaBase-ewmaSlope*float64(n-1), n, horizon, threshold)
+	ewmaBreached := current >= threshold
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"metric": metric, "instance": instance, "threshold": threshold,
+		"current": current, "change_pct": changePct,
+		"timestamps": timestamps, "history": series,
+		"forecasts": map[string]interface{}{
+			"linear": map[string]interface{}{
+				"values": linearValues, "ett_seconds": linearETT * step,
+				"within_horizon": linearHit, "already_breached": linearBreached,
+			},
+			"ewma": map[string]interface{}{
+				"values": ewmaValues, "ett_seconds": ewmaETT * step,
+				"within_horizon": ewmaHit, "already_breached": ewmaBreached,
+			},
+		},
+	})
+}
+
+// parseIntDefault 解析正整数参数，失败或<=0返回默认值。
+func parseIntDefault(s string, def int) int {
+	v, err := strconv.Atoi(s)
+	if err != nil || v <= 0 {
+		return def
+	}
+	return v
 }
