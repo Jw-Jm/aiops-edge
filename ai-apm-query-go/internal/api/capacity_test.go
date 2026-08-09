@@ -325,3 +325,61 @@ func TestCapacityForecastEmptyResult(t *testing.T) {
 		t.Fatalf("code=%d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// vmInstanceLabels 解析 VM 即时查询结果中的 instance 标签并去重。
+func TestVMInstanceLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data": map[string]interface{}{
+				"resultType": "vector",
+				"result": []map[string]interface{}{
+					{"metric": map[string]interface{}{"instance": "192.168.139.2:9100"}, "value": []interface{}{1710000000, "1"}},
+					{"metric": map[string]interface{}{"instance": "192.168.139.3:9100"}, "value": []interface{}{1710000000, "1"}},
+					{"metric": map[string]interface{}{"instance": "192.168.139.2:9100"}, "value": []interface{}{1710000000, "1"}}, // 重复，应去重
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	labels, err := h.vmInstanceLabels(`up{job="node-exporter"}`)
+	if err != nil {
+		t.Fatalf("vmInstanceLabels error: %v", err)
+	}
+	if len(labels) != 2 {
+		t.Fatalf("len=%d, want 2 (dedup), got %v", len(labels), labels)
+	}
+}
+
+// CapacityInstances 返回实例列表；无数据时返回空数组（非 null）。
+func TestCapacityInstances(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data": map[string]interface{}{
+				"resultType": "vector",
+				"result": []map[string]interface{}{
+					{"metric": map[string]interface{}{"instance": "192.168.139.2:9100"}, "value": []interface{}{1710000000, "1"}},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/capacity/instances", nil)
+	h.CapacityInstances(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("code=%d, want 200", rec.Code)
+	}
+	var resp struct {
+		Instances []string `json:"instances"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if len(resp.Instances) != 1 || resp.Instances[0] != "192.168.139.2:9100" {
+		t.Fatalf("instances=%v, want [192.168.139.2:9100]", resp.Instances)
+	}
+}

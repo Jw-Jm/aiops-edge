@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Statistic, Tag, Tooltip } from 'antd'
 import { ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined, ArrowRightOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { CapacityForecast, ForecastSeries, getCapacityForecast } from '../../api/client'
+import { CapacityForecast, ForecastSeries, getCapacityForecast, getCapacityInstances } from '../../api/client'
 import AppEmpty from '../../components/AppEmpty'
 
 const darkText = '#e8e8e8'
@@ -92,13 +92,15 @@ const Capacity: React.FC = () => {
   const [metric, setMetric] = useState('cpu')
   const [hours, setHours] = useState(24)
   const [horizon, setHorizon] = useState(12)
+  const [instance, setInstance] = useState('') // '' = 全部节点（集群聚合）
+  const [instances, setInstances] = useState<string[]>([])
   const [data, setData] = useState<CapacityForecast | null>(null)
   const [loading, setLoading] = useState(false)
 
   const load = async () => {
     setLoading(true)
     try {
-      const r = await getCapacityForecast({ metric, hours, horizon })
+      const r = await getCapacityForecast({ metric, hours, horizon, instance: instance || undefined })
       setData(r?.data || null)
     } catch {
       setData(null)
@@ -107,18 +109,33 @@ const Capacity: React.FC = () => {
     }
   }
 
+  // 加载可选 node 列表（VM 中 node-exporter 实例）
+  useEffect(() => {
+    getCapacityInstances()
+      .then((r) => setInstances(r?.data?.instances || []))
+      .catch(() => setInstances([]))
+  }, [])
+
   useEffect(() => {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [metric, hours, horizon])
-
-  const meta = METRICS.find((m) => m.key === metric)!
+  }, [metric, hours, horizon, instance])
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ fontSize: 16, fontWeight: 600 }}>容量预测</div>
-        <Space>
+        <Space wrap>
+          <Select
+            value={instance}
+            onChange={setInstance}
+            style={{ width: 220 }}
+            placeholder="选择节点"
+            options={[
+              { value: '', label: '全部节点（集群聚合）' },
+              ...instances.map((i) => ({ value: i, label: i })),
+            ]}
+          />
           <Select value={hours} onChange={setHours} style={{ width: 120 }} options={[12, 24, 48, 72].map((h) => ({ value: h, label: `历史 ${h}h` }))} />
           <Select value={horizon} onChange={setHorizon} style={{ width: 140 }} options={[6, 12, 24, 48].map((h) => ({ value: h, label: `预测 ${h} 步` }))} />
           <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={load} /></Tooltip>

@@ -86,6 +86,7 @@ func main() {
 	mux.HandleFunc("/api/v1/metrics/query", handler.QueryMetrics)
 	mux.HandleFunc("/api/v1/metrics/query_range", handler.QueryRange)
 	mux.HandleFunc("/api/v1/capacity/forecast", handler.CapacityForecast)
+	mux.HandleFunc("/api/v1/capacity/instances", handler.CapacityInstances)
 	mux.HandleFunc("/api/v1/dashboard/stats", handler.DashboardStats)
 	mux.HandleFunc("/api/v1/topology/global", handler.GlobalTopology)
 	mux.HandleFunc("/api/v1/topology/node/", handler.TopologyNodeDetail)

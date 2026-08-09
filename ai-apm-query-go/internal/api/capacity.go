@@ -1,8 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -231,4 +235,58 @@ func parseIntDefault(s string, def int) int {
 		return def
 	}
 	return v
+}
+
+// vmInstanceLabels 查 VM 即时查询结果中的 instance 标签并去重排序。
+func (h *Handler) vmInstanceLabels(promQL string) ([]string, error) {
+	if h.vmURL == "" {
+		return nil, fmt.Errorf("victoria-metrics not configured")
+	}
+	u, _ := url.Parse(h.vmURL + "/api/v1/query")
+	q := u.Query()
+	q.Set("query", promQL)
+	u.RawQuery = q.Encode()
+	req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var r struct {
+		Data struct {
+			Result []struct {
+				Metric map[string]string `json:"metric"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return nil, fmt.Errorf("invalid VM response")
+	}
+	seen := map[string]bool{}
+	for _, item := range r.Data.Result {
+		if inst := item.Metric["instance"]; inst != "" && !seen[inst] {
+			seen[inst] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for inst := range seen {
+		out = append(out, inst)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// CapacityInstances 处理 GET /api/v1/capacity/instances，返回 node-exporter 的实例列表。
+// 供前端容量预测页的 node 选择器使用；值为 VM 中真实的 instance 标签（如 192.168.139.2:9100）。
+func (h *Handler) CapacityInstances(w http.ResponseWriter, r *http.Request) {
+	labels, err := h.vmInstanceLabels(`up{job="node-exporter"}`)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"instances": labels,
+		"count":     len(labels),
+	})
 }

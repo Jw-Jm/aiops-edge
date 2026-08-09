@@ -342,4 +342,8 @@ export const getCapacityForecast = (params: {
   threshold?: number
 }) => api.get<CapacityForecast>('/capacity/forecast', { params })
 
+// node 实例列表（供容量预测页 node 选择器；值为 VM 真实 instance 标签）
+export const getCapacityInstances = () =>
+  api.get<{ instances: string[]; count: number }>('/capacity/instances')
+
 export default api
