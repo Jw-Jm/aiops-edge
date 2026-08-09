@@ -372,9 +372,52 @@ func TestCapacityForecastSuccess(t *testing.T) {
 	if resp.Forecasts["linear"].Values[4] <= resp.History[3] {
 		t.Fatalf("linear forecast should rise above last history: last=%v fc[4]=%v", resp.History[3], resp.Forecasts["linear"].Values[4])
 	}
-	// change_pct = (current - history[0]) / history[0] * 100 = (13-10)/10*100 = 30
-	if resp.ChangePct < 29 || resp.ChangePct > 31 {
-		t.Fatalf("change_pct=%v, want ≈30", resp.ChangePct)
+	// EWMA 预测：末段平滑斜率（smoothed 末 4 点），对上升序列 slope>0 → 未来也应上升
+	if resp.Forecasts["ewma"].Values[4] <= resp.History[3] {
+		t.Fatalf("ewma forecast should rise above last history: last=%v ewma[4]=%v", resp.History[3], resp.Forecasts["ewma"].Values[4])
+	}
+	// change_pct 为数值（短序列走均值兜底空 → 0，不 panic）
+	if resp.ChangePct != resp.ChangePct { // NaN 检查
+		t.Fatalf("change_pct should not be NaN, got %v", resp.ChangePct)
+	}
+}
+
+// change_pct：step=3600、n=30（>86400/3600+1=25）→ 走 24h 同相位分支。
+// 序列：前 24 个点=10（24h 前同相位），后 6 个点线性 11..16（近端上升）。
+// current=16，24h 前同相位 series[30-1-24]=series[5]=10 → change_pct=(16-10)/10*100=60。
+func TestCapacityForecastChangePctSamePhase(t *testing.T) {
+	vals := make([][2]interface{}, 30)
+	for i := 0; i < 30; i++ {
+		v := 10.0
+		if i >= 24 {
+			v = float64(11 + (i - 24))
+		}
+		vals[i] = [2]interface{}{int64(1710000000 + i*3600), fmt.Sprintf("%v", v)}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data": map[string]interface{}{
+				"resultType": "matrix",
+				"result":     []map[string]interface{}{{"metric": map[string]interface{}{}, "values": vals}},
+			},
+		})
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/capacity/forecast?metric=cpu&hours=30&step=3600&horizon=5&threshold=80", nil)
+	h.CapacityForecast(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("code=%d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		ChangePct float64 `json:"change_pct"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.ChangePct < 59 || resp.ChangePct > 61 {
+		t.Fatalf("change_pct=%v, want ≈60 (24h same-phase comparison)", resp.ChangePct)
 	}
 }
 
@@ -503,12 +546,31 @@ func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	current := series[n-1]
+	// change_pct：对比 24h 前同相位（step 为秒，86400/step 即 24h 的样本数），
+	// 数据不足 24h 时降级为对比近端均值（最后 10% 样本）——避免受周期峰谷/早期异常点影响。
 	changePct := 0.0
-	if series[0] != 0 {
-		changePct = (current - series[0]) / series[0] * 100
+	phaseStep := 86400 / step
+	var baseVal float64
+	if n > phaseStep+1 && series[n-1-phaseStep] != 0 {
+		baseVal = series[n-1-phaseStep]
+	} else {
+		startIdx := n - n/10
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		sum := 0.0
+		for i := startIdx; i < n; i++ {
+			sum += series[i]
+		}
+		if startIdx < n {
+			baseVal = sum / float64(n-startIdx)
+		}
+	}
+	if baseVal != 0 {
+		changePct = (current - baseVal) / baseVal * 100
 	}
 
-	// 线性回归预测
+	// 线性回归预测：全窗口最小二乘，输出预测曲线 + ETT
 	slope, intercept := LinearRegression(series)
 	linearValues := make([]float64, horizon)
 	for k := 1; k <= horizon; k++ {
@@ -517,15 +579,21 @@ func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
 	linearETT, linearHit := EstimateTimeToThreshold(slope, intercept, n, horizon, threshold)
 	linearBreached := current >= threshold
 
-	// EWMA 平滑 + 末段趋势外推
+	// 真实 EWMA 预测：平滑序列末值 + 末段平滑斜率外推（而非全窗口回归）。
+	// EWMA 体现"近期趋势持续"且对噪声平滑，与外推起点严格贴合。
 	smoothed := EWMA(series, 0.3)
-	ewmaSlope, _ := LinearRegression(smoothed)
-	ewmaValues := make([]float64, horizon)
+	ewmaTail := smoothed
+	if len(smoothed) > 4 {
+		ewmaTail = smoothed[len(smoothed)-4:]
+	}
+	ewmaSlope, _ := LinearRegression(ewmaTail)
 	ewmaBase := smoothed[n-1]
+	ewmaValues := make([]float64, horizon)
 	for k := 1; k <= horizon; k++ {
 		ewmaValues[k-1] = ewmaBase + ewmaSlope*float64(k)
 	}
-	ewmaETT, ewmaHit := EstimateTimeToThreshold(ewmaSlope, smoothed[n-1]-ewmaSlope*float64(n-1), n, horizon, threshold)
+	// ETT 与外推直线一致：直线 y=ewmaSlope*x + b 过点 (n-1, ewmaBase) → b=ewmaBase-ewmaSlope*(n-1)
+	ewmaETT, ewmaHit := EstimateTimeToThreshold(ewmaSlope, ewmaBase-ewmaSlope*float64(n-1), n, horizon, threshold)
 	ewmaBreached := current >= threshold
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
