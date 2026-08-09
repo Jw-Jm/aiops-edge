@@ -26,6 +26,8 @@ import api from "../../api/client";
 import { getLLMSettings, approveTask, rejectTask } from '../../api/client';
 import { useNavigate } from 'react-router-dom';
 import { fmtLocalTime } from '../../utils/date';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface SessionInfo {
   session_id: string;
@@ -68,6 +70,7 @@ const AIChat: React.FC = () => {
   const [activeSession, setActiveSession] = useState('');
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Check API key status on mount
   useEffect(() => {
@@ -142,11 +145,16 @@ const AIChat: React.FC = () => {
     setToolCards([]);
     setApproval(null);
 
+    let onKey: ((e: KeyboardEvent) => void) | null = null;
     try {
       const baseURL = api.defaults.baseURL || '/api/v1';
       const sessionId = activeSession || Date.now().toString(36);
       const controller = new AbortController();
+      abortRef.current = controller;
       const timeoutId = setTimeout(() => controller.abort(), 120000);
+      // Esc 键中断流式（用户主动停止）
+      onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') controller.abort(); };
+      window.addEventListener('keydown', onKey);
 
       const resp = await fetch(`${baseURL}/ai/chat`, {
         method: 'POST',
@@ -216,6 +224,8 @@ const AIChat: React.FC = () => {
     } finally {
       setLoading(false);
       setProgressText('');
+      if (onKey) window.removeEventListener('keydown', onKey);
+      abortRef.current = null;
     }
   };
 
@@ -419,32 +429,34 @@ const AIChat: React.FC = () => {
                   </Collapse>
                 )}
 
-                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
-                  {msg.content.split('\n').map((line, i) => {
-                    const boldRegex = /\*\*(.*?)\*\*/g;
-                    const parts: React.ReactNode[] = [];
-                    let lastIndex = 0;
-                    let match: RegExpExecArray | null;
-
-                    const regex = new RegExp(boldRegex);
-                    while ((match = regex.exec(line)) !== null) {
-                      if (match.index > lastIndex) {
-                        parts.push(line.substring(lastIndex, match.index));
-                      }
-                      parts.push(<strong key={`b-${i}-${match.index}`}>{match[1]}</strong>);
-                      lastIndex = match.index + match[0].length;
-                    }
-                    if (lastIndex < line.length) {
-                      parts.push(line.substring(lastIndex));
-                    }
-
-                    return (
-                      <span key={i}>
-                        {parts.length > 0 ? parts : line}
-                        {i < msg.content.split('\n').length - 1 && <br />}
-                      </span>
-                    );
-                  })}
+                <div style={{ lineHeight: 1.6 }}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code({ className, children, ...props }) {
+                        const inline = !className;
+                        if (inline) {
+                          return <code style={{ background: 'rgba(127,127,127,0.15)', padding: '1px 5px', borderRadius: 4, fontSize: '0.92em' }} {...props}>{children}</code>
+                        }
+                        return (
+                          <pre style={{ background: 'rgba(0,0,0,0.35)', padding: 12, borderRadius: 8, overflowX: 'auto', fontSize: 12 }}>
+                            <code className={className} {...props}>{children}</code>
+                          </pre>
+                        )
+                      },
+                      table({ children }) {
+                        return <table style={{ borderCollapse: 'collapse', margin: '8px 0', width: '100%' }}>{children}</table>
+                      },
+                      th({ children }) {
+                        return <th style={{ border: '1px solid rgba(127,127,127,0.3)', padding: '4px 10px', textAlign: 'left' }}>{children}</th>
+                      },
+                      td({ children }) {
+                        return <td style={{ border: '1px solid rgba(127,127,127,0.3)', padding: '4px 10px' }}>{children}</td>
+                      },
+                    }}
+                  >
+                    {msg.content}
+                  </ReactMarkdown>
                 </div>
               </div>
             </div>
