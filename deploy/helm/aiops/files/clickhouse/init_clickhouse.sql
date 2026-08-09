@@ -115,5 +115,5 @@ CREATE TABLE IF NOT EXISTS observability.alert_events
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY date
 ORDER BY (service, rule_id, id)
-TTL last_timestamp + INTERVAL 30 DAY
+TTL toDateTime(last_timestamp) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
