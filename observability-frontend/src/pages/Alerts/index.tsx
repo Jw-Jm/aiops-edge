@@ -127,6 +127,15 @@ const AlertRulesTab: React.FC = () => {
   const handleSave = async () => {
     try {
       const values = await form.validateFields()
+      // 按 type 裁剪无关字段，避免切换类型后残留字段一并提交
+      const t = values.type
+      if (t !== 'anomaly') {
+        delete values.baseline_seconds
+        delete values.anomaly_method
+      }
+      if (t !== 'burn_rate') {
+        delete values.slo_id
+      }
       if (editingRule) {
         await updateAlertRule(editingRule.id, { ...values, enabled: editingRule.enabled })
         message.success('规则已更新')
@@ -269,7 +278,7 @@ const AlertRulesTab: React.FC = () => {
                 <Option value="<=">&lt;=</Option>
               </Select>
             </Form.Item>
-            <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}>
+            <Form.Item name="threshold" label={ruleType === 'anomaly' ? '统计阈值' : '阈值'} rules={[{ required: ruleType !== 'burn_rate' }]}>
               <InputNumber min={0} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="duration" label="持续时间(分钟)" rules={[{ required: true }]}>
