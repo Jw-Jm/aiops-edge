@@ -292,6 +292,41 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 	)`)
 
+	// dashboard_panels Monitor 看板面板（B4 完整看板）
+	conn.Exec(`CREATE TABLE IF NOT EXISTS dashboard_panels (
+		id VARCHAR(64) PRIMARY KEY,
+		title VARCHAR(128) NOT NULL,
+		query TEXT,
+		chart_type VARCHAR(32) DEFAULT 'line',
+		grid_x INT DEFAULT 0,
+		grid_y INT DEFAULT 0,
+		grid_w INT DEFAULT 6,
+		grid_h INT DEFAULT 4,
+		span INT DEFAULT 6,
+		sort INT DEFAULT 0,
+		enabled TINYINT DEFAULT 1,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	)`)
+	// 种子面板（首次初始化 4 个默认面板）
+	var panelCount int
+	_ = conn.QueryRow("SELECT count(*) FROM dashboard_panels").Scan(&panelCount)
+	if panelCount == 0 {
+		seedPanels := []struct {
+			id, title, query, chart string
+			span                    int
+		}{
+			{"panel-1", "服务请求速率", "sum(rate(http_requests_total[5m])) by (service)", "line", 6},
+			{"panel-2", "服务错误率", "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (service)", "line", 6},
+			{"panel-3", "延迟 P95", "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))", "line", 6},
+			{"panel-4", "CPU 使用率", "100 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100", "line", 6},
+		}
+		for i, sp := range seedPanels {
+			_, _ = conn.Exec("INSERT IGNORE INTO dashboard_panels (id, title, query, chart_type, span, sort, enabled) VALUES (?, ?, ?, ?, ?, ?, 1)",
+				sp.id, sp.title, sp.query, sp.chart, sp.span, i)
+		}
+	}
+
 	// alert_events 告警事件（从 /tmp JSON 迁 MySQL）
 	_, _ = conn.Exec(`
 CREATE TABLE IF NOT EXISTS alert_events (

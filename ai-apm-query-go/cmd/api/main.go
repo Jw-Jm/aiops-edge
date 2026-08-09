@@ -172,6 +172,9 @@ func main() {
 	// SLO 目标（读任意，写 admin，isAdmin 在 handler 内校验）
 	mux.HandleFunc("/api/v1/slo", handler.SLORouter)
 	mux.HandleFunc("/api/v1/slo/", handler.SLORouterByID)
+	// Dashboard Monitor 看板面板（B4）
+	mux.HandleFunc("/api/v1/dashboard/panels", handler.DashboardRouter)
+	mux.HandleFunc("/api/v1/dashboard/panels/", handler.DashboardRouterByID)
 	// Tenants (List/Create)
 	mux.HandleFunc("/api/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
