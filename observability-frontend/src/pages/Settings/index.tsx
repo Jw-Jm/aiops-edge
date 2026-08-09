@@ -344,7 +344,7 @@ const Settings: React.FC = () => {
           <Tag color="blue">ServiceAccount</Tag>
           <Tag color="green">已连接</Tag>
         </Space>
-        <div style={{ color: '#666', fontSize: 13, marginTop: 8 }}>
+        <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 8 }}>
           当前平台运行在 Kubernetes 集群中，通过 In-Cluster ServiceAccount 自动获取集群资源。
         </div>
       </Card>

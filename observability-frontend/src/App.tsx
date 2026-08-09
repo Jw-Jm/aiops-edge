@@ -238,11 +238,11 @@ const AppLayout: React.FC = () => {
                 onPressEnter={(e: any) => { const v = e.target.value.trim(); if (v) navigate(`/logs?q=${encodeURIComponent(v)}`) }}
               />
               <Tooltip title="告警中心">
-                <BellOutlined style={{ fontSize: 16, color: darkMode ? 'rgba(255,255,255,0.7)' : '#666', cursor: 'pointer' }} onClick={() => navigate('/alerts')} />
+                <BellOutlined style={{ fontSize: 16, color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => navigate('/alerts')} />
               </Tooltip>
               <span style={{ fontSize: 12, color: darkMode ? 'rgba(255,255,255,0.5)' : '#999', fontVariantNumeric: 'tabular-nums' }}>{clock}</span>
               <Tooltip title={darkMode ? '切换浅色' : '切换深色'}>
-                <BulbOutlined style={{ fontSize: 16, color: darkMode ? '#faad14' : '#666', cursor: 'pointer' }} onClick={toggleDark} />
+                <BulbOutlined style={{ fontSize: 16, color: darkMode ? '#faad14' : 'var(--text-muted)', cursor: 'pointer' }} onClick={toggleDark} />
               </Tooltip>
               <Dropdown menu={{ items: [{ key: 'settings', label: '系统设置', onClick: () => navigate('/settings') }] }}>
                 <Space style={{ cursor: 'pointer' }}>

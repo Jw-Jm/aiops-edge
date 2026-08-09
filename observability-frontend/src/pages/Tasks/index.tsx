@@ -168,8 +168,15 @@ const Tasks: React.FC = () => {
         const s = STATUS_MAP[v] || { color: 'default', label: v || '?' }
         return <Badge status={s.color === 'green' ? 'success' : s.color === 'red' ? 'error' : s.color === 'warning' ? 'warning' : s.color === 'processing' ? 'processing' : 'default'} text={<Text style={{ fontSize: 12 }}>{s.label}</Text>} />
       }},
-    { title: '风险', dataIndex: 'risk_score', key: 'risk', width: 55, align: 'center' as const,
-      render: (v: number) => v > 0 ? <Text>{'⭐'.repeat(Math.min(v, 5))}</Text> : <Text type='secondary'>-</Text> },
+    { title: '风险', dataIndex: 'risk_score', key: 'risk', width: 70, align: 'center' as const,
+      render: (v: number) => {
+        // risk_score 为 0-1 浮点；改为高/中/低标签，避免"星星数越多越危险"的方向误解
+        if (!v || v <= 0) return <Text type='secondary'>-</Text>
+        const pct = v * 100
+        if (pct >= 70) return <Tag color='red'>高</Tag>
+        if (pct >= 40) return <Tag color='orange'>中</Tag>
+        return <Tag color='green'>低</Tag>
+      } },
     { title: '摘要', dataIndex: 'context', key: 'ctx', ellipsis: true,
       render: (v: string) => <Text style={{ fontSize: 13 }}>{v || '-'}</Text> },
     { title: '操作', key: 'act', width: 240,

@@ -50,7 +50,7 @@ const ServiceDetail: React.FC<{ name?: string }> = ({ name: nameProp }) => {
     ...baseChart,
     xAxis: { type: 'category' as const, data: timeData, axisLabel: { rotate: 40, fontSize: 10, color: 'rgba(255,255,255,0.5)' }, axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } } },
     yAxis: { type: 'value' as const, axisLabel: axisStyle, splitLine },
-    series: [{ name: '调用量', type: 'bar', data: data.map(d => d.calls), itemStyle: { color: '#1890ff', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 24 }],
+    series: [{ name: '调用量', type: 'bar', data: data.map(d => d.calls), itemStyle: { color: 'var(--primary)', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 24 }],
     grid: { top: 20, right: 16, bottom: 34, left: 44 },
   }
 

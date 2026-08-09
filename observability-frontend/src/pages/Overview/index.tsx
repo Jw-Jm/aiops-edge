@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Row, Col, Card, Statistic, Space, Typography, Button, Select, Empty } from 'antd'
+import { Row, Col, Card, Statistic, Space, Typography, Button, Empty } from 'antd'
 import {
   DatabaseOutlined, AlertOutlined, FileSearchOutlined,
   ApartmentOutlined, NodeIndexOutlined, ThunderboltOutlined, ArrowRightOutlined,
@@ -19,7 +19,6 @@ const Overview: React.FC = () => {
   const navigate = useNavigate()
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
-  const [range, setRange] = useState('24h')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -131,8 +130,7 @@ const Overview: React.FC = () => {
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} lg={16}>
           <Card size="small" title="调用 / 错误趋势" extra={
-            <Select size="small" value={range} onChange={setRange}
-              options={[{ value: '24h', label: '近 24h' }]} style={{ width: 90 }} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>近 24 小时</Typography.Text>
           }>
             {(stats?.trend || []).length ? <ReactECharts option={trendOption} style={{ height: 280 }} />
               : <Empty description="暂无趋势数据" />}

@@ -178,7 +178,21 @@ const AlertRulesTab: React.FC = () => {
     { title: '服务', dataIndex: 'service', key: 'service', render: (s: string) => <Tag>{s || '-'}</Tag> },
     {
       title: '类型', dataIndex: 'type', key: 'type', width: 100,
-      render: (t: string) => t === 'threshold' ? <Tag color="blue">阈值</Tag> : <Tag color="purple">突变</Tag>,
+      render: (t: string) => {
+        const typeMap: Record<string, [string, string]> = {
+          threshold: ['阈值', 'blue'],
+          mutation: ['突变', 'purple'],
+          anomaly: ['异常', 'volcano'],
+          forecast: ['预测', 'geekblue'],
+          burn_rate: ['烧毁率', 'red'],
+          metric_raw: ['原始表达式', 'gold'],
+          log_presence: ['日志出现', 'cyan'],
+          log_pattern: ['日志模式', 'magenta'],
+          metric: ['指标', 'green'],
+        }
+        const [text, color] = typeMap[t] || [t, 'default']
+        return <Tag color={color}>{text}</Tag>
+      },
     },
     {
       title: '指标', dataIndex: 'metric', key: 'metric', width: 120,

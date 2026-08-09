@@ -45,21 +45,20 @@ const Logs: React.FC = () => {
   }
 
   const setTimeRangePreset = (minutes: number) => {
+    // 只更新时间预设，不改写用户输入的查询词（避免破坏用户手写的 LogsQL）
     setTimePreset(minutes)
-    if (backend === 'victorialogs') {
-      setLogsQuery(`_time:${minutes}m${severityFilter ? ` ${severityFilter}` : ''}`)
-    }
   }
 
   const fetchLogs = useCallback(async () => {
     setLoading(true)
     try {
       if (backend === 'victorialogs') {
-        let q = logsQuery.trim() || '_time:15m'
-        // Apply severity filter if not already in query
-        if (severityFilter && !q.toLowerCase().includes(severityFilter.toLowerCase())) {
-          q = `${q} ${severityFilter}`
-        }
+        // 时间/级别/搜索词结构化组合（时间预设与级别过滤不再改写用户输入的 logsQuery，
+        // 避免状态错乱与非法 LogsQL）。用户输入优先，预设作为默认时间兜底。
+        let q = logsQuery.trim()
+        if (!q.includes('_time:')) q = `_time:${timePreset}m${q ? ' ' + q : ''}`
+        else if (severityFilter && !q.includes(severityFilter)) q = `${q} ${severityFilter}`
+        else if (severityFilter) q = `${q} ${severityFilter}`
         // 注意：axios 会对 params 自动 URL 编码，这里不要再手动 encodeURIComponent，
         // 否则特殊字符（%、+、&）会被双重编码（% → %25）导致查询错误。
         const res = await api.get('/logs/victorialogs', {
@@ -152,7 +151,8 @@ const Logs: React.FC = () => {
                       <Button key={t.value} size='small' type={timePreset === t.value ? 'primary' : 'default'}
                         onClick={() => setTimeRangePreset(t.value)}>{t.label}</Button>
                     ))}
-                    <Select size='small' value={severityFilter} onChange={v => { setSeverityFilter(v); if (v) { setLogsQuery(q => q.includes('_time:') ? `_time:${timePreset}m ${v}` : `${q} ${v}`) } }}
+                    {/* 级别过滤为独立状态，由 fetchLogs 结构化组合，不改写用户输入的查询词 */}
+                    <Select size='small' value={severityFilter} onChange={v => setSeverityFilter(v)}
                       options={SEVERITY_FILTERS} style={{ width: 80 }} />
                   </>
                 )}

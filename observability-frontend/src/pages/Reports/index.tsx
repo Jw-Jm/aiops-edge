@@ -90,7 +90,11 @@ const Reports: React.FC = () => {
     { title: '任务ID', dataIndex: 'task_id', key: 'task_id', width: 170, ellipsis: true },
     { title: '服务', dataIndex: 'service_name', key: 'service_name', width: 150,
       render: (v: string) => v && v !== '-' ? <Tag color="blue">{v}</Tag> : '-' },
-    { title: '类型', dataIndex: 'report_type', key: 'report_type', width: 100 },
+    { title: '类型', dataIndex: 'report_type', key: 'report_type', width: 100,
+      render: (v: string) => {
+        const map: Record<string, string> = { inspection: '巡检', diagnosis: '诊断', recovery: '恢复', analysis: '分析' }
+        return map[v] || v || '-'
+      } },
     { title: '结论', dataIndex: 'verdict', key: 'verdict', width: 90,
       render: (v: string) => VERDICT_MAP[v] ? <Tag color={VERDICT_MAP[v].color}>{VERDICT_MAP[v].label}</Tag> : (v || '-') },
     { title: '风险分', dataIndex: 'risk_score', key: 'risk_score', width: 90,

@@ -137,7 +137,7 @@ const Capacity: React.FC = () => {
             ]}
           />
           <Select value={hours} onChange={setHours} style={{ width: 120 }} options={[12, 24, 48, 72].map((h) => ({ value: h, label: `历史 ${h}h` }))} />
-          <Select value={horizon} onChange={setHorizon} style={{ width: 140 }} options={[6, 12, 24, 48].map((h) => ({ value: h, label: `预测 ${h} 步` }))} />
+          <Select value={horizon} onChange={setHorizon} style={{ width: 140 }} options={[6, 12, 24, 48].map((h) => ({ value: h, label: `预测未来 ${h} 小时` }))} />
           <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={load} /></Tooltip>
         </Space>
       </div>
@@ -180,7 +180,7 @@ const Capacity: React.FC = () => {
             showIcon
             style={{ margin: '16px 0' }}
             message="预测说明"
-            description="预测采用线性回归 + EWMA 双算法，未做周期性分解，长周期外推误差可能放大，ETT 仅供参考，请勿作为唯一扩缩容依据。"
+            description="预测基于历史趋势，提供「线性回归」和「指数平滑」两种算法。预测时间越长误差越大，尤其遇到周期性波动（如每天固定高峰）时结果仅供参考，请勿作为唯一的扩缩容依据。"
           />
           <Row gutter={[16, 16]}>
             <Col span={12}><ForecastCard title="线性回归预测" fc={data.forecasts.linear} isEwma={false} /></Col>

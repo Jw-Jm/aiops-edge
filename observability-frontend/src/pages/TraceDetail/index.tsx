@@ -111,9 +111,9 @@ const TraceDetail: React.FC = () => {
                   <span style={{ color: '#999', fontSize: 12 }}>{s.ms?.toFixed(1)}ms</span>
                 </div>
                 <div style={{ marginLeft: indent, flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: Math.max(20, Math.min(s.ms || 1, 800) / 4), height: 20, background: s.is_error ? '#ff4d4f' : '#1890ff', borderRadius: 4, opacity: 0.8, flexShrink: 0 }} />
+                  <div style={{ width: Math.max(20, Math.min(s.ms || 1, 800) / 4), height: 20, background: s.is_error ? '#ff4d4f' : 'var(--primary)', borderRadius: 4, opacity: 0.8, flexShrink: 0 }} />
                   <span style={{ fontFamily: 'monospace', fontSize: 13 }}>{s.service_name}</span>
-                  <span style={{ color: '#666', fontSize: 13 }}>{s.operation_name}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{s.operation_name}</span>
                   <Tag color={kindColor[s.span_kind] || 'default'} style={{ fontSize: 11 }}>{s.span_kind}</Tag>
                 </div>
                 <div style={{ width: 160, textAlign: 'right', color: '#999', fontSize: 12, flexShrink: 0 }}>

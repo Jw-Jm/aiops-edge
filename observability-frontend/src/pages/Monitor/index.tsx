@@ -28,10 +28,15 @@ function buildLayout(panels: DashboardPanel[]): Layout[] {
   })
 }
 
-// query_range 结果 → echarts series 数据
+// 图表类型中文映射（用于面板标题 Tag，避免暴露英文 chart_type）
+export const chartTypeText: Record<string, string> = {
+  line: '折线图', area: '面积图', bar: '柱状图', gauge: '仪表盘', table: '表格',
+}
+
+// query_range 结果 → echarts series 数据（line/area/bar）
 function buildOption(panel: DashboardPanel, series: any[]) {
   const xValues = series[0]?.values?.map((v: any[]) => new Date(v[0] * 1000).toLocaleTimeString()) || []
-  const type = panel.chart_type === 'bar' ? 'bar' : panel.chart_type === 'gauge' ? 'line' : panel.chart_type === 'table' ? 'line' : 'line'
+  const type = panel.chart_type === 'bar' ? 'bar' : panel.chart_type === 'area' ? 'line' : 'line'
   const isArea = panel.chart_type === 'area'
   return {
     backgroundColor: 'transparent',
@@ -49,6 +54,50 @@ function buildOption(panel: DashboardPanel, series: any[]) {
       areaStyle: isArea ? { opacity: 0.15 } : undefined,
     })),
   }
+}
+
+// gauge 类型 → echarts 仪表盘（取各 series 最新值）
+function buildGaugeOption(panel: DashboardPanel, series: any[]) {
+  const latest = series.map((s, i) => {
+    const vals = s.values?.map((v: any[]) => Number(v[1])) || []
+    return {
+      name: s.metric?.service || `series${i}`,
+      value: vals.length ? vals[vals.length - 1] : 0,
+    }
+  })
+  return {
+    backgroundColor: 'transparent',
+    series: latest.map((d, i) => ({
+      name: d.name,
+      type: 'gauge',
+      min: 0,
+      max: 100,
+      radius: '80%',
+      center: ['50%', `${35 + i * 30}%`],
+      startAngle: 220,
+      endAngle: -40,
+      axisLine: { lineStyle: { width: 8, color: [[1, 'rgba(255,255,255,0.15)']] } },
+      pointer: { itemStyle: { color: chartColors[i % chartColors.length] } },
+      axisTick: { distance: -8, length: 4, lineStyle: { color: '#999' } },
+      splitLine: { distance: -10, length: 8, lineStyle: { color: '#999' } },
+      axisLabel: { color: '#999', distance: 12, fontSize: 8 },
+      detail: {
+        valueAnimation: true, formatter: '{value}',
+        color: chartColors[i % chartColors.length], fontSize: 14, offsetCenter: [0, '40%'],
+      },
+      title: { offsetCenter: [0, '68%'], color: '#999', fontSize: 11 },
+      data: [{ value: d.value, name: d.name }],
+    })),
+  }
+}
+
+// table 类型 → 最新值表格（避免渲染成折线图造成"类型欺骗"）
+function tableRows(series: any[]) {
+  return series.map((s, i) => {
+    const vals = s.values?.map((v: any[]) => Number(v[1])) || []
+    const last = vals.length ? vals[vals.length - 1] : null
+    return { name: s.metric?.service || `series${i}`, current: last, color: chartColors[i % chartColors.length] }
+  })
 }
 
 const Monitor: React.FC = () => {
@@ -231,7 +280,7 @@ const Monitor: React.FC = () => {
                     title={
                       <span className="panel-drag-handle" style={{ cursor: 'move', fontSize: 13 }}>
                         {p.title}
-                        <Tag style={{ marginLeft: 8 }}>{p.chart_type}</Tag>
+                        <Tag style={{ marginLeft: 8 }}>{chartTypeText[p.chart_type] || p.chart_type}</Tag>
                       </span>
                     }
                     extra={
@@ -244,7 +293,33 @@ const Monitor: React.FC = () => {
                     bodyStyle={{ height: 'calc(100% - 57px)' }}
                   >
                     {series.length ? (
-                      <ReactECharts option={buildOption(p, series)} style={{ height: '100%' }} notMerge />
+                      p.chart_type === 'gauge' ? (
+                        <ReactECharts option={buildGaugeOption(p, series)} style={{ height: '100%' }} notMerge />
+                      ) : p.chart_type === 'table' ? (
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>指标</th>
+                              <th style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>当前值</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tableRows(series).map((r) => (
+                              <tr key={r.name}>
+                                <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>
+                                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: r.color, marginRight: 6 }} />
+                                  {r.name}
+                                </td>
+                                <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', textAlign: 'right', fontWeight: 600 }}>
+                                  {r.current === null ? '—' : r.current}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <ReactECharts option={buildOption(p, series)} style={{ height: '100%' }} notMerge />
+                      )
                     ) : (
                       <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }} />
                     )}

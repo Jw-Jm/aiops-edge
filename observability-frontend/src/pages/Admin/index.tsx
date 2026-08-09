@@ -69,11 +69,12 @@ function UsersTab() {
           {
             title: '数据范围 scope',
             dataIndex: 'scope',
-            render: (s) => {
+            render: (s, r) => {
               try {
                 const p = s ? JSON.parse(s) : {}
                 const n = (p.services?.length || 0) + (p.clusters?.length || 0) + (p.devices?.length || 0)
-                return n > 0 ? <Tag>{`${n} 项`}</Tag> : <Tag color={r_role_admin(s) ? 'red' : 'default'}>全量</Tag>
+                // scope 为空 = 全量权限；admin 角色天然全量（红色标记，与普通用户灰色区分）
+                return n > 0 ? <Tag>{`${n} 项`}</Tag> : <Tag color={r?.role === 'admin' ? 'red' : 'default'}>全量</Tag>
               } catch { return <Tag>全量</Tag> }
             },
           },
@@ -102,9 +103,6 @@ function UsersTab() {
     </div>
   )
 }
-
-// scope 是否 admin（admin 全量）的辅助：admin 角色用户不可配 scope
-function r_role_admin(_s: string) { return false }
 
 // ─── 审计 Tab ─────────────────────────────────────────────
 function AuditTab() {

@@ -50,10 +50,10 @@ interface ChatMessage {
 }
 
 const EXPERT_OPTIONS = [
-  { value: 'inspection', label: '巡检' },
-  { value: 'diagnosis', label: '诊断' },
-  { value: 'query', label: '问数' },
-  { value: 'ops', label: '运维' },
+  { value: 'inspection', label: '健康巡检' },
+  { value: 'diagnosis', label: '故障诊断' },
+  { value: 'query', label: '数据查询' },
+  { value: 'ops', label: '日常运维' },
 ];
 
 const AIChat: React.FC = () => {
@@ -332,7 +332,7 @@ const AIChat: React.FC = () => {
             <RobotOutlined style={{ fontSize: 48, marginBottom: 16 }} />
             <br />
             <Text type="secondary" style={{ fontSize: 16 }}>
-              选择一个专家模式，开始对话
+              先选择要执行的任务类型，再输入问题开始诊断
             </Text>
             <br />
             <Space style={{ marginTop: 16 }}>
@@ -347,6 +347,22 @@ const AIChat: React.FC = () => {
                 </Button>
               ))}
             </Space>
+            <div style={{ marginTop: 20, maxWidth: 520 }}>
+              <Text type="secondary" style={{ fontSize: 13 }}>试试这样提问：</Text>
+              <Space wrap style={{ marginTop: 8 }}>
+                {[
+                  '为什么订单服务错误率升高了？',
+                  '分析最近 1 小时网关延迟高的问题',
+                  '帮我巡检所有服务健康状态',
+                  '数据库连接数为什么增长？',
+                ].map((q) => (
+                  <Button key={q} size="small" style={{ borderRadius: 16 }}
+                    onClick={() => { setExpert('diagnosis'); setInput(q); handleSend(); }}>
+                    {q}
+                  </Button>
+                ))}
+              </Space>
+            </div>
           </div>
         )}
 
@@ -419,7 +435,7 @@ const AIChat: React.FC = () => {
                       <Text
                         style={{
                           fontSize: 12,
-                          color: msg.role === 'user' ? 'rgba(255,255,255,0.8)' : '#666',
+                          color: msg.role === 'user' ? 'rgba(255,255,255,0.8)' : 'var(--text-muted)',
                           whiteSpace: 'pre-wrap',
                         }}
                       >

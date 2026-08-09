@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Tag, Button, Space, Typography, message, Input, Select } from 'antd'
+import { Card, Table, Tag, Button, Space, Typography, message, Input, Select, Popconfirm } from 'antd'
 import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons'
 import api from '../../api/client'
 
@@ -58,8 +58,10 @@ const Approvals: React.FC = () => {
     { title: '风险', dataIndex: 'risk_score', key: 'risk_score', width: 90,
       render: (v: number) => {
         const n = Number(v || 0)
+        if (n <= 0) return <Text type="secondary">—</Text>
         const color = n >= 70 ? 'red' : n >= 40 ? 'orange' : 'green'
-        return <Tag color={color}>{n}</Tag>
+        const label = n >= 70 ? '高' : n >= 40 ? '中' : '低'
+        return <Tag color={color}>{label}（{Math.round(n)}）</Tag>
       } },
     { title: '状态', dataIndex: 'status', key: 'status', width: 110,
       render: (v: string) => STATUS_MAP[v] ? <Tag color={STATUS_MAP[v].color}>{STATUS_MAP[v].label}</Tag> : v },
@@ -69,7 +71,13 @@ const Approvals: React.FC = () => {
     { title: '操作', key: 'action', width: 160, fixed: 'right' as const,
       render: (_: unknown, r: Task) => r.status === 'waiting' ? (
         <Space>
-          <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => doDecide(r.id, true)}>批准</Button>
+          <Popconfirm
+            title="确认批准？"
+            description={r.script ? `批准后将执行恢复脚本（${r.script.slice(0, 60)}${r.script.length > 60 ? '…' : ''}），请确认操作安全` : '批准后继续执行该任务'}
+            onConfirm={() => doDecide(r.id, true)} okText="批准" cancelText="取消" okButtonProps={{ danger: true }}
+          >
+            <Button size="small" type="primary" icon={<CheckOutlined />}>批准</Button>
+          </Popconfirm>
           <Button size="small" danger icon={<CloseOutlined />} onClick={() => doDecide(r.id, false)}>驳回</Button>
         </Space>
       ) : <Text type="secondary">—</Text> },
