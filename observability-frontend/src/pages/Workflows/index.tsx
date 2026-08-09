@@ -114,16 +114,19 @@ const Workflows: React.FC = () => {
               }
               style={{ background: 'var(--surface)', borderColor: 'var(--border)', borderRadius: 10 }}
               extra={
-                <Button
-                  size="small"
-                  onClick={() => {
-                    setDetail(f)
-                    setRunParams({ service: '', message: '' })
-                    setRunResult('')
-                  }}
-                >
-                  查看/运行
-                </Button>
+                <Space>
+                  <Button size="small" onClick={() => navigate(`/workflows/${encodeURIComponent(f.key)}`)}>详情</Button>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setDetail(f)
+                      setRunParams({ service: '', message: '' })
+                      setRunResult('')
+                    }}
+                  >
+                    查看/运行
+                  </Button>
+                </Space>
               }
             >
               <div style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 8 }}>{f.description}</div>

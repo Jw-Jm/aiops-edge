@@ -24,6 +24,7 @@ const Skills = lazy(() => import('./pages/Skills'))
 const Agents = lazy(() => import('./pages/Agents'))
 const Workflows = lazy(() => import('./pages/Workflows'))
 const WorkflowEditor = lazy(() => import('./pages/Workflows/Editor'))
+const WorkflowDetail = lazy(() => import('./pages/Workflows/Detail'))
 const Settings = lazy(() => import('./pages/Settings'))
 const DeepFlow = lazy(() => import('./pages/DeepFlow'))
 const Login = lazy(() => import('./pages/Login'))
@@ -255,6 +256,7 @@ const AppLayout: React.FC = () => {
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/workflows" element={<Workflows />} />
                 <Route path="/workflows/editor" element={<WorkflowEditor />} />
+                <Route path="/workflows/:id" element={<WorkflowDetail />} />
                 <Route path="/services" element={<Services />} />
                 <Route path="/services/:name" element={<ServiceDetail />} />
                 <Route path="/topology" element={<Topology />} />
