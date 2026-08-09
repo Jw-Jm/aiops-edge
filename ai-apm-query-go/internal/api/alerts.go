@@ -39,6 +39,7 @@ type AlertRule struct {
 	BaselineSeconds int    `json:"baseline_seconds,omitempty"` // anomaly 基线窗口（秒）
 	AnomalyMethod   string `json:"anomaly_method,omitempty"`   // anomaly 检测方法：zscore|mad
 	SLOID           string `json:"slo_id,omitempty"`           // burn_rate 引用的 SLO 目标 id
+	Keyword         string `json:"keyword,omitempty"`          // log_keyword 日志关键字（body LIKE '%keyword%'）
 }
 
 // inCooldown 判断规则是否处于冷却期（距上次触发 < Cooldown 分钟）。
@@ -88,15 +89,18 @@ func eventSignature(ruleID, service, detail string) string {
 
 // logMetricQuery 构造日志类规则的 CH 查询。
 // log_error_rate：错误日志占比；log_keyword：关键词命中数。
+// service/keyword 由用户输入拼入 SQL，须转义单引号防注入。
 func logMetricQuery(service, metric, keyword string) string {
+	svc := strings.ReplaceAll(service, "'", "''")
 	if metric == "log_error_rate" {
 		return fmt.Sprintf(
 			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE service_name='%s' AND timestamp >= now() - INTERVAL 5 MINUTE",
-			service)
+			svc)
 	}
+	kw := strings.ReplaceAll(keyword, "'", "''")
 	return fmt.Sprintf(
 		"SELECT count() FROM observability.log_records WHERE service_name='%s' AND body LIKE '%%%s%%' AND timestamp >= now() - INTERVAL 5 MINUTE",
-		service, keyword)
+		svc, kw)
 }
 
 // traceMetricQuery 构造链路类规则的 CH 查询。
@@ -195,6 +199,7 @@ func loadAlertRules() {
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 			Cooldown: r.Cooldown, Dampening: r.Dampening,
 			BaselineSeconds: r.BaselineSeconds, AnomalyMethod: r.AnomalyMethod, SLOID: r.SLOID,
+			Keyword: r.Keyword,
 		})
 	}
 }
@@ -210,6 +215,7 @@ func saveAlertRules() {
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 			Cooldown: r.Cooldown, Dampening: r.Dampening,
 			BaselineSeconds: r.BaselineSeconds, AnomalyMethod: r.AnomalyMethod, SLOID: r.SLOID,
+			Keyword: r.Keyword,
 		})
 	}
 	alertRulesMu.RUnlock()
@@ -1271,7 +1277,7 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 
 	// log 类型：CH 日志查询（log_error_rate / log_keyword）
 	if rule.Type == "log" {
-		sql := logMetricQuery(rule.Service, rule.Metric, rule.Name)
+		sql := logMetricQuery(rule.Service, rule.Metric, rule.Keyword)
 		v, err := h.evalCHQuery(ctx, sql)
 		if err != nil {
 			return 0, err

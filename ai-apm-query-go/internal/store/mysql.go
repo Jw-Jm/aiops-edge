@@ -275,6 +275,9 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 	if !hasColumn(conn, "alert_rules", "slo_id") {
 		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN slo_id VARCHAR(64) DEFAULT ''")
 	}
+	if !hasColumn(conn, "alert_rules", "keyword") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN keyword VARCHAR(255) DEFAULT ''")
+	}
 
 	// slo_targets SLO 目标（availability/latency，burn_rate 规则引用）
 	conn.Exec(`CREATE TABLE IF NOT EXISTS slo_targets (

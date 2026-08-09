@@ -20,6 +20,22 @@ func TestLogTypeQuery(t *testing.T) {
 	}
 }
 
+// TestLogKeywordQuery 验证 log_keyword 用独立 keyword 匹配 body（而非规则名）。
+func TestLogKeywordQuery(t *testing.T) {
+	q := logMetricQuery("svc", "log_keyword", "OOMKilled")
+	if !strings.Contains(q, "body LIKE '%OOMKilled%'") {
+		t.Fatalf("log_keyword should match body LIKE keyword, got: %s", q)
+	}
+	if strings.Contains(q, "severity") {
+		t.Fatal("log_keyword should NOT use severity filter")
+	}
+	// keyword 含特殊字符时应正确转义（% 不进入 SQL 结构）
+	q2 := logMetricQuery("svc", "log_keyword", "a' OR '1'='1")
+	if strings.Contains(q2, "OR '1'='1") {
+		t.Fatal("keyword should be escaped to avoid SQL injection")
+	}
+}
+
 // TestCooldownBlocksRepeat 验证 cooldown 冷却期内不重复告警
 func TestCooldownBlocksRepeat(t *testing.T) {
 	c := AlertRule{Cooldown: 10}
