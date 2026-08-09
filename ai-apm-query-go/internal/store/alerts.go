@@ -124,6 +124,7 @@ type AlertEvent struct {
 	ResolvedBy      string
 	Timeline        string
 	Investigation   string
+	Signature       string
 }
 
 // AlertEventDAO 告警事件数据访问。
@@ -138,7 +139,7 @@ func (d *AlertEventDAO) LoadAll() ([]AlertEvent, error) {
 	rows, err := conn.Query(
 		`SELECT id, rule_id, rule_name, service, severity, message, value, threshold,
 		        timestamp, count, first_timestamp, last_timestamp, status,
-		        acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation
+		        acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature
 		 FROM alert_events`)
 	if err != nil {
 		return nil, err
@@ -147,10 +148,10 @@ func (d *AlertEventDAO) LoadAll() ([]AlertEvent, error) {
 	out := []AlertEvent{}
 	for rows.Next() {
 		var e AlertEvent
-		var ts, fts, lts, aat, rat, tl, inv sql.NullString
+		var ts, fts, lts, aat, rat, tl, inv, sig sql.NullString
 		if err := rows.Scan(&e.ID, &e.RuleID, &e.RuleName, &e.Service, &e.Severity,
 			&e.Message, &e.Value, &e.Threshold, &ts, &e.Count, &fts, &lts, &e.Status,
-			&aat, &e.AcknowledgedBy, &rat, &e.ResolvedBy, &tl, &inv); err != nil {
+			&aat, &e.AcknowledgedBy, &rat, &e.ResolvedBy, &tl, &inv, &sig); err != nil {
 			return nil, err
 		}
 		e.Timestamp = ts.String
@@ -160,6 +161,7 @@ func (d *AlertEventDAO) LoadAll() ([]AlertEvent, error) {
 		e.ResolvedAt = rat.String
 		e.Timeline = tl.String
 		e.Investigation = inv.String
+		e.Signature = sig.String
 		out = append(out, e)
 	}
 	return out, nil
@@ -179,14 +181,14 @@ func (d *AlertEventDAO) ReplaceAll(events []AlertEvent) error {
 	stmt, err := tx.Prepare(
 		`INSERT INTO alert_events (id, rule_id, rule_name, service, severity, message, value, threshold,
 		        timestamp, count, first_timestamp, last_timestamp, status,
-		        acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		        acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE rule_id=VALUES(rule_id), rule_name=VALUES(rule_name), service=VALUES(service),
 		   severity=VALUES(severity), message=VALUES(message), value=VALUES(value), threshold=VALUES(threshold),
 		   timestamp=VALUES(timestamp), count=VALUES(count), first_timestamp=VALUES(first_timestamp),
 		   last_timestamp=VALUES(last_timestamp), status=VALUES(status), acknowledged_at=VALUES(acknowledged_at),
 		   acknowledged_by=VALUES(acknowledged_by), resolved_at=VALUES(resolved_at), resolved_by=VALUES(resolved_by),
-		   timeline=VALUES(timeline), investigation=VALUES(investigation)`)
+		   timeline=VALUES(timeline), investigation=VALUES(investigation), signature=VALUES(signature)`)
 	if err != nil {
 		return err
 	}
@@ -198,7 +200,7 @@ func (d *AlertEventDAO) ReplaceAll(events []AlertEvent) error {
 			e.Message, e.Value, e.Threshold, nullStr(e.Timestamp), e.Count,
 			nullStr(e.FirstTimestamp), nullStr(e.LastTimestamp), e.Status,
 			nullStr(e.AcknowledgedAt), e.AcknowledgedBy, nullStr(e.ResolvedAt), e.ResolvedBy,
-			nullStr(e.Timeline), nullStr(e.Investigation)); err != nil {
+			nullStr(e.Timeline), nullStr(e.Investigation), nullStr(e.Signature)); err != nil {
 			return err
 		}
 	}

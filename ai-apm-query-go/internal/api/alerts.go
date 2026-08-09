@@ -57,6 +57,12 @@ type AlertEvent struct {
 	ResolvedBy       string  `json:"resolved_by,omitempty"`
 	Timeline         string  `json:"timeline,omitempty"`       // 状态变更历史（JSON 数组）
 	Investigation    string  `json:"investigation,omitempty"` // 调查结果（RCA 分析 JSON）
+	Signature        string  `json:"signature,omitempty"`     // dedupe 指纹（rule+service+detail）
+}
+
+// eventSignature 生成事件指纹（rule+service+detail 维度），用于 dedupe。
+func eventSignature(ruleID, service, detail string) string {
+	return ruleID + ":" + service + ":" + detail
 }
 
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
@@ -181,7 +187,7 @@ func loadAlertEvents() {
 			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
 			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
 			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
-			Timeline: e.Timeline, Investigation: e.Investigation,
+			Timeline: e.Timeline, Investigation: e.Investigation, Signature: e.Signature,
 		})
 	}
 }
@@ -197,7 +203,7 @@ func saveAlertEvents() {
 			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
 			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
 			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
-			Timeline: e.Timeline, Investigation: e.Investigation,
+			Timeline: e.Timeline, Investigation: e.Investigation, Signature: e.Signature,
 		})
 	}
 	alertEventsMu.RUnlock()
@@ -840,11 +846,12 @@ func (h *Handler) evaluateAlerts() {
 			nowStr := now.Format(time.RFC3339)
 
 			alertEventsMu.Lock()
-			// 时间窗口聚合：窗口内已有同 (service, rule_id) 事件则只更新计数/时间，不新增（降噪）
+			// 时间窗口聚合 + dedupe：窗口内已有同 (service, rule_id, signature) 事件则只更新计数/时间，不新增（降噪）
+			sig := eventSignature(rule.ID, rule.Service, rule.Metric)
 			var existing *AlertEvent
 			for i := range alertEvents {
 				e := &alertEvents[i]
-				if e.RuleID == rule.ID && e.Service == rule.Service {
+				if e.RuleID == rule.ID && e.Service == rule.Service && e.Signature == sig {
 					if t, err := time.Parse(time.RFC3339, e.LastTimestamp); err == nil {
 						if now.Sub(t) <= alertGroupInterval {
 							existing = e
@@ -881,8 +888,9 @@ func (h *Handler) evaluateAlerts() {
 					FirstTimestamp: nowStr,
 					LastTimestamp:  nowStr,
 					Status:         "firing",
-				}
-				alertEvents = append(alertEvents, event)
+					Signature:      sig,
+					}
+					alertEvents = append(alertEvents, event)
 				if len(alertEvents) > maxAlertEvents {
 					alertEvents = alertEvents[len(alertEvents)-maxAlertEvents:]
 				}

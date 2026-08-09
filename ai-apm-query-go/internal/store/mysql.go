@@ -280,12 +280,17 @@ CREATE TABLE IF NOT EXISTS alert_events (
   resolved_by VARCHAR(64) DEFAULT '',
   timeline TEXT,
   investigation TEXT,
+  signature VARCHAR(128) DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 
 	// 兼容已存在的 alert_events 表：补 timeline 列（幂等）
 	if !hasColumn(conn, "alert_events", "timeline") {
 		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN timeline TEXT")
+	}
+	// 兼容已存在的 alert_events 表：补 signature 列（幂等）
+	if !hasColumn(conn, "alert_events", "signature") {
+		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN signature VARCHAR(128) DEFAULT ''")
 	}
 	// 兼容已存在的 alert_events 表：补 investigation 列（幂等）
 	if !hasColumn(conn, "alert_events", "investigation") {

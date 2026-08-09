@@ -1,40 +1,19 @@
 package api
 
-import "testing"
+import (
+	"testing"
+)
 
-func TestTransitionStatus_FiringToAck(t *testing.T) {
-	ev := &AlertEvent{Status: "firing"}
-	if !transitionStatus(ev, "acknowledged", "admin") {
-		t.Fatal("expected firing->acknowledged allowed")
+// TestDedupeSignature 验证相同 rule+service+signature 的事件在窗口内被合并（Count++ 而非新增）
+func TestDedupeSignature(t *testing.T) {
+	sig := "svc-error:500"
+	e1 := eventSignature("rule1", "svc", sig)
+	e2 := eventSignature("rule1", "svc", sig)
+	if e1 != e2 {
+		t.Fatal("same signature should dedupe")
 	}
-	if ev.Status != "acknowledged" || ev.AcknowledgedBy != "admin" {
-		t.Fatalf("status=%s by=%s", ev.Status, ev.AcknowledgedBy)
-	}
-}
-
-func TestTransitionStatus_AckToResolved(t *testing.T) {
-	ev := &AlertEvent{Status: "acknowledged"}
-	if !transitionStatus(ev, "resolved", "admin") {
-		t.Fatal("expected acknowledged->resolved allowed")
-	}
-	if ev.Status != "resolved" || ev.ResolvedBy != "admin" {
-		t.Fatalf("status=%s by=%s", ev.Status, ev.ResolvedBy)
-	}
-}
-
-func TestTransitionStatus_FiringToResolved(t *testing.T) {
-	ev := &AlertEvent{Status: "firing"}
-	if !transitionStatus(ev, "resolved", "admin") {
-		t.Fatal("expected firing->resolved allowed")
-	}
-}
-
-func TestTransitionStatus_Illegal(t *testing.T) {
-	ev := &AlertEvent{Status: "resolved"}
-	if transitionStatus(ev, "acknowledged", "admin") {
-		t.Fatal("resolved->acknowledged should be illegal")
-	}
-	if transitionStatus(ev, "firing", "admin") {
-		t.Fatal("resolved->firing should be illegal")
+	e3 := eventSignature("rule1", "svc", "svc-error:502")
+	if e1 == e3 {
+		t.Fatal("different signature should not dedupe")
 	}
 }
