@@ -70,21 +70,27 @@ func EstimateTimeToThreshold(slope, intercept float64, n, horizon int, threshold
 }
 
 // capacityPromQL 返回指定资源维度的 range 查询 PromQL。未知 metric 返回空串。
+// instance 非空时按精确 instance 标签过滤（如 node-exporter 的 192.168.139.2:9100）。
 func capacityPromQL(metric, instance string) string {
-	inst := ""
+	// instPart：用于需要多 label 的维度，作为 ", instance=\"x\"" 追加进 {mode="idle", instance="x"}
+	instPart := ""
+	// instSel：用于只有 instance 一个 label 的维度，独立 {instance="x"}
+	instSel := ""
 	if instance != "" {
-		inst = fmt.Sprintf(`{instance="%s"}`, instance)
+		instPart = fmt.Sprintf(`, instance="%s"`, instance)
+		instSel = fmt.Sprintf(`{instance="%s"}`, instance)
 	}
 	switch metric {
 	case "cpu":
-		// node_cpu_seconds_total 每个 mode 各一条 series，必须加 mode="idle" 才能正确计算使用率
-		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{mode="idle"%s}[5m])) * 100`, inst)
+		// node_cpu_seconds_total 每个 mode 各一条 series，必须加 mode="idle" 才能正确计算使用率；
+		// instance 与 mode 必须在同一对大括号内（逗号分隔），不能嵌套大括号
+		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{mode="idle"%s}[5m])) * 100`, instPart)
 	case "memory":
-		return fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes%s / node_memory_MemTotal_bytes%s)`, inst, inst)
+		return fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes%s / node_memory_MemTotal_bytes%s)`, instSel, instSel)
 	case "disk":
-		return fmt.Sprintf(`avg(1 - node_filesystem_avail_bytes%s / node_filesystem_size_bytes%s) * 100`, inst, inst)
+		return fmt.Sprintf(`avg(1 - node_filesystem_avail_bytes%s / node_filesystem_size_bytes%s) * 100`, instSel, instSel)
 	case "network":
-		return fmt.Sprintf(`rate(node_network_receive_bytes_total%s[5m]) + rate(node_network_transmit_bytes_total%s[5m])`, inst, inst)
+		return fmt.Sprintf(`rate(node_network_receive_bytes_total%s[5m]) + rate(node_network_transmit_bytes_total%s[5m])`, instSel, instSel)
 	}
 	return ""
 }

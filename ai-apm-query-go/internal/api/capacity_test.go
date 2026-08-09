@@ -138,10 +138,15 @@ func TestCapacityPromQLCPUIdleFilter(t *testing.T) {
 	if !contains(got, `mode="idle"`) {
 		t.Fatalf("cpu PromQL must contain mode=\"idle\", got: %s", got)
 	}
-	// 带 instance 时 mode filter 与 instance 同时存在
+	// 带 instance 时 mode filter 与 instance 必须在同一对大括号内（逗号分隔），不能嵌套大括号
 	gotInst := capacityPromQL("cpu", "node-1")
 	if !contains(gotInst, `mode="idle"`) || !contains(gotInst, `node-1`) {
 		t.Fatalf("cpu PromQL with instance must keep mode=\"idle\" and instance, got: %s", gotInst)
+	}
+	// 校验括号不嵌套：mode="idle" 与 instance="node-1" 用逗号分隔在同一对 {} 内
+	wantInst := `node_cpu_seconds_total{mode="idle", instance="node-1"}`
+	if gotInst != `100 - avg(rate(`+wantInst+`[5m])) * 100` {
+		t.Fatalf("cpu PromQL with instance must be %q (single brace pair), got: %s", wantInst, gotInst)
 	}
 }
 
