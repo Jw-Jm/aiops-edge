@@ -174,8 +174,11 @@ const AlertRulesTab: React.FC = () => {
   }
 
   const columns = [
-    { title: '规则名称', dataIndex: 'name', key: 'name', ellipsis: true },
-    { title: '服务', dataIndex: 'service', key: 'service', render: (s: string) => <Tag>{s || '-'}</Tag> },
+    {
+      title: '规则名称', dataIndex: 'name', key: 'name', width: 200, ellipsis: true,
+      render: (v: string) => <Tooltip title={v} placement="topLeft"><span>{v}</span></Tooltip>,
+    },
+    { title: '服务', dataIndex: 'service', key: 'service', width: 120, render: (s: string) => <Tag>{s || '-'}</Tag> },
     {
       title: '类型', dataIndex: 'type', key: 'type', width: 100,
       render: (t: string) => {
