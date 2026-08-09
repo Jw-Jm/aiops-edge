@@ -1,0 +1,191 @@
+package api
+
+import (
+	"fmt"
+	"log"
+	"time"
+)
+
+func (h *Handler) StartAlertEvaluation() {
+	go func() {
+		// Run once immediately on startup
+		h.evaluateAlerts()
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.evaluateAlerts()
+		}
+	}()
+	log.Println("Alert evaluation loop started (every 60s)")
+}
+
+func (h *Handler) evaluateAlerts() {
+	alertRulesMu.RLock()
+	rules := make([]AlertRule, len(alertRules))
+	copy(rules, alertRules)
+	alertRulesMu.RUnlock()
+
+	// 记录每条规则最近触发时间（cooldown 冷却）与连续 breach 次数（dampening）
+	lastRuleTrigger := make(map[string]time.Time)
+	ruleStreak := make(map[string]int)
+
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+
+		value, err := h.evaluateRule(rule)
+		if err != nil {
+			log.Printf("evaluate rule %s (%s): %v", rule.ID, rule.Name, err)
+			continue
+		}
+
+		// anomaly / burn_rate 有自己的统计/烧毁评估逻辑，不走外层 checkCondition（避免阈值语义冲突）。
+		// threshold / mutation / forecast / metric_raw 等用 checkCondition 判定。
+		breached := false
+		if rule.Type != "anomaly" && rule.Type != "burn_rate" {
+			breached = checkCondition(value, rule.Condition, rule.Threshold)
+		}
+
+		// Mutation detection: compare with historical window
+		if !breached && rule.Type == "mutation" {
+			historicalValue, err := h.evaluateRuleHistorical(rule)
+			if err == nil && historicalValue > 0 {
+				change := (value - historicalValue) / historicalValue * 100
+				if change > 50 || change < -50 {
+					breached = true
+					log.Printf("MUTATION: %s changed %.1f%% (current=%.1f, historical=%.1f)", rule.Name, change, value, historicalValue)
+				}
+			}
+		}
+
+		// Anomaly detection: zscore/MAD 统计检测（当前值偏离历史序列均值/中位数）
+		if !breached && rule.Type == "anomaly" {
+			if current, anom := h.evaluateRuleAnomaly(rule); anom {
+				breached = true
+				log.Printf("ANOMALY: %s current=%.2f (method=%s)", rule.Name, current, rule.AnomalyMethod)
+			}
+		}
+
+		// Forecast：基于历史窗口的偏差（简单线性外推 vs 实际）
+		if !breached && rule.Type == "forecast" {
+			if hist, err := h.evaluateRuleHistorical(rule); err == nil && hist > 0 {
+				dev := (value - hist) / hist * 100
+				limit := rule.Threshold
+				if limit <= 0 {
+					limit = 20
+				}
+				if dev > limit {
+					breached = true
+					log.Printf("FORECAST: %s dev %.1f%% (current=%.1f, window=%.1f)", rule.Name, dev, value, hist)
+				}
+			}
+		}
+
+		// Burn-rate：SLO 目标错误预算烧毁率（实际错误率 / 目标错误率）
+		if !breached && rule.Type == "burn_rate" {
+			if burn, ok := h.evaluateRuleBurnRate(rule, value); ok {
+				breached = true
+				log.Printf("BURN_RATE: %s burn=%.1f (slo=%s)", rule.Name, burn, rule.SLOID)
+			}
+		}
+
+		if breached {
+			// 告警降噪：先检查是否被静默抑制
+			if isSilenced(rule.Service, rule.ID) {
+				log.Printf("ALERT_SILENCED: %s | %s | %s (value=%.2f)", rule.Severity, rule.Service, rule.Name, value)
+				continue
+			}
+
+			now := time.Now().UTC()
+			nowStr := now.Format(time.RFC3339)
+
+			// cooldown 触发冷却：冷却期内不重复告警（即使窗口外）
+			if t, ok := lastRuleTrigger[rule.ID]; ok && inCooldown(rule, t, now) {
+				continue
+			}
+
+			// dampening 连续确认：连续 breach 次数未达阈值则暂不告警
+			ruleStreak[rule.ID]++
+			if !shouldAlertAfterDampening(rule, ruleStreak[rule.ID]) {
+				log.Printf("ALERT_DAMPENED: %s | %s (streak=%d/%d)", rule.Service, rule.Name, ruleStreak[rule.ID], rule.Dampening)
+				continue
+			}
+			lastRuleTrigger[rule.ID] = now
+
+			alertEventsMu.Lock()
+			// 时间窗口聚合 + dedupe：窗口内已有同 (service, rule_id, signature) 事件则只更新计数/时间，不新增（降噪）
+			sig := eventSignature(rule.ID, rule.Service, rule.Metric)
+			var existing *AlertEvent
+			for i := range alertEvents {
+				e := &alertEvents[i]
+				if e.RuleID == rule.ID && e.Service == rule.Service && e.Signature == sig {
+					if t, err := time.Parse(time.RFC3339, e.LastTimestamp); err == nil {
+						if now.Sub(t) <= alertGroupInterval {
+							existing = e
+							break
+						}
+					}
+				}
+			}
+
+			if existing != nil {
+				// 窗口内重复 → 聚合计数，不产生新事件
+				existing.Count++
+				existing.LastTimestamp = nowStr
+				// 持续告警升级：超过 repeatInterval 仍未恢复 → 提升严重级别
+				if first, err := time.Parse(time.RFC3339, existing.FirstTimestamp); err == nil {
+					if now.Sub(first) > alertRepeatInterval && existing.Severity == rule.Severity && existing.Severity != "critical" {
+						existing.Severity = escalateSeverity(existing.Severity)
+						log.Printf("ALERT_ESCALATED: %s -> %s | %s", rule.Name, rule.Severity, existing.Severity)
+					}
+				}
+			} else {
+				// 窗口外新事件
+				event := AlertEvent{
+					ID:             generateID(),
+					RuleID:         rule.ID,
+					RuleName:       rule.Name,
+					Service:        rule.Service,
+					Severity:       rule.Severity,
+					Message:        fmt.Sprintf("%s: %s %.2f > threshold %.2f", rule.Name, rule.Metric, value, rule.Threshold),
+					Value:          value,
+					Threshold:      rule.Threshold,
+					Timestamp:      nowStr,
+					Count:          1,
+					FirstTimestamp: nowStr,
+					LastTimestamp:  nowStr,
+					Status:         "firing",
+					Signature:      sig,
+					}
+					alertEvents = append(alertEvents, event)
+				if len(alertEvents) > maxAlertEvents {
+					alertEvents = alertEvents[len(alertEvents)-maxAlertEvents:]
+				}
+				// Webhook 通知（仅新事件通知，聚合事件不重复通知）；优先规则级 webhook
+				ruleCopy := rule
+				appendTimeline(&event, "created", "system")
+				h.sendWebhook(event, &ruleCopy)
+				log.Printf("ALERT: %s | %s | %s | value=%.2f threshold=%.2f", rule.Severity, rule.Service, rule.Name, value, rule.Threshold)
+			}
+			alertEventsMu.Unlock()
+
+			saveAlertEvents()
+		} else {
+			// 未 breach：重置连续计数（dampening）
+			ruleStreak[rule.ID] = 0
+		}
+	}
+}
+
+// escalateSeverity 告警级别升级 warning→critical
+func escalateSeverity(s string) string {
+	if s == "critical" {
+		return "critical"
+	}
+	if s == "warning" {
+		return "critical"
+	}
+	return "critical"
+}
+
