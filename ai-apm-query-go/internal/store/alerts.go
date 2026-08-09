@@ -209,9 +209,9 @@ func (d *AlertEventDAO) ReplaceAll(events []AlertEvent) error {
 	for _, e := range events {
 		ids[e.ID] = true
 		if _, err := stmt.Exec(e.ID, e.RuleID, e.RuleName, e.Service, e.Severity,
-			e.Message, e.Value, e.Threshold, nullStr(e.Timestamp), e.Count,
-			nullStr(e.FirstTimestamp), nullStr(e.LastTimestamp), e.Status,
-			nullStr(e.AcknowledgedAt), e.AcknowledgedBy, nullStr(e.ResolvedAt), e.ResolvedBy,
+			e.Message, e.Value, e.Threshold, nullStr(mysqlTime(e.Timestamp)), e.Count,
+			nullStr(mysqlTime(e.FirstTimestamp)), nullStr(mysqlTime(e.LastTimestamp)), e.Status,
+			nullStr(mysqlTime(e.AcknowledgedAt)), e.AcknowledgedBy, nullStr(mysqlTime(e.ResolvedAt)), e.ResolvedBy,
 			nullStr(e.Timeline), nullStr(e.Investigation), nullStr(e.Signature)); err != nil {
 			return err
 		}
@@ -391,6 +391,19 @@ func nullStr(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// mysqlTime 把 RFC3339（如 2026-08-09T04:28:59Z）转成 MySQL datetime 格式（2026-08-09 04:28:59）。
+// 解析失败或空串原样返回，由 nullStr 处理空串。
+func mysqlTime(s string) string {
+	if s == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	return t.Format("2006-01-02 15:04:05")
 }
 
 var _ = time.Now
