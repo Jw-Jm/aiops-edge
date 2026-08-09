@@ -867,8 +867,8 @@ func (h *Handler) evaluateAlerts() {
 			}
 		}
 
-		// Forecast / Burn-rate：基于历史窗口的偏差（简单线性外推 vs 实际）
-		if !breached && (rule.Type == "forecast" || rule.Type == "burn_rate") {
+		// Forecast：基于历史窗口的偏差（简单线性外推 vs 实际）
+		if !breached && rule.Type == "forecast" {
 			if hist, err := h.evaluateRuleHistorical(rule); err == nil && hist > 0 {
 				dev := (value - hist) / hist * 100
 				limit := rule.Threshold
@@ -877,8 +877,16 @@ func (h *Handler) evaluateAlerts() {
 				}
 				if dev > limit {
 					breached = true
-					log.Printf("%s: %s dev %.1f%% (current=%.1f, window=%.1f)", strings.ToUpper(rule.Type), rule.Name, dev, value, hist)
+					log.Printf("FORECAST: %s dev %.1f%% (current=%.1f, window=%.1f)", rule.Name, dev, value, hist)
 				}
+			}
+		}
+
+		// Burn-rate：SLO 目标错误预算烧毁率（实际错误率 / 目标错误率）
+		if !breached && rule.Type == "burn_rate" {
+			if burn, ok := h.evaluateRuleBurnRate(rule); ok {
+				breached = true
+				log.Printf("BURN_RATE: %s burn=%.1f (slo=%s)", rule.Name, burn, rule.SLOID)
 			}
 		}
 
@@ -1077,6 +1085,30 @@ func defaultAnomalyThreshold(method string) float64 {
 		return 3.5
 	}
 	return 3
+}
+
+// evaluateRuleBurnRate 按 SLO 目标计算当前错误率烧毁率，超阈值告警。
+// 烧毁率 = 实际错误率 / 目标错误率（目标错误率 = 1 - slo.target）。rule.Threshold 默认 14.4。
+func (h *Handler) evaluateRuleBurnRate(rule AlertRule) (float64, bool) {
+	if rule.SLOID == "" {
+		return 0, false
+	}
+	dao := &store.SLOTargetDAO{}
+	slo, err := dao.Get(rule.SLOID)
+	if err != nil || slo == nil {
+		return 0, false
+	}
+	// 当前错误率（%）：error_rate 即时值
+	errRate, err2 := h.vmInstantQuery(metricPromQL(rule))
+	if err2 != nil {
+		return 0, false
+	}
+	burn := ComputeBurnRate(errRate, slo.Target)
+	threshold := rule.Threshold
+	if threshold <= 0 {
+		threshold = 14.4 // 默认：SLO 预算 1% 窗口烧毁率上限
+	}
+	return burn, burn > threshold
 }
 
 // evaluateRuleHistorical 查 VM 历史窗口的指标基线（用于 mutation/forecast 检测）。
