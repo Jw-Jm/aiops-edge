@@ -1,6 +1,8 @@
 crewai>=1.0
 langgraph>=1.0,<2.0
-langgraph-checkpoint-sqlite>=2.0,<3.0
+# langgraph-checkpoint-sqlite 3.x 的 SqliteSaver.put 才与 checkpoint 4.x(JsonPlusSerializer dumps_typed) 兼容；
+# 2.x 的 put 用旧 API self.jsonplus_serde.dumps() 会报 "'JsonPlusSerializer' object has no attribute 'dumps'"
+langgraph-checkpoint-sqlite>=3.0,<4.0
 fastapi>=0.115
 uvicorn[standard]>=0.32
 sse-starlette>=2.0
