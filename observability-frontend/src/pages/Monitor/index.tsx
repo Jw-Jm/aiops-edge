@@ -1,13 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Col, Empty, Form, Input, InputNumber, Modal, Row, Select, Spin, Tag, Tooltip, message } from 'antd'
-import { PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons'
+import { Button, Card, Empty, Form, Input, InputNumber, Modal, Row, Select, Spin, Tag, Tooltip, message } from 'antd'
+import { PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
+import { Responsive, WidthProvider, type Layout } from 'react-grid-layout'
+import 'react-grid-layout/css/styles.css'
+import 'react-resizable/css/styles.css'
 import api, { DashboardPanel, listPanels, createPanel, updatePanel, deletePanel } from '../../api/client'
 import AppEmpty from '../../components/AppEmpty'
 
 const darkText = '#e8e8e8'
 const gridColor = 'rgba(255,255,255,0.12)'
 const chartColors = ['#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#13c2c2', '#722ed1', '#eb2f96']
+
+const ResponsiveGridLayout = WidthProvider(Responsive)
+
+// 从面板 grid 字段构造 lg 24 列布局；旧数据（grid 全 0）用 sort/span 推导
+function buildLayout(panels: DashboardPanel[]): Layout[] {
+  return panels.map((p) => {
+    const w = p.grid_w > 0 ? p.grid_w : Math.min(Math.max(p.span || 6, 6), 24)
+    const h = p.grid_h > 0 ? p.grid_h : 5
+    const x = p.grid_w > 0 ? p.grid_x : p.sort % 24
+    const y = p.grid_w > 0 ? p.grid_y : Math.floor(p.sort / 24)
+    return { i: String(p.id), x, y, w, h, minW: 3, minH: 2 }
+  })
+}
 
 // query_range 结果 → echarts series 数据
 function buildOption(panel: DashboardPanel, series: any[]) {
@@ -39,13 +55,19 @@ const Monitor: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<DashboardPanel | null>(null)
   const [form] = Form.useForm()
+  const [lgLayout, setLgLayout] = useState<Layout[]>([])
+  const [allLayouts, setAllLayouts] = useState<{ lg: Layout[]; md: Layout[]; sm: Layout[]; xs: Layout[] } | null>(null)
+  const [saveLock, setSaveLock] = useState(false) // 拖拽/缩放中禁止并发保存
 
   const loadPanels = async () => {
     try {
       const r = await listPanels()
-      setPanels(r?.data?.data || [])
+      const ps = r?.data?.data || []
+      setPanels(ps)
+      setLgLayout(buildLayout(ps))
     } catch {
       setPanels([])
+      setLgLayout([])
     }
   }
 
@@ -76,6 +98,7 @@ const Monitor: React.FC = () => {
     setLoading(true)
     const ps = await listPanels().then((r) => r?.data?.data || [])
     setPanels(ps)
+    setLgLayout(buildLayout(ps))
     await loadData(ps)
     setLoading(false)
   }
@@ -92,7 +115,7 @@ const Monitor: React.FC = () => {
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ chart_type: 'line', span: 6 })
+    form.setFieldsValue({ chart_type: 'line', span: 6, grid_h: 5 })
     setModalOpen(true)
   }
 
@@ -108,7 +131,15 @@ const Monitor: React.FC = () => {
       if (editing) {
         await updatePanel(editing.id, { ...values, enabled: editing.enabled })
       } else {
-        await createPanel({ ...values, enabled: true })
+        const maxY = lgLayout.reduce((m, it) => Math.max(m, it.y + it.h), 0)
+        await createPanel({
+          ...values,
+          enabled: true,
+          grid_x: 0,
+          grid_y: maxY,
+          grid_w: values.span || 6,
+          grid_h: values.grid_h || 5,
+        })
       }
       message.success('面板已保存')
       setModalOpen(false)
@@ -125,18 +156,34 @@ const Monitor: React.FC = () => {
     await refresh()
   }
 
-  // 上移/下移排序（交换 sort）
-  const move = async (index: number, dir: -1 | 1) => {
-    const target = index + dir
-    if (target < 0 || target >= panels.length) return
-    const sorted = [...panels].sort((a, b) => a.sort - b.sort)
-    const tmp = sorted[index]
-    sorted[index] = sorted[target]
-    sorted[target] = tmp
-    for (let i = 0; i < sorted.length; i++) {
-      await updatePanel(sorted[i].id, { ...sorted[i], sort: i })
+  // 拖拽/缩放结束后持久化布局（用 allLayouts.lg 的 24 列坐标），仅写有变化的面板
+  const persistLayout = async () => {
+    const layouts = allLayouts
+    if (!layouts || !layouts.lg || saveLock) return
+    setSaveLock(true)
+    try {
+      await Promise.all(
+        layouts.lg.map(async (it) => {
+          const panel = panels.find((p) => String(p.id) === it.i)
+          if (!panel) return
+          const changed =
+            it.x !== panel.grid_x || it.y !== panel.grid_y ||
+            it.w !== panel.grid_w || it.h !== panel.grid_h
+          if (!changed) return
+          await updatePanel(panel.id, { grid_x: it.x, grid_y: it.y, grid_w: it.w, grid_h: it.h })
+        }),
+      )
+    } catch {
+      // 保存失败不阻塞交互，下次拖拽会重试
+    } finally {
+      setSaveLock(false)
     }
-    await refresh()
+  }
+
+  // 拖动/缩放过程中同步布局（lg 为持久化基准）
+  const handleLayoutChange = (current: Layout[], all: any) => {
+    setAllLayouts(all)
+    if (current && current.length) setLgLayout(all?.lg || current)
   }
 
   const sortedPanels = useMemo(() => [...panels].sort((a, b) => a.sort - b.sort), [panels])
@@ -155,39 +202,47 @@ const Monitor: React.FC = () => {
         {sortedPanels.length === 0 ? (
           <AppEmpty description="暂无面板" tip="点击右上角新增面板开始" height={200} />
         ) : (
-          <Row gutter={[16, 16]}>
-            {sortedPanels.map((p, idx) => {
-              const span = Math.min(Math.max(p.span || 6, 6), 24)
+          <ResponsiveGridLayout
+            layouts={{ lg: lgLayout, md: lgLayout, sm: lgLayout, xs: lgLayout }}
+            breakpoints={{ lg: 1200, md: 992, sm: 768, xs: 480 }}
+            cols={{ lg: 24, md: 16, sm: 12, xs: 6 }}
+            rowHeight={60}
+            margin={[12, 12]}
+            draggableHandle=".panel-drag-handle"
+            onLayoutChange={handleLayoutChange}
+            onDragStop={persistLayout}
+            onResizeStop={persistLayout}
+          >
+            {sortedPanels.map((p) => {
               const series = dataMap[p.id] || []
               return (
-                <Col span={span} key={p.id}>
+                <div key={String(p.id)} style={{ overflow: 'hidden' }}>
                   <Card
                     title={
-                      <span style={{ fontSize: 13 }}>
+                      <span className="panel-drag-handle" style={{ cursor: 'move', fontSize: 13 }}>
                         {p.title}
                         <Tag style={{ marginLeft: 8 }}>{p.chart_type}</Tag>
                       </span>
                     }
                     extra={
                       <div style={{ display: 'flex', gap: 4 }}>
-                        <Button size="small" icon={<ArrowUpOutlined />} disabled={idx === 0} onClick={() => move(idx, -1)} />
-                        <Button size="small" icon={<ArrowDownOutlined />} disabled={idx === sortedPanels.length - 1} onClick={() => move(idx, 1)} />
                         <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(p)} />
                         <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(p)} />
                       </div>
                     }
-                    style={{ borderRadius: 12 }}
+                    style={{ borderRadius: 12, height: '100%' }}
+                    bodyStyle={{ height: 'calc(100% - 57px)' }}
                   >
                     {series.length ? (
-                      <ReactECharts option={buildOption(p, series)} style={{ height: 260 }} notMerge />
+                      <ReactECharts option={buildOption(p, series)} style={{ height: '100%' }} notMerge />
                     ) : (
-                      <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                      <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }} />
                     )}
                   </Card>
-                </Col>
+                </div>
               )
             })}
-          </Row>
+          </ResponsiveGridLayout>
         )}
       </Spin>
 
@@ -216,6 +271,9 @@ const Monitor: React.FC = () => {
           </Form.Item>
           <Form.Item name="span" label="宽度（栅格数，6-24）">
             <InputNumber min={6} max={24} step={2} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="grid_h" label="高度（行数，2-12）">
+            <InputNumber min={2} max={12} defaultValue={5} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>
