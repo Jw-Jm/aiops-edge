@@ -1226,6 +1226,16 @@ def _persist_inspection_report(task_id: str, service: str, content: str, filenam
 
 # ── 巡检报告查询接口 ────────────────────────────────────────────
 
+@app.get("/api/v1/ops/artifacts")
+async def list_artifacts_endpoint(limit: int = 50, type_filter: str = ""):
+    """产物中心聚合（C3）：统一聚合报告/审批单/工作流运行，按时间倒序。"""
+    from artifacts import list_artifacts, TYPE_LABELS
+    items = list_artifacts(limit=limit)
+    if type_filter:
+        items = [it for it in items if it["type"] == type_filter]
+    return {"artifacts": items, "total": len(items), "labels": TYPE_LABELS}
+
+
 @app.get("/api/v1/ops/reports/history")
 async def list_inspection_reports(service: str = "", limit: int = 50, offset: int = 0, report_type: str = ""):
     """巡检报告历史列表（按时间倒序）。数据来自 MySQL reports 表。"""
