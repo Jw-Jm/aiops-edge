@@ -32,9 +32,10 @@ build() {
   echo ">>> building $full from $dir"
   local platform_args=()
   if [ -n "$PLATFORM" ]; then
-    platform_args=(--platform "$PLATFORM")
+    (cd "$ROOT/$dir" && docker build --platform "$PLATFORM" -t "$full" .)
+  else
+    (cd "$ROOT/$dir" && docker build -t "$full" .)
   fi
-  (cd "$ROOT/$dir" && docker build "${platform_args[@]}" -t "$full" .)
   echo ">>> built $full"
 }
 
