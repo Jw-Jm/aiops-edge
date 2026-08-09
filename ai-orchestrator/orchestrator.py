@@ -45,6 +45,11 @@ class AgentState(TypedDict):
     crewai_result: str
     holmesgpt_result: str
 
+    # dual agent (批3)
+    subtasks: list
+    sub_results: dict
+    review_result: str
+
     # plan + risk
     plan: str
     script: str
@@ -641,12 +646,14 @@ def node_reviewer(state):
     cfg = state.get("llm_config")
     sub_results = state.get("sub_results") or {}
     if should_skip_llm(cfg) or is_mock_enabled():
-        final = mock_reviewer_result(sub_results)
+        final = merge_review(sub_results, mock_reviewer_result)
     else:
         parts = "\n\n".join(f"[{tid}]({r.get('task_type', '')}): {r.get('conclusion', '')[:500]}"
                             for tid, r in sub_results.items())
-        final = _llm(cfg, "你是结果审查员。合并子 Agent 结论，校验依据与冲突，输出最终诊断报告。",
-                     f"子结论:\n{parts}", "Reviewer")
+        llm_final = _llm(cfg, "你是结果审查员。合并子 Agent 结论，校验依据与冲突，输出最终诊断报告。",
+                         f"子结论:\n{parts}", "Reviewer")
+        # LLM 失败/为空时兜底到确定性合并
+        final = llm_final if llm_final and not llm_final.startswith("[LLM") else merge_review(sub_results, None)
     return {"review_result": final, "final_response": final,
             "messages": [f"[{_now()}] Reviewer 审查完成"]}
 
@@ -806,6 +813,7 @@ class BrainOrchestrator:
             "approved": True, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
+            "subtasks": [], "sub_results": {}, "review_result": "",
         }
         config = {"configurable": {"thread_id": thread_id}}
         try:
@@ -825,6 +833,7 @@ class BrainOrchestrator:
             "approved": True, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
+            "subtasks": [], "sub_results": {}, "review_result": "",
         }
         config = {"configurable": {"thread_id": thread_id}}
         step_names = {"collect": "数据采集", "clean": "数据清洗", "rca": "根因分析", "rag": "案例匹配",
@@ -835,8 +844,13 @@ class BrainOrchestrator:
             yield {"type": "progress", "node": "start", "text": "分析开始", "step": 0, "total": 8}
             step_num = 0
             suggestion = {}
-            # 交互式 Chat 使用精简 chat_graph；dual 模式用双层 Agent 图
-            graph = getattr(self, "dual_graph" if mode == "dual" else "chat_graph", self.graph)
+            # 交互式 Chat 使用精简 chat_graph；dual 模式用双层 Agent 图；full 用完整运维图
+            if mode == "dual":
+                graph = getattr(self, "dual_graph", self.graph)
+            elif mode == "full":
+                graph = getattr(self, "graph", self.graph)
+            else:
+                graph = getattr(self, "chat_graph", self.graph)
             for step in graph.stream(initial, config):
                 node_name = list(step.keys())[0] if step else "unknown"
                 node_data = step.get(node_name, {}) if step else {}
