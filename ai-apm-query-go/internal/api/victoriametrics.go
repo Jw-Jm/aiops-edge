@@ -77,6 +77,10 @@ func (h *Handler) vmRangeQuery(promQL string, start, end int64, step int) ([]flo
 	if err != nil {
 		return nil, err
 	}
+	// 显式检查状态码：VM 错误响应可能带 JSON body，若跳过会静默吞掉 500 错误
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("VM query_range returned %d: %s", resp.StatusCode, string(body)[:min(len(body), 200)])
+	}
 	var vr struct {
 		Data struct {
 			Result []struct {

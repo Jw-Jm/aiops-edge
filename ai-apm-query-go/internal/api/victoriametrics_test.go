@@ -77,12 +77,27 @@ func TestVMRangeQueryEmptyResult(t *testing.T) {
 
 func TestVMRangeQueryErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// VM 错误响应通常带 JSON body
 		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"status":"error","error":"bad query"}`))
 	}))
 	defer srv.Close()
 	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
 	_, err := h.vmRangeQuery("x", 1, 100, 10)
 	if err == nil {
-		t.Fatalf("expected error on 500")
+		t.Fatalf("expected error on 500 (even with JSON body)")
 	}
+	// 确认错误信息包含状态码
+	if !contains(err.Error(), "500") {
+		t.Fatalf("error should mention status 500, got: %v", err)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
