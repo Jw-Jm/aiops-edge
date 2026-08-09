@@ -148,3 +148,28 @@ def test_run_tool_loop_rejects_mutating_from_llm():
 
     res = run_tool_loop(seq_decision, [t], "问题")
     assert "拒绝" in res["trace"][0]["result"]
+
+
+# ── llm_fc 真实 LLM 决策解析 ───────────────────────────────
+from llm_fc import parse_llm_decision
+
+
+def test_parse_llm_decision_tool():
+    d = parse_llm_decision('{"type":"tool","name":"query_metrics","arguments":{"service":"svc"}}')
+    assert d["type"] == "tool" and d["name"] == "query_metrics"
+    assert d["arguments"]["service"] == "svc"
+
+
+def test_parse_llm_decision_final():
+    d = parse_llm_decision('{"type":"final","content":"结论"}')
+    assert d["type"] == "final"
+
+
+def test_parse_llm_decision_invalid_defaults_final():
+    d = parse_llm_decision("no json")
+    assert d["type"] == "final"
+
+
+def test_parse_llm_decision_tool_missing_name_is_final():
+    d = parse_llm_decision('{"type":"tool","arguments":{}}')
+    assert d["type"] == "final"

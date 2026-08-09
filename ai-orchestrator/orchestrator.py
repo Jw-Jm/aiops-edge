@@ -636,7 +636,13 @@ def node_subagent(state):
     subtasks = state.get("subtasks") or []
     if not subtasks:
         return {"sub_results": {}}
-    sub_results = run_subtasks(subtasks, mock_llm_decision, ExpertRegistry)
+    cfg = state.get("llm_config")
+    if should_skip_llm(cfg) or is_mock_enabled():
+        decision = mock_llm_decision
+    else:
+        from llm_fc import make_llm_decision_fn
+        decision = make_llm_decision_fn(cfg, "你是可观测性诊断子 Agent，通过调用工具收集证据并给出结论。")
+    sub_results = run_subtasks(subtasks, decision, ExpertRegistry)
     return {"sub_results": sub_results,
             "messages": [f"[{_now()}] {len(sub_results)} 个子 Agent 完成"]}
 
