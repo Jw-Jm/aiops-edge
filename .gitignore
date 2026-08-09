@@ -45,3 +45,7 @@ deploy/helm/aiops/charts/
 
 # 隔离 worktree 目录
 /.worktrees/
+
+# playwright-cli 临时 snapshot 文件（测试产物，不入库）
+.playwright-cli/
+
