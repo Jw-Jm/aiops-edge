@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(128) DEFAULT '',
   status TINYINT DEFAULT 1,
   scope VARCHAR(512) DEFAULT '',
+  is_approver TINYINT DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
@@ -82,6 +83,10 @@ CREATE TABLE IF NOT EXISTS users (
 	hasScope := hasColumn(conn, "users", "scope")
 	if !hasScope {
 		_, _ = conn.Exec("ALTER TABLE users ADD COLUMN scope VARCHAR(512) DEFAULT ''")
+	}
+	// 兼容已存在的 users 表：补 is_approver 列（幂等）
+	if !hasColumn(conn, "users", "is_approver") {
+		_, _ = conn.Exec("ALTER TABLE users ADD COLUMN is_approver TINYINT DEFAULT 0")
 	}
 
 	// service_catalog 服务目录

@@ -639,7 +639,16 @@ async def run_task(tid: str):
 
 
 @app.post("/api/v1/ops/tasks/{tid}/approve")
-async def approve_task(tid: str):
+def _require_approver(request: Request):
+    """审批权限校验：仅 admin 或已配置的审批人可操作。内部 header 由 query-api 注入。"""
+    role = request.headers.get("X-Internal-Role", "")
+    is_approver = request.headers.get("X-Internal-Approver", "0") == "1"
+    if role != "admin" and not is_approver:
+        raise HTTPException(403, "仅管理员或审批人可操作")
+
+
+async def approve_task(tid: str, request: Request):
+    _require_approver(request)
     if tid not in _task_store:
         raise HTTPException(404, "task not found")
     task = _task_store[tid]
@@ -673,7 +682,8 @@ async def approve_task(tid: str):
 
 
 @app.post("/api/v1/ops/tasks/{tid}/reject")
-async def reject_task(tid: str):
+async def reject_task(tid: str, request: Request):
+    _require_approver(request)
     if tid not in _task_store:
         raise HTTPException(404, "task not found")
     task = _task_store[tid]

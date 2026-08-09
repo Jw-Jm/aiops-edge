@@ -40,6 +40,7 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
 		Username, Password, DisplayName, Role, Email string
+		IsApprover                                   bool
 	}
 	json.Unmarshal(body, &req)
 	if req.Username == "" || req.Password == "" {
@@ -54,14 +55,18 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 500, map[string]interface{}{"error": "hash error"})
 		return
 	}
+	d := &store.UserDAO{}
 	u := &store.User{
 		Username: req.Username, PasswordHash: string(hash),
 		DisplayName: req.DisplayName, Role: req.Role, Email: req.Email, Status: 1,
 	}
-	id, err := (&store.UserDAO{}).Create(u)
+	id, err := d.Create(u)
 	if err != nil {
 		respondJSON(w, 400, map[string]interface{}{"error": err.Error()})
 		return
+	}
+	if req.IsApprover {
+		_ = d.SetApprover(id, true)
 	}
 	respondJSON(w, 200, map[string]interface{}{"ok": true, "id": id})
 }
@@ -84,6 +89,7 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		Status                   int
 		Password                 string
 		Scope                    string
+		IsApprover               *bool
 	}
 	json.Unmarshal(body, &req)
 	status := req.Status
@@ -119,6 +125,10 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	// 可选：更新 scope（数据范围）
 	if bodyScope := getBodyField(body, "scope"); bodyScope != "" {
 		_ = d.UpdateScope(id, req.Scope)
+	}
+	// 可选：更新审批人标记
+	if req.IsApprover != nil {
+		_ = d.SetApprover(id, *req.IsApprover)
 	}
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }

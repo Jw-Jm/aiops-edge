@@ -16,6 +16,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Status       int       `json:"status"`
 	Scope        string    `json:"scope"`
+	IsApprover   bool      `json:"is_approver"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -37,7 +38,7 @@ func (d *UserDAO) List(page, size int) ([]User, int, error) {
 		return nil, 0, err
 	}
 	rows, err := conn.Query(
-		"SELECT id, username, password_hash, display_name, role, email, status, scope, created_at FROM users ORDER BY id LIMIT ? OFFSET ?",
+		"SELECT id, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users ORDER BY id LIMIT ? OFFSET ?",
 		size, offset)
 	if err != nil {
 		return nil, 0, err
@@ -46,10 +47,12 @@ func (d *UserDAO) List(page, size int) ([]User, int, error) {
 	users := []User{}
 	for rows.Next() {
 		var u User
+		var ap int
 		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-			&u.Role, &u.Email, &u.Status, &u.Scope, &u.CreatedAt); err != nil {
+			&u.Role, &u.Email, &u.Status, &u.Scope, &ap, &u.CreatedAt); err != nil {
 			return nil, 0, err
 		}
+		u.IsApprover = ap == 1
 		users = append(users, u)
 	}
 	return users, total, nil
@@ -62,16 +65,18 @@ func (d *UserDAO) GetByUsername(username string) (*User, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		"SELECT id, username, password_hash, display_name, role, email, status, scope, created_at FROM users WHERE username = ?",
+		"SELECT id, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE username = ?",
 		username)
 	var u User
+	var ap int
 	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-		&u.Role, &u.Email, &u.Status, &u.Scope, &u.CreatedAt); err != nil {
+		&u.Role, &u.Email, &u.Status, &u.Scope, &ap, &u.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
+	u.IsApprover = ap == 1
 	return &u, nil
 }
 
@@ -82,16 +87,18 @@ func (d *UserDAO) GetByID(id int64) (*User, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		"SELECT id, username, password_hash, display_name, role, email, status, scope, created_at FROM users WHERE id = ?",
+		"SELECT id, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE id = ?",
 		id)
 	var u User
+	var ap int
 	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-		&u.Role, &u.Email, &u.Status, &u.Scope, &u.CreatedAt); err != nil {
+		&u.Role, &u.Email, &u.Status, &u.Scope, &ap, &u.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
+	u.IsApprover = ap == 1
 	return &u, nil
 }
 
@@ -102,8 +109,8 @@ func (d *UserDAO) Create(u *User) (int64, error) {
 		return 0, errors.New("mysql unavailable")
 	}
 	res, err := conn.Exec(
-		"INSERT INTO users (username, password_hash, display_name, role, email, status) VALUES (?, ?, ?, ?, ?, ?)",
-		u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Email, u.Status)
+		"INSERT INTO users (username, password_hash, display_name, role, email, status, is_approver) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Email, u.Status, boolToInt(u.IsApprover))
 	if err != nil {
 		return 0, err
 	}
@@ -136,6 +143,16 @@ func (d *UserDAO) UpdateScope(id int64, scope string) error {
 		return errors.New("mysql unavailable")
 	}
 	_, err := conn.Exec("UPDATE users SET scope=? WHERE id=?", scope, id)
+	return err
+}
+
+// SetApprover 设置用户是否为审批人（可审恢复/危险操作）。
+func (d *UserDAO) SetApprover(id int64, isApprover bool) error {
+	conn := GetDB()
+	if conn == nil {
+		return errors.New("mysql unavailable")
+	}
+	_, err := conn.Exec("UPDATE users SET is_approver=? WHERE id=?", boolToInt(isApprover), id)
 	return err
 }
 

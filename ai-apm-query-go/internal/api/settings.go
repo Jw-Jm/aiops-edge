@@ -491,6 +491,14 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("X-LLM-Provider", llmCfg.Provider)
 	}
 
+	// 注入审批人身份（从 JWT + MySQL 读取），供 orchestrator 校验 approve/reject 权限
+	if role, approver, ok := requesterApprover(r); ok {
+		req.Header.Set("X-Internal-Role", role)
+		if approver {
+			req.Header.Set("X-Internal-Approver", "1")
+		}
+	}
+
 	// Use longer timeout for AI requests (full 14-node DAG with 5 LLM calls = 120-300s)
 	aiClient := &http.Client{Timeout: 300 * time.Second}
 	resp, err := aiClient.Do(req)
@@ -506,4 +514,20 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+// requesterApprover 从请求 JWT 提取请求者 role 与是否审批人（查 MySQL）。
+func requesterApprover(r *http.Request) (string, bool, bool) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	username, role, _, ok := validateJWT(token)
+	if !ok {
+		return "", false, false
+	}
+	approver := false
+	if role == "admin" {
+		approver = true
+	} else if u, _ := (&store.UserDAO{}).GetByUsername(username); u != nil && u.IsApprover {
+		approver = true
+	}
+	return role, approver, true
 }
