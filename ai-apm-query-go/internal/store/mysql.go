@@ -274,12 +274,17 @@ CREATE TABLE IF NOT EXISTS alert_events (
   resolved_at DATETIME DEFAULT NULL,
   resolved_by VARCHAR(64) DEFAULT '',
   timeline TEXT,
+  investigation TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 
 	// 兼容已存在的 alert_events 表：补 timeline 列（幂等）
 	if !hasColumn(conn, "alert_events", "timeline") {
 		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN timeline TEXT")
+	}
+	// 兼容已存在的 alert_events 表：补 investigation 列（幂等）
+	if !hasColumn(conn, "alert_events", "investigation") {
+		_, _ = conn.Exec("ALTER TABLE alert_events ADD COLUMN investigation TEXT")
 	}
 
 	// alert_silences 告警静默（从 /tmp JSON 迁 MySQL）

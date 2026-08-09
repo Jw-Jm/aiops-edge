@@ -55,7 +55,8 @@ type AlertEvent struct {
 	AcknowledgedBy   string  `json:"acknowledged_by,omitempty"`
 	ResolvedAt       string  `json:"resolved_at,omitempty"`
 	ResolvedBy       string  `json:"resolved_by,omitempty"`
-	Timeline         string  `json:"timeline,omitempty"` // 状态变更历史（JSON 数组）
+	Timeline         string  `json:"timeline,omitempty"`       // 状态变更历史（JSON 数组）
+	Investigation    string  `json:"investigation,omitempty"` // 调查结果（RCA 分析 JSON）
 }
 
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
@@ -180,7 +181,7 @@ func loadAlertEvents() {
 			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
 			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
 			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
-			Timeline: e.Timeline,
+			Timeline: e.Timeline, Investigation: e.Investigation,
 		})
 	}
 }
@@ -196,7 +197,7 @@ func saveAlertEvents() {
 			Timestamp: e.Timestamp, Count: e.Count, FirstTimestamp: e.FirstTimestamp,
 			LastTimestamp: e.LastTimestamp, Status: e.Status, AcknowledgedAt: e.AcknowledgedAt,
 			AcknowledgedBy: e.AcknowledgedBy, ResolvedAt: e.ResolvedAt, ResolvedBy: e.ResolvedBy,
-			Timeline: e.Timeline,
+			Timeline: e.Timeline, Investigation: e.Investigation,
 		})
 	}
 	alertEventsMu.RUnlock()
@@ -269,6 +270,19 @@ func saveAlertSilences() {
 	if err := d.ReplaceAll(rows); err != nil {
 		log.Printf("saveAlertSilences(mysql): %v", err)
 	}
+}
+
+// saveInvestigation 持久化某事件的调查结果（RCA 结果 JSON）到事件。
+func saveInvestigation(eventID, investigation string) {
+	alertEventsMu.Lock()
+	for i := range alertEvents {
+		if alertEvents[i].ID == eventID {
+			alertEvents[i].Investigation = investigation
+			break
+		}
+	}
+	alertEventsMu.Unlock()
+	go saveAlertEvents()
 }
 
 // isSilenced 判断某服务/规则的告警当前是否被静默抑制
