@@ -81,6 +81,7 @@ const Skills: React.FC = () => {
             {(detail?.tools || []).map((t: any) => (
               <Tag key={t.name} style={{ margin: 2 }}>
                 {t.name}
+                {t.cls ? <Tag color={t.cls === 'safe' ? 'green' : t.cls === 'mutating' ? 'orange' : 'red'} style={{ marginLeft: 4, fontSize: 11 }}>{t.cls}</Tag> : null}
                 {t.requires_approval ? ' (审批)' : ''}
               </Tag>
             ))}
