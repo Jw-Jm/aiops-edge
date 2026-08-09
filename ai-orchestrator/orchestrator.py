@@ -873,6 +873,28 @@ class BrainOrchestrator:
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": tool_node_map[node_name], "status": "success",
                            "arguments": {}, "result": str(node_data)[:500]}
+                # 双层 Agent 节点级事件（批3）：coordinator/subagent/reviewer
+                if node_name == "coordinator":
+                    yield {"type": "tool_start", "tool_call_id": tool_id, "name": "Coordinator 拆解",
+                           "agent_type": "coordinator", "status": "pending", "arguments": {}}
+                    yield {"type": "tool_end", "tool_call_id": tool_id, "name": "Coordinator 拆解",
+                           "agent_type": "coordinator", "status": "success",
+                           "arguments": {}, "result": str(node_data.get("subtasks", ""))[:500]}
+                elif node_name == "subagent":
+                    for tid, r in (node_data.get("sub_results") or {}).items():
+                        sid = f"sub_{tid}"
+                        yield {"type": "tool_start", "tool_call_id": sid, "name": f"子Agent {r.get('task_type', '')}",
+                               "agent_type": "subagent", "status": "pending", "arguments": {}}
+                        yield {"type": "tool_end", "tool_call_id": sid, "name": f"子Agent {r.get('task_type', '')}",
+                               "agent_type": "subagent", "status": "success",
+                               "arguments": {}, "result": r.get("conclusion", "")[:500],
+                               "tool_trace": r.get("tool_trace", [])}
+                elif node_name == "reviewer":
+                    yield {"type": "tool_start", "tool_call_id": tool_id, "name": "Reviewer 审查",
+                           "agent_type": "reviewer", "status": "pending", "arguments": {}}
+                    yield {"type": "tool_end", "tool_call_id": tool_id, "name": "Reviewer 审查",
+                           "agent_type": "reviewer", "status": "success",
+                           "arguments": {}, "result": str(node_data.get("review_result", ""))[:500]}
                 # 捕获分析结果供任务工作台生成建议
                 if node_name == "crewai":
                     suggestion.update(node_data)

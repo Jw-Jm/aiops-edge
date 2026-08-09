@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Card, Input, Button, Spin, message } from 'antd'
+import { Card, Input, Button, Spin, message, Tag } from 'antd'
 import { SendOutlined } from '@ant-design/icons'
 import { getSession, approveTask, rejectTask } from '../../api/client'
 
@@ -15,6 +15,8 @@ interface ToolCard {
   name: string
   status: string
   result?: string
+  agent_type?: string   // coordinator | subagent | reviewer | tool
+  tool_trace?: { tool: string; result: string }[]
 }
 
 const ChatThread: React.FC = () => {
@@ -83,9 +85,9 @@ const ChatThread: React.FC = () => {
           case 'progress': if (ev.text) setProgressText(ev.text); break
           case 'chunk': if (ev.text) fullText += ev.text; break
           case 'assistant': fullText = ev.content ?? ev.text ?? fullText; break
-          case 'tool_start': toolLocal.push({ tool_call_id: ev.tool_call_id, name: ev.name, status: 'pending' }); break
+          case 'tool_start': toolLocal.push({ tool_call_id: ev.tool_call_id, name: ev.name, status: 'pending', agent_type: ev.agent_type, tool_trace: ev.tool_trace }); break
           case 'tool_end':
-            toolLocal = toolLocal.map((t) => (t.tool_call_id === ev.tool_call_id ? { ...t, status: ev.status, result: ev.result } : t))
+            toolLocal = toolLocal.map((t) => (t.tool_call_id === ev.tool_call_id ? { ...t, status: ev.status, result: ev.result, agent_type: ev.agent_type ?? t.agent_type, tool_trace: ev.tool_trace ?? t.tool_trace } : t))
             break
           case 'approval_pending':
             setApproval({ task_id: ev.task_id, plan: ev.plan || '', script: ev.script || '', risk_score: ev.risk_score || 0, risk_reason: ev.risk_reason || '' })
@@ -151,12 +153,23 @@ const ChatThread: React.FC = () => {
             </div>
           </div>
         ))}
-        {toolCards.map((t) => (
-          <div key={t.tool_call_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', marginBottom: 6, background: 'var(--surface-2)', borderRadius: 8 }}>
-            <span style={{ fontSize: 12, color: 'var(--text)' }}>⚙️ {t.name}</span>
-            <span style={{ fontSize: 11, color: t.status === 'success' ? '#22c55e' : '#a1a1aa' }}>{t.status}</span>
-          </div>
-        ))}
+        {toolCards.map((t) => {
+          const tagColor = t.agent_type === 'coordinator' ? 'purple' : t.agent_type === 'reviewer' ? 'orange' : t.agent_type === 'subagent' ? 'blue' : 'default'
+          return (
+            <div key={t.tool_call_id} style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 12px', marginBottom: 6, background: 'var(--surface-2)', borderRadius: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Tag color={tagColor}>{t.agent_type || 'tool'}</Tag>
+                <span style={{ fontSize: 12, color: 'var(--text)' }}>⚙️ {t.name}</span>
+                <span style={{ fontSize: 11, color: t.status === 'success' ? '#22c55e' : '#a1a1aa' }}>{t.status}</span>
+              </div>
+              {t.agent_type === 'subagent' && t.tool_trace && t.tool_trace.length > 0 && (
+                <div style={{ marginLeft: 24, fontSize: 11, color: 'var(--text-muted)' }}>
+                  {t.tool_trace.map((tr, i) => <div key={i}>→ {tr.tool}: {tr.result.slice(0, 60)}</div>)}
+                </div>
+              )}
+            </div>
+          )
+        })}
         {approval && (
           <div style={{ display: 'flex', flexDirection: 'column', marginBottom: 12, padding: '12px 14px', background: 'var(--surface-2)', border: '1px solid #d97706', borderRadius: 8 }}>
             <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>⏳ 待人工审批</div>
