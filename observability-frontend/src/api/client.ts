@@ -313,4 +313,33 @@ export const createCluster = (data: Record<string, unknown>) => api.post('/clust
 export const getClusterNamespaces = (id: number) => api.get(`/clusters/${id}/namespaces`)
 export const getClusterEvents = (id: number) => api.get(`/clusters/${id}/events`)
 
+// ===== 容量预测（Capacity Forecast）=====
+export interface ForecastSeries {
+  values: number[]
+  ett_seconds: number
+  within_horizon: boolean
+  already_breached: boolean
+}
+export interface CapacityForecast {
+  metric: string
+  instance: string
+  threshold: number
+  current: number
+  change_pct: number
+  timestamps: number[]
+  history: number[]
+  forecasts: {
+    linear: ForecastSeries
+    ewma: ForecastSeries
+  }
+}
+export const getCapacityForecast = (params: {
+  metric: string
+  instance?: string
+  hours?: number
+  step?: number
+  horizon?: number
+  threshold?: number
+}) => api.get<CapacityForecast>('/capacity/forecast', { params })
+
 export default api
