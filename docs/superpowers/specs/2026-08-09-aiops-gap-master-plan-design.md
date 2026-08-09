@@ -147,8 +147,9 @@
 | **批 2** | ✅ 完成（4 重降噪 + 规则类型 log/trace/burn_rate；后续补 log_keyword 关键字字段 + SQL 注入转义） | plan: `2026-08-09-batch2-noise-reduction-rule-types-plan.md` |
 | **批 3** | ✅ 完成（function-calling 工具循环 + Coordinator/子Agent/Reviewer 双层 Agent，mock 可测） | design/plan: `2026-08-09-batch3-*.md` |
 | **批 4** | ✅ 完成（zscore/MAD 异常检测 + SLO 目标管理 + burn_rate 多窗口烧毁率） | design/plan: `2026-08-09-batch4-*.md` |
-| **批 5** | ⏳ 待做（B4 Monitor 看板 + C1 审批闸门） | — |
-| **批 6** | ⏳ 待做（C2 Infrastructure + C3 产物中心） | — |
+| **批 5** | ✅ 完成（Monitor 完整看板 + C1 审批闸门 execution_gate；Monitor 拖拽布局为 sort 排序+上下移，非自由拖拽） | plan: `2026-08-09-batch5-monitor-board-approval-gate.md` |
+| **批 6** | ✅ 完成（C2 Infrastructure 挂载 + C3 产物中心聚合页） | plan: `2026-08-09-batch6-*.md` |
+| **批 7（本期补充）** | ✅ 完成（容量预测 /capacity：线性回归+EWMA 双算法 + node 选择器） | design/plan: `2026-08-09-capacity-forecast-*.md` |
 
 **前置任务已完成**：服务 RED 指标采集打通（DeepFlow 真实流量 → DeepFlowSyncer → VM 服务 RED，多 k8s 环境 DEEPFLOW_CH_ENDPOINTS）+ loadgen 调试数据源（trace+日志，默认不部署）。
 
