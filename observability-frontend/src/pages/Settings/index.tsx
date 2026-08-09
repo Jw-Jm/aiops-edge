@@ -38,6 +38,24 @@ const Settings: React.FC = () => {
   const [enablingId, setEnablingId] = useState<number | null>(null)
   const [testingId, setTestingId] = useState<number | null>(null)
   const [testResults, setTestResults] = useState<Record<number, { ok: boolean; msg: string }>>({})
+  // 恢复白名单
+  const [policy, setPolicy] = useState<{ allow: string[]; deny: string[] }>({ allow: [], deny: [] })
+  const [policyDirty, setPolicyDirty] = useState(false)
+  const loadPolicy = async () => {
+    try {
+      const r = await api.get('/ops/recovery/policy')
+      const p = r?.data
+      setPolicy({ allow: p?.allow || [], deny: p?.deny || [] })
+    } catch { /* 静默 */ }
+  }
+  useEffect(() => { loadPolicy() }, [])
+  const savePolicy = async () => {
+    try {
+      await api.put('/ops/recovery/policy', policy)
+      message.success('恢复白名单已保存')
+      setPolicyDirty(false)
+    } catch { message.error('保存失败（需管理员/审批人权限）') }
+  }
   const [curModels, setCurModels] = useState<string[]>([])
   const [fetchingModels, setFetchingModels] = useState(false)
 
@@ -323,6 +341,51 @@ const Settings: React.FC = () => {
         <div style={{ color: '#666', fontSize: 13, marginTop: 8 }}>
           当前平台运行在单节点 Kubernetes 集群（192.168.0.63）中，通过 In-Cluster ServiceAccount 自动获取集群资源。
         </div>
+      </Card>
+
+      {/* 恢复白名单（安全边界） */}
+      <Card title={<Space><RadarChartOutlined /> 恢复白名单（安全边界）</Space>} size="small" style={{ marginTop: 12 }}
+        extra={<Button type="primary" size="small" icon={<SaveOutlined />} disabled={!policyDirty} onClick={savePolicy}>保存</Button>}>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="告警恢复执行前，恢复命令必须命中白名单。允许列表 = 可自动恢复操作；禁止列表 = 一律拦截。修改需管理员/审批人权限。" />
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <Typography.Text strong>允许（可自动恢复）</Typography.Text>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {policy.allow.map((c, i) => (
+                <Tag key={i} closable color="green" onClose={() => { setPolicy({ ...policy, allow: policy.allow.filter((_, j) => j !== i) }); setPolicyDirty(true) }}>
+                  {c}
+                </Tag>
+              ))}
+              <Input
+                size="small" placeholder="新增允许命令" style={{ width: 260 }}
+                onPressEnter={(e: any) => {
+                  const v = (e.target.value || '').trim()
+                  if (v && !policy.allow.includes(v)) { setPolicy({ ...policy, allow: [...policy.allow, v] }); setPolicyDirty(true) }
+                  e.target.value = ''
+                }}
+              />
+            </div>
+          </div>
+          <div>
+            <Typography.Text strong>禁止（一律拦截）</Typography.Text>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {policy.deny.map((c, i) => (
+                <Tag key={i} closable color="red" onClose={() => { setPolicy({ ...policy, deny: policy.deny.filter((_, j) => j !== i) }); setPolicyDirty(true) }}>
+                  {c}
+                </Tag>
+              ))}
+              <Input
+                size="small" placeholder="新增禁止命令" style={{ width: 260 }}
+                onPressEnter={(e: any) => {
+                  const v = (e.target.value || '').trim()
+                  if (v && !policy.deny.includes(v)) { setPolicy({ ...policy, deny: [...policy.deny, v] }); setPolicyDirty(true) }
+                  e.target.value = ''
+                }}
+              />
+            </div>
+          </div>
+        </Space>
       </Card>
     </div>
   )

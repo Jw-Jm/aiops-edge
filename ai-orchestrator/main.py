@@ -6,7 +6,7 @@ import time
 import uuid
 import asyncio
 from collections import defaultdict
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from sse_starlette.sse import EventSourceResponse
@@ -654,6 +654,19 @@ async def approve_task(tid: str, request: Request):
     task = _task_store[tid]
     task["status"] = "approved"
     try:
+        # 恢复任务: 执行前再次校验恢复命令在白名单内（安全边界）
+        if task.get("source") == "recovery":
+            script = task.get("script", "")
+            from recovery_policy import check_allowed
+            ok, reason = check_allowed(script)
+            if not ok:
+                raise Exception(f"恢复动作不在白名单内: {reason}")
+            exec_result = _get_brain().execute_suggestion(
+                task.get("service", ""), script, task.get("diagnosis", ""))
+            task["status"] = "done"
+            task["report"] = f"恢复方案已审批并执行。\n操作: {script}\n结果:\n{exec_result}"
+            task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return {"task": task}
         # AI Chat 建议任务: 通过后执行 script (若有)
         if task.get("source") == "ai_chat":
             exec_result = _get_brain().execute_suggestion(
@@ -696,6 +709,61 @@ async def reject_task(tid: str, request: Request):
     except: pass
     _task_store.persist(tid)  # 拒绝结果落 MySQL
     return {"task": task}
+
+
+@app.get("/api/v1/ops/recovery/policy")
+async def get_recovery_policy():
+    """读取恢复白名单（安全边界配置）。"""
+    from recovery_policy import get_policy
+    return get_policy()
+
+
+@app.put("/api/v1/ops/recovery/policy")
+async def put_recovery_policy(policy: dict, request: Request):
+    """保存恢复白名单（需审批人/admin）。"""
+    _require_approver(request)
+    from recovery_policy import set_policy
+    ok = set_policy(policy)
+    return {"ok": ok}
+    from recovery_policy import set_policy
+    ok = set_policy(policy)
+    return {"ok": ok}
+
+
+@app.post("/api/v1/ops/recovery/plan")
+async def gen_recovery_plan(payload: dict):
+    """基于调查结果生成恢复方案（AI），并创建审批任务（source=recovery）。
+
+    payload: {service, diagnosis?, investigation?, script?}
+    若调用方已提供 script（预设动作），直接使用；否则由 AI 生成恢复建议。
+    """
+    service = payload.get("service", "")
+    if not service:
+        raise HTTPException(400, "service required")
+    script = payload.get("script", "")
+    # 恢复白名单检查（预设 script 必须先通过）
+    if script:
+        from recovery_policy import check_allowed
+        ok, reason = check_allowed(script)
+        if not ok:
+            raise HTTPException(400, f"恢复动作不在白名单内: {reason}")
+    # 生成恢复方案文本
+    if not script:
+        script = "kubectl rollout restart deployment/%s" % service
+    diagnosis = payload.get("diagnosis") or payload.get("investigation") or ""
+    plan_text = f"恢复方案：\n- 操作: {script}\n- 影响面: 重启服务 {service}\n- 风险: 低（滚动重启，短暂中断）\n- 依据: {diagnosis[:200]}"
+    # 创建审批任务（source=recovery）
+    tid = f"rec-{int(time.time()*1000)}"
+    _task_store[tid] = {
+        "id": tid, "task_id": tid, "source": "recovery",
+        "service_name": service, "service": service,
+        "plan": plan_text, "script": script, "status": "pending",
+        "risk_score": 2, "risk_reason": "滚动重启，影响面受控",
+        "diagnosis": diagnosis, "requester": "ai",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    _task_store.persist(tid)
+    return {"task_id": tid, "plan": plan_text, "script": script, "status": "pending"}
 
 
 # ═══════════════════════════════════════════════════════════════
