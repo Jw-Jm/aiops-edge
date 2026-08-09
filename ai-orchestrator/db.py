@@ -47,7 +47,12 @@ def db_available() -> bool:
 
 
 def migrate():
-    """顺序执行 migrations/*.sql 中未应用的版本。幂等。"""
+    """顺序执行 migrations/*.sql 中未应用的版本。幂等。
+
+    schema 归属契约见 docs/SCHEMA_OWNERSHIP.md：
+    orchestrator 仅拥有 AI 编排/审批/审计/报告等表，查询侧/配置/告警表归 query-api。
+    单表单主写者，新增表按功能域选择归属，勿跨服务写他表。
+    """
     import glob
     conn = get_conn()
     if conn is None:
