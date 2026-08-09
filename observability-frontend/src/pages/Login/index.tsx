@@ -3,6 +3,7 @@ import { Card, Form, Input, Button, Typography, message } from 'antd'
 import { UserOutlined, LockOutlined, LoginOutlined, ThunderboltOutlined, DatabaseOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { login } from '../../api/client'
+import { useAuthStore } from '../../store/authStore'
 
 const { Title, Text } = Typography
 
@@ -16,7 +17,12 @@ const Login: React.FC = () => {
       const res = await login(values.username, values.password)
       const token = res.data?.token || res.data?.data?.token
       if (token) {
-        localStorage.setItem('token', token)
+        useAuthStore.getState().login(
+          token,
+          res.data?.username || values.username,
+          res.data?.role || 'user',
+          res.data?.display_name || '',
+        )
         message.success('登录成功')
         navigate('/')
       } else {
