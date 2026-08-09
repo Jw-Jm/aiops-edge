@@ -1,0 +1,53 @@
+{{- if .Values.queryApi.enabled }}
+# query-api 专用 ServiceAccount + 只读集群 RBAC（支撑 /infrastructure 读取真实 K8s 资源）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: query-api
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-api
+---
+# view 角色：namespaces/pods/deployments 等核心资源只读
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: query-api-view
+  labels:
+    app: query-api
+subjects:
+- kind: ServiceAccount
+  name: query-api
+  namespace: {{ .Values.namespace.observability }}
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+---
+# nodes 不在 view 默认规则，单独授权只读（节点信息敏感但 /infrastructure 需要）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: query-api-node-reader
+  labels:
+    app: query-api
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: query-api-node-reader
+  labels:
+    app: query-api
+subjects:
+- kind: ServiceAccount
+  name: query-api
+  namespace: {{ .Values.namespace.observability }}
+roleRef:
+  kind: ClusterRole
+  name: query-api-node-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

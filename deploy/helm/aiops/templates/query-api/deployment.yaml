@@ -16,6 +16,7 @@ spec:
       labels:
         app: query-api
     spec:
+      serviceAccountName: query-api
       containers:
         - name: query-api
           image: {{ .Values.queryApi.image }}
