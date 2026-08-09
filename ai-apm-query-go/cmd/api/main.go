@@ -168,6 +168,9 @@ func main() {
 	mux.HandleFunc("/api/v1/alerts/aggregation", handler.AlertAggregation)
 	mux.HandleFunc("/api/v1/alerts/silences", handler.AlertSilences)
 	mux.HandleFunc("/api/v1/alerts/silences/", handler.AlertSilenceByID)
+	// SLO 目标（读任意，写 admin，isAdmin 在 handler 内校验）
+	mux.HandleFunc("/api/v1/slo", handler.SLORouter)
+	mux.HandleFunc("/api/v1/slo/", handler.SLORouterByID)
 	// Tenants (List/Create)
 	mux.HandleFunc("/api/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
