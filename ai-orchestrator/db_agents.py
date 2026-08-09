@@ -203,7 +203,7 @@ class KnowledgeStore:
 
 
 class RuleStore:
-    """规则持久化（参考 ongrid Alert Rules 字段模型，适配本项目）。"""
+    """规则持久化（自定义 Alert Rules 字段模型）。"""
 
     def __init__(self):
         self._mem: dict[str, dict] = {}

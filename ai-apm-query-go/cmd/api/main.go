@@ -111,7 +111,7 @@ func main() {
 	mux.HandleFunc("/api/v1/topology/node/", handler.TopologyNodeDetail)
 	mux.HandleFunc("/api/v1/topology/sync", handler.SyncTopologyFromK8s)
 	mux.HandleFunc("/api/v1/topology/sync-catalog", handler.SyncTopologyCatalog)
-	// Topology graph catalogue (typed property graph, aligned with ongrid)
+	// Topology graph catalogue (typed property graph)
 	mux.HandleFunc("/api/v1/topology/nodes", handler.TopologyNodesRouter)
 	mux.HandleFunc("/api/v1/topology/nodes/", handler.TopologyNodesRouter)
 	mux.HandleFunc("/api/v1/topology/relations", handler.TopologyRelationsRouter)

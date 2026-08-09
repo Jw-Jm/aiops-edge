@@ -1,4 +1,4 @@
-// TopologyGraph — react-flow tiered layout visualisation, aligned with ongrid.
+// TopologyGraph — react-flow tiered layout visualisation.
 // Dagre lays out nodes top-to-bottom then snaps each node onto a horizontal
 // band by its type-tier (app top → rack bottom). Node fill keyed on type,
 // edge stroke keyed on RelationType.semantics_tag (hard_dep red, observation

@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS clusters (
 		_, _ = conn.Exec("ALTER TABLE clusters ADD COLUMN kubeconfig TEXT")
 	}
 
-	// topology_nodes 拓扑顶点（typed property graph，对齐 ongrid）
+	// topology_nodes 拓扑顶点（typed property graph）
 	_, _ = conn.Exec(`
 CREATE TABLE IF NOT EXISTS topology_nodes (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,

@@ -1,101 +1,183 @@
-# AIOps 平台（自研 ongrid 风格）
+# AIOps 智能可观测平台
 
-> 自研云原生 AIOps 平台：采集 → 存储 → AI 编排 → 可视化，四维对标 ongrid（界面/功能/框架/架构），**全部自研**（ongrid 为 AGPL-3.0，仅对标不复制）。
+> 一款**全自研**的云原生 AIOps 平台：以 AI 智能运维为核心，融合**全链路可观测、深度网络分析、容量预测、AI 辅助诊断与自动化修复**，帮助企业从"被动救火"走向"主动预防"。
 
-> 📖 **详细部署使用手册**：见 [`docs/deploy/`](./docs/deploy/README.md)
-> （含架构、环境准备、部署步骤、生产配置与密钥、使用指南、运维排障）。本文为概要。
+---
 
-## 架构
+## 🎯 产品定位
 
-```
-浏览器 ──NodePort:30253──▶ frontend(nginx:80)
-  /api/v1/ai/, /api/v1/ops/ → ai-orchestrator:8080
-  /grafana/                 → deepflow-grafana
-  /metrics 默认             → query-api:8080
-query-api(Go:8080) ── ClickHouse / VictoriaMetrics / VictoriaLogs / Redis / MinIO / MySQL
-ai-orchestrator:8080 ── ChromaDB / Redis / VictoriaMetrics / VictoriaLogs / MinIO / LLM(mock)
-ingest ── ClickHouse / DeepFlowSyncer(deepflow-clickhouse, 实时增量) / X-Api-Key
-```
+**解决什么问题？**
 
-- **自研服务（4）**：frontend / query-api / ingest / ai-orchestrator
-- **中间件（8）**：ClickHouse / VictoriaMetrics / VictoriaLogs / Redis / ChromaDB / MinIO / MySQL / vmalert
-- **deepflow（完整）**：agent / server / clickhouse / mysql / grafana（独立 namespace）
-- 命名空间：`observability`（自研+中间件）、`deepflow`
+在微服务与云原生环境下，运维面临三大难题：
 
-## 本机部署（macOS arm64 + OrbStack K8s）
+| 痛点 | 传统方式 | AIOps 平台 |
+|------|---------|-----------|
+| **观测碎片化** | 指标/日志/链路/网络各查各的，难以关联 | 指标 + 日志 + 链路 + eBPF 网络深度观测**统一接入**，一键关联定位 |
+| **告警靠人盯** | 阈值告警海量、误报多、根因靠猜 | 内置 6 类告警策略 + **AI 根因分析（RCA）**，直达问题源头 |
+| **处置靠人做** | 发现慢、排查慢、修复靠脚本和经验 | **AI 诊断 → 生成方案 → 人工审批 → 安全执行**，闭环自动化 |
 
-### 前置
-- OrbStack K8s 已启用，`kubectl config current-context` = `orbstack`
-- helm v3、Docker
+**核心价值**：用 AI 把"观测、诊断、决策、执行"串成一条自动化闭环，显著缩短 MTTR（平均修复时间），降低对资深专家经验的依赖。
 
-### 步骤
+---
+
+## ✨ 核心能力
+
+### 1. 全链路可观测（One Platform）
+- **指标**：服务 RED 指标（请求/错误/延迟）实时监控
+- **日志**：海量日志全文检索 + 聚合分析
+- **链路追踪**：分布式调用链路瀑布图，毫秒级定位慢调用
+- **深度网络观测**：基于 eBPF 的**零侵扰**网络/应用性能分析（DeepFlow 集成），看清每一跳网络延迟
+
+### 2. AI 智能运维（AI Ops）
+- **自然语言诊断**：像对话一样提问"为什么订单服务错误率升高了？"，AI 自动采集分析并给出结论
+- **根因分析（RCA）**：告警触发后，AI 自动关联指标/日志/链路，推理根因
+- **自动化修复闭环**：AI 生成修复方案 → **人工审批** → **安全执行**（命令白名单 + 审批门控）
+- **NL→SQL**：自然语言生成查询语句，无需懂数据库
+- **技能/工作流**：可编排的诊断技能与可视化 DAG 工作流
+
+### 3. 智能告警与容量管理
+- **6 类告警策略**：阈值 / 突变 / 异常 / 预测 / 烧毁率 / 原始表达式
+- **SLO 管理**：定义服务目标，烧毁率预警
+- **容量预测**：基于历史趋势**预测资源触达阈值的时间（ETT）**，提前扩容避免故障
+
+### 4. 基础设施与硬件
+- **K8s 集群管理**：资源查看、集群监控
+- **SNMP 网络设备**：交换机等网络设备采集
+- **IPMI 硬件健康**：服务器温度/风扇/电源等硬件状态
+- **安全 WebShell**：白名单命令的在线终端
+
+### 5. 安全与治理
+- **审批中心**：危险/写操作必须人工确认
+- **审计日志**：全量操作审计，责任可追溯
+- **角色权限**：admin / 普通用户分级
+
+---
+
+## 🖥️ 功能全景
+
+### 可观测
+| 功能 | 说明 |
+|------|------|
+| 总览看板 | 全局健康一屏尽览 |
+| 服务列表 / 详情 | RED 指标、依赖、拓扑、日志、链路 |
+| 服务拓扑 | 调用关系可视化 |
+| 链路追踪 | trace 瀑布图 + span 明细 |
+| 日志查询 | 全文检索 + 聚合 |
+| 自定义监控面板 | 拖拽式布局，自由组合图表 |
+| 容量预测 | 趋势预测 + ETT 预警 |
+| DeepFlow 深度观测 | eBPF 零侵扰网络分析 |
+
+### AI 智能
+| 功能 | 说明 |
+|------|------|
+| AI 诊断 | 自然语言驱动的智能分析 |
+| 技能目录 | 诊断/RCA/巡检/问数等技能 |
+| 多 Agent 协作 | 主 Agent + 子 Agent + 审阅 |
+| 可视化工作流 | DAG 流程编排 |
+| NL→SQL | 自然语言生成查询 |
+| MCP 工具 | 标准工具接入协议 |
+
+### 告警 / 治理
+| 功能 | 说明 |
+|------|------|
+| 告警中心 | 规则管理 + 事件列表 |
+| SLO 管理 | 目标 + 烧毁率 |
+| 审批中心 | 写操作人工审批 |
+| 审计日志 | 全量操作审计 |
+
+### 基础设施
+| 功能 | 说明 |
+|------|------|
+| K8s 资源 | 集群内资源查看 |
+| SNMP / IPMI | 网络设备 / 硬件健康 |
+| WebShell | 白名单安全终端 |
+| 报告 / 产物 | AI 报告 + 诊断产物中心 |
+
+---
+
+## 🚀 快速上手
+
+### 本机一键体验（macOS + OrbStack K8s）
 
 ```bash
 cd aiops
 
-# 1. 构建 4 个自研服务镜像（arm64）
+# 1. 构建镜像
 ./deploy/scripts/build-images.sh
 
-# 2. 部署 observability（自研 + 中间件 + 自动建表）
+# 2. 一键部署（自研服务 + 中间件 + deepflow 采集）
 ./deploy/scripts/apply.sh
 
-# 3. 部署 deepflow（完整 eBPF 采集）
-helm upgrade --install deepflow deepflow/deepflow --version 7.1.002 \
-  --namespace deepflow --create-namespace
-
-# 4. 验证
-curl -s -o /dev/null -w "%{http_code}" http://localhost:30253/   # 期望 200
-kubectl -n observability get pods                                  # 全部 Running
-kubectl -n observability exec clickhouse-0 -- clickhouse-client \
-  --query "SELECT count() FROM system.tables WHERE database='observability'"  # 期望 8
+# 3. 访问
+#   浏览器打开 http://localhost:30253/
 ```
 
-### 清理
+> 生产环境部署、密钥注入、HA 配置见 [**部署使用手册**](./docs/deploy/README.md)。
 
-```bash
-# 卸载（保留 PVC 数据）
-./deploy/scripts/destroy.sh
-# 彻底清除（含 PVC/namespace）
-./deploy/scripts/destroy.sh --purge-data
+### 典型使用路径
+
+**排查一次故障**：
+```
+总览看异常 → 服务详情看指标 → 日志检索 → 链路定位 → AI 诊断根因 → 审批执行修复
 ```
 
-> 完整部署步骤、生产配置、密钥注入、HA 方案见
-> **[`docs/deploy/03-deploy.md`](./docs/deploy/03-deploy.md)** 与 **[`docs/deploy/04-prod-config.md`](./docs/deploy/04-prod-config.md)**。
+**配置一次智能告警**：
+```
+定义 SLO → 创建告警规则 → 触发后 AI 自动分析 → 审批执行 → 审计留痕
+```
 
-## 关键配置（values.yaml / apply.sh）
+---
 
-| 项 | 默认 | 说明 |
-|---|---|---|
-| 副本数 | 1 | 唯一偏离生产标准 |
-| 镜像架构 | arm64 | OrbStack 原生 |
-| 存储类 | 集群默认（`local-path`） | PVC `storageClass: ""`，可移植改 SC |
-| 前端 NodePort | 30253 | |
-| LLM | mock（`LLM_MOCK=true`） | 配真实 Key：改 `aiOrchestrator.llm.*` + `LLM_MOCK=false` 后 `helm upgrade` |
-| 实时同步 | `DEEPFLOW_SYNC_INTERVAL=10s` | ingest 增量拉取 deepflow-clickhouse |
+## 🏗️ 技术架构（概要）
 
-### 密钥（生产覆盖）
-`apply.sh` 用 `--set secrets.*` 注入本机开发默认值。**生产环境务必**：
-- 用 `values-prod.yaml` 覆盖真实密钥（JWT_SECRET / INTERNAL_TOKEN / INGEST_API_KEY / MINIO / MySQL 密码）
-- 密钥不写入代码仓库（`.gitignore` 已排除 `.env`/`secrets/`）
+```
+应用/服务 ──OTLP/eBPF──▶ 采集层(ingest) ──▶ 存储层
+                                               ├─ ClickHouse   (trace/日志/拓扑/告警)
+                                               ├─ VictoriaMetrics (指标)
+                                               ├─ VictoriaLogs  (日志查询)
+                                               ├─ MySQL        (业务状态)
+                                               ├─ Redis        (任务队列)
+                                               └─ MinIO        (对象存储/产物)
+查询/告警 API(query-api) ◀── 前端控制台
+        │
+        └─▶ AI 编排层(ai-orchestrator) ──▶ LLM / ChromaDB(知识库) / SNMP / IPMI
+```
 
-## 可移植到其他环境
+- **自研服务（4）**：前端控制台 / 查询告警 API / 数据采集 / AI 编排
+- **数据底座**：ClickHouse / VictoriaMetrics / VictoriaLogs / MySQL / Redis / MinIO / ChromaDB
+- **深度网络观测**：DeepFlow（eBPF 零侵扰采集，独立部署）
 
-- 本机部署与 63（192.168.0.63 amd64 K8s）解耦，仅一次性参考其 ClickHouse 表结构固化为 `deploy/helm/aiops/files/clickhouse/init_clickhouse.sql`。
-- 迁移到任何集群：改 `values.yaml` 的 `storageClass`（如 `nfs-client`）、镜像架构（amd64）、`secrets.*`（真实密钥）。
-- 若环境已有某中间件：对应组件设 `enabled: false` + `external.host`，Chart 复用外部实例，不重复部署。
-- ClickHouse/MySQL 由 Chart 内 InitContainer 自动建库建表（幂等 `IF NOT EXISTS`），`helm install` 即完成初始化，无历史数据。
+---
 
-## 项目结构
+## 📚 文档导航
+
+| 文档 | 内容 |
+|------|------|
+| [**部署使用手册**](./docs/deploy/README.md) | 架构 / 环境准备 / 部署 / 生产配置 / 使用 / 运维排障 |
+| [**架构与组件**](./docs/deploy/01-architecture.md) | 系统架构、数据流、中间件清单 |
+| [**使用指南**](./docs/deploy/05-usage.md) | 全部功能模块操作说明 |
+| [**生产配置与密钥**](./docs/deploy/04-prod-config.md) | 密钥注入、HA 方案、安全基线 |
+
+---
+
+## 📁 项目结构
 
 ```
 aiops/
-├── ai-apm-ingest-go/       # 采集/同步（Go）
-├── ai-apm-query-go/        # 查询/告警/设置（Go）
-├── ai-orchestrator/        # AI 编排（Python/FastAPI）
-├── observability-frontend/ # 前端（React/Vite）
+├── observability-frontend/   # 前端控制台（React / Vite）
+├── ai-apm-query-go/          # 查询 / 告警 / 设置 API（Go）
+├── ai-apm-ingest-go/         # 数据采集 / 同步（Go）
+├── ai-orchestrator/          # AI 编排（Python / FastAPI）
 ├── deploy/
-│   ├── helm/aiops/         # Helm Chart（自研+中间件）
-│   └── scripts/            # build-images / apply / destroy / init-db
-├── docs/superpowers/       # spec + plan（superpowers 流程文档）
-└── ongrid-ref/             # ongrid 只读对标副本（AGPL，.gitignore 排除，不入库）
+│   ├── helm/aiops/           # Helm Chart（自研 + 中间件 + 自动建表）
+│   └── scripts/              # build-images / apply / destroy / init-db
+└── docs/
+    ├── deploy/               # 部署使用手册
+    └── superpowers/          # 内部研发流程文档
 ```
+
+---
+
+## 📄 License
+
+本平台**全部自研**，代码归本项目所有。

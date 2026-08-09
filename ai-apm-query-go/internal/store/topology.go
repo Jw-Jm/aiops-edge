@@ -53,7 +53,7 @@ type TopologyRelationType struct {
 
 // ---------- 种子数据 ----------
 
-// builtinNodeTypes 内置 5 种节点类型（对齐 ongrid，tier 0=业务顶 → 底层）。
+// builtinNodeTypes 内置 5 种节点类型（tier 0=业务顶 → 底层）。
 var builtinNodeTypes = []TopologyNodeType{
 	{Name: "app", DisplayName: "应用", DisplayNameEN: "App", Builtin: true, Tier: 0, Description: "业务系统 / 产品 — 跨多服务的业务能力；故障影响评估的业务视角。"},
 	{Name: "service", DisplayName: "服务", DisplayNameEN: "Service", Builtin: true, Tier: 1, Description: "可部署的进程 / 容器 / 二进制 — 一个 git 仓库一个 SLO 的研发单位。"},
@@ -62,7 +62,7 @@ var builtinNodeTypes = []TopologyNodeType{
 	{Name: "rack", DisplayName: "机架", DisplayNameEN: "Rack", Builtin: true, Tier: 4, Description: "物理位置（机房 / 机架 / 可用区）— 故障域物理边界。"},
 }
 
-// builtinRelationTypes 内置 7 种关系类型（对齐 ongrid semantics 语义）。
+// builtinRelationTypes 内置 7 种关系类型（语义关系）。
 var builtinRelationTypes = []TopologyRelationType{
 	{Name: "member_of", DisplayName: "成员属于", DisplayNameEN: "Member of", Builtin: true, PropagatesFailure: false, Direction: "src_to_dst", SemanticsTag: "aggregation", Description: "src 是 dst 的成员。聚合关系，不传播故障。"},
 	{Name: "depends_on", DisplayName: "依赖", DisplayNameEN: "Depends on", Builtin: true, PropagatesFailure: true, Direction: "dst_to_src", SemanticsTag: "hard_dep", Description: "src 依赖 dst；dst 出故障会影响 src。核心边类型。"},

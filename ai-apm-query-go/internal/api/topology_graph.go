@@ -22,7 +22,7 @@ var validDirections = map[string]bool{
 	"bidirectional":  true,
 }
 
-// validSemanticsTags 允许的关系语义标签集合（对齐 ongrid 推理层）。
+// validSemanticsTags 允许的关系语义标签集合（推理层）。
 var validSemanticsTags = map[string]bool{
 	"hard_dep":    true,
 	"runtime_dep": true,
@@ -300,7 +300,7 @@ func (h *Handler) topologyNodeTypeDelete(w http.ResponseWriter, r *http.Request,
 
 // ---------- Sync catalog from trace ----------
 
-// catalogTypeForService 将 trace 服务名映射到 ongrid 类型体系，使图谱能落在 tier 分层上。
+// catalogTypeForService 将 trace 服务名映射到类型体系，使图谱能落在 tier 分层上。
 // 服务→service(tier1)；db/cache/mq→cluster(tier2)。外部/网关视为 service。
 func catalogTypeForService(name string) string {
 	typ, _ := topologyNodeType(name)
@@ -313,7 +313,7 @@ func catalogTypeForService(name string) string {
 }
 
 // SyncTopologyCatalog 从 ClickHouse trace_spans 聚合服务节点 + 调用边，写入拓扑目录
-// （topology_nodes / topology_relations，类型为 ongrid 体系）。幂等：同名节点 upsert。
+// （topology_nodes / topology_relations，类型为自定义体系）。幂等：同名节点 upsert。
 // 返回写入的节点/边数量。
 func (h *Handler) SyncTopologyCatalog(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
