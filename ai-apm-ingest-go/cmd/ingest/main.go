@@ -48,18 +48,51 @@ func main() {
 	logWriter := clickhouse.NewLogWriter(*chHost, *chPort)
 	defer logWriter.Close()
 
-	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志
-	if dfHost := os.Getenv("DEEPFLOW_CH_HOST"); dfHost != "" {
-		dfPort := parseEnvInt("DEEPFLOW_CH_PORT")
-		if dfPort == 0 {
-			dfPort = 8123
+	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志，
+	// 并累加为 VM 服务 RED 指标。
+	// 多 k8s 环境支持：DEEPFLOW_CH_ENDPOINTS="name@host:port,name2@host2:port2"（name=cluster 名，RED 指标按 cluster 区分）
+	// 兼容旧配置：仅 DEEPFLOW_CH_HOST/DEEPFLOW_CH_PORT 时按单环境 cluster="default" 接入。
+	startDeepFlowSyncers := func() int {
+		n := 0
+		if eps := os.Getenv("DEEPFLOW_CH_ENDPOINTS"); eps != "" {
+			for _, ep := range strings.Split(eps, ",") {
+				ep = strings.TrimSpace(ep)
+				if ep == "" {
+					continue
+				}
+				cluster, hostPort := ep, ep
+				if at := strings.LastIndex(ep, "@"); at > 0 {
+					cluster, hostPort = ep[:at], ep[at+1:]
+				}
+				host, portStr, ok := strings.Cut(hostPort, ":")
+				if !ok {
+					portStr = "8123"
+				}
+				port, _ := strconv.Atoi(portStr)
+				if port == 0 {
+					port = 8123
+				}
+				syncer := pipeline.NewDeepFlowSyncer(host, port, cluster, metricsWriter, writer, logWriter, met)
+				syncer.Start()
+				n++
+				log.Printf("DeepFlowSyncer enabled (cluster=%s deepflow-ch=%s:%d)", cluster, host, port)
+			}
+		} else if dfHost := os.Getenv("DEEPFLOW_CH_HOST"); dfHost != "" {
+			dfPort := parseEnvInt("DEEPFLOW_CH_PORT")
+			if dfPort == 0 {
+				dfPort = 8123
+			}
+			syncer := pipeline.NewDeepFlowSyncer(dfHost, dfPort, "default", metricsWriter, writer, logWriter, met)
+			syncer.Start()
+			n++
+			log.Printf("DeepFlowSyncer enabled (cluster=default deepflow-ch=%s:%d)", dfHost, dfPort)
 		}
-		syncer := pipeline.NewDeepFlowSyncer(dfHost, dfPort, metricsWriter, writer, logWriter)
-		syncer.Start()
-		log.Printf("DeepFlowSyncer enabled (deepflow-ch=%s:%d)", dfHost, dfPort)
-	} else {
-		log.Printf("DeepFlowSyncer disabled (DEEPFLOW_CH_HOST not set)")
+		if n == 0 {
+			log.Printf("DeepFlowSyncer disabled (DEEPFLOW_CH_HOST / DEEPFLOW_CH_ENDPOINTS not set)")
+		}
+		return n
 	}
+	startDeepFlowSyncers()
 
 	pl := pipeline.New(writer, metricsWriter)
 	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics

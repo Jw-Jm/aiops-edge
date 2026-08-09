@@ -56,13 +56,15 @@ func clampStartTime(last, now time.Time) time.Time {
 
 // DeepFlowSyncer 定期从 DeepFlow ClickHouse 拉取应用层调用数据，
 // 解析服务名后写入 observability 的 service_topology（拓扑边）与 trace_spans（调用记录），
-// 让拓扑页/服务列表/调用链页展示真实服务间调用。
+// 让拓扑页/服务列表/调用链页展示真实服务间调用；同时把真实流量累加为 VM 服务 RED 指标。
 type DeepFlowSyncer struct {
 	dfEndpoint string // DeepFlow ClickHouse HTTP 地址，如 http://host:8123
 	dfClient   *http.Client
 	edgeWriter interface{ AddEdge(*model.TopologyEdge) }
 	spanWriter interface{ Add(*model.Span) }
 	logWriter  interface{ Add(*model.LogRecord) }
+	redMetric  interface{ AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64) }
+	cluster    string // 所属 k8s 环境/集群，RED 指标用 cluster 标签区分
 	tenantID   string
 	interval   time.Duration
 	// 增量拉取状态（线程安全）
@@ -71,13 +73,16 @@ type DeepFlowSyncer struct {
 }
 
 // NewDeepFlowSyncer 创建 DeepFlow 同步器。edgeWriter 写拓扑边，spanWriter 写 span，logWriter 写日志。
-func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, edgeWriter interface{ AddEdge(*model.TopologyEdge) }, spanWriter interface{ Add(*model.Span) }, logWriter interface{ Add(*model.LogRecord) }) *DeepFlowSyncer {
+// redMetric 可选：若提供，则把同步到的真实服务流量累加为 VM 服务 RED 指标（cluster 为所属环境）。
+func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter interface{ AddEdge(*model.TopologyEdge) }, spanWriter interface{ Add(*model.Span) }, logWriter interface{ Add(*model.LogRecord) }, redMetric interface{ AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64) }) *DeepFlowSyncer {
 	return &DeepFlowSyncer{
 		dfEndpoint: fmt.Sprintf("http://%s:%d", dfCHHost, dfCHPort),
 		dfClient:   &http.Client{Timeout: 30 * time.Second},
 		edgeWriter: edgeWriter,
 		spanWriter: spanWriter,
 		logWriter:  logWriter,
+		redMetric:  redMetric,
+		cluster:    cluster,
 		tenantID:   "default",
 		interval:   parseSyncInterval(os.Getenv("DEEPFLOW_SYNC_INTERVAL")),
 	}
@@ -295,6 +300,12 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 			ServiceInstanceID: fmt.Sprintf("%v", r["src"]),
 		}
 		s.spanWriter.Add(span)
+
+		// 把真实服务流量累加为 VM 服务 RED 指标（service_requests_total / service_errors_total / 时长）
+		// 供 anomaly 检测 / SLO 烧毁率等规则评估使用。cluster 标签区分多 k8s 环境。
+		if s.redMetric != nil {
+			s.redMetric.AddServiceREDForCluster(s.cluster, dst, isErr == 1, durNs)
+		}
 
 		// 构造访问日志（src 服务访问 dst 服务）写入 log_records，支撑 /logs 页
 		if s.logWriter != nil {
