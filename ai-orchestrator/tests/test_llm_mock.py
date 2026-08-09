@@ -1,5 +1,6 @@
 import pytest
 from llm_mock import is_mock_enabled, mock_llm_response, should_skip_llm
+from llm_mock import mock_llm_decision, mock_coordinator_plan, mock_reviewer_result
 
 
 def test_mock_disabled_by_default(monkeypatch):
@@ -30,3 +31,24 @@ def test_should_skip_llm_not_skip_when_mock_even_without_key(monkeypatch):
     monkeypatch.setenv("LLM_MOCK", "true")
     assert should_skip_llm(None) is False
     assert should_skip_llm({}) is False
+
+
+def test_mock_decision_first_tool_then_final():
+    # 第一次调用应返回 query_metrics 工具决策
+    d1 = mock_llm_decision([], [])
+    assert d1["type"] == "tool"
+    # 第二次（带已有消息）返回 final
+    d2 = mock_llm_decision([{"role": "assistant", "content": "已调工具"}], [])
+    assert d2["type"] == "final"
+    assert isinstance(d2.get("content"), str)
+
+
+def test_mock_coordinator_plan_shape():
+    plan = mock_coordinator_plan()
+    assert isinstance(plan, list) and len(plan) >= 2
+    assert "task_type" in plan[0] and "task_id" in plan[0]
+
+
+def test_mock_reviewer_merges():
+    out = mock_reviewer_result({"t1": {"conclusion": "a"}, "t2": {"conclusion": "b"}})
+    assert isinstance(out, str) and "b" in out
