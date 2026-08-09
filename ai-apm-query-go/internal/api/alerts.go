@@ -219,7 +219,7 @@ func fromCHTime(s string) string {
 // version 用当前纳秒时间戳，确保同 id 新版本被 ReplacingMergeTree 保留。
 func (h *Handler) insertAlertEvents(events []AlertEvent) error {
 	var buf strings.Builder
-	buf.WriteString(`INSERT INTO observability.alert_events (id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, version) VALUES `)
+	buf.WriteString(`INSERT INTO observability.alert_events (id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, version, date) VALUES `)
 	version := uint64(time.Now().UnixNano())
 	for i, e := range events {
 		if i > 0 {
