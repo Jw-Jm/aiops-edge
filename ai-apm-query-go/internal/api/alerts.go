@@ -482,20 +482,27 @@ func (h *Handler) AlertEventAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	by := extractTenantID(r)
+	// 锁内修改 + 释放锁，锁外持久化（避免持写锁调 saveAlertEvents 死锁）
 	alertEventsMu.Lock()
-	defer alertEventsMu.Unlock()
+	idx := -1
 	for i := range alertEvents {
 		if alertEvents[i].ID == id || alertEvents[i].RuleID == id {
 			if !transitionStatus(&alertEvents[i], "acknowledged", by) {
+				alertEventsMu.Unlock()
 				respondError(w, http.StatusConflict, "cannot acknowledge from current status")
 				return
 			}
-			saveAlertEvents()
-			respondJSON(w, http.StatusOK, alertEvents[i])
-			return
+			idx = i
+			break
 		}
 	}
-	respondError(w, http.StatusNotFound, "event not found")
+	alertEventsMu.Unlock()
+	if idx < 0 {
+		respondError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	saveAlertEvents()
+	respondJSON(w, http.StatusOK, alertEvents[idx])
 }
 
 // AlertEventResolve handles POST /api/v1/alerts/events/{id}/resolve
@@ -507,20 +514,27 @@ func (h *Handler) AlertEventResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	by := extractTenantID(r)
+	// 锁内修改 + 释放锁，锁外持久化（避免持写锁调 saveAlertEvents 死锁）
 	alertEventsMu.Lock()
-	defer alertEventsMu.Unlock()
+	idx := -1
 	for i := range alertEvents {
 		if alertEvents[i].ID == id || alertEvents[i].RuleID == id {
 			if !transitionStatus(&alertEvents[i], "resolved", by) {
+				alertEventsMu.Unlock()
 				respondError(w, http.StatusConflict, "cannot resolve from current status")
 				return
 			}
-			saveAlertEvents()
-			respondJSON(w, http.StatusOK, alertEvents[i])
-			return
+			idx = i
+			break
 		}
 	}
-	respondError(w, http.StatusNotFound, "event not found")
+	alertEventsMu.Unlock()
+	if idx < 0 {
+		respondError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	saveAlertEvents()
+	respondJSON(w, http.StatusOK, alertEvents[idx])
 }
 
 // ---- Alert Silence CRUD ----
@@ -675,18 +689,24 @@ func (h *Handler) getAlertRule(w http.ResponseWriter, r *http.Request, id string
 }
 
 func (h *Handler) deleteAlertRule(w http.ResponseWriter, r *http.Request, id string) {
+	// 先在锁内删除内存规则并释放锁，再在锁外持久化 MySQL（避免锁内调用 saveAlertRules 死锁）
 	alertRulesMu.Lock()
-	defer alertRulesMu.Unlock()
-
+	found := false
 	for i, rule := range alertRules {
 		if rule.ID == id {
 			alertRules = append(alertRules[:i], alertRules[i+1:]...)
-			saveAlertRules()
-			respondJSON(w, http.StatusOK, map[string]interface{}{
-				"message": "rule deleted",
-			})
-			return
+			found = true
+			break
 		}
+	}
+	alertRulesMu.Unlock()
+
+	if found {
+		saveAlertRules()
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"message": "rule deleted",
+		})
+		return
 	}
 
 	respondError(w, http.StatusNotFound, "rule not found")
@@ -1299,16 +1319,18 @@ func K8sDefaultRules() []AlertRule {
 // InitK8sRules initializes Kubernetes alert rules if not already present
 func InitK8sRules() {
 	k8sRules := K8sDefaultRules()
-	alertEventsMu.Lock()
-	defer alertEventsMu.Unlock()
-
+	alertRulesMu.Lock()
 	existingIDs := make(map[string]bool)
-	for _, r := range alertRules { existingIDs[r.ID] = true }
+	for _, r := range alertRules {
+		existingIDs[r.ID] = true
+	}
 	for _, r := range k8sRules {
 		if !existingIDs[r.ID] {
 			alertRules = append(alertRules, r)
 		}
 	}
+	alertRulesMu.Unlock()
+
 	saveAlertRules()
 }
 
