@@ -2,6 +2,9 @@
 
 > 自研云原生 AIOps 平台：采集 → 存储 → AI 编排 → 可视化，四维对标 ongrid（界面/功能/框架/架构），**全部自研**（ongrid 为 AGPL-3.0，仅对标不复制）。
 
+> 📖 **详细部署使用手册**：见 [`docs/deploy/`](./docs/deploy/README.md)
+> （含架构、环境准备、部署步骤、生产配置与密钥、使用指南、运维排障）。本文为概要。
+
 ## 架构
 
 ```
@@ -55,6 +58,9 @@ kubectl -n observability exec clickhouse-0 -- clickhouse-client \
 # 彻底清除（含 PVC/namespace）
 ./deploy/scripts/destroy.sh --purge-data
 ```
+
+> 完整部署步骤、生产配置、密钥注入、HA 方案见
+> **[`docs/deploy/03-deploy.md`](./docs/deploy/03-deploy.md)** 与 **[`docs/deploy/04-prod-config.md`](./docs/deploy/04-prod-config.md)**。
 
 ## 关键配置（values.yaml / apply.sh）
 
