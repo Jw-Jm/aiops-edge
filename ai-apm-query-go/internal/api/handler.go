@@ -156,90 +156,14 @@ func (h *Handler) SyncTopologyFromK8s(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SyncDataFromK8s 从 K8s 真实服务生成 trace 数据写入 ClickHouse trace_spans 表。
-// 前端 /services(服务列表) 和 /traces(链路追踪) 页面依赖此表，当前为空，需从 K8s 生成真实服务数据。
+// SyncDataFromK8s 已废弃为只读接口。
+// 该接口原用于"从 K8s 生成合成 trace 数据填充空表"，但会 TRUNCATE 掉 ingest 实时写入的真实链路数据。
+// 现在 ingest 已实时落库 trace_spans/service_topology，此接口保留路由但不再写入任何数据，
+// 避免清空真实链路数据（数据破坏型双写隐患）。返回说明即可。
 func (h *Handler) SyncDataFromK8s(w http.ResponseWriter, r *http.Request) {
-	// 1. 获取 K8s 真实服务列表
-	svcSet := map[string]bool{}
-	for _, ns := range []string{"observability", "deepflow"} {
-		svcData, err := k8sAPI("/api/v1/namespaces/" + ns + "/services")
-		if err != nil {
-			respondJSON(w, 500, map[string]interface{}{"error": "k8s api unavailable: " + err.Error()})
-			return
-		}
-		var svcList struct {
-			Items []struct{ Metadata struct{ Name string } `json:"metadata"` } `json:"items"`
-		}
-		if err := json.Unmarshal(svcData, &svcList); err != nil {
-			respondJSON(w, 500, map[string]interface{}{"error": "parse k8s services failed"})
-			return
-		}
-		for _, s := range svcList.Items {
-			svcSet[s.Metadata.Name] = true
-		}
-	}
-
-	// 2. 平台调用依赖（与拓扑一致）
-	deps := [][2]string{
-		{"frontend", "query-api"}, {"frontend", "ai-orchestrator"},
-		{"query-api", "ai-orchestrator"}, {"query-api", "clickhouse"},
-		{"query-api", "victoria-logs"}, {"query-api", "redis"},
-		{"ai-orchestrator", "clickhouse"}, {"ai-orchestrator", "redis"},
-		{"ai-orchestrator", "minio"}, {"ai-orchestrator", "victoria-metrics"},
-		{"ingest", "clickhouse"}, {"ingest", "minio"}, {"ingest", "redis"},
-		{"deepflow-server", "deepflow-app"}, {"deepflow-server", "deepflow-clickhouse"},
-		{"deepflow-server", "deepflow-mysql"}, {"deepflow-app", "deepflow-clickhouse"},
-		{"deepflow-agent", "deepflow-server"}, {"deepflow-app", "deepflow-server"},
-	}
-
-	now := time.Now().UTC()
-	date := now.Format("2006-01-02")
-	bucket := now.Truncate(time.Minute).Format("2006-01-02 15:04:05")
-	tid := "default"
-
-	// 3. 生成 trace 数据（每个调用边一个 trace：source span + target span）
-	var values []string
-	for _, d := range deps {
-		src, tgt := d[0], d[1]
-		if !svcSet[src] || !svcSet[tgt] {
-			continue
-		}
-		traceID := fmt.Sprintf("%x", time.Now().UnixNano()+int64(len(values)))
-		spanID1 := fmt.Sprintf("%x", time.Now().UnixNano()+1+int64(len(values))*7)
-		spanID2 := fmt.Sprintf("%x", time.Now().UnixNano()+2+int64(len(values))*13)
-		// source span
-		values = append(values, fmt.Sprintf(
-			"('%s','%s','%s','','%s','%s -> %s','CLIENT',0,'%s',5000000,{},'GET',200,'/api', '', '', '', '','','',0,0,'%s','%s')",
-			tid, traceID, spanID1, src, src, tgt, bucket, bucket, date,
-		))
-		// target span
-		values = append(values, fmt.Sprintf(
-			"('%s','%s','%s','%s','%s','handle request','SERVER',0,'%s',3000000,{},'GET',200,'/api', '', '', '', '','','',0,0,'%s','%s')",
-			tid, traceID, spanID2, spanID1, tgt, bucket, bucket, date,
-		))
-	}
-	expected := len(values)
-
-	if len(values) > 0 {
-		// 先清空旧数据（避免重复累积）
-		_ = h.writeClickHouse(context.Background(), "TRUNCATE TABLE observability.trace_spans")
-		sql := "INSERT INTO observability.trace_spans (tenant_id, trace_id, span_id, parent_span_id, service_name, operation_name, span_kind, status_code, start_time, duration_ns, attributes, http_method, http_status_code, http_url, db_system, db_statement, rpc_system, service_instance_id, k8s_namespace, k8s_pod_name, is_slow, is_error, time_bucket, date) VALUES " +
-			strings.Join(values, ",")
-		go func(q string) {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := h.writeClickHouse(bgCtx, q); err != nil {
-				log.Printf("SyncData async insert error: %v", err)
-			} else {
-				log.Printf("SyncData async insert success: %d spans", expected)
-			}
-		}(sql)
-	}
-
-	respondJSON(w, http.StatusAccepted, map[string]interface{}{
-		"message":  "data sync started",
-		"expected": expected,
-		"services": len(svcSet),
+	respondJSON(w, http.StatusGone, map[string]interface{}{
+		"message":  "deprecated: trace_spans/service_topology 现由 ingest 实时写入，此接口不再生成或清空数据",
+		"expected": 0,
 	})
 }
 
