@@ -1,0 +1,23 @@
+- generic [ref=e5]:
+  - generic [ref=e6]:
+    - img "thunderbolt" [ref=e8]
+    - heading "AIOps 智能运维平台" [level=3] [ref=e11]
+    - text: 统一可观测性 · 智能诊断 · 自动化运维
+  - generic [ref=e12]:
+    - generic [ref=e18]:
+      - img "user" [ref=e20]
+      - textbox "用户名" [ref=e23]
+    - generic [ref=e29]:
+      - img "lock" [ref=e31]
+      - textbox "密码" [ref=e34]
+      - img "eye-invisible" [ref=e36] [cursor=pointer]
+    - button "login 登录" [ref=e45] [cursor=pointer]:
+      - img "login" [ref=e47]
+      - generic [ref=e50]: 登录
+    - generic [ref=e51]:
+      - generic [ref=e52]:
+        - img "database" [ref=e53]
+        - text: 指标 · 链路 · 日志
+      - generic [ref=e56]:
+        - img "safety-certificate" [ref=e57]
+        - text: 安全接入

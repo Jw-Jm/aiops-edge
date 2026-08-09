@@ -175,6 +175,9 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/sessions", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/session/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/shell/check", handler.ProxyAI)
+	// WebShell WebSocket：AuthMiddleware 已放行该路径（WebSocket 无 header），
+	// handler 内部从 ?token= 验证 JWT 并代理到 orchestrator（注入 INTERNAL_TOKEN）。
+	mux.HandleFunc("/api/v1/shell/ws", handler.ProxyShellWS)
 	mux.HandleFunc("/api/v1/mcp/tools", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/mcp/call", handler.ProxyAI)
 	// Hardware / IPMI：代理到 ai-orchestrator（其上有 /ipmi/sensors、/node/health 等端点）。

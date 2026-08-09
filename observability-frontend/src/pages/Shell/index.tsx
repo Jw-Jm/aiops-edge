@@ -55,7 +55,9 @@ const Shell: React.FC = () => {
     term.write('\r\n$ ')
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${location.host}/api/v1/shell/ws`)
+    // WebSocket 无法自定义 header，JWT 经 ?token= query 传递，由 query-go 验证后代理到 orchestrator
+    const token = localStorage.getItem('token') || ''
+    const ws = new WebSocket(`${proto}://${location.host}/api/v1/shell/ws?token=${encodeURIComponent(token)}`)
     wsRef.current = ws
 
     ws.onopen = () => { setConnected(true); term.writeln('（已连接）') }

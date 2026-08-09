@@ -249,6 +249,9 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		if path == "/health" || path == "/api/v1/health" ||
 			path == "/api/v1/auth/login" || path == "/api/v1/login" ||
 			(path == "/api/v1/settings/llm" && r.Method == http.MethodGet) ||
+			// WebShell WebSocket：无自定义 header，token 经 ?token= query 传递，由 ProxyShellWS
+			// 内部验证 JWT（不能在此处拦截，否则 WebSocket 升级请求会被 401 拒绝）。
+			path == "/api/v1/shell/ws" ||
 			r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
 			return

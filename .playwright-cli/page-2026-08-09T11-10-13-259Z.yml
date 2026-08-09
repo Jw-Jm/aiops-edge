@@ -1,0 +1,295 @@
+- generic [ref=e2]:
+  - generic [ref=e60]:
+    - complementary [ref=e61]:
+      - generic [ref=e62]:
+        - generic [ref=e63]:
+          - img "thunderbolt" [ref=e65]
+          - generic [ref=e68]:
+            - generic [ref=e69]: AIOps
+            - generic [ref=e70]: 智能可观测平台
+        - menu [ref=e71]:
+          - text: 总览
+          - group [ref=e72]:
+            - menuitem "dashboard 平台总览" [ref=e73] [cursor=pointer]:
+              - img "dashboard" [ref=e74]
+              - generic [ref=e77]: 平台总览
+          - text: 可观测
+          - group [ref=e78]:
+            - menuitem "database 服务列表" [ref=e79] [cursor=pointer]:
+              - img "database" [ref=e80]
+              - generic [ref=e83]: 服务列表
+            - menuitem "apartment 服务拓扑" [ref=e84] [cursor=pointer]:
+              - img "apartment" [ref=e85]
+              - generic [ref=e88]: 服务拓扑
+            - menuitem "apartment 拓扑目录" [ref=e89] [cursor=pointer]:
+              - img "apartment" [ref=e90]
+              - generic [ref=e93]: 拓扑目录
+            - menuitem "node-index 链路追踪" [active] [ref=e94] [cursor=pointer]:
+              - img "node-index" [ref=e95]
+              - generic [ref=e98]: 链路追踪
+            - menuitem "file-search 日志查询" [ref=e99] [cursor=pointer]:
+              - img "file-search" [ref=e100]
+              - generic [ref=e103]: 日志查询
+            - menuitem "cloud-server DeepFlow" [ref=e104] [cursor=pointer]:
+              - img "cloud-server" [ref=e105]
+              - generic [ref=e110]: DeepFlow
+          - text: 监控
+          - group [ref=e111]:
+            - menuitem "radar-chart 监控面板" [ref=e112] [cursor=pointer]:
+              - img "radar-chart" [ref=e113]
+              - generic [ref=e116]: 监控面板
+            - menuitem "line-chart 容量预测" [ref=e117] [cursor=pointer]:
+              - img "line-chart" [ref=e118]
+              - generic [ref=e121]: 容量预测
+          - text: 智能运维
+          - group [ref=e122]:
+            - menuitem "robot AI 诊断" [ref=e123] [cursor=pointer]:
+              - img "robot" [ref=e124]
+              - generic [ref=e127]: AI 诊断
+            - menuitem "tool 技能目录" [ref=e128] [cursor=pointer]:
+              - img "tool" [ref=e129]
+              - generic [ref=e132]: 技能目录
+            - menuitem "robot AI 助理" [ref=e133] [cursor=pointer]:
+              - img "robot" [ref=e134]
+              - generic [ref=e137]: AI 助理
+            - menuitem "deployment-unit 工作流" [ref=e138] [cursor=pointer]:
+              - img "deployment-unit" [ref=e139]
+              - generic [ref=e142]: 工作流
+            - menuitem "alert 告警中心" [ref=e143] [cursor=pointer]:
+              - img "alert" [ref=e144]
+              - generic [ref=e147]: 告警中心
+            - menuitem "radar-chart SLO 管理" [ref=e148] [cursor=pointer]:
+              - img "radar-chart" [ref=e149]
+              - generic [ref=e152]: SLO 管理
+            - menuitem "safety-certificate 审批中心" [ref=e153] [cursor=pointer]:
+              - img "safety-certificate" [ref=e154]
+              - generic [ref=e157]: 审批中心
+            - menuitem "audit 审计日志" [ref=e158] [cursor=pointer]:
+              - img "audit" [ref=e159]
+              - generic [ref=e162]: 审计日志
+            - menuitem "thunderbolt SQL 查询" [ref=e163] [cursor=pointer]:
+              - img "thunderbolt" [ref=e164]
+              - generic [ref=e167]: SQL 查询
+            - menuitem "api MCP 工具" [ref=e168] [cursor=pointer]:
+              - img "api" [ref=e169]
+              - generic [ref=e172]: MCP 工具
+          - text: 管理
+          - group [ref=e173]:
+            - menuitem "control 管理门户" [ref=e174] [cursor=pointer]:
+              - img "control" [ref=e175]
+              - generic [ref=e178]: 管理门户
+          - text: 任务
+          - group [ref=e179]:
+            - menuitem "tool 任务工作台" [ref=e180] [cursor=pointer]:
+              - img "tool" [ref=e181]
+              - generic [ref=e184]: 任务工作台
+          - text: 智能资产
+          - group [ref=e185]:
+            - menuitem "book 知识库" [ref=e186] [cursor=pointer]:
+              - img "book" [ref=e187]
+              - generic [ref=e190]: 知识库
+            - menuitem "setting 规则管理" [ref=e191] [cursor=pointer]:
+              - img "setting" [ref=e192]
+              - generic [ref=e195]: 规则管理
+          - text: 基础设施
+          - group [ref=e196]:
+            - menuitem "cluster 服务目录" [ref=e197] [cursor=pointer]:
+              - img "cluster" [ref=e198]
+              - generic [ref=e201]: 服务目录
+            - menuitem "desktop 设备管理" [ref=e202] [cursor=pointer]:
+              - img "desktop" [ref=e203]
+              - generic [ref=e206]: 设备管理
+            - menuitem "cloud-server 集群管理" [ref=e207] [cursor=pointer]:
+              - img "cloud-server" [ref=e208]
+              - generic [ref=e213]: 集群管理
+            - menuitem "control K8s 资源" [ref=e214] [cursor=pointer]:
+              - img "control" [ref=e215]
+              - generic [ref=e218]: K8s 资源
+            - menuitem "cluster SNMP 网络设备" [ref=e219] [cursor=pointer]:
+              - img "cluster" [ref=e220]
+              - generic [ref=e223]: SNMP 网络设备
+            - menuitem "hdd 硬件健康" [ref=e224] [cursor=pointer]:
+              - img "hdd" [ref=e225]
+              - generic [ref=e228]: 硬件健康
+          - text: 运维工具
+          - group [ref=e229]:
+            - menuitem "cloud-server WebShell" [ref=e230] [cursor=pointer]:
+              - img "cloud-server" [ref=e231]
+              - generic [ref=e236]: WebShell
+            - menuitem "file-search 报告中心" [ref=e237] [cursor=pointer]:
+              - img "file-search" [ref=e238]
+              - generic [ref=e241]: 报告中心
+            - menuitem "control 产物中心" [ref=e242] [cursor=pointer]:
+              - img "control" [ref=e243]
+              - generic [ref=e246]: 产物中心
+          - text: 设置
+          - group [ref=e247]:
+            - menuitem "setting 系统设置" [ref=e248] [cursor=pointer]:
+              - img "setting" [ref=e249]
+              - generic [ref=e252]: 系统设置
+            - menuitem "team 用户管理" [ref=e253] [cursor=pointer]:
+              - img "team" [ref=e254]
+              - generic [ref=e257]: 用户管理
+      - img "left" [ref=e259] [cursor=pointer]
+    - generic [ref=e262]:
+      - banner [ref=e263]:
+        - generic [ref=e264]:
+          - generic [ref=e265]: 链路追踪
+          - generic [ref=e266]: 生产环境
+        - generic [ref=e267]:
+          - generic [ref=e269]:
+            - img "search" [ref=e271]
+            - textbox "全局搜索服务 / 日志 / 告警..." [ref=e274]
+          - img "bell" [ref=e276] [cursor=pointer]
+          - generic [ref=e279]: 2026-08-09 19:10:13
+          - img "bulb" [ref=e281] [cursor=pointer]
+          - generic [ref=e285] [cursor=pointer]:
+            - generic [ref=e286]: A
+            - img "down" [ref=e290]
+      - main [ref=e293]:
+        - generic [ref=e867]:
+          - generic [ref=e868]:
+            - img "search" [ref=e870]
+            - textbox "搜索 Trace ID..." [ref=e873]
+          - generic [ref=e878]:
+            - table [ref=e882]:
+              - rowgroup [ref=e889]:
+                - row [ref=e890]:
+                  - columnheader "Trace ID" [ref=e891]
+                  - columnheader "开始时间" [ref=e892]
+                  - columnheader "服务数" [ref=e893]
+                  - columnheader "Span 数" [ref=e894]
+                  - columnheader "最大延迟 (ms)" [ref=e895]
+              - rowgroup [ref=e896]:
+                - row [ref=e897]:
+                  - cell "394ebe5f9ba2d880..." [ref=e898]
+                  - cell "08-09 19:09:45" [ref=e900]
+                  - cell "1" [ref=e901]
+                  - cell "1" [ref=e903]
+                  - cell "0.4" [ref=e904]
+                - row [ref=e905]:
+                  - cell "95a6aafe4bed3c09..." [ref=e906]
+                  - cell "08-09 19:09:45" [ref=e908]
+                  - cell "1" [ref=e909]
+                  - cell "1" [ref=e911]
+                  - cell "0.9" [ref=e912]
+                - row [ref=e913]:
+                  - cell "9c47744ea609b489..." [ref=e914]
+                  - cell "08-09 19:09:45" [ref=e916]
+                  - cell "1" [ref=e917]
+                  - cell "1" [ref=e919]
+                  - cell "2.1" [ref=e920]
+                - row [ref=e921]:
+                  - cell "9eab0ac7b995d4da..." [ref=e922]
+                  - cell "08-09 19:09:45" [ref=e924]
+                  - cell "1" [ref=e925]
+                  - cell "1" [ref=e927]
+                  - cell "3.9" [ref=e928]
+                - row [ref=e929]:
+                  - cell "dcde3f6a5354e1e2..." [ref=e930]
+                  - cell "08-09 19:09:43" [ref=e932]
+                  - cell "1" [ref=e933]
+                  - cell "1" [ref=e935]
+                  - cell "1.7" [ref=e936]
+                - row [ref=e937]:
+                  - cell "0b375965643c7336..." [ref=e938]
+                  - cell "08-09 19:09:43" [ref=e940]
+                  - cell "1" [ref=e941]
+                  - cell "1" [ref=e943]
+                  - cell "1.8" [ref=e944]
+                - row [ref=e945]:
+                  - cell "5d9b0957d12ac547..." [ref=e946]
+                  - cell "08-09 19:09:43" [ref=e948]
+                  - cell "1" [ref=e949]
+                  - cell "1" [ref=e951]
+                  - cell "1.9" [ref=e952]
+                - row [ref=e953]:
+                  - cell "cf67718ab2428f75..." [ref=e954]
+                  - cell "08-09 19:09:43" [ref=e956]
+                  - cell "1" [ref=e957]
+                  - cell "1" [ref=e959]
+                  - cell "1.1" [ref=e960]
+                - row [ref=e961]:
+                  - cell "7e958a6b7df93191..." [ref=e962]
+                  - cell "08-09 19:09:43" [ref=e964]
+                  - cell "1" [ref=e965]
+                  - cell "1" [ref=e967]
+                  - cell "1.5" [ref=e968]
+                - row [ref=e969]:
+                  - cell "a8372fc26e1172d9..." [ref=e970]
+                  - cell "08-09 19:09:43" [ref=e972]
+                  - cell "1" [ref=e973]
+                  - cell "1" [ref=e975]
+                  - cell "1.5" [ref=e976]
+                - row [ref=e977]:
+                  - cell "3e3fc8f9e4246c8f..." [ref=e978]
+                  - cell "08-09 19:09:43" [ref=e980]
+                  - cell "1" [ref=e981]
+                  - cell "1" [ref=e983]
+                  - cell "0.0" [ref=e984]
+                - row [ref=e985]:
+                  - cell "002fae487cb63c2f..." [ref=e986]
+                  - cell "08-09 19:09:43" [ref=e988]
+                  - cell "1" [ref=e989]
+                  - cell "1" [ref=e991]
+                  - cell "0.7" [ref=e992]
+                - row [ref=e993]:
+                  - cell "0af221f2a3933109..." [ref=e994]
+                  - cell "08-09 19:09:43" [ref=e996]
+                  - cell "1" [ref=e997]
+                  - cell "1" [ref=e999]
+                  - cell "0.7" [ref=e1000]
+                - row [ref=e1001]:
+                  - cell "a52bf895864636f4..." [ref=e1002]
+                  - cell "08-09 19:09:42" [ref=e1004]
+                  - cell "1" [ref=e1005]
+                  - cell "1" [ref=e1007]
+                  - cell "0.2" [ref=e1008]
+                - row [ref=e1009]:
+                  - cell "0e103563df897885..." [ref=e1010]
+                  - cell "08-09 19:09:42" [ref=e1012]
+                  - cell "1" [ref=e1013]
+                  - cell "1" [ref=e1015]
+                  - cell "0.4" [ref=e1016]
+                - row [ref=e1017]:
+                  - cell "f36e09f30047b78c..." [ref=e1018]
+                  - cell "08-09 19:09:42" [ref=e1020]
+                  - cell "1" [ref=e1021]
+                  - cell "1" [ref=e1023]
+                  - cell "0.4" [ref=e1024]
+                - row [ref=e1025]:
+                  - cell "ff8f3007b441520b..." [ref=e1026]
+                  - cell "08-09 19:09:42" [ref=e1028]
+                  - cell "1" [ref=e1029]
+                  - cell "1" [ref=e1031]
+                  - cell "0.6" [ref=e1032]
+                - row [ref=e1033]:
+                  - cell "7582439e0c175dd1..." [ref=e1034]
+                  - cell "08-09 19:09:42" [ref=e1036]
+                  - cell "1" [ref=e1037]
+                  - cell "1" [ref=e1039]
+                  - cell "0.7" [ref=e1040]
+                - row [ref=e1041]:
+                  - cell "94fadfc7bac7a786..." [ref=e1042]
+                  - cell "08-09 19:09:42" [ref=e1044]
+                  - cell "1" [ref=e1045]
+                  - cell "1" [ref=e1047]
+                  - cell "0.8" [ref=e1048]
+                - row [ref=e1049]:
+                  - cell "a18ffaa41d8e2e26..." [ref=e1050]
+                  - cell "08-09 19:09:41" [ref=e1052]
+                  - cell "1" [ref=e1053]
+                  - cell "1" [ref=e1055]
+                  - cell "0.8" [ref=e1056]
+            - list [ref=e1057]:
+              - listitem [ref=e1058]: 共 50 条调用链
+              - listitem "Previous Page" [ref=e1059]:
+                - button [disabled] [ref=e1060]:
+                  - img "left" [ref=e1061]
+              - listitem "1" [ref=e1064] [cursor=pointer]
+              - listitem "2" [ref=e1066] [cursor=pointer]
+              - listitem "3" [ref=e1068] [cursor=pointer]
+              - listitem "Next Page" [ref=e1070] [cursor=pointer]:
+                - button [ref=e1071]:
+                  - img "right" [ref=e1072]
+  - button "🤖" [ref=e514] [cursor=pointer]
