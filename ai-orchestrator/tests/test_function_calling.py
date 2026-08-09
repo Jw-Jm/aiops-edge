@@ -173,3 +173,11 @@ def test_parse_llm_decision_invalid_defaults_final():
 def test_parse_llm_decision_tool_missing_name_is_final():
     d = parse_llm_decision('{"type":"tool","arguments":{}}')
     assert d["type"] == "final"
+
+
+def test_parse_llm_decision_non_dict_json_is_final():
+    # LLM 输出合法 JSON 数组/标量时按 final 容错，不崩溃
+    d = parse_llm_decision('["a", "b"]')
+    assert d["type"] == "final"
+    d2 = parse_llm_decision("42")
+    assert d2["type"] == "final"

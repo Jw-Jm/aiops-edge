@@ -19,6 +19,9 @@ def parse_llm_decision(raw: str) -> dict:
         d = json.loads(text)
     except Exception:
         return {"type": "final", "content": raw[:2000]}
+    # LLM 可能输出合法 JSON 但非 dict（数组/标量），此时按 final 容错处理，避免崩溃
+    if not isinstance(d, dict):
+        return {"type": "final", "content": raw[:2000]}
     if d.get("type") == "tool" and d.get("name"):
         return {"type": "tool", "name": d["name"], "arguments": d.get("arguments") or {}}
     return {"type": "final", "content": d.get("content") or raw[:2000]}
