@@ -31,23 +31,43 @@ def _get_ef():
     try:
         if _EF is not None:
             return _EF
-        # 首选 ChromaDB 内置 ONNX 模型（离线安全）
+        # 首选中文 embedding 模型 bge-small-zh-v1.5 (sentence-transformers, 本地缓存, 零联网)
+        # 显著提升中文故障描述 (k8s/Kylin/内核/kubevirt/ceph) 的向量检索精度
+        try:
+            from chromadb.utils import embedding_functions
+            _EF = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="BAAI/bge-small-zh-v1.5",
+                device="cpu",
+            )
+            # 用本地缓存路径，避免联网 HuggingFace
+            import os
+            _HF_HOME = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+            _EF._model_kwargs = getattr(_EF, "_model_kwargs", {}) or {}
+            _EF._model_kwargs["cache_folder"] = _HF_HOME
+            _EF._model_kwargs["local_files_only"] = True
+            # 预热一次，确认模型可加载
+            _EF(["中文检索预热"])
+            print("[RAG] embedding 使用 bge-small-zh-v1.5 (中文模型, 本地缓存)")
+            return _EF
+        except Exception as e:
+            print(f"[RAG] bge-small-zh 模型加载失败: {e}")
+        # 降级：ChromaDB 内置 ONNX 模型（离线安全）
         try:
             from chromadb.utils import embedding_functions
             _EF = embedding_functions.ONNXMiniLM_L6_V2(
                 preferred_providers=["CPUExecutionProvider"])
-            print("[RAG] embedding 使用 ONNXMiniLM_L6_V2 (离线)")
+            print("[RAG] embedding 降级使用 ONNXMiniLM_L6_V2 (离线)")
             return _EF
         except Exception as e:
             print(f"[RAG] ONNX 模型加载失败: {e}")
-        # 降级：尝试本地的 sentence-transformers（仅用本地缓存，不联网）
+        # 再降级：all-MiniLM-L6-v2 sentence-transformers
         try:
             from chromadb.utils import embedding_functions
             _EF = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name="sentence-transformers/all-MiniLM-L6-v2",
                 device="cpu",
             )
-            print("[RAG] embedding 使用 sentence-transformers all-MiniLM-L6-v2")
+            print("[RAG] embedding 降级使用 sentence-transformers all-MiniLM-L6-v2")
             return _EF
         except Exception as e:
             print(f"[RAG] sentence-transformers 模型加载失败: {e}")
@@ -107,13 +127,14 @@ class RAGStore:
                 return False
             t = threading.Thread(target=_do_init, daemon=True)
             t.start()
-            t.join(timeout=8)
+            # 首次冷启动加载中文 embedding 模型 + 打开 ChromaDB 需要时间，给足 60s
+            t.join(timeout=60)
             if result.get("ok"):
                 return True
             if t.is_alive():
-                # 线程还在跑（联网卡住），直接标记失败降级，不等待
-                self._init_error = "timeout: ChromaDB/模型初始化超时，已降级"
-                print(f"[RAG] {self._init_error}")
+                # 线程还在跑，本次降级返回 False，但不永久标记失败：
+                # 后台线程完成后仍会置 _ready，后续请求可正常使用 RAG
+                print("[RAG] 初始化进行中，本次检索降级跳过 (后台线程继续加载)")
                 return False
             self._init_error = result.get("err", "unknown init error")
             print(f"[RAG] ChromaDB 初始化失败 (将降级运行): {self._init_error}")

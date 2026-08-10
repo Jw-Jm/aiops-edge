@@ -1,0 +1,140 @@
+[
+  {
+    "service": "kubernetes",
+    "symptom": "Kubernetes 节点状态显示 NotReady，kubelet 无法上报节点状态，Pod 无法调度",
+    "root_cause": "kubelet 异常或网络组件 (CNI) 故障导致节点心跳丢失，或 /var/lib/kubelet 磁盘满、docker/containerd 未运行",
+    "plan": "1. 检查节点 kubelet 服务状态: systemctl status kubelet；2. 查看 kubelet 日志: journalctl -u kubelet -f 定位报错；3. 确认容器运行时 (containerd/docker) 存活；4. 检查磁盘空间: df -h /var/lib/kubelet，清理日志与镜像；5. 检查 CNI 网络插件 (flannel/calico) pod 是否正常；6. 修复后 kubectl uncordon 节点重新调度"
+  },
+  {
+    "service": "kubernetes",
+    "symptom": "Pod 状态 CrashLoopBackOff，容器反复崩溃重启，无法进入 Running",
+    "root_cause": "容器启动命令错误、依赖缺失、OOM 内存超限、健康检查探针配置失败、镜像内进程无法启动",
+    "plan": "1. kubectl describe pod 查看 Events 和退出码；2. kubectl logs 查看容器实际报错；3. 检查 exit code：137=OOM、1=启动失败；4. 调整 resources.limits 或修复启动命令/参数；5. 检查 livenessProbe/readinessProbe 探针路径与端口；6. 验证镜像可独立启动后重新部署"
+  },
+  {
+    "service": "kubernetes",
+    "symptom": "Pod 状态 ImagePullBackOff/ErrImagePull，镜像拉取失败，Pod 无法启动",
+    "root_cause": "镜像名/标签错误、镜像不存在、私有仓库未配置 imagePullSecret、拉取超时、registry 不可达",
+    "plan": "1. kubectl describe pod 查看拉取报错详情；2. 确认镜像 tag 存在: docker pull 验证；3. 私有仓库添加 imagePullSecrets；4. 检查镜像仓库网络与认证；5. 用正确镜像地址重新部署；6. 本地环境可改用镜像仓库镜像源规避外网超时"
+  },
+  {
+    "service": "kubernetes",
+    "symptom": "Kubernetes Node 端口或 Service 无法访问，ClusterIP 服务不通，Pod 间通信异常",
+    "root_cause": "CNI 插件故障、kube-proxy 未运行或 iptables 规则错误、Service selector 标签不匹配、防火墙拦截",
+    "plan": "1. 检查 kube-proxy pod 状态: kubectl get pods -n kube-system；2. 检查 Service selector 与 Pod 标签匹配: kubectl get svc -o yaml；3. 检查 CNI (calico/flannel) 组件；4. 检查节点防火墙规则 (iptables/firewalld)；5. 重启 kube-proxy 重建规则；6. 验证 Endpoints 是否有后端 Pod: kubectl get endpoints"
+  },
+  {
+    "service": "kubernetes",
+    "symptom": "Pod 一直 Pending 无法调度，提示 0/1 nodes are available，资源不足",
+    "root_cause": "节点 CPU/内存不足、节点亲和/污点 (taint/toleration) 不匹配、持久卷 PVC 未绑定、资源配额限制",
+    "plan": "1. kubectl describe pod 查看调度失败原因；2. 检查节点资源: kubectl top nodes，释放或扩容；3. 检查 nodeSelector/affinity 与 taint: kubectl describe node；4. 检查 PVC 是否 Bound；5. 调整 resources.requests 或加 toleration；6. 检查 ResourceQuota/LimitRange"
+  },
+  {
+    "service": "kubernetes",
+    "symptom": "Kubernetes 证书过期 (kubelet/etcd/CA)，kubectl 报 x509: certificate has expired or is not yet valid",
+    "root_cause": "集群证书默认 1 年有效期，到期后控制面组件通信失败",
+    "plan": "1. 检查证书过期时间: kubeadm certs check-expiration；2. kubeadm certs renew all 续期全部证书；3. 更新 kubeconfig: kubeadm init phase kubeconfig；4. 重启 kubelet 与静态 Pod 使新证书生效；5. 生产建议配置自动续期 (kubelet 证书轮换)"
+  },
+  {
+    "service": "kylin-v10",
+    "symptom": "银河麒麟 Kylin V10 开机黑屏、卡在启动界面或无限重启，无法进入桌面/命令行",
+    "root_cause": "图形驱动不兼容、系统引导损坏、内核参数错误、磁盘空间满或系统文件损坏",
+    "plan": "1. 开机按 Esc/Shift 进入 GRUB，选择恢复模式或编辑内核参数 (nomodeset)；2. 检查磁盘空间: df -h，清理 /var/log 等；3. 修复引导: grub2-mkconfig -o /boot/grub2/grub.cfg；4. 重装或回退显卡驱动；5. 检查 /var/log/messages 定位崩溃点；6. 必要时进入单用户模式修复损坏文件"
+  },
+  {
+    "service": "kylin-v10",
+    "symptom": "银河麒麟 Kylin V10 软件源无法使用、yum/dnf 安装软件报错或包依赖冲突",
+    "root_cause": "软件源配置错误、官方源不可达、依赖关系破坏、epel/麒麟源未正确配置",
+    "plan": "1. 检查 /etc/yum.repos.d/ 源配置，改回官方或国内镜像源；2. yum clean all && yum makecache 重建缓存；3. 用 yum install 指定版本解决依赖；4. 缺依赖用 yum install 下载缺失包；5. 验证源连通性: yum repolist"
+  },
+  {
+    "service": "kylin-v10",
+    "symptom": "银河麒麟 Kylin V10 网络无法上网或网卡未激活，ip addr 无 IP 地址",
+    "root_cause": "NetworkManager/网卡服务未启用、网卡配置错误、网络防护软件拦截、驱动未加载",
+    "plan": "1. nmcli device status 检查网卡状态；2. nmcli con up 激活连接；3. 检查网卡配置文件 (ifcfg-*) 与 ONBOOT=yes；4. 关闭安全中心网络防护或放行规则；5. 检查驱动: lsmod | grep 网卡；6. 重启 network/NetworkManager 服务"
+  },
+  {
+    "service": "kylin-v10",
+    "symptom": "银河麒麟 Kylin V10 授权激活失败、提示许可证过期或无法激活",
+    "root_cause": "激活码错误、服务器不可达、系统时间异常、未联网或激活服务问题",
+    "plan": "1. 检查系统时间并同步 (date/nptdate)；2. 确认能访问激活服务器；3. 重新输入正确的激活码/授权文件；4. 检查授权工具状态: kylin-auth 或系统授权中心；5. 联系厂商获取有效授权；6. 重启授权服务生效"
+  },
+  {
+    "service": "kylin-v10",
+    "symptom": "银河麒麟 Kylin V10 桌面版 V10 SP1 登录域控或域账户失败，无法认证",
+    "root_cause": "域加入配置错误、Kerberos/DNS 配置问题、时间不同步、域控不可达",
+    "plan": "1. 检查与域控的 DNS 解析和网络连通；2. 校准系统时间避免 Kerberos 票据失败；3. 检查 /etc/krb5.conf 和 sssd/winbind 配置；4. 重新加入域: realm join 或 adjoin；5. 检查域控防火墙端口 (88/389/445)"
+  },
+  {
+    "service": "linux-kernel",
+    "symptom": "Linux 内核 Kernel Panic 系统崩溃，控制台显示 Kernel panic - not syncing，系统重启或挂死",
+    "root_cause": "硬件故障 (内存/CPU)、驱动缺陷、文件系统损坏、内核缺陷或关键进程 OOM",
+    "plan": "1. 记录 panic 完整日志 (dmesg/journalctl -k)；2. 检查硬件: memtest 内存、检查硬盘 SMART；3. 定位 Oops/Panic 中的函数栈 (stack trace)；4. 升级或回退内核版本；5. 更新/回退可疑驱动；6. 配置 kdump/crash 收集完整 coredump 分析；7. 检查 root 分区是否写满"
+  },
+  {
+    "service": "linux-kernel",
+    "symptom": "Linux 内核 Oops 非致命内核错误，系统仍运行但可能不稳定，日志出现 BUG: unable to handle kernel paging request",
+    "root_cause": "内核模块/驱动访问非法内存地址、内存损坏、驱动与内核版本不兼容",
+    "plan": "1. 捕获完整 oops 日志 (dmesg)；2. 分析 stack trace 定位出问题的模块；3. 更新或禁用可疑内核模块；4. 检查内存 (memtest)；5. 升级内核或驱动版本；6. 若可稳定复现，收集 coredump 提交内核分析"
+  },
+  {
+    "service": "linux-kernel",
+    "symptom": "Linux 系统出现 OOM (Out of Memory)，内核杀进程 (OOM Killer)，应用被 kill，日志出现 Out of memory: Kill process",
+    "root_cause": "物理内存不足、进程内存泄漏、cgroup 内存限制触发、swap 配置不足",
+    "plan": "1. 查看 /var/log/messages 或 dmesg 的 OOM 记录；2. free -h 检查内存与 swap；3. 定位内存大户: top/ps aux --sort=-%mem；4. 排查应用内存泄漏并修复；5. 增加 swap 或内存；6. 优化 cgroup 内存 limit；7. 对关键进程设置 OOM_Score 保护"
+  },
+  {
+    "service": "linux-kernel",
+    "symptom": "Linux 内核死锁 (deadlock) 或软锁 (soft lockup)，系统卡死无响应，日志出现 soft lockup - CPU stuck",
+    "root_cause": "内核锁竞争死锁、驱动持锁卡住、CPU 长时间中断屏蔽、有缺陷的驱动阻塞",
+    "plan": "1. 记录 soft lockup 日志中的 CPU 与内核栈；2. 定位持锁的驱动/内核线程；3. 更新或禁用该驱动；4. 检查是否中断风暴 (irq)；5. 升级内核修复锁 bug；6. 配置 watchdog 自动重启恢复 (hard lockup)"
+  },
+  {
+    "service": "kubevirt",
+    "symptom": "KubeVirt 虚拟机 (VMI) 一直处于 Pending 无法调度，创建失败或卡住",
+    "root_cause": "节点不支持虚拟化 (KVM 未开启)、virt-launcher 资源不足、节点污点、CRD/virt-controller 异常",
+    "plan": "1. 检查节点 KVM 支持: grep -E '(vmx|svm)' /proc/cpuinfo，无则启用嵌套虚拟化；2. kubectl describe vmi 查看调度失败原因；3. 检查 virt-controller/virt-handler pod 状态；4. 检查 KubeVirt CRD 是否注册；5. 添加 toleration 或选择支持虚拟化的节点；6. 检查 /dev/kvm 是否存在"
+  },
+  {
+    "service": "kubevirt",
+    "symptom": "KubeVirt 虚拟机热迁移 (Live Migration) 失败，VMI 状态 migrationState 显示 Failed",
+    "root_cause": "源/目的节点网络不通、存储不共享或网络带宽不足、迁移超时、节点资源不足、虚拟机使用非迁移兼容设备",
+    "plan": "1. kubectl get vmi -o yaml 查看 migrationState 报错；2. 检查源/目的节点网络连通与迁移端口；3. 确认存储为共享存储 (block/RWX) 并支持块迁移；4. 调整 migrationConfiguration 带宽/超时 (bandwidthPerMigration, completionTimeoutPerGiB)；5. 检查目的节点 CPU/内存/PCI 资源；6. 查看 virt-handler 日志定位具体失败原因"
+  },
+  {
+    "service": "kubevirt",
+    "symptom": "KubeVirt 虚拟机创建后 Paused 或 VMI 无法启动，状态 Unknown，virt-launcher 异常",
+    "root_cause": "qemu/libvirt 启动失败、磁盘卷未就绪、virt-launcher 资源限制、存储 PVC 未绑定、安全上下文问题",
+    "plan": "1. kubectl describe vmi 和 virt-launcher pod 日志；2. 检查 PVC 是否 Bound 且存储可访问；3. 查看 virt-handler 日志定位 qemu 启动错误；4. 检查节点资源与 /dev/kvm 权限；5. 调整 virt-launcher resources 配额；6. 重启 virt-handler/virt-controller"
+  },
+  {
+    "service": "kubevirt",
+    "symptom": "KubeVirt 虚拟机快照失败，无法创建或恢复快照，报存储不支持快照",
+    "root_cause": "后端存储不支持快照、未启用 qemu-guest-agent、快照 API 版本不兼容、PVC 存储类无快照能力",
+    "plan": "1. 确认存储后端支持快照 (CSI snapshot) ；2. 虚拟机内安装并启用 qemu-guest-agent；3. 检查存储类 storageclass 是否启用 snapshot；4. 查看 virt-controller 快照日志；5. 使用支持的存储类重建 PVC；6. 升级 KubeVirt 到支持快照的版本"
+  },
+  {
+    "service": "ceph",
+    "symptom": "Ceph 集群 OSD 状态 down，数据处于 degraded，health 变为 WARN/ERR，读写变慢",
+    "root_cause": "磁盘坏道/故障、OSD 进程崩溃、网络故障、monitor 无法联系 OSD、磁盘空间满",
+    "plan": "1. ceph health detail 确认 OSD 故障；2. ceph osd tree 定位 down 的 OSD 及节点；3. 检查 OSD 磁盘 SMART 与空间: df -h；4. 重启 OSD 服务: systemctl restart ceph-osd@N；5. 若磁盘损坏则更换磁盘并重做 OSD: ceph orch osd rm；6. 等待 recovery 完成后确认 health OK"
+  },
+  {
+    "service": "ceph",
+    "symptom": "Ceph PG 状态 active+degraded 或 active+clean 无法达成，PG 长时间不恢复 (stuck inactive/peered)",
+    "root_cause": "OSD 故障导致副本不足、PG 数据损坏、monitor 时钟漂移、副本数配置与实际不符、网络分区",
+    "plan": "1. ceph health detail 查看 stuck PG；2. ceph pg dump 分析 PG 状态；3. 检查 OSD 在线数与副本数 (osd_pool_default_size)；4. 修复损坏 PG: ceph pg repair 或 ceph-objectstore-tool 修复；5. 检查节点时钟同步 (NTP)；6. 确认网络无分区，等待或手动调度 PG"
+  },
+  {
+    "service": "ceph",
+    "symptom": "Ceph 出现 slow ops / slow requests，客户端 IO 延迟高，osd 卡在 op 处理",
+    "root_cause": "磁盘性能瓶颈、网络拥塞、OSD 过载 (recovery 占满 IO)、monitor 慢、内存不足",
+    "plan": "1. ceph daemon osd.N ops 查看慢操作；2. ceph -s 观察 recovery/backfill 是否占满带宽；3. 限制恢复速度: ceph config set global osd_max_backfills 1；4. 检查磁盘 IO (iostat) 与网络；5. 调整 osd 内存/日志配置；6. 定位具体慢 osd 并处理坏盘"
+  },
+  {
+    "service": "ceph",
+    "symptom": "Ceph 集群 mon 状态 quorum 异常，monitor 无法形成多数派 (no quorum)，客户端无法连接",
+    "root_cause": "monitor 进程崩溃、mon 数据损坏、时钟漂移、网络隔离导致多数派丢失、磁盘满",
+    "plan": "1. ceph mon stat 检查 quorum；2. 检查 mon 服务与日志: journalctl -u ceph-mon；3. 检查节点时钟同步 (chrony/ntp)；4. 修复损坏 mon: ceph-mon --inject 或重建 mon；5. 确认多数派节点网络连通；6. 检查 mon 磁盘空间，清理或扩容"
+  }
+]
