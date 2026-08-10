@@ -81,7 +81,11 @@ def _get_ef():
 class RAGStore:
     """ChromaDB-backed case store for ops experience retrieval with feedback loop."""
 
-    def __init__(self, persist_dir="/tmp/ops-cases"):
+    def __init__(self, persist_dir=None):
+        # 统一数据目录: 由 AIOPS_DATA_DIR 环境变量控制 (helm 挂载 PVC 到 /var/lib/aiops)
+        if persist_dir is None:
+            data_dir = os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
+            persist_dir = os.path.join(data_dir, "ops-cases")
         os.makedirs(persist_dir, exist_ok=True)
         self._ready = False
         self._init_error = None

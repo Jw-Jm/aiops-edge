@@ -8,7 +8,11 @@ import time
 class SessionStore:
     """Custom session store - LangGraph SqliteSaver compatible"""
 
-    def __init__(self, db_path="/tmp/ai-sessions.db"):
+    def __init__(self, db_path=None):
+        import os as _os
+        if db_path is None:
+            data_dir = _os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
+            db_path = _os.path.join(data_dir, "ai-sessions.db")
         self.db_path = db_path
         self._init_db()
 

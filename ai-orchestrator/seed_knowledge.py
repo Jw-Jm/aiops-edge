@@ -43,7 +43,8 @@ def load_and_seed(json_path: str, persist_dir: str) -> dict:
 
 if __name__ == "__main__":
     json_path = sys.argv[1] if len(sys.argv) > 1 else "data/knowledge_cases.json"
-    persist_dir = sys.argv[2] if len(sys.argv) > 2 else "/tmp/ops-cases"
+    _data_dir = os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
+    persist_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(_data_dir, "ops-cases")
     print(f"[seed] 开始导入知识库: {json_path} -> {persist_dir}")
     r = load_and_seed(json_path, persist_dir)
     print(f"[seed] 完成: 新增 {r['added']} 条, 去重跳过 {r['dup']} 条, 当前案例总数 {r['total']}")

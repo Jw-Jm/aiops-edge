@@ -55,6 +55,8 @@ COPY bin/kubectl /usr/local/bin/kubectl
 RUN echo ">>> [5/6] 赋权二进制工具 (k8sgpt + kubectl 本地拷贝)" && \
     chmod +x /usr/local/bin/k8sgpt /usr/local/bin/kubectl
 COPY . .
+# 内置知识库随镜像分发（供启动自动加载 + 上线后重载），避免运行时从外部拉取
+COPY data/knowledge_cases.json /app/data/knowledge_cases.json
 # 清理构建期的离线依赖包（已被解压到镜像），避免 `COPY . .` 把 bin/ 重复带入镜像导致体积膨胀
 RUN rm -rf /app/bin /tmp/*.tar.gz
 EXPOSE 8080

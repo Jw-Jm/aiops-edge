@@ -1432,6 +1432,50 @@ async def delete_knowledge(kid: int):
     return {"ok": True}
 
 
+# ── RAG 故障案例库管理（ChromaDB, 供 AI 诊断检索） ──────────────
+@app.get("/api/v1/ai/knowledge/rag/stats")
+async def rag_knowledge_stats():
+    """RAG 案例库统计：案例总数 + 最近导入时间。"""
+    from rag import rag
+    try:
+        total = rag.collection.count()
+    except Exception:
+        total = 0
+    return {"collection": "ops_cases", "total": total}
+
+
+@app.post("/api/v1/ai/knowledge/rag/reload")
+async def rag_knowledge_reload():
+    """重载项目内置知识库文件 (data/knowledge_cases.json)，幂等去重。
+    上线后向该文件追加新案例并调用此接口即可增量导入，无需重建镜像。"""
+    from knowledge_seed import seed_default
+    r = seed_default()
+    return {"ok": True, **r}
+
+
+@app.post("/api/v1/ai/knowledge/rag/import")
+async def rag_knowledge_import(body: dict = None):
+    """单条导入 RAG 案例 (供运行时动态新增，写入 ChromaDB 并落盘到持久目录)。"""
+    b = body or {}
+    symptom, service = b.get("symptom", ""), b.get("service", "kubernetes")
+    if not symptom:
+        raise HTTPException(400, "symptom is required")
+    import hashlib
+    cid = hashlib.md5(symptom.encode()).hexdigest()[:12]
+    from rag import rag
+    case = {
+        "case_id": cid,
+        "service": service,
+        "symptom": symptom,
+        "root_cause": b.get("root_cause", ""),
+        "plan": b.get("plan", ""),
+        "outcome": b.get("outcome", "success"),
+        "report": f"[{service}] 故障案例: {symptom}",
+    }
+    r = rag.add_case(case)
+    return {"ok": True, "case_id": cid, "inserted": r == cid}
+
+
 @app.get("/api/v1/ai/rules")
 async def list_rules():
     from db_agents import RuleStore
@@ -1587,7 +1631,7 @@ _snmp_collector = SNMPCollector()
 
 @app.on_event("startup")
 async def _start_snmp_collector():
-    """启动初始化：应用 MySQL 迁移 + 后台 SNMP 采集调度（均可降级，失败不阻塞）。"""
+    """启动初始化：MySQL 迁移 + 后台 SNMP 采集 + 知识库自动加载（均可降级，失败不阻塞）。"""
     try:
         from db import migrate
         migrate()
@@ -1597,6 +1641,24 @@ async def _start_snmp_collector():
         asyncio.create_task(_snmp_collector.run_forever())
     except Exception:
         pass
+    # 启动时自动加载/增量导入知识库（幂等去重；上线后可新增 data/knowledge_cases.json 内容）
+    try:
+        import threading
+        threading.Thread(target=_seed_knowledge_bg, daemon=True).start()
+    except Exception:
+        pass
+
+
+def _seed_knowledge_bg():
+    """后台线程加载知识库，避免阻塞 startup；仅首次冷启动导入，后续幂等跳过。"""
+    try:
+        import logging
+        from knowledge_seed import seed_default
+        r = seed_default()
+        logging.getLogger("knowledge_seed").info("知识库自动加载完成: %s", r)
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger("knowledge_seed").warning("知识库自动加载失败(不影响启动): %s", e)
 
 
 @app.get("/api/v1/snmp/devices")

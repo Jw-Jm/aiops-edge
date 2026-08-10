@@ -898,9 +898,13 @@ def build_graph(checkpointer=None, mode: str = "full"):
 # ═══════════════════════════════════════════════════════════════
 
 class BrainOrchestrator:
-    def __init__(self, db_path="/tmp/ai-sessions.db"):
+    def __init__(self, db_path=None):
+        import os as _os
+        if db_path is None:
+            db_path = _os.path.join(_os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops"), "ai-sessions.db")
         self.llm_config = None
         import sqlite3
+        _os.makedirs(_os.path.dirname(db_path), exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self.checkpointer = SqliteSaver(self._conn)
         # 双图: chat_graph 用于交互式 Chat (精简快速)，graph 用于完整运维任务
