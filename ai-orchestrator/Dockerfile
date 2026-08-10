@@ -24,42 +24,35 @@ RUN set -eux; \
       cp "$DEBIAN_SRC" "$DEBIAN_SRC.bak"; \
       { echo "Types: deb"; echo "URIs: http://${APT_MIRROR}/debian/"; echo "Suites: bookworm bookworm-updates bookworm-backports"; echo "Components: main contrib non-free non-free-firmware"; echo "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg"; } > "$DEBIAN_SRC"; \
     fi
-RUN apt-get update && apt-get install -y curl git procps iproute2 net-tools iputils-ping \
+RUN echo ">>> [1/6] 安装系统工具 (apt 国内源)" && \
+    apt-get update && apt-get install -y curl git procps iproute2 net-tools iputils-ping \
     sysstat gawk grep sed \
-    && \
-    (curl -sL "https://github.com/k8sgpt-ai/k8sgpt/releases/download/v0.4.0/k8sgpt_linux_${TARGETARCH}.tar.gz" | tar xz -C /usr/local/bin k8sgpt) || \
-    echo "k8sgpt binary skipped" && \
-    # 安装 kubectl（K8s 集群操作，供诊断/执行使用）
-    (curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.28.0/bin/linux/${TARGETARCH}/kubectl" && chmod +x /usr/local/bin/kubectl) || \
-    echo "kubectl binary skipped" && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Python 依赖（完全离线）：从本地 bin/sp.tar.gz 直接解压已装好的 site-packages，零网络下载。
+# 来源：从已运行成功的 ai-orchestrator 容器内打包导出（torch 2.13.0+cpu / chromadb 1.1.1 / sentence-transformers 5.7.0 等全部依赖）
+COPY bin/sp.tar.gz /tmp/sp.tar.gz
+COPY bin/pybin.tar.gz /tmp/pybin.tar.gz
+RUN echo ">>> [3/6] 解压 Python 依赖 (site-packages + console scripts 离线包)" && \
+    mkdir -p /usr/local/lib/python3.12 && \
+    tar xzf /tmp/sp.tar.gz -C /usr/local/lib/python3.12/ && \
+    tar xzf /tmp/pybin.tar.gz -C /usr/local/bin/ && \
+    chmod +x /usr/local/bin/uvicorn /usr/local/bin/chroma 2>/dev/null; \
+    rm -f /tmp/sp.tar.gz /tmp/pybin.tar.gz
 
-# Python deps (多国内 pip 源依次尝试: 清华→阿里云→腾讯云, 避免回退到慢的 pypi.org)
-# 先安装 CPU 版 torch, 避免 sentence-transformers 自动拉取 GPU/CUDA 依赖(数GB, CPU 服务器用不到)
-COPY requirements.txt .
-# 优先装 CPU 版 torch(避免拉取数 GB CUDA 依赖); 失败则回退默认源
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu || \
-    pip install --no-cache-dir torch || \
-    pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn torch || \
-    echo "torch install skipped (will be pulled by requirements)"
-# 安装其余 Python 依赖 (多国内 pip 源依次尝试: 清华→阿里云→腾讯云)
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn -r requirements.txt || \
-    pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com -r requirements.txt || \
-    pip install --no-cache-dir -i https://mirrors.cloud.tencent.com/pypi/simple --trusted-host mirrors.cloud.tencent.com -r requirements.txt
+# 嵌入模型缓存（完全离线）：从本地 bin/hf.tar.gz 直接解压 HF 模型缓存（bge-small-zh + chromadb onnx）
+COPY bin/hf.tar.gz /tmp/hf.tar.gz
+RUN echo ">>> [4/6] 解压 HF 模型缓存 (离线包)" && \
+    mkdir -p /root/.cache && \
+    tar xzf /tmp/hf.tar.gz -C /root/.cache/ && \
+    rm -f /tmp/hf.tar.gz
 
-# Pre-cache embedding models
-# 1. bge-small-zh-v1.5 for sentence-transformers (RAG)
-RUN HF_ENDPOINT=https://hf-mirror.com python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5')" || \
-    python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5')"
-# 2. ChromaDB onnx model (all-MiniLM-L6-v2 fallback, ~79MB) — pre-cache to avoid runtime download
-# 使用国内 HF 镜像 (hf-mirror.com) 加速模型下载，避免从国外源极慢下载
-RUN HF_ENDPOINT=https://hf-mirror.com python3 -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; \
-    ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider']); \
-    ef(['pre-cache'])" || \
-    python3 -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; \
-    ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider']); \
-    ef(['pre-cache'])" || echo "chromadb onnx cache skipped"
-
+# 二进制工具：k8sgpt + kubectl 均用本地已下载好的 linux/arm64 版 (COPY 进镜像)，完全离线
+COPY bin/k8sgpt /usr/local/bin/k8sgpt
+COPY bin/kubectl /usr/local/bin/kubectl
+RUN echo ">>> [5/6] 赋权二进制工具 (k8sgpt + kubectl 本地拷贝)" && \
+    chmod +x /usr/local/bin/k8sgpt /usr/local/bin/kubectl
 COPY . .
+# 清理构建期的离线依赖包（已被解压到镜像），避免 `COPY . .` 把 bin/ 重复带入镜像导致体积膨胀
+RUN rm -rf /app/bin /tmp/*.tar.gz
 EXPOSE 8080
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"]

@@ -183,7 +183,7 @@ aiOrchestrator:
   minioEndpoint: "minio.observability.svc.cluster.local:9000"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
-  llmMock: "true"
+  llmMock: "false"
   dataStorageClass: ""
   dataStorage: 5Gi
   resources:

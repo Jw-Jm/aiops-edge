@@ -1,0 +1,9 @@
+# 离线依赖包（从运行容器导出，较大，不提交 git，构建时由 Dockerfile 从 bin/ 引用）
+bin/
+# Python 运行时产物
+__pycache__/
+*.pyc
+.venv/
+venv/
+# 日志
+*.log

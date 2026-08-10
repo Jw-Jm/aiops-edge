@@ -341,11 +341,37 @@ def node_clean(state: AgentState) -> dict:
     return {"messages": [f"[{_now()}] 数据清洗完成"]}
 
 
+def _top_anomaly_service() -> str:
+    """从全局服务概览中选出最异常的服务（错误率最高），供「未指定服务时默认为所有服务」的 RCA 兜底。"""
+    try:
+        data = _parse(get_service_list())
+        if not isinstance(data, list) or not data:
+            return ""
+        best_name, best_rate = "", -1.0
+        for s in data:
+            name = s.get("service_name", "")
+            traces = float(s.get("traces", 0) or 0)
+            if not name or traces <= 0:
+                continue
+            errs = float(s.get("errors", s.get("error_count", 0)) or 0)
+            if errs > 0:
+                rate = errs / traces
+                if rate > best_rate:
+                    best_rate, best_name = rate, name
+        return best_name or ""
+    except Exception:
+        return ""
+
+
 def node_rca(state: AgentState) -> dict:
-    """RCA 节点: 自动选择确定性或假设引擎模式"""
+    """RCA 节点: 自动选择确定性或假设引擎模式。
+    未指定服务时默认为所有服务 —— 自动选全服务中最异常者做 RCA，而非直接跳过。
+    """
     svc = state.get("service", "")
     if not svc:
-        return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无目标服务, 跳过"]}
+        svc = _top_anomaly_service()
+        if not svc:
+            return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
     try:
         result = full_rca_analysis(svc)
         mode = result.get("mode", "deterministic")
@@ -853,7 +879,7 @@ class BrainOrchestrator:
         return self._run_dag(intent, service, message, thread_id)
 
     def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
-        if not service: service = self._detect_service()
+        if not service: service = self._detect_service(message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "llm_config": self.llm_config,
@@ -873,7 +899,7 @@ class BrainOrchestrator:
             return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
 
     def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default", mode: str = "chat"):
-        if not service: service = self._detect_service()
+        if not service: service = self._detect_service(message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "llm_config": self.llm_config,
@@ -1029,13 +1055,27 @@ class BrainOrchestrator:
         except Exception as e:
             return f"执行异常: {str(e)[:200]}"
 
-    def _detect_service(self) -> str:
+    def _detect_service(self, message: str = "") -> str:
+        """推断目标服务名：优先从用户消息中匹配服务列表里的服务名（避免误诊为默认第一个），
+        仅在能明确匹配时才返回，否则返回空让 RCA 跳过。
+        """
         try:
             data = json.loads(get_service_list())
-            if isinstance(data, list) and data:
-                return data[0].get("service_name", "unknown")
-        except: pass
-        return "unknown"
+            if not isinstance(data, list) or not data:
+                return ""
+            services = [d.get("service_name", "") for d in data if d.get("service_name")]
+            if not services:
+                return ""
+            if message:
+                # 从消息中查找包含的服务名（按服务名长度降序匹配，避免短名误匹配）
+                msg_lower = message.lower()
+                for svc in sorted(services, key=len, reverse=True):
+                    if svc and svc.lower() in msg_lower:
+                        return svc
+            # 消息中没有明确服务名 → 返回空让 RCA 跳过，避免误用首个服务
+            return ""
+        except Exception:
+            return ""
 
 
 # ═══════════════════════════════════════════════════════════════

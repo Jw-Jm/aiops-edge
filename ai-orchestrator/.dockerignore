@@ -1,0 +1,8 @@
+# 排除开发/运行时无关内容，避免 `COPY . .` 将大文件或敏感内容拷入镜像
+.git
+__pycache__
+*.pyc
+.venv
+venv
+node_modules
+*.log
