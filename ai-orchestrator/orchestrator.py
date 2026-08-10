@@ -83,7 +83,7 @@ class AgentState(TypedDict):
 #  LLM call
 # ═══════════════════════════════════════════════════════════════
 
-from llm_mock import is_mock_enabled, mock_llm_response, should_skip_llm
+from llm_mock import is_mock_enabled, mock_llm_response
 from llm_mock import mock_llm_decision, mock_coordinator_plan, mock_reviewer_result
 from dual_agent import parse_subtasks, run_subtasks, merge_review
 
@@ -91,6 +91,15 @@ from dual_agent import parse_subtasks, run_subtasks, merge_review
 # state 中的 llm_config 剔除 api_key 字段，节点调用 _llm 时若缺 key 从此处回填，
 # 避免明文 key 落入 LangGraph SqliteSaver checkpoint / 日志。
 _LLM_KEY_HOLDER = {"api_key": ""}
+
+
+def _llm_key_ready() -> bool:
+    """判断是否具备真实 LLM 调用条件。
+    注意: cfg(llm_config) 里 api_key 已被 set_llm_config 安全剔除(只存 _LLM_KEY_HOLDER),
+    因此必须检查 _LLM_KEY_HOLDER 而非 cfg.get('api_key'), 否则真实 key 存在时也会被误判为
+    '无 key' 而全部走 mock/跳过 —— 这正是"LLM 并未实际调用"的根因。
+    """
+    return bool(_LLM_KEY_HOLDER.get("api_key"))
 
 
 def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家") -> str:
@@ -471,7 +480,7 @@ def node_rag(state: AgentState) -> dict:
 
 def node_crewai(state: AgentState) -> dict:
     cfg = state.get("llm_config")
-    if should_skip_llm(cfg):
+    if not _llm_key_ready():
         return {"crewai_result": ""}
 
     # LLM 动态路由: 根据用户消息匹配最佳专家
@@ -531,7 +540,7 @@ def node_crewai(state: AgentState) -> dict:
 
 def node_holmes(state: AgentState) -> dict:
     cfg = state.get("llm_config")
-    if should_skip_llm(cfg):
+    if not _llm_key_ready():
         return {"holmesgpt_result": ""}
     svc = state.get("service", "")
     context = f"服务: {svc}\nRED: {state.get('red_metrics','')}\nTrace: {state.get('trace_data','')}"[:4000]
@@ -735,7 +744,7 @@ def node_coordinator(state):
     user_msg = state.get("user_message", "")
     context = (state.get("services_data", "") + state.get("alert_data", ""))[:2000]
     raw = ""
-    if should_skip_llm(cfg) or is_mock_enabled():
+    if (not _llm_key_ready()) or is_mock_enabled():
         raw = json.dumps(mock_coordinator_plan(), ensure_ascii=False)
     else:
         raw = _llm(cfg, "你是任务协调器。把用户请求拆解为可并行执行的子任务，"
@@ -755,7 +764,7 @@ def node_subagent(state):
     if not subtasks:
         return {"sub_results": {}}
     cfg = state.get("llm_config")
-    if should_skip_llm(cfg) or is_mock_enabled():
+    if (not _llm_key_ready()) or is_mock_enabled():
         decision = mock_llm_decision
     else:
         from llm_fc import make_llm_decision_fn
@@ -769,7 +778,7 @@ def node_reviewer(state):
     """双层 Agent - Reviewer：合并审查全部子结论，输出最终报告。"""
     cfg = state.get("llm_config")
     sub_results = state.get("sub_results") or {}
-    if should_skip_llm(cfg) or is_mock_enabled():
+    if (not _llm_key_ready()) or is_mock_enabled():
         final = merge_review(sub_results, mock_reviewer_result)
     else:
         parts = "\n\n".join(f"[{tid}]({r.get('task_type', '')}): {r.get('conclusion', '')[:500]}"

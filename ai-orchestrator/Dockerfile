@@ -39,12 +39,15 @@ RUN echo ">>> [3/6] 解压 Python 依赖 (site-packages + console scripts 离线
     chmod +x /usr/local/bin/uvicorn /usr/local/bin/chroma 2>/dev/null; \
     rm -f /tmp/sp.tar.gz /tmp/pybin.tar.gz
 
-# 嵌入模型缓存（完全离线）：从本地 bin/hf.tar.gz 直接解压 HF 模型缓存（bge-small-zh + chromadb onnx）
+# 嵌入模型缓存（完全离线）：从本地 bin/hf.tar.gz 直接解压 HF 模型缓存（bge-small-zh）
 COPY bin/hf.tar.gz /tmp/hf.tar.gz
-RUN echo ">>> [4/6] 解压 HF 模型缓存 (离线包)" && \
+# ChromaDB onnx 模型（all-MiniLM-L6-v2, ~79MB）：从本地 bin/chroma.tar.gz 解压，避免运行时从国外源下载
+COPY bin/chroma.tar.gz /tmp/chroma.tar.gz
+RUN echo ">>> [4/6] 解压 HF + ChromaDB 模型缓存 (离线包)" && \
     mkdir -p /root/.cache && \
     tar xzf /tmp/hf.tar.gz -C /root/.cache/ && \
-    rm -f /tmp/hf.tar.gz
+    tar xzf /tmp/chroma.tar.gz -C /root/.cache/ && \
+    rm -f /tmp/hf.tar.gz /tmp/chroma.tar.gz
 
 # 二进制工具：k8sgpt + kubectl 均用本地已下载好的 linux/arm64 版 (COPY 进镜像)，完全离线
 COPY bin/k8sgpt /usr/local/bin/k8sgpt
