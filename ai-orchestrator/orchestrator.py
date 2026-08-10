@@ -341,6 +341,57 @@ def node_clean(state: AgentState) -> dict:
     return {"messages": [f"[{_now()}] 数据清洗完成"]}
 
 
+def _friendly_tool_result(node_name: str, node_data: dict) -> str:
+    """把 langgraph 节点的 state dict 转为用户友好的中文摘要。
+    避免 str(dict) 把 {'rca_mode': 'deterministic', ...} 这种调试数据直接展示给用户。
+    """
+    if not isinstance(node_data, dict):
+        return "已完成"
+    name = node_name.lower()
+    # RCA 根因分析
+    if name == "rca":
+        mode = node_data.get("rca_mode", "")
+        cause = node_data.get("rca_root_cause") or ""
+        if mode == "skipped":
+            return "未指定目标服务，已跳过"
+        if cause and cause != "unknown":
+            return f"已定位根因: {cause}"
+        return "根因分析完成"
+    # RAG 案例匹配
+    if name == "rag":
+        cases = node_data.get("similar_cases") or ""
+        if cases and cases.strip():
+            return f"匹配到 {len(cases) if isinstance(cases, list) else 1} 个相似案例"
+        msgs = node_data.get("messages") or []
+        if msgs:
+            # 提取 RAG: 后的简短说明
+            for m in msgs:
+                t = str(m)
+                if "RAG:" in t:
+                    return t.split("RAG:", 1)[1].strip()[:80] or "无相似案例"
+        return "暂无相似历史案例"
+    # CrewAI 分析
+    if name == "crewai":
+        result = node_data.get("crewai_result") or ""
+        if result and result.strip():
+            return result[:120]
+        return "团队分析完成"
+    # Trace 调查 (holmes)
+    if name == "holmes":
+        return "调用链分析完成"
+    # 生成操作方案
+    if name == "plan":
+        plan = node_data.get("plan") or ""
+        if plan:
+            return f"已生成操作方案 ({len(plan)} 字符)"
+        return "操作方案已就绪"
+    # 其它节点: 提取 messages 字段第一条
+    msgs = node_data.get("messages")
+    if isinstance(msgs, list) and msgs:
+        return str(msgs[-1])[:120]
+    return "已完成"
+
+
 def _top_anomaly_service() -> str:
     """从全局服务概览中选出最异常的服务（错误率最高），供「未指定服务时默认为所有服务」的 RCA 兜底。"""
     try:
@@ -941,9 +992,11 @@ class BrainOrchestrator:
                 if node_name in tool_node_map:
                     yield {"type": "tool_start", "tool_call_id": tool_id,
                            "name": tool_node_map[node_name], "status": "pending", "arguments": {}}
+                    # 提取用户友好的结果摘要, 避免把整个 state dict str() 后给用户看
+                    friendly_result = _friendly_tool_result(node_name, node_data)
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": tool_node_map[node_name], "status": "success",
-                           "arguments": {}, "result": str(node_data)[:500]}
+                           "arguments": {}, "result": friendly_result}
                 # 双层 Agent 节点级事件（批3）：coordinator/subagent/reviewer
                 if node_name == "coordinator":
                     yield {"type": "tool_start", "tool_call_id": tool_id, "name": "Coordinator 拆解",

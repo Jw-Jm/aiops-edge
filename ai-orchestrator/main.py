@@ -176,7 +176,16 @@ async def ai_chat(req: ChatRequest, request: Request):
             return f"event: {etype}\ndata: {data}\n\n"
 
         async def generate():
+            # 检查客户端断开: 浏览器关闭/取消时主动退出, 避免流悬挂
+            _is_disconnected = getattr(request, "is_disconnected", None)
             while True:
+                # 客户端断开 → 立即停止 (uvicorn 才能关闭连接, 前端 reader.read() 才会 done)
+                if _is_disconnected is not None:
+                    try:
+                        if await _is_disconnected():
+                            break
+                    except Exception:
+                        pass
                 try:
                     event = await _asyncio.get_event_loop().run_in_executor(None, event_queue.get, True, 0.1)
                 except queue.Empty:
@@ -197,6 +206,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         },
                     })
+                    # 关键修复: yield done 后立即结束流, 避免前端 reader.read() 永远等不到 done
+                    break
                 elif event.get("type") == "approval_pending":
                     # 创建待审批任务并回填真实 task_id 供前端审批卡绑定
                     tid = _create_chat_suggestion_task(event, req, thread_id)
@@ -205,6 +216,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                     yield _format_sse(event)
                 elif event.get("type") == "error":
                     yield _format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
+                    # error 后也立即结束, 避免流悬挂
+                    break
                 else:
                     yield _format_sse(event)
 
