@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -361,7 +362,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. 从 MySQL 拿富化元数据（LEFT JOIN 语义：缺失则用默认值）
-	meta := h.loadServiceMetadata(services)
+	meta := h.loadServiceMetadataForHandler(services)
 
 	// 3. 组装响应：每个服务一行，富化字段缺失时走默认值
 	result := make([]map[string]interface{}, 0, len(services))
@@ -407,14 +408,13 @@ type serviceMeta struct {
 }
 
 // loadServiceMetadata 批量加载服务富化元数据。
-// MySQL 不可达（store.GetDB() 返回 nil）时返回空 map，调用方降级为默认值。
+// db 为 nil 时返回空 map，调用方降级为默认值。
 // 这实现了 LEFT JOIN 语义：CH 中存在的服务即使 MySQL 无对应行也保留，富化字段走默认。
-func (h *Handler) loadServiceMetadata(services []string) map[string]*serviceMeta {
+func loadServiceMetadata(services []string, db *sql.DB) map[string]*serviceMeta {
 	result := make(map[string]*serviceMeta)
 	if len(services) == 0 {
 		return result
 	}
-	db := store.GetDB()
 	if db == nil {
 		return result
 	}
@@ -444,6 +444,12 @@ func (h *Handler) loadServiceMetadata(services []string) map[string]*serviceMeta
 		result[name] = &serviceMeta{Owner: owner, Team: team, Tier: tier, Description: desc}
 	}
 	return result
+}
+
+// loadServiceMetadataForHandler 是 Handler 对包级 loadServiceMetadata 的封装，
+// 从全局 store.GetDB() 取连接（MySQL 不可达时返回空 map，调用方降级）。
+func (h *Handler) loadServiceMetadataForHandler(services []string) map[string]*serviceMeta {
+	return loadServiceMetadata(services, store.GetDB())
 }
 
 // ServiceDetail handles GET /api/v1/services/{name}

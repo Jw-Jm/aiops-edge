@@ -1,12 +1,14 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -229,5 +231,79 @@ func TestListServicesEmptyResult(t *testing.T) {
 	}
 	if resp["total"].(float64) != 0 {
 		t.Errorf("expected total=0, got %v", resp["total"])
+	}
+}
+
+// ===== loadServiceMetadata sqlmock 单测（MySQL 富化路径，不依赖真实 DB）=====
+
+func TestLoadServiceMetadata_SQLConstructionAndScan(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	// 期望：IN 子句有 2 个占位符，参数为 frontend/backend
+	rows := sqlmock.NewRows([]string{"service_name", "owner", "team", "tier", "description"}).
+		AddRow("frontend", "team-a", "sre", "critical", "web frontend")
+	mock.ExpectQuery("SELECT service_name, owner, team, tier, description FROM service_metadata WHERE service_name IN").
+		WithArgs("frontend", "backend").
+		WillReturnRows(rows)
+
+	meta := loadServiceMetadata([]string{"frontend", "backend"}, db)
+
+	if len(meta) != 1 {
+		t.Fatalf("expected 1 enriched service, got %d", len(meta))
+	}
+	frontend, ok := meta["frontend"]
+	if !ok {
+		t.Fatalf("expected frontend in meta")
+	}
+	if frontend.Owner != "team-a" || frontend.Team != "sre" ||
+		frontend.Tier != "critical" || frontend.Description != "web frontend" {
+		t.Errorf("frontend metadata mismatch: %+v", frontend)
+	}
+	// backend 无对应行 → 不在结果中（LEFT JOIN 语义）
+	if _, exists := meta["backend"]; exists {
+		t.Errorf("backend should not be present (no row)")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func TestLoadServiceMetadata_NilDBReturnsEmpty(t *testing.T) {
+	meta := loadServiceMetadata([]string{"frontend"}, nil)
+	if len(meta) != 0 {
+		t.Fatalf("expected empty meta for nil db, got %d", len(meta))
+	}
+}
+
+func TestLoadServiceMetadata_EmptyServicesReturnsEmpty(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+	meta := loadServiceMetadata([]string{}, db)
+	if len(meta) != 0 {
+		t.Fatalf("expected empty meta for empty services, got %d", len(meta))
+	}
+}
+
+func TestLoadServiceMetadata_QueryErrorReturnsEmpty(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT service_name.*FROM service_metadata").
+		WillReturnError(sql.ErrConnDone)
+
+	meta := loadServiceMetadata([]string{"frontend"}, db)
+	if len(meta) != 0 {
+		t.Fatalf("expected empty meta on query error, got %d", len(meta))
 	}
 }
