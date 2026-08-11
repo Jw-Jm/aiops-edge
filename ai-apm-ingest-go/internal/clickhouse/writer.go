@@ -167,8 +167,13 @@ func (w *Writer) flush() {
 func (w *Writer) serializeSpans(spans []*model.Span) []byte {
 	var buf bytes.Buffer
 	for _, s := range spans {
-		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t",
-			escapeTSV(s.TenantID), escapeTSV(s.TraceID), escapeTSV(s.SpanID), escapeTSV(s.ParentSpanID),
+		clusterID := s.ClusterID
+		if clusterID == "" {
+			clusterID = "default"
+		}
+		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t",
+			escapeTSV(s.TenantID), escapeTSV(clusterID),
+			escapeTSV(s.TraceID), escapeTSV(s.SpanID), escapeTSV(s.ParentSpanID),
 			escapeTSV(s.ServiceName), escapeTSV(s.OperationName), escapeTSV(s.SpanKind),
 			s.StatusCode, s.StartTime.Format("2006-01-02 15:04:05.000000000"),
 			s.DurationNs,

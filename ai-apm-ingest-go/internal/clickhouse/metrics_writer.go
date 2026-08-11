@@ -133,8 +133,12 @@ func (w *MetricsWriter) flush() {
 func (w *MetricsWriter) serializeEdges(edges []*model.TopologyEdge) []byte {
 	var buf bytes.Buffer
 	for _, e := range edges {
-		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
-			e.TenantID, e.SourceService, e.TargetService,
+		clusterID := e.ClusterID
+		if clusterID == "" {
+			clusterID = "default"
+		}
+		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
+			e.TenantID, clusterID, e.SourceService, e.TargetService,
 			e.TimeBucket.Format("2006-01-02 15:04:05"),
 			e.CallCount, e.ErrorCount, e.AvgDurationNs, e.Date,
 		)

@@ -5,6 +5,7 @@ import "time"
 // Span is the internal span model
 type Span struct {
 	TenantID      string            `json:"tenant_id"`
+	ClusterID     string            `json:"cluster_id"`
 	TraceID       string            `json:"trace_id"`
 	SpanID        string            `json:"span_id"`
 	ParentSpanID  string            `json:"parent_span_id"`

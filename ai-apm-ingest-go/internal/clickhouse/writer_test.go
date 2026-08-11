@@ -54,25 +54,29 @@ func TestSerializeSpansEscapesSpecialChars(t *testing.T) {
 		t.Fatalf("expected 1 row, got %d", len(lines))
 	}
 	line := lines[0]
-	// 每行字段数应与格式串一致（23 个 \t 分隔 24 字段）
+	// 每行字段数应与格式串一致（24 个 \t 分隔 25 字段，含 cluster_id）
 	cols := strings.Split(line, "\t")
-	if len(cols) != 24 {
-		t.Fatalf("expected 24 columns, got %d: %q", len(cols), line)
+	if len(cols) != 25 {
+		t.Fatalf("expected 25 columns, got %d: %q", len(cols), line)
 	}
-	// 第 6 列 OperationName 应已转义（无裸换行）
-	if strings.ContainsAny(cols[5], "\n\t") {
-		t.Fatalf("OperationName column should be escaped, got: %q", cols[5])
+	// 第 7 列 OperationName 应已转义（无裸换行）（0-based 6）
+	if strings.ContainsAny(cols[6], "\n\t") {
+		t.Fatalf("OperationName column should be escaped, got: %q", cols[6])
 	}
-	if cols[5] != `GET /api\nwith-newline` {
-		t.Fatalf("OperationName = %q, want escaped %q", cols[5], `GET /api\nwith-newline`)
+	if cols[6] != `GET /api\nwith-newline` {
+		t.Fatalf("OperationName = %q, want escaped %q", cols[6], `GET /api\nwith-newline`)
 	}
-	// DBStatement 列（索引 16，0-based 15）应转义
-	if strings.ContainsAny(cols[15], "\n") {
-		t.Fatalf("DBStatement column should be escaped, got: %q", cols[15])
+	// DBStatement 列（0-based 16）应转义
+	if strings.ContainsAny(cols[16], "\n") {
+		t.Fatalf("DBStatement column should be escaped, got: %q", cols[16])
 	}
-	// Attributes Map 列（索引 10）应整体可解析（内部值含换行需转义）
-	if strings.Contains(cols[10], "\nv") {
-		t.Fatalf("Attributes Map column should have escaped inner newline, got: %q", cols[10])
+	// Attributes Map 列（0-based 11）应整体可解析（内部值含换行需转义）
+	if strings.Contains(cols[11], "\nv") {
+		t.Fatalf("Attributes Map column should have escaped inner newline, got: %q", cols[11])
+	}
+	// 第 2 列 cluster_id 应为 default（未显式设置时回退）
+	if cols[1] != "default" {
+		t.Fatalf("cluster_id = %q, want default", cols[1])
 	}
 }
 

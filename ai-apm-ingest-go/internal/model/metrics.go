@@ -5,6 +5,7 @@ import "time"
 // ServiceMetric represents RED metrics for a service within a time bucket
 type ServiceMetric struct {
 	TenantID      string
+	ClusterID     string
 	ServiceName   string
 	CallerService string
 	TimeBucket    time.Time
@@ -18,6 +19,7 @@ type ServiceMetric struct {
 // TopologyEdge represents a call edge between two services within a time bucket
 type TopologyEdge struct {
 	TenantID      string
+	ClusterID     string
 	SourceService string
 	TargetService string
 	TimeBucket    time.Time

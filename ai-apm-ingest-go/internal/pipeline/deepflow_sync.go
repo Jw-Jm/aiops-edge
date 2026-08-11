@@ -193,6 +193,7 @@ func (s *DeepFlowSyncer) Sync() error {
 		tbUTC := tb.In(time.UTC)
 		s.edgeWriter.AddEdge(&model.TopologyEdge{
 			TenantID:      s.tenantID,
+			ClusterID:     s.cluster,
 			SourceService: src,
 			TargetService: dst,
 			TimeBucket:    tbUTC,
@@ -282,6 +283,7 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 		base := fmt.Sprintf("%d", ts.UnixNano())
 		span := &model.Span{
 			TenantID:      s.tenantID,
+			ClusterID:     s.cluster,
 			TraceID:       hexHash(base, 32),
 			SpanID:        hexHash(base+"s", 16),
 			ParentSpanID:  "",
@@ -316,6 +318,7 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 			srcName := fmt.Sprintf("%v", r["src"])
 			s.logWriter.Add(&model.LogRecord{
 				TenantID:    s.tenantID,
+				ClusterID:   s.cluster,
 				Timestamp:   ts.In(time.UTC),
 				ServiceName: dst,
 				Severity:    severity,

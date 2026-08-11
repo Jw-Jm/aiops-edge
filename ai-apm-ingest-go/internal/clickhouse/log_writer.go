@@ -161,9 +161,14 @@ func (w *LogWriter) serializeRecords(records []*model.LogRecord) []byte {
 			attrParts = append(attrParts, fmt.Sprintf("'%s':'%s'", escapeTSV(escapeCH(k)), escapeTSV(escapeCH(v))))
 		}
 		attrStr := "{" + strings.Join(attrParts, ",") + "}"
+		clusterID := r.ClusterID
+		if clusterID == "" {
+			clusterID = "default"
+		}
 
-		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			escapeTSV(r.TenantID),
+			escapeTSV(clusterID),
 			r.Timestamp.Format("2006-01-02 15:04:05.000000000"),
 			escapeTSV(r.ServiceName),
 			escapeTSV(r.Severity),

@@ -51,6 +51,7 @@ type edgeValue struct {
 type Pipeline struct {
 	writer        *clickhouse.Writer
 	metricsWriter *clickhouse.MetricsWriter
+	clusterID     string // 本 ingest 实例所属集群（多集群纳管打标；空默认 default）
 	mu            sync.Mutex
 	metricsAgg    map[metricsKey]*metricsValue
 	edgesAgg      map[edgeKey]*edgeValue
@@ -77,6 +78,14 @@ func New(w *clickhouse.Writer, mw *clickhouse.MetricsWriter) *Pipeline {
 	}
 	go p.flushLoop()
 	return p
+}
+
+// SetClusterID 设置本 ingest 实例所属集群 ID（多集群纳管打标；空默认 default）。
+func (p *Pipeline) SetClusterID(id string) {
+	if id == "" {
+		id = "default"
+	}
+	p.clusterID = id
 }
 
 // flushLoop periodically flushes aggregated metrics and edges to the MetricsWriter
@@ -112,6 +121,7 @@ func (p *Pipeline) flushMetrics() {
 		}
 		p.metricsWriter.AddEdge(&model.TopologyEdge{
 			TenantID:      k.tenantID,
+			ClusterID:     p.clusterID,
 			SourceService: k.sourceService,
 			TargetService: k.targetService,
 			TimeBucket:    tb,
@@ -304,6 +314,7 @@ func (p *Pipeline) convertSpan(tenantID string, raw *struct {
 
 	span := &model.Span{
 		TenantID:      tenantID,
+		ClusterID:     p.clusterID,
 		TraceID:       raw.TraceID,
 		SpanID:        raw.SpanID,
 		ParentSpanID:  raw.ParentSpanID,

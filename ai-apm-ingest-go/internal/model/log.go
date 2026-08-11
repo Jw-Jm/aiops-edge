@@ -32,6 +32,7 @@ type OTLPLogRequest struct {
 // LogRecord is the internal log record model for ClickHouse
 type LogRecord struct {
 	TenantID    string
+	ClusterID   string
 	Timestamp   time.Time
 	ServiceName string
 	Severity    string

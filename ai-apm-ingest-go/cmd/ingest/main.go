@@ -33,6 +33,11 @@ func main() {
 	}
 	// WAL 持久化目录（生产挂载 PVC 保证数据不丢；空则退化为内存重试）
 	walDir := os.Getenv("INGEST_WAL_DIR")
+	// 多集群纳管：本 ingest 实例所属集群 ID（主集群默认 default；纳管集群采集器注入各自 cluster_id）
+	clusterID := os.Getenv("CLUSTER_ID")
+	if clusterID == "" {
+		clusterID = "default"
+	}
 
 	// 生产化中间件：鉴权 + 限流 + metrics
 	met := metrics.New()
@@ -95,7 +100,8 @@ func main() {
 	startDeepFlowSyncers()
 
 	pl := pipeline.New(writer, metricsWriter)
-	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics
+	pl.SetClusterID(clusterID)                   // 多集群纳管：数据打 cluster_id 标
+	pl.SetOnServiceMetric(met.AddServiceRED)     // 服务 RED 指标暴露到 /metrics
 	defer pl.Close()
 
 	// DeepFlow data receiver
@@ -174,6 +180,7 @@ func main() {
 
 					record := &model.LogRecord{
 						TenantID:    tenantID,
+						ClusterID:   clusterID,
 						Timestamp:   ts,
 						ServiceName: serviceName,
 						Severity:    lr.SeverityText,
