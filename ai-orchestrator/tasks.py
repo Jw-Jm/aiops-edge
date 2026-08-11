@@ -13,7 +13,8 @@ async def diagnose_task(ctx, task_id: str, source: str, service: str, context: s
 
     try:
         from orchestrator import brain
-        result = brain.execute_sync_full("diagnosis", service, context, task_id)
+        # execute_sync_full 已改为 async (节点 async def); arq worker 在 async 上下文，直接 await
+        result = await brain.execute_sync_full("diagnosis", service, context, task_id)
 
         mapping = {
             "status": "done",

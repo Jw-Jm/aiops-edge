@@ -1,4 +1,5 @@
 """Brain orchestrator v4 — 15-node LangGraph DAG + ChromaDB RAG + Skill Registry"""
+import asyncio
 import json
 import os
 import time as _time
@@ -163,6 +164,19 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
         return f"[LLM error: {e}]"
 
 
+async def _llm_async(cfg: dict, system_prompt: str, user_prompt: str,
+                     role: str = "分析专家") -> str:
+    """LLM 调用丢到线程池，不阻塞 event loop。
+
+    502 根因修复: _llm() 内部 future.result(timeout=60) 是同步阻塞调用，若直接在
+    async 节点中调用会卡住 uvicorn event loop，导致 liveness probe 超时 → kubelet kill → 502。
+    用 asyncio.to_thread 把整个 _llm (含 crew.kickoff 阻塞) 丢到默认线程池执行，
+    event loop 可继续处理 liveness probe / 其他请求。
+    不重写 crewai，只包裹其同步 kickoff。
+    """
+    return await asyncio.to_thread(_llm, cfg, system_prompt, user_prompt, role)
+
+
 def _extract_script(text: str) -> str:
     """从 LLM 分析结果中提取可执行的 kubectl/curl 等命令作为操作建议。"""
     import re
@@ -274,7 +288,8 @@ def _audit_log(task_id: str, action: str, operator: str,
 #  Nodes
 # ═══════════════════════════════════════════════════════════════
 
-def node_collect(state: AgentState) -> dict:
+async def node_collect(state: AgentState) -> dict:
+    """数据采集节点（async: 与 LangGraph async 图统一；内部 HTTP/子进程调用有短超时兜底）。"""
     cfg = state.get("llm_config")
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
@@ -345,7 +360,7 @@ def node_collect(state: AgentState) -> dict:
     return result
 
 
-def node_clean(state: AgentState) -> dict:
+async def node_clean(state: AgentState) -> dict:
     """Deduplicate and standardize collected data."""
     return {"messages": [f"[{_now()}] 数据清洗完成"]}
 
@@ -423,7 +438,7 @@ def _top_anomaly_service() -> str:
         return ""
 
 
-def node_rca(state: AgentState) -> dict:
+async def node_rca(state: AgentState) -> dict:
     """RCA 节点: 自动选择确定性或假设引擎模式。
     未指定服务时默认为所有服务 —— 自动选全服务中最异常者做 RCA，而非直接跳过。
     """
@@ -433,7 +448,8 @@ def node_rca(state: AgentState) -> dict:
         if not svc:
             return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
     try:
-        result = full_rca_analysis(svc)
+        # full_rca_analysis 内部多次 query_metrics/trace 是同步阻塞 HTTP，丢线程池避免阻塞 event loop
+        result = await asyncio.to_thread(full_rca_analysis, svc)
         mode = result.get("mode", "deterministic")
         if mode == "deterministic":
             det = result.get("result", {})
@@ -459,13 +475,14 @@ def node_rca(state: AgentState) -> dict:
         return {"rca_mode": "error", "rca_root_cause": "", "messages": [f"[{_now()}] RCA: 失败 ({e})"]}
 
 
-def node_rag(state: AgentState) -> dict:
+async def node_rag(state: AgentState) -> dict:
     """Search ChromaDB for similar historical cases."""
     symptom = state.get("user_message", "")
     svc = state.get("service", "")
     query = f"{svc}: {symptom}" if svc else symptom
     try:
-        cases = rag.search(query, limit=3)
+        # rag.search (ChromaDB) 是同步阻塞 IO，丢线程池
+        cases = await asyncio.to_thread(rag.search, query, 3)
         if cases:
             lines = ["## 相似历史案例"]
             for i, c in enumerate(cases):
@@ -516,7 +533,7 @@ def _deterministic_diagnosis(state: dict) -> str:
     return "\n".join(lines)
 
 
-def node_crewai(state: AgentState) -> dict:
+async def node_crewai(state: AgentState) -> dict:
     cfg = state.get("llm_config")
     if not _llm_key_ready():
         # Issue1: 无 LLM 时用确定性诊断兜底，保证报告/任务有实质内容
@@ -573,17 +590,17 @@ def node_crewai(state: AgentState) -> dict:
             f"直接基于数据逐项分析，给出具体的健康状态、发现的问题、风险和建议。"
         )
 
-    result = _llm(cfg, system_prompt, f"用户问题:「{user_msg}」\n已采集数据:\n{context}", expert.role if expert else "巡检专家")
+    result = await _llm_async(cfg, system_prompt, f"用户问题:「{user_msg}」\n已采集数据:\n{context}", expert.role if expert else "巡检专家")
     return {"crewai_result": result, "messages": [f"[{_now()}] CrewAI ({expert.role if expert else '巡检'}) 分析完成"]}
 
 
-def node_holmes(state: AgentState) -> dict:
+async def node_holmes(state: AgentState) -> dict:
     cfg = state.get("llm_config")
     if not _llm_key_ready():
         return {"holmesgpt_result": ""}
     svc = state.get("service", "")
     context = f"服务: {svc}\nRED: {state.get('red_metrics','')}\nTrace: {state.get('trace_data','')}"[:4000]
-    result = _llm(cfg, "你是 Trace 调查引擎。深入分析 Trace 与指标，定位根因。", context, "Trace专家")
+    result = await _llm_async(cfg, "你是 Trace 调查引擎。深入分析 Trace 与指标，定位根因。", context, "Trace专家")
     return {"holmesgpt_result": result, "messages": [f"[{_now()}] HolmesGPT 分析完成"]}
 
 
@@ -611,7 +628,7 @@ def _deterministic_plan(state: dict) -> dict:
     return {"plan": plan, "script": script}
 
 
-def node_plan(state: AgentState) -> dict:
+async def node_plan(state: AgentState) -> dict:
     """Generate execution plan + shell script."""
     cfg = state.get("llm_config")
     if not _llm_key_ready() or not cfg:
@@ -619,7 +636,7 @@ def node_plan(state: AgentState) -> dict:
         return _deterministic_plan(state)
     analysis = state.get("crewai_result", "")[:2000]
     prompt = f"基于诊断结果，生成执行计划 + Shell/K8s 命令。只输出可执行的脚本。诊断:\n{analysis}"
-    result = _llm(cfg, "你是 K8s 运维工程师。生成可直接执行的 Shell 脚本。", prompt, "运维工程师")
+    result = await _llm_async(cfg, "你是 K8s 运维工程师。生成可直接执行的 Shell 脚本。", prompt, "运维工程师")
     plan = result[:2000]
     # Extract script block
     script = ""
@@ -632,13 +649,13 @@ def node_plan(state: AgentState) -> dict:
     return {"plan": plan, "script": script, "messages": [f"[{_now()}] 执行计划已生成"]}
 
 
-def node_risk(state: AgentState) -> dict:
+async def node_risk(state: AgentState) -> dict:
     """LLM risk assessment 1-5."""
     cfg = state.get("llm_config")
     if not cfg:
         return {"risk_score": 1, "risk_reason": "无 LLM 配置"}
     plan = state.get("plan", "")[:1000]
-    result = _llm(cfg,
+    result = await _llm_async(cfg,
         "评估执行计划风险，输出 JSON: {\"score\": 1-5, \"reason\": \"理由\"}",
         f"执行计画:\n{plan}", "风险评估师")
     try:
@@ -648,7 +665,7 @@ def node_risk(state: AgentState) -> dict:
         return {"risk_score": 3, "risk_reason": "风险评估默认中等"}
 
 
-def node_wait_approval(state: AgentState) -> dict:
+async def node_wait_approval(state: AgentState) -> dict:
     """Pause for human approval. Resumed via /api/v1/ops/tasks/:id/approve.
     If state['approved'] is already True (e.g. chat mode), skip interrupt."""
     # Chat mode / non-interactive: skip interrupt
@@ -674,7 +691,7 @@ def node_wait_approval(state: AgentState) -> dict:
     return {"approved": True, "human_approved": True, "messages": [f"[{_now()}] 审批通过, 开始执行"]}
 
 
-def node_execute(state: AgentState) -> dict:
+async def node_execute(state: AgentState) -> dict:
     """Execute K8s command via ShellCommandPolicy whitelist.
 
     安全：只读命令可自动执行；写命令（EXEC_WRITE 白名单）必须经人工审批
@@ -693,7 +710,8 @@ def node_execute(state: AgentState) -> dict:
         return {"execute_output": "", "messages": [f"[{_now()}] 脚本不在可执行白名单内，已跳过执行"]}
     if category == "write" and not state.get("human_approved"):
         return {"execute_output": "", "messages": [f"[{_now()}] 检测到写操作，需人工审批后才执行（可在审批面板确认）"]}
-    result = execute_shell(script, timeout=30)
+    # execute_shell 内部 subprocess 同步阻塞 (timeout=30s)，丢线程池避免阻塞 event loop
+    result = await asyncio.to_thread(execute_shell, script, 30)
     # 审计日志
     _audit_log(state.get("user_message", "")[:8], "execute", "auto",
                state.get("service", ""), script,
@@ -702,7 +720,7 @@ def node_execute(state: AgentState) -> dict:
     return {"execute_output": result[:2000], "messages": [f"[{_now()}] 命令执行完成"]}
 
 
-def node_verify(state: AgentState) -> dict:
+async def node_verify(state: AgentState) -> dict:
     """升级版验证: Cohen's d 效果量 + 副作用检测 + 二次取样确认"""
     import re, statistics as _stats
     svc = state.get("service", "")
@@ -723,8 +741,10 @@ def node_verify(state: AgentState) -> dict:
                 total_errors = sum(int(i.get("errors", 0)) for i in items)
                 err = (total_errors / max(total_calls, 1)) * 100
                 samples.append({"latency": lat, "error_rate": err})
-            import time as _t
-            _t.sleep(30) if _ == 0 else None
+            # 502 修复: 原用 _t.sleep(30) 同步阻塞 event loop 30s → liveness 超时。
+            # 改用 asyncio.sleep 让出 event loop，liveness probe 可正常响应。
+            if _ == 0:
+                await asyncio.sleep(30)
 
         after_lat = _stats.mean([s["latency"] for s in samples]) if samples else float("inf")
         after_err = _stats.mean([s["error_rate"] for s in samples]) if samples else 100
@@ -767,7 +787,7 @@ def node_verify(state: AgentState) -> dict:
         return {"verify_pass": False, "messages": [f"[{_now()}] 验证: 失败 ({e})"]}
 
 
-def node_report(state: AgentState) -> dict:
+async def node_report(state: AgentState) -> dict:
     """LLM generates execution summary report."""
     cfg = state.get("llm_config")
     verify = "✅ 修复成功" if state.get("verify_pass") else "❌ 修复未达到预期"
@@ -778,17 +798,17 @@ def node_report(state: AgentState) -> dict:
     verify: {verify}
     """
     if cfg:
-        rep = _llm(cfg, "生成运维执行总结报告，含 before/after 对比和后续建议。", context, "报告生成器")
+        rep = await _llm_async(cfg, "生成运维执行总结报告，含 before/after 对比和后续建议。", context, "报告生成器")
         return {"report": rep[:2000]}
     return {"report": f"执行结果: {verify}"}
 
 
-def node_memorize(state: AgentState) -> dict:
+async def node_memorize(state: AgentState) -> dict:
     """Write successful case to ChromaDB."""
     if state.get("verify_pass") and state.get("crewai_result"):
         try:
             import uuid
-            rag.add_case({
+            case = {
                 "case_id": uuid.uuid4().hex[:12],
                 "service": state.get("service", ""),
                 "symptom": state.get("user_message", "")[:500],
@@ -796,13 +816,15 @@ def node_memorize(state: AgentState) -> dict:
                 "plan": state.get("plan", "")[:500],
                 "outcome": "success",
                 "report": state.get("report", "")[:500],
-            })
+            }
+            # rag.add_case (ChromaDB) 同步阻塞 IO，丢线程池
+            await asyncio.to_thread(rag.add_case, case)
             return {"messages": [f"[{_now()}] 案例已入库 (总数: {rag.count()})"]}
         except: pass
     return {"messages": [f"[{_now()}] 案例未入库 (verify_pass={state.get('verify_pass')})"]}
 
 
-def node_coordinator(state):
+async def node_coordinator(state):
     """双层 Agent - Coordinator：拆解用户意图为子任务列表。"""
     cfg = state.get("llm_config")
     user_msg = state.get("user_message", "")
@@ -811,7 +833,7 @@ def node_coordinator(state):
     if (not _llm_key_ready()) or is_mock_enabled():
         raw = json.dumps(mock_coordinator_plan(), ensure_ascii=False)
     else:
-        raw = _llm(cfg, "你是任务协调器。把用户请求拆解为可并行执行的子任务，"
+        raw = await _llm_async(cfg, "你是任务协调器。把用户请求拆解为可并行执行的子任务，"
                          "输出 JSON 数组，每项含 task_id/task_type/target_service/query。"
                          "task_type 限 diagnosis/inspection/ops/query。只输出 JSON。",
                    f"用户请求:「{user_msg}」\n上下文:\n{context}", "Coordinator")
@@ -822,7 +844,7 @@ def node_coordinator(state):
     return {"subtasks": subtasks, "messages": [f"[{_now()}] Coordinator 拆解为 {len(subtasks)} 个子任务"]}
 
 
-def node_subagent(state):
+async def node_subagent(state):
     """双层 Agent - 子 Agent：并行跑每个子任务的 function-calling 循环。"""
     subtasks = state.get("subtasks") or []
     if not subtasks:
@@ -833,12 +855,15 @@ def node_subagent(state):
     else:
         from llm_fc import make_llm_decision_fn
         decision = make_llm_decision_fn(cfg, "你是可观测性诊断子 Agent，通过调用工具收集证据并给出结论。")
-    sub_results = run_subtasks(subtasks, decision, ExpertRegistry)
+    # run_subtasks 内部并行跑子 Agent 的 function-calling 循环（含同步 LLM 调用），
+    # 整体丢线程池避免阻塞 event loop。decision 内部若调 _llm 仍是同步阻塞，
+    # 但在 to_thread 的线程中执行，不会卡 uvicorn event loop。
+    sub_results = await asyncio.to_thread(run_subtasks, subtasks, decision, ExpertRegistry)
     return {"sub_results": sub_results,
             "messages": [f"[{_now()}] {len(sub_results)} 个子 Agent 完成"]}
 
 
-def node_reviewer(state):
+async def node_reviewer(state):
     """双层 Agent - Reviewer：合并审查全部子结论，输出最终报告。"""
     cfg = state.get("llm_config")
     sub_results = state.get("sub_results") or {}
@@ -847,7 +872,7 @@ def node_reviewer(state):
     else:
         parts = "\n\n".join(f"[{tid}]({r.get('task_type', '')}): {r.get('conclusion', '')[:500]}"
                             for tid, r in sub_results.items())
-        llm_final = _llm(cfg, "你是结果审查员。合并子 Agent 结论，校验依据与冲突，输出最终诊断报告。",
+        llm_final = await _llm_async(cfg, "你是结果审查员。合并子 Agent 结论，校验依据与冲突，输出最终诊断报告。",
                          f"子结论:\n{parts}", "Reviewer")
         # LLM 失败/为空时兜底到确定性合并
         final = llm_final if llm_final and not llm_final.startswith("[LLM") else merge_review(sub_results, None)
@@ -855,7 +880,7 @@ def node_reviewer(state):
             "messages": [f"[{_now()}] Reviewer 审查完成"]}
 
 
-def node_summarize(state: AgentState) -> dict:
+async def node_summarize(state: AgentState) -> dict:
     # If rejected / already set (dual mode reviewer), pass through final_response
     if state.get("final_response"):
         return {"final_response": state.get("final_response"),
@@ -997,16 +1022,16 @@ class BrainOrchestrator:
         # LLM 调用时（_llm 内）按每次请求传入的 cfg + 内存单例 key 临时设置所需环境变量，
         # 用完即走，避免跨请求/跨会话共享明文 key。
 
-    def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default") -> str:
-        """Run full DAG synchronously and return final_response text."""
-        final = self._run_dag(intent, service, message, thread_id)
+    async def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default") -> str:
+        """Run full DAG and return final_response text. (async — 调用方需 await)"""
+        final = await self._run_dag(intent, service, message, thread_id)
         return final.get("final_response", "")
 
-    def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
-        """Run full DAG synchronously and return complete final state."""
-        return self._run_dag(intent, service, message, thread_id)
+    async def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
+        """Run full DAG and return complete final state. (async — 调用方需 await)"""
+        return await self._run_dag(intent, service, message, thread_id)
 
-    def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
+    async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
         if not service: service = self._detect_service(message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
@@ -1022,11 +1047,18 @@ class BrainOrchestrator:
         }
         config = {"configurable": {"thread_id": thread_id}}
         try:
-            return self.graph.invoke(initial, config)
+            # 节点已全部改为 async def，必须用 ainvoke（sync invoke 会在已运行的
+            # event loop 中失败）。ainvoke 内部并发执行 async 节点，LLM 调用走
+            # asyncio.to_thread 不阻塞 event loop → liveness probe 不超时。
+            return await self.graph.ainvoke(initial, config)
         except Exception as e:
             return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
 
-    def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default", mode: str = "chat"):
+    async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default", mode: str = "chat"):
+        """异步生成器: async for event in brain.stream_sync(...)。
+        节点为 async def，必须用 graph.astream (不能用 sync graph.stream, 会在
+        已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
+        """
         if not service: service = self._detect_service(message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
@@ -1056,7 +1088,7 @@ class BrainOrchestrator:
                 graph = getattr(self, "graph", self.graph)
             else:
                 graph = getattr(self, "chat_graph", self.graph)
-            for step in graph.stream(initial, config):
+            async for step in graph.astream(initial, config):
                 node_name = list(step.keys())[0] if step else "unknown"
                 node_data = step.get(node_name, {}) if step else {}
                 step_num += 1
@@ -1105,8 +1137,7 @@ class BrainOrchestrator:
                     if resp:
                         for i in range(0, len(resp), 80):
                             yield {"type": "chunk", "text": resp[i:i+80]}
-                            import time as _t
-                            _t.sleep(0.01)
+                            await asyncio.sleep(0.01)
             # 从分析结果中提取可执行的 kubectl/curl 命令作为操作建议
             analysis = suggestion.get("crewai_result", "")
             full_resp = suggestion.get("final_response", "")
@@ -1140,11 +1171,12 @@ class BrainOrchestrator:
             yield {"type": "error", "text": f"分析执行异常: {err_detail}"}
             yield {"type": "done", "text": ""}
 
-    def approve_and_resume(self, thread_id: str, approved: bool = True):
-        """Resume interrupted graph with approval decision."""
+    async def approve_and_resume(self, thread_id: str, approved: bool = True):
+        """Resume interrupted graph with approval decision. (async — 调用方需 await)"""
         config = {"configurable": {"thread_id": thread_id}}
         resume_value = {"approved": approved}
-        return self.graph.invoke(Command(resume=resume_value), config)
+        # 节点为 async def，必须用 ainvoke 恢复中断的图
+        return await self.graph.ainvoke(Command(resume=resume_value), config)
 
     def execute_suggestion(self, service: str, script: str, user_message: str = "") -> str:
         """审批通过后执行建议脚本（受 ShellPolicy 安全策略管控）。返回执行结果。"""

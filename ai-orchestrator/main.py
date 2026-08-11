@@ -144,7 +144,9 @@ async def ai_chat(req: ChatRequest, request: Request):
 
     if req.stream:
         # 关键修复: SSE 生成器放在线程中执行，不占用 uvicorn 的 async worker pool
-        # graph.stream() 是同步阻塞调用，在线程中运行不会阻塞事件循环
+        # stream_sync() 现在是 async generator (节点 async def, LLM 走 asyncio.to_thread
+        # 不阻塞 event loop)。线程内无 event loop，用 asyncio.run 驱动 async generator。
+        # 保留 thread + queue 模型: 让 SSE generate() 仍可独立检查 is_disconnected。
         import queue
         import threading
         import asyncio as _asyncio
@@ -153,13 +155,16 @@ async def ai_chat(req: ChatRequest, request: Request):
         stop_event = threading.Event()
 
         def _run_stream():
-            try:
-                for event in _get_brain().stream_sync(req.intent, req.service or "", req.message, thread_id,
-                                                      mode="dual" if req.dual_agent else "chat"):
+            async def _astream():
+                async for event in _get_brain().stream_sync(
+                        req.intent, req.service or "", req.message, thread_id,
+                        mode="dual" if req.dual_agent else "chat"):
                     # 捕获操作建议 → 自动创建待审批任务到任务工作台
                     if event.get("type") == "suggestion":
                         _create_chat_suggestion_task(event, req, thread_id)
                     event_queue.put(event)
+            try:
+                asyncio.run(_astream())
                 event_queue.put(None)  # sentinel: done
                 # Issue4: 会话完成后更新 session_store（提供 updated_at 供历史会话按时间倒序）
                 try:
@@ -244,7 +249,7 @@ async def ai_chat(req: ChatRequest, request: Request):
         return StreamingResponse(generate(), media_type="text/event-stream",
                                  headers={"X-Session-Id": thread_id, "Cache-Control": "no-cache"})
     else:
-        result = _get_brain().execute_sync(req.intent, req.service or "", req.message, thread_id)
+        result = await _get_brain().execute_sync(req.intent, req.service or "", req.message, thread_id)
         # 巡检/诊断报告落盘：持久化到 ClickHouse（历史趋势）并在 MinIO 留档
         try:
             if result and len(result.strip()) > 100:
@@ -401,9 +406,8 @@ async def ai_flow_run(key: str, body: dict = None):
     message = (body or {}).get("message", "对服务进行完整诊断")
     intent = "chat" if mode == "chat" else "ops"
     brain = _get_brain()
-    result = await asyncio.get_event_loop().run_in_executor(
-        None, brain.execute_sync_full, intent, service, message, "workflow-run"
-    )
+    # execute_sync_full 已改为 async（节点 async def），直接 await（不再 run_in_executor）
+    result = await brain.execute_sync_full(intent, service, message, "workflow-run")
     return {"run_id": f"run_{int(time.time()*1000)}", "result": result}
 
 @app.get("/api/v1/ai/sessions")
@@ -620,7 +624,8 @@ async def create_task(req: TaskCreateRequest, request: Request):
     task["status"] = "diagnosing"
     def _run():
         try:
-            final_state = _get_brain().execute_sync_full("diagnosis", req.service, req.context, tid)
+            # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动
+            final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", req.service, req.context, tid))
             _task_store[tid]["diagnosis"] = final_state.get("final_response", "")[:5000]
             _task_store[tid]["plan"] = final_state.get("plan", "")[:2000]
             _task_store[tid]["script"] = final_state.get("script", "")[:1000]
@@ -708,7 +713,8 @@ def _run_diagnosis(tid: str, svc: str, ctx: str):
     import threading
     def _run():
         try:
-            final_state = _get_brain().execute_sync_full("diagnosis", svc, ctx, tid)
+            # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动
+            final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", svc, ctx, tid))
             _task_store[tid]["status"] = "done"
             _task_store[tid]["diagnosis"] = final_state.get("final_response", "")[:5000]
             _task_store[tid]["plan"] = final_state.get("plan", "")[:2000]
@@ -801,7 +807,8 @@ def approve_task(tid: str, request: Request):
             except Exception: pass
         else:
             # LangGraph 任务: Resume with approval
-            final = _get_brain().approve_and_resume(tid, approved=True)
+            # approve_and_resume 已改为 async；sync handler 在线程池中运行，无 event loop，用 asyncio.run
+            final = asyncio.run(_get_brain().approve_and_resume(tid, approved=True))
             task["status"] = "done"
             task["report"] = final.get("final_response", "")[:500]
             task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -834,7 +841,8 @@ def reject_task(tid: str, request: Request):
     try:
         # 仅 LangGraph 任务需要 resume 拒绝
         if task.get("source") != "ai_chat":
-            _get_brain().approve_and_resume(tid, approved=False)
+            # approve_and_resume 已改为 async；sync handler 在线程池中，用 asyncio.run
+            asyncio.run(_get_brain().approve_and_resume(tid, approved=False))
     except: pass
     _task_store.persist(tid)  # 拒绝结果落 MySQL
     return {"task": task}
