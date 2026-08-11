@@ -323,24 +323,28 @@ func parseRows(body []byte) ([]map[string]interface{}, error) {
 }
 
 // ListServices handles GET /api/v1/services
+// 从 ClickHouse 动态发现服务，LEFT JOIN MySQL service_metadata 富化元数据。
+// 数据归属治理：服务列表以 trace_spans 实际接入为准（source=trace），
+// service_metadata 仅提供 owner/team/tier/description 富化，缺失字段走默认值。
 func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
-	sql := fmt.Sprintf(
-		"SELECT service_name, count(DISTINCT trace_id) as traces, count() as spans, avg(duration_ns)/1000000 as avg_ms, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 GROUP BY service_name ORDER BY spans DESC",
-		chQuote(tid), clusterClause,
-	)
+	_ = tid // CH 查询暂不用 tenant 过滤（trace_spans 无 tenant_id 列）
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	body, err := h.queryClickHouse(ctx, sql)
+	// 1. 从 ClickHouse 拿动态服务列表（近 7 天有 trace 的服务）
+	chSQL := `SELECT DISTINCT service_name
+              FROM observability.trace_spans
+              WHERE date >= today()-7
+                AND service_name != ''
+              ORDER BY service_name`
+	body, err := h.queryClickHouse(ctx, chSQL)
 	if err != nil {
-		log.Printf("ListServices query error: %v", err)
+		log.Printf("ListServices CH query error: %v", err)
 		respondError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-
 	rows, err := parseRows(body)
 	if err != nil {
 		log.Printf("ListServices parse error: %v", err)
@@ -348,10 +352,98 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 提取服务名列表
+	services := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if name, ok := row["service_name"].(string); ok && name != "" {
+			services = append(services, name)
+		}
+	}
+
+	// 2. 从 MySQL 拿富化元数据（LEFT JOIN 语义：缺失则用默认值）
+	meta := h.loadServiceMetadata(services)
+
+	// 3. 组装响应：每个服务一行，富化字段缺失时走默认值
+	result := make([]map[string]interface{}, 0, len(services))
+	for _, svc := range services {
+		m := meta[svc]
+		item := map[string]interface{}{
+			"service_name": svc,
+			"owner":        "",
+			"team":         "",
+			"tier":         "standard",
+			"description":  "",
+			"source":       "trace",
+		}
+		if m != nil {
+			if m.Owner != "" {
+				item["owner"] = m.Owner
+			}
+			if m.Team != "" {
+				item["team"] = m.Team
+			}
+			if m.Tier != "" {
+				item["tier"] = m.Tier
+			}
+			if m.Description != "" {
+				item["description"] = m.Description
+			}
+		}
+		result = append(result, item)
+	}
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"data":  rows,
-		"count": len(rows),
+		"services": result,
+		"total":    len(result),
 	})
+}
+
+// serviceMeta 是 service_metadata 表的行映射（富化元数据）。
+type serviceMeta struct {
+	Owner       string
+	Team        string
+	Tier        string
+	Description string
+}
+
+// loadServiceMetadata 批量加载服务富化元数据。
+// MySQL 不可达（store.GetDB() 返回 nil）时返回空 map，调用方降级为默认值。
+// 这实现了 LEFT JOIN 语义：CH 中存在的服务即使 MySQL 无对应行也保留，富化字段走默认。
+func (h *Handler) loadServiceMetadata(services []string) map[string]*serviceMeta {
+	result := make(map[string]*serviceMeta)
+	if len(services) == 0 {
+		return result
+	}
+	db := store.GetDB()
+	if db == nil {
+		return result
+	}
+
+	// 构造 IN 子句的占位符与参数（参数化查询防 SQL 注入）
+	placeholders := make([]string, len(services))
+	args := make([]interface{}, len(services))
+	for i, svc := range services {
+		placeholders[i] = "?"
+		args[i] = svc
+	}
+	query := fmt.Sprintf("SELECT service_name, owner, team, tier, description FROM service_metadata WHERE service_name IN (%s)",
+		strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("loadServiceMetadata query error: %v", err)
+		return result
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, owner, team, tier, desc string
+		if err := rows.Scan(&name, &owner, &team, &tier, &desc); err != nil {
+			continue
+		}
+		result[name] = &serviceMeta{Owner: owner, Team: team, Tier: tier, Description: desc}
+	}
+	return result
 }
 
 // ServiceDetail handles GET /api/v1/services/{name}
