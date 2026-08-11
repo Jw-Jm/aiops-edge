@@ -32,6 +32,12 @@ spec:
               value: {{ .Values.clickhouse.user | default "default" | quote }}
             - name: VICTORIA_METRICS_URL
               value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
+            - name: VICTORIA_LOGS_URL
+              value: {{ .Values.queryApi.victoriaLogsUrl }}/insert/jsonline
+            - name: K8S_API_URL
+              value: {{ .Values.queryApi.k8sApiUrl | quote }}
+            - name: K8S_INSECURE_SKIP_VERIFY
+              value: {{ .Values.queryApi.k8sInsecureSkipVerify | default "true" | quote }}
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: JWT_SECRET }

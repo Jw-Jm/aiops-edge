@@ -13,6 +13,7 @@ CREATE DATABASE IF NOT EXISTS observability;
 CREATE TABLE IF NOT EXISTS observability.log_records
 (
     `tenant_id` String,
+    `cluster_id` String DEFAULT 'default',
     `timestamp` DateTime64(9),
     `service_name` String,
     `severity` String,
@@ -25,7 +26,7 @@ CREATE TABLE IF NOT EXISTS observability.log_records
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY date
-ORDER BY (tenant_id, service_name, date, timestamp, trace_id)
+ORDER BY (tenant_id, cluster_id, service_name, date, timestamp, trace_id)
 TTL toDateTime(timestamp) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
@@ -36,6 +37,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS observability.service_topology
 (
     `tenant_id` String,
+    `cluster_id` String DEFAULT 'default',
     `source_service` String,
     `target_service` String,
     `time_bucket` DateTime,
@@ -46,7 +48,7 @@ CREATE TABLE IF NOT EXISTS observability.service_topology
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY date
-ORDER BY (tenant_id, source_service, target_service, date, time_bucket)
+ORDER BY (tenant_id, cluster_id, source_service, target_service, date, time_bucket)
 TTL toDateTime(time_bucket) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
@@ -57,6 +59,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS observability.trace_spans
 (
     `tenant_id` String,
+    `cluster_id` String DEFAULT 'default',
     `trace_id` String,
     `span_id` String,
     `parent_span_id` String,
@@ -83,7 +86,7 @@ CREATE TABLE IF NOT EXISTS observability.trace_spans
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY date
-ORDER BY (tenant_id, service_name, date, start_time, span_id)
+ORDER BY (tenant_id, cluster_id, service_name, date, start_time, span_id)
 TTL toDateTime(start_time) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
@@ -95,6 +98,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS observability.alert_events
 (
     `id` String,
+    `cluster_id` String DEFAULT 'default',
     `rule_id` String,
     `rule_name` String,
     `service` String,

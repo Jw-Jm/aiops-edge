@@ -157,6 +157,9 @@ queryApi:
   clickhousePort: "8123"
   victoriaLogsUrl: "http://victoria-logs.observability.svc.cluster.local:9428"
   victoriaMetricsUrl: "http://victoria-metrics.observability.svc.cluster.local:8428"
+  # K8s 集群 API（in-cluster 自签证书环境需 skip verify）与 VictoriaLogs 采集
+  k8sApiUrl: "https://kubernetes.default.svc"
+  k8sInsecureSkipVerify: "true"
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits: { cpu: "1", memory: "1Gi" }
