@@ -111,9 +111,10 @@ func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
 	horizon := parseIntDefault(q.Get("horizon"), 12)
 	thresholdStr := q.Get("threshold")
 
+	// 空 metric 默认 cpu：前端默认进入 cpu 容量预测页时无需显式传参，
+	// 避免无谓的 400 报错。下方 capacityPromQL 仍会校验非空 metric 的合法性。
 	if metric == "" {
-		respondError(w, http.StatusBadRequest, "metric is required")
-		return
+		metric = "cpu"
 	}
 	if capacityPromQL(metric, "") == "" {
 		respondError(w, http.StatusBadRequest, "invalid metric, must be cpu|memory|disk|network")

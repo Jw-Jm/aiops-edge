@@ -183,14 +183,32 @@ func TestCapacityPromQLUnknown(t *testing.T) {
 	}
 }
 
-// 缺少 metric 参数 → 400。
-func TestCapacityForecastMissingMetric(t *testing.T) {
-	h := &Handler{}
+// 缺少 metric 参数 → 默认 cpu（不报错），与无 VM 数据组合仍返回 200 空历史。
+// 旧实现返回 400 "metric is required"，对前端默认进入 cpu 容量预测页的场景不友好。
+func TestCapacityForecastEmptyMetricDefaultsToCPU(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data":   map[string]interface{}{"resultType": "matrix", "result": []interface{}{}},
+		})
+	}))
+	defer srv.Close()
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/capacity/forecast", nil)
 	h.CapacityForecast(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("code=%d, want 400", rec.Code)
+	if rec.Code != 200 {
+		t.Fatalf("expected 200 for empty metric (should default to cpu), got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Metric string `json:"metric"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v, body=%s", err, rec.Body.String())
+	}
+	if resp.Metric != "cpu" {
+		t.Fatalf("metric=%q, want cpu (defaulted from empty)", resp.Metric)
 	}
 }
 
