@@ -12,11 +12,17 @@ const Report: React.FC = () => {
   const [preview, setPreview] = useState<Report | null>(null) // 2.18 预览
 
   useEffect(() => {
-    listReports({ limit: 100 }).then((r) => {
-      // /ops/reports/history 返回 { history: [{task_id, service_name, report_type, verdict, risk_score, summary, created_at}] }
-      const d = Array.isArray(r.data) ? r.data : r.data?.history || r.data?.reports || r.data?.data || []
-      setData(d)
-    }).catch(() => setData([])).finally(() => setLoading(false))
+    const load = () => {
+      listReports({ limit: 100 }).then((r) => {
+        // /ops/reports/history 返回 { history: [{task_id, service_name, report_type, verdict, risk_score, summary, created_at}] }
+        const d = Array.isArray(r.data) ? r.data : r.data?.history || r.data?.reports || r.data?.data || []
+        setData(d)
+      }).catch(() => setData([])).finally(() => setLoading(false))
+    }
+    load()
+    // Issue7: 30s 轮询刷新，使 AI 对话新生成的巡检/诊断报告自动出现在报告中心，无需手动刷新
+    const timer = setInterval(load, 30000)
+    return () => clearInterval(timer)
   }, [])
 
   const taskIdOf = (r: any) => r.task_id || r.id || ''

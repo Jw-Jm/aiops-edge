@@ -34,7 +34,6 @@ const GROUPS: { title: string; items: Cmd[] }[] = [
     items: [
       { icon: 'chat', label: 'AI 对话', path: '/ai/chat', kbd: 'G C' },
       { icon: 'tasks', label: '任务工作台', path: '/ai/tasks' },
-      { icon: 'workflow', label: '工作流', path: '/ai/workflow' },
       { icon: 'nl2sql', label: 'AI 工具', path: '/ai/tools' },
     ],
   },

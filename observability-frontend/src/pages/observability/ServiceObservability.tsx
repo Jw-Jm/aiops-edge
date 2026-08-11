@@ -61,9 +61,10 @@ const ServiceObservability: React.FC = () => {
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [metricType, setMetricType] = useState('errorRate')
 
-  useEffect(() => {
-    setLoading(true)
-    Promise.all([getTopology({ minutes: 10080 }), getServices()])
+  // Issue5: 拓扑/服务数据加载；抽成函数以便定时刷新（默认 30s 轮询，接近实时）
+  const loadData = (silent = false) => {
+    if (!silent) setLoading(true)
+    Promise.all([getTopology({ minutes: 60 }), getServices()])
       .then(([t, s]) => {
         const td = t.data
         const rawNodes: any[] = (td.nodes || []).map((n: any, i: number) => ({
@@ -74,8 +75,6 @@ const ServiceObservability: React.FC = () => {
         const N = Math.max(1, rawNodes.length)
         const nodesData: TopoNode[] = rawNodes.map((n, i) => ({
           ...n,
-          // 以 0.5,0.5 为中心、0.36 半径放置初始位置（graph data 的 x/y 为像素，这里用 setOption 前无法知宽高，故用 fixed=false + 环形种子）
-          // 实际由下方 ECharts 配置里的 initialX/initialY 用百分比种子控制
           _seed: i,
           _count: N,
         }))
@@ -87,10 +86,27 @@ const ServiceObservability: React.FC = () => {
         setNodes(nodesData)
         setLinks(linksData)
         const sd = s.data
-        setServices(Array.isArray(sd) ? sd : sd?.data || sd?.services || [])
+        // Issue6: 后端 /services 返回字段为 service_name/traces/spans/avg_ms/max_ms，
+        // 前端需映射为 service/calls/avg_latency_ms 等表格列字段，否则服务名为空、调用量为0。
+        const rawSvc = (Array.isArray(sd) ? sd : sd?.data || sd?.services || []) as any[]
+        setServices(rawSvc.map((x: any) => ({
+          ...x,
+          service: x.service_name ?? x.service,
+          calls: Number(x.traces ?? x.calls ?? 0),
+          errors: Number(x.errors ?? 0),
+          error_rate: Number(x.error_rate ?? 0),
+          avg_latency_ms: Number(x.avg_ms ?? x.avg_latency_ms ?? 0),
+        })))
       })
-      .catch(() => { setNodes([]); setLinks([]); setServices([]) })
-      .finally(() => setLoading(false))
+      .catch(() => { if (!silent) { setNodes([]); setLinks([]); setServices([]) } })
+      .finally(() => { if (!silent) setLoading(false) })
+  }
+
+  useEffect(() => {
+    loadData(false)
+    // Issue5: 30s 静默轮询，保持拓扑/服务列表近实时；切换集群时也会因 uiStore 变化重新加载
+    const timer = setInterval(() => loadData(true), 30000)
+    return () => clearInterval(timer)
   }, [])
 
   // 支持 ?node=xxx 自动打开节点详情（深链分享 / 测试验证）
@@ -105,6 +121,11 @@ const ServiceObservability: React.FC = () => {
 
   useEffect(() => {
     if (view !== 'topo' || !chartRef.current) return
+    // Issue3: 离开 topo 视图后 chartRef 容器会卸载重建；若 chartInst 仍指向旧(已脱离DOM)实例，
+    // 复用会导致白屏。故在 view 非 topo 时清空并释放，回到 topo 时重新 init。
+    if (view === 'topo' && chartInst.current && chartInst.current.isDisposed()) {
+      chartInst.current = null
+    }
     if (!chartInst.current) chartInst.current = echarts.init(chartRef.current)
     const inst = chartInst.current
     const nodeScale = Math.max(1, nodes.length / 8) // 节点多则加大斥力
@@ -149,13 +170,15 @@ const ServiceObservability: React.FC = () => {
           distance: 6,
           overflow: 'truncate', width: 90,
         },
-        // 边：按调用量缩放宽度，无箭头（恢复上一版）
+        // Issue4: 边按调用量缩放宽度 + 末端箭头表达调用方向 + 增大曲率让双向调用分离
         lineStyle: {
           color: '#c6cfdb',
           width: 1.2,
-          curveness: 0.03,
+          curveness: 0.22,
           opacity: 0.7,
         },
+        edgeSymbol: ['none', 'arrow'],
+        edgeSymbolSize: [0, 9],
         emphasis: {
           focus: 'adjacency',
           lineStyle: { width: 3 },
@@ -164,10 +187,21 @@ const ServiceObservability: React.FC = () => {
         itemStyle: { color: '#2f54eb', borderColor: '#fff', borderWidth: 1 },
       }],
     })
+    // Issue3: 先 off 再 on，避免每次 nodes/links 变化重复注册 click 监听导致 handler 累积、
+    // 点击一次触发多次 openDetail（抽屉闪开关）进而白屏。
+    inst.off('click')
     inst.on('click', (p: any) => { if (p.dataType === 'node' && p.data?.name) openDetail(p.data.name) })
     const onResize = () => inst.resize()
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      // Issue3: 离开 topo 视图时 dispose 实例并清空引用，避免复用已脱离 DOM 的旧实例导致白屏
+      if (view !== 'topo') {
+        inst.off('click')
+        inst.dispose()
+        if (chartInst.current === inst) chartInst.current = null
+      }
+    }
   }, [view, nodes, links])
 
   const openDetail = (name: string) => {
@@ -187,6 +221,14 @@ const ServiceObservability: React.FC = () => {
 
   // 节点详情：指标趋势图（对齐 v1.1）
   useEffect(() => {
+    // Issue3: 抽屉 destroyOnClose 会销毁趋势图容器；关闭抽屉时 dispose 旧实例，避免复用脱离 DOM 实例白屏
+    if (!drawerOpen) {
+      if (trendInst.current) {
+        trendInst.current.dispose()
+        trendInst.current = null
+      }
+      return
+    }
     if (!drawerOpen || drawerLoading || !trendChartRef.current) return
     if (!trendInst.current) trendInst.current = echarts.init(trendChartRef.current)
     const mt = METRIC_TYPES.find((m) => m.value === metricType) || METRIC_TYPES[0]
