@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Drawer, Spin, Button, Space, Tag, Statistic, Row, Col, Table, Segmented, Card, Tabs, Select, Badge, Typography } from 'antd'
+import { Drawer, Spin, Button, Space, Tag, Statistic, Row, Col, Table, Segmented, Card, Tabs, Select, Badge, Typography, Empty as AntdEmpty } from 'antd'
 import * as echarts from 'echarts'
 import { getTopology, getServices, getTopologyNodeDetail, getServiceDetail } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
@@ -331,7 +331,14 @@ const ServiceObservability: React.FC = () => {
       ) : (
         <div className="card" style={{ padding: 0 }}>
           <Table rowKey="service" loading={loading} columns={columns} dataSource={services}
-            pagination={{ pageSize: 15 }} size="middle" scroll={{ x: 700 }} />
+            pagination={{ pageSize: 15 }} size="middle" scroll={{ x: 700 }}
+            locale={{
+              emptyText: (
+                <AntdEmpty description="服务目录为空，可前往拓扑图查看">
+                  <Button type="primary" onClick={() => setView('topo')}>查看拓扑图</Button>
+                </AntdEmpty>
+              ),
+            }} />
         </div>
       )}
 
