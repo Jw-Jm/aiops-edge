@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+import re
 import uuid
 import asyncio
 from collections import defaultdict
@@ -198,11 +199,16 @@ async def ai_chat(req: ChatRequest, request: Request):
                 # done/error 补结构化字段；其余透传
                 if event.get("type") == "done":
                     done_text = event.get("text", "")
-                    # P0-1 修复: 流式对话结束同样持久化报告到报告中心（MinIO + MySQL）
-                    # 与下方非流式路径保持一致，确保 AI 诊断/巡检报告被报告中心收纳
+                    # Issue7 修复: 流式对话结束持久化报告到报告中心（MinIO + MySQL）。
+                    # req.service 可能为空（如"巡检所有 K8s 集群"），尝试从消息/报告内容中提取目标服务，
+                    # 使报告中心能展示明确的服务归属，而非匿名 "-"。
                     try:
                         if done_text and len(done_text.strip()) > 100:
-                            _upload_report(thread_id, done_text, service=req.service or "")
+                            svc = (req.service or "").strip()
+                            if not svc:
+                                # 优先从消息里的"分析/诊断/巡检 XXX"提取；再退化从报告首行"**目标**"提取
+                                svc = _extract_service_from_text(req.message or "") or _extract_service_from_text(done_text)
+                            _upload_report(thread_id, done_text, service=svc)
                     except Exception as _e:
                         print(f"[chat] 流式报告持久化失败: {_e}")
                     yield _format_sse({
@@ -709,7 +715,7 @@ def approve_task(tid: str, request: Request):
     task["status"] = "approved"
     try:
         _audit_log(tid, "approve", request.headers.get("X-Internal-Approver", "admin"),
-                   task.get("service", ""), task.get("script", "")[:300], "approved",
+                   _task_service(task), task.get("script", "")[:300], "approved",
                    {"source": task.get("source", "")})
     except Exception:
         pass
@@ -764,7 +770,7 @@ def reject_task(tid: str, request: Request):
     task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         _audit_log(tid, "reject", request.headers.get("X-Internal-Approver", "admin"),
-                   task.get("service", ""), task.get("script", "")[:300], "rejected",
+                   _task_service(task), task.get("script", "")[:300], "rejected",
                    {"source": task.get("source", "")})
     except Exception:
         pass
@@ -1198,6 +1204,33 @@ if _minio_enabled:
 BUCKET = "ops-reports"
 if _minio is not None and not _minio.bucket_exists(BUCKET):
     _minio.make_bucket(BUCKET)
+
+
+def _extract_service_from_text(text: str) -> str:
+    """从自然语言消息/报告文本中粗提取目标服务名（用于报告中心 service 归属）。
+    匹配模式：'分析/诊断/巡检/排查 <服务>' 等。无法识别返回 ''。"""
+    if not text:
+        return ""
+    # 常见指令前缀 + 服务名（取到空白/换行/标点前）
+    m = re.search(r'(?:分析|诊断|巡检|排查|查看|检查|诊断一下|分析一下|巡检一下)\s*[:：]?\s*([A-Za-z0-9_.\-]{2,40})', text)
+    if m:
+        return m.group(1).strip()
+    # 报告首行形如 '**目标**: xxx' 或 '服务 xxx 诊断报告'
+    m2 = re.search(r'(?:\*\*目标\*\*|目标|服务)\s*[:：]\s*([A-Za-z0-9_.\-]{2,40})', text)
+    if m2:
+        return m2.group(1).strip()
+    return ""
+
+
+def _task_service(task: dict) -> str:
+    """审计日志目标服务：优先 task.service；ai_chat 任务 service 为空时从 context 里的消息提取。"""
+    svc = (task.get("service") or "").strip()
+    if svc:
+        return svc
+    ctx = task.get("context") or ""
+    # ai_chat context 形如 "[AI Chat] 分析 frontend 服务状态"
+    msg = re.sub(r'^\[AI Chat\]\s*', '', ctx)
+    return _extract_service_from_text(msg)
 
 
 def _upload_report(task_id: str, content: str, filename: str = "report.md", service: str = ""):
