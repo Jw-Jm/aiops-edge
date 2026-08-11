@@ -18,7 +18,9 @@ const AiDock: React.FC = () => {
   }, [open, setOpen])
 
   const ask = (preset?: string) => {
-    navigate(`/ai/chat${preset ? `?q=${encodeURIComponent(preset)}` : ''}`)
+    const q = (preset || '').trim()
+    // P3-2 修复: 空输入直接进对话页（不带 q）；有内容则带 ?q= 让对话页自动发送
+    navigate(`/ai/chat${q ? `?q=${encodeURIComponent(q)}` : ''}`)
     setOpen(false)
   }
 
@@ -46,8 +48,12 @@ const AiDock: React.FC = () => {
             </div>
           </div>
           <div className="ai-dock__input">
-            <input className="in" placeholder="问点什么…" onKeyDown={(e) => { if (e.key === 'Enter') ask() }} />
-            <button className="ai-dock__send" title="发送" onClick={() => ask()}><AppIcon name="send" /></button>
+            <input className="in" placeholder="问点什么…"
+              onKeyDown={(e) => { if (e.key === 'Enter') { const v = (e.target as HTMLInputElement).value; ask(v) } }} />
+            <button className="ai-dock__send" title="发送" onClick={() => {
+              const inp = document.querySelector('.ai-dock__input input') as HTMLInputElement | null
+              ask(inp?.value || '')
+            }}><AppIcon name="send" /></button>
           </div>
         </div>
       )}

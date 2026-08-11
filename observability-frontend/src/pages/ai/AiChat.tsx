@@ -35,6 +35,17 @@ const AiChat: React.FC = () => {
   useEffect(() => { loadSessions() }, [])
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, progress])
 
+  // P3-2 修复: 从 AiDock/快捷入口携带 ?q= 进入时，自动发送该问题（无需手动点发送）
+  const autoSentRef = useRef(false)
+  useEffect(() => {
+    const q = searchParams.get('q')
+    if (q && !autoSentRef.current) {
+      autoSentRef.current = true
+      handleSend(q)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const newSession = () => { setMessages([]); setActiveSession(''); setInput('') }
 
   const handleSend = async (preset?: string) => {

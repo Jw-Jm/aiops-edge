@@ -8,6 +8,7 @@ import AiDock from './components/AiDock'
 import ClusterSwitcher from './components/ClusterSwitcher'
 import AppIcon, { AppIconName } from './components/AppIcons'
 import RequireAuth from './components/RequireAuth'
+import { getAlertEvents } from './api/client'
 
 // ===== 懒加载页面（全新 IA）=====
 const Login = lazy(() => import('./pages/Login'))
@@ -46,7 +47,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: '告警',
     items: [
-      { path: '/alerts/events', label: '告警事件', icon: 'alerts', badge: '12' },
+      { path: '/alerts/events', label: '告警事件', icon: 'alerts', badge: 'dynamic' },
       { path: '/alerts/rules', label: '告警规则', icon: 'settings' },
     ],
   },
@@ -93,11 +94,27 @@ function AppLayout() {
   const logout = useAuthStore((s) => s.logout)
   const [clock, setClock] = useState('')
   const [navCollapsed, setNavCollapsed] = useState<Record<string, boolean>>({})
+  const [alertCount, setAlertCount] = useState<number | null>(null)
 
   // 初始化拉取集群列表（多集群纳管入口）
   useEffect(() => {
     refreshClusters()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // P3-1: 侧栏告警 badge 动态拉取真实告警数（替代硬编码 12）
+  useEffect(() => {
+    const loadAlerts = () => {
+      getAlertEvents({ limit: 1 }).then((r) => {
+        const d = r.data
+        // API 返回 {count: 本次条数, total: 总告警数}；优先用 total 反映真实告警总量
+        const n = Array.isArray(d) ? d.length : (d?.total ?? d?.count ?? 0)
+        setAlertCount(Number(n) || 0)
+      }).catch(() => setAlertCount(null))
+    }
+    loadAlerts()
+    const t = setInterval(loadAlerts, 30000) // 30s 刷新
+    return () => clearInterval(t)
   }, [])
 
   // 高亮当前路由
@@ -156,7 +173,11 @@ function AppLayout() {
                         onClick={() => navigate(it.path)} title={collapsed ? it.label : undefined}>
                         <AppIcon name={it.icon} />
                         {!collapsed && <span>{it.label}</span>}
-                        {!collapsed && it.badge && <span className="nav__badge">{it.badge}</span>}
+                        {!collapsed && it.badge && (
+                          <span className="nav__badge">
+                            {it.badge === 'dynamic' ? (alertCount ?? '') : it.badge}
+                          </span>
+                        )}
                       </div>
                     ))}
                   </div>
