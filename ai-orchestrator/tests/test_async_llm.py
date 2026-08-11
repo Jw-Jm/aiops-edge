@@ -115,3 +115,43 @@ def test_stream_sync_is_async():
     # async generator (async def + yield) 不是 coroutine function，要用 isasyncgenfunction
     assert inspect.isasyncgenfunction(BrainOrchestrator.stream_sync), \
         "stream_sync must be async def (async generator)"
+
+
+def test_node_collect_http_calls_do_not_block_event_loop():
+    """node_collect 内的 get_service_list/query_metrics 应走 asyncio.to_thread，
+    同步 HTTP 阻塞调用不阻塞 event loop（502 根因）。
+
+    通过 patch get_service_list 为带 sleep 的同步慢函数 + 并发 timer 验证：
+    若 node_collect 直接同步调用（不走 to_thread），timer 会被阻塞。
+    """
+    import orchestrator
+
+    async def run_test():
+        timer_hits = []
+
+        async def timer():
+            for _ in range(4):
+                timer_hits.append(time.time())
+                await asyncio.sleep(0.05)
+
+        original_get_service_list = orchestrator.get_service_list
+        original_parse = orchestrator._parse
+        # 慢速同步 get_service_list（模拟真实 HTTP 阻塞 0.3s）
+        orchestrator.get_service_list = lambda: time.sleep(0.3) or "[]"
+        orchestrator._parse = lambda raw: []  # 快速返回空 list
+        try:
+            state = {"llm_config": None, "service": ""}
+            t1 = asyncio.create_task(orchestrator.node_collect(state))
+            t2 = asyncio.create_task(timer())
+            await t1
+            await t2
+            # 若 node_collect 阻塞 event loop，timer 只会跑 1 次；走 to_thread 则 4 次全跑
+            assert len(timer_hits) == 4, (
+                f"timer only hit {len(timer_hits)} — node_collect blocked the event loop "
+                f"(expected 4 concurrent ticks via asyncio.to_thread)"
+            )
+        finally:
+            orchestrator.get_service_list = original_get_service_list
+            orchestrator._parse = original_parse
+
+    asyncio.run(run_test())

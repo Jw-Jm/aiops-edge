@@ -63,7 +63,7 @@ async def _scheduled_anomaly_scan():
         from detector import detector
         from tools import get_service_list
         import json as _json
-        raw = get_service_list()
+        raw = await asyncio.to_thread(get_service_list)
         try:
             svc_data = _json.loads(raw)
         except Exception:
@@ -1228,7 +1228,7 @@ async def scan_anomalies(request: Request):
     import json as _json
 
     anomalies = []
-    raw = get_service_list()
+    raw = await asyncio.to_thread(get_service_list)
     try:
         svc_data = _json.loads(raw)
     except Exception:

@@ -295,7 +295,7 @@ async def node_collect(state: AgentState) -> dict:
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
-        data = _parse(get_service_list())
+        data = _parse(await asyncio.to_thread(get_service_list))
         if isinstance(data, list):
             lines = []
             for s in data:
@@ -313,7 +313,7 @@ async def node_collect(state: AgentState) -> dict:
     except: pass
     # Infra
     try:
-        result["infra_data"] = get_infrastructure().replace("## K8s 基础设施\n", "").strip()[:2000]
+        result["infra_data"] = (await asyncio.to_thread(get_infrastructure)).replace("## K8s 基础设施\n", "").strip()[:2000]
     except: pass
     # Alerts — 告警态势（规则 + 事件聚合）
     try:
@@ -324,7 +324,7 @@ async def node_collect(state: AgentState) -> dict:
     svc = state.get("service", "")
     if svc:
         try:
-            raw = query_metrics(svc)
+            raw = await asyncio.to_thread(query_metrics, svc)
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -338,7 +338,7 @@ async def node_collect(state: AgentState) -> dict:
                 result["red_metrics"] = "\n".join(lines)
                 result["before_metrics"] = f"总调用={total_calls} 错误率={err_rate:.2f}% P50延迟={avg_lat:.1f}ms"
         except: pass
-        try: result["trace_data"] = query_traces(svc)[:3000]
+        try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc))[:3000]
         except: pass
     # K8sGPT — 快速失败不阻塞, timeout 5s
     # 安全：明文 key 不写入子进程 argv（ps 可见），改用临时环境变量传递。
@@ -350,10 +350,16 @@ async def node_collect(state: AgentState) -> dict:
                 backend = cfg.get("backend", "openai")
                 env = dict(os.environ)
                 env["OPENAI_API_KEY"] = api_key
-                subprocess.run(["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o")],
-                               capture_output=True, text=True, timeout=5, env=env)
-                r = subprocess.run(["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
-                                   capture_output=True, text=True, timeout=10, env=env)
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o")],
+                    capture_output=True, text=True, timeout=5, env=env,
+                )
+                r = await asyncio.to_thread(
+                    subprocess.run,
+                    ["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
+                    capture_output=True, text=True, timeout=10, env=env,
+                )
                 if r.returncode == 0 and r.stdout.strip() and len(r.stdout.strip()) > 50:
                     result["k8sgpt_raw"] = r.stdout[:2000]
         except: pass
@@ -445,7 +451,7 @@ async def node_rca(state: AgentState) -> dict:
     """
     svc = state.get("service", "")
     if not svc:
-        svc = _top_anomaly_service()
+        svc = await asyncio.to_thread(_top_anomaly_service)
         if not svc:
             return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
     try:
@@ -733,7 +739,7 @@ async def node_verify(state: AgentState) -> dict:
         # 二次取样 (间隔 30s 确认非瞬时波动)
         samples = []
         for _ in range(2):
-            raw = query_metrics(svc)
+            raw = await asyncio.to_thread(query_metrics, svc)
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -759,12 +765,12 @@ async def node_verify(state: AgentState) -> dict:
         # 副作用检测: 关联服务
         side_effect = False
         try:
-            topo_raw = query_topology()
+            topo_raw = await asyncio.to_thread(query_topology)
             topo_data = _parse(topo_raw)
             edges = topo_data.get("edges", []) if topo_data else []
             downstreams = [e.get("target_service", e.get("target", "")) for e in edges if e.get("source_service", e.get("source", "")) == svc]
             for ds in downstreams[:3]:
-                ds_data = _parse(query_metrics(ds))
+                ds_data = _parse(await asyncio.to_thread(query_metrics, ds))
                 if ds_data and isinstance(ds_data.get("data"), list):
                     ds_lat = sum(float(i.get("avg_ms", 0)) for i in ds_data["data"]) / max(len(ds_data["data"]), 1)
                     if ds_lat > before_lat * 1.5 and before_lat > 0:
@@ -1101,7 +1107,7 @@ class BrainOrchestrator:
 
     async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
-        if not service: service = self._detect_service(message)
+        if not service: service = await asyncio.to_thread(self._detect_service, message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "llm_config": self.llm_config,
@@ -1129,7 +1135,7 @@ class BrainOrchestrator:
         已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
         """
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
-        if not service: service = self._detect_service(message)
+        if not service: service = await asyncio.to_thread(self._detect_service, message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "llm_config": self.llm_config,
