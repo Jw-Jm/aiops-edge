@@ -351,6 +351,39 @@ CREATE TABLE IF NOT EXISTS tenants (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// service_metadata: 服务富化元数据（替代 service_catalog 的富化职责）
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS service_metadata (
+  service_name VARCHAR(255) PRIMARY KEY,
+  owner VARCHAR(255) DEFAULT '',
+  team VARCHAR(255) DEFAULT '',
+  tier ENUM('critical','important','standard','experimental') DEFAULT 'standard',
+  description TEXT,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_tier (tier)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// 从旧 service_catalog 迁移数据（幂等）。
+	// 注意：service_catalog 无 tier 列，故不迁移 tier（service_metadata.tier 走默认 'standard'）。
+	_, _ = conn.Exec(`INSERT IGNORE INTO service_metadata (service_name, owner, team, description)
+SELECT service_name, owner, team, description FROM service_catalog
+WHERE service_name IS NOT NULL AND service_name != ''`)
+
+	// anomaly_events: 异常检测持久化
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS anomaly_events (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  service_name VARCHAR(255) NOT NULL,
+  metric VARCHAR(64) NOT NULL,
+  value DOUBLE,
+  method VARCHAR(32),
+  severity VARCHAR(32),
+  score DOUBLE,
+  detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_service (service_name),
+  INDEX idx_detected (detected_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 }
 
 func env(key, def string) string {
