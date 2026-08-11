@@ -3,6 +3,16 @@ import statistics
 from collections import deque
 from dataclasses import dataclass, field
 
+# MySQL 持久化（best-effort，db 模块或其依赖缺失时降级为不写入）
+try:
+    from db import db_available, get_conn
+except Exception:  # pragma: no cover - 依赖缺失时的降级路径
+    def db_available() -> bool:
+        return False
+
+    def get_conn():
+        return None
+
 
 @dataclass
 class AnomalyResult:
@@ -85,6 +95,11 @@ class AnomalyDetector:
         if r: results.append(r)
         r = self._detect_rate_change(values, current, service, metric)
         if r: results.append(r)
+
+        # 异常确认（>= 2/3 算法触发）时持久化到 MySQL（best-effort）
+        confirmed = self.vote(results)
+        if confirmed:
+            self._persist_anomaly(confirmed)
         return results
 
     def vote(self, results: list[AnomalyResult]) -> AnomalyResult | None:
@@ -92,6 +107,32 @@ class AnomalyDetector:
         if len(results) >= 2:
             return max(results, key=lambda r: r.score)
         return None
+
+    def _persist_anomaly(self, confirmed: AnomalyResult) -> None:
+        """异常确认时写入 MySQL anomaly_events 表（best-effort，不抛异常）
+
+        持久化失败不影响检测主流程：DB 不可用、连接失败、SQL 异常等一律吞掉。
+        """
+        try:
+            if not db_available():
+                return
+            conn = get_conn()
+            if conn is None:
+                return
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO anomaly_events "
+                        "(service_name, metric, value, method, severity, score) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (confirmed.service, confirmed.metric, confirmed.current_value,
+                         confirmed.method, confirmed.severity, confirmed.score),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass  # best-effort，不影响检测主流程
 
     # ── 算法 1: 3-Sigma ──
     def _detect_3sigma(self, values: list, current: float,
