@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from sse_starlette.sse import EventSourceResponse
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from shell_policy import ShellPolicy
 from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCARequest
@@ -31,6 +32,59 @@ app = FastAPI(title="AIOps Orchestrator", version="5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 shell_policy = ShellPolicy()
 app.include_router(flow_router)
+
+# ═══════════════════════════════════════════════════════════════
+#  APScheduler — 定时异常扫描（每 5 分钟，只检测+持久化，不触发 LLM）
+# ═══════════════════════════════════════════════════════════════
+scheduler = AsyncIOScheduler()
+
+
+@app.on_event("startup")
+async def start_scheduler():
+    """启动定时异常扫描（每 5 分钟）"""
+    scheduler.add_job(_scheduled_anomaly_scan, 'interval', minutes=5,
+                      id='anomaly_scan', replace_existing=True)
+    scheduler.start()
+
+
+@app.on_event("shutdown")
+async def stop_scheduler():
+    scheduler.shutdown(wait=False)
+
+
+async def _scheduled_anomaly_scan():
+    """定时异常扫描（只检测+持久化，不触发 LLM 诊断）
+
+    从 query-api 拉服务列表，对 error_rate/p99_latency/request_rate 三指标做
+    3 算法投票检测。detect() 内部确认异常时会调 _persist_anomaly 写入 MySQL
+    anomaly_events 表（best-effort）。此处不调 LLM，避免定时任务产生模型开销。
+    """
+    try:
+        from detector import detector
+        from tools import get_service_list
+        import json as _json
+        raw = get_service_list()
+        try:
+            svc_data = _json.loads(raw)
+        except Exception:
+            svc_data = []
+        for svc in (svc_data if isinstance(svc_data, list) else []):
+            name = svc.get("service_name", "")
+            if not name:
+                continue
+            metrics_vals = {
+                "error_rate": float(svc.get("error_rate", 0) or 0),
+                "p99_latency": float(svc.get("max_ms", 0) or 0),
+                "request_rate": float(svc.get("traces", 0) or 0),
+            }
+            for metric, val in metrics_vals.items():
+                results = detector.detect(name, metric, val)
+                if results:
+                    # detect() 已在内部 vote + _persist_anomaly；此处显式 vote
+                    # 仅保留语义占位（纯函数，无副作用，不会双写 MySQL）
+                    detector.vote(results)
+    except Exception as e:
+        print(f"[scheduler] anomaly scan error: {e}")
 
 # 延迟导入：orchestrator 中的 ChromaDB 模型下载会阻塞启动
 # 使用 startup event 在后台初始化
@@ -1222,24 +1276,33 @@ async def scan_anomalies(request: Request):
 
 
 @app.get("/api/v1/ops/anomalies")
-async def list_anomalies(service: str = "", metric: str = ""):
-    """查询历史异常事件 (从 detector 当前窗口)"""
-    from detector import detector
-    result = []
-    for key, values in detector.history.items():
-        svc_mt = key.split(":", 1)
-        if len(svc_mt) < 2:
-            continue
-        s, m = svc_mt
-        if service and s != service:
-            continue
-        if metric and m != metric:
-            continue
-        vals = list(values)
-        if len(vals) >= 2:
-            result.append({"service": s, "metric": m, "latest": vals[-1],
-                           "window_size": len(vals), "trend": "up" if vals[-1] > vals[-2] else "down"})
-    return {"anomaly_trends": result[:50]}
+async def list_anomalies(service: str = "", limit: int = 50):
+    """查询历史异常事件（从 MySQL anomaly_events 表）"""
+    try:
+        from db import db_available, get_conn
+        import pymysql.cursors
+        if not db_available():
+            return {"anomaly_trends": [], "total": 0}
+        conn = get_conn()
+        if conn is None:
+            return {"anomaly_trends": [], "total": 0}
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                sql = ("SELECT service_name, metric, value, method, severity, score, "
+                       "detected_at FROM anomaly_events")
+                args = []
+                if service:
+                    sql += " WHERE service_name=%s"
+                    args.append(service)
+                sql += " ORDER BY detected_at DESC LIMIT %s"
+                args.append(limit)
+                cur.execute(sql, args)
+                rows = cur.fetchall()
+            return {"anomaly_trends": rows, "total": len(rows)}
+        finally:
+            conn.close()
+    except Exception as e:
+        return {"anomaly_trends": [], "total": 0, "error": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════
