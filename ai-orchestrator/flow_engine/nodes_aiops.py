@@ -120,12 +120,24 @@ def _verify(ctx, config):
 
 
 def _report(ctx, config):
-    """报告节点：基于采集数据生成真实报告文本（非 mock）。"""
+    """报告节点：基于采集数据生成真实报告文本（非 mock），并持久化到报告中心。"""
     co = _collect_out(ctx)
     svc = co.get("service", "")
     red = co.get("red") or "(无指标数据)"
     exec_out = _node_out(ctx, "execute").get("output", "")
-    return {"report": f"[{_now()}] 服务 {svc} 诊断报告\n- 指标: {red[:300]}\n- 执行结果: {str(exec_out)[:300]}"}
+    report_text = f"[{_now()}] 服务 {svc} 诊断报告\n- 指标: {red[:300]}\n- 执行结果: {str(exec_out)[:300]}"
+    # P0-1 修复: 工作流报告节点输出后持久化到报告中心（MySQL reports 表 + MinIO 留档）
+    # 与 orchestrator 的 _upload_report 复用同一持久化逻辑，确保工作流报告被报告中心收纳
+    try:
+        from main import _upload_report
+        run_id = getattr(ctx, "run_id", "") or config.get("run_id", "")
+        _upload_report(run_id, report_text, service=svc or "")
+    except Exception as _e:
+        try:
+            print(f"[flow] 报告持久化失败: {_e}")
+        except Exception:
+            pass
+    return {"report": report_text}
 
 
 def _memorize(ctx, config):

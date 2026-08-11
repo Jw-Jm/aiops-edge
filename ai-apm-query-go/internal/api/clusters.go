@@ -95,6 +95,42 @@ func (h *Handler) clusterList(w http.ResponseWriter, r *http.Request) {
 	for i := range items {
 		items[i].Kubeconfig = ""
 	}
+	// P1-1: 若集群元数据（node_count/version/api_server）为空，尝试从 kubectl 实时补齐一次，
+	// 使默认集群能展示真实节点数/版本/APIServer，无需手动触发 /clusters/sync。
+	enriched := false
+	for i := range items {
+		c := &items[i]
+		if c.NodeCount <= 0 || c.APIServer == "" || c.Version == "" {
+			info := k8sClusterInfo()
+			if info.Name == c.Name || c.Name == "kubernetes-cluster" {
+				if info.NodeCount > 0 {
+					c.NodeCount = info.NodeCount
+				}
+				if info.Version != "" {
+					c.Version = info.Version
+				}
+				if info.APIServer != "" {
+					c.APIServer = info.APIServer
+				}
+				if info.Status != "" {
+					c.Status = info.Status
+				}
+				enriched = true
+			}
+		}
+	}
+	// 有补齐才写库（幂等 upsert），避免每次列表都触发
+	if enriched {
+		d := &store.ClusterDAO{}
+		for _, c := range items {
+			if c.NodeCount > 0 || c.APIServer != "" {
+				_, _ = d.Upsert(&store.Cluster{
+					Name: c.Name, Provider: c.Provider, Region: c.Region,
+					Version: c.Version, NodeCount: c.NodeCount, Status: c.Status, APIServer: c.APIServer,
+				})
+			}
+		}
+	}
 	respondJSON(w, 200, map[string]interface{}{"clusters": items})
 }
 
@@ -381,10 +417,14 @@ func k8sClusterInfo() clusterInfo {
 			info.Status = "degraded"
 		}
 	}
-	if out, err := exec.Command("kubectl", "version", "--short").Output(); err == nil {
+	// kubectl 1.28+ 移除了 --short，改用 kubectl version 并解析 Server Version 行
+	if out, err := exec.Command("kubectl", "version").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
-			if strings.Contains(line, "Server Version") || strings.HasPrefix(line, "Server") {
-				info.Version = strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
+			if strings.Contains(line, "Server Version") || strings.HasPrefix(line, "Server Version:") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 {
+					info.Version = strings.TrimSpace(parts[1])
+				}
 			}
 		}
 	}

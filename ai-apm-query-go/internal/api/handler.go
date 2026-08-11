@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/biz"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 // firstNonEmpty 返回第一个非空字符串（用于 env 缺省回退）。
@@ -845,6 +846,13 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// P0-2: 若 ClickHouse 仍无边（service_topology 为空且 trace 无 parent_span_id），
+	// 回退到 MySQL topology_relations（由 SyncTopologyCatalog 按 trace 内服务时序生成的真实调用边）。
+	if len(edgeRows) == 0 {
+		if mysqlEdges := loadTopologyEdgesFromMySQL(); len(mysqlEdges) > 0 {
+			edgeRows = mysqlEdges
+		}
+	}
 
 	// 节点聚合（真实 trace）：按 service_name 聚合调用量、错误、平均延迟
 	nodeSQL := fmt.Sprintf(
@@ -963,6 +971,42 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		"node_count": len(nodes),
 		"edge_count": len(edges),
 	})
+}
+
+// loadTopologyEdgesFromMySQL 从 MySQL topology_relations（关联 topology_nodes）读取真实调用边。
+// 返回与 ClickHouse 边行同构的 map 切片（source_service/target_service/calls/errs/avg_ns），
+// 供 GlobalTopology 复用统一边构建逻辑。数据由 SyncTopologyCatalog 按 trace 内服务时序生成。
+func loadTopologyEdgesFromMySQL() []map[string]interface{} {
+	nd := &store.TopologyNodeDAO{}
+	rd := &store.TopologyRelationDAO{}
+	rels, _, err := rd.List(0, 0, "", 500, 0)
+	if err != nil {
+		return nil
+	}
+	// 一次拉全节点建立 id → name 映射（避免逐 id Get 在缺省 mysql 下静默失败）
+	id2name := map[int64]string{}
+	nodes, _, nerr := nd.List("", "", 500, 0)
+	if nerr == nil {
+		for _, n := range nodes {
+			id2name[n.ID] = n.Name
+		}
+	}
+	rows := []map[string]interface{}{}
+	for _, rel := range rels {
+		src := id2name[rel.SrcID]
+		dst := id2name[rel.DstID]
+		if src == "" || dst == "" || src == dst {
+			continue
+		}
+		rows = append(rows, map[string]interface{}{
+			"source_service": src,
+			"target_service": dst,
+			"calls":          float64(1),
+			"errs":           float64(0),
+			"avg_ns":         float64(1e6), // 1ms 默认，边无延迟时给个合理占位
+		})
+	}
+	return rows
 }
 
 // buildSyntheticNode 为拓扑边缘未聚合到的节点生成占位（类型推断 + 健康）

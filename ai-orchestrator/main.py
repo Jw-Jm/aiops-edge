@@ -197,12 +197,20 @@ async def ai_chat(req: ChatRequest, request: Request):
                     break
                 # done/error 补结构化字段；其余透传
                 if event.get("type") == "done":
+                    done_text = event.get("text", "")
+                    # P0-1 修复: 流式对话结束同样持久化报告到报告中心（MinIO + MySQL）
+                    # 与下方非流式路径保持一致，确保 AI 诊断/巡检报告被报告中心收纳
+                    try:
+                        if done_text and len(done_text.strip()) > 100:
+                            _upload_report(thread_id, done_text, service=req.service or "")
+                    except Exception as _e:
+                        print(f"[chat] 流式报告持久化失败: {_e}")
                     yield _format_sse({
                         "type": "done",
-                        "text": event.get("text", ""),
+                        "text": done_text,
                         "assistant_message": {
                             "id": f"asst_{thread_id}",
-                            "content": event.get("text", ""),
+                            "content": done_text,
                             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         },
                     })

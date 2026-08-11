@@ -294,14 +294,34 @@ func (h *Handler) vmInstanceLabels(promQL string) ([]string, error) {
 
 // CapacityInstances 处理 GET /api/v1/capacity/instances，返回 node-exporter 的实例列表。
 // 供前端容量预测页的 node 选择器使用；值为 VM 中真实的 instance 标签（如 192.168.139.2:9100）。
+// P2-1 修复：若 VM 无 node-exporter 实例（metrics 未接入），回退到从 kubectl 读取真实节点列表，
+// 确保容量页节点选择器始终有可选项。
 func (h *Handler) CapacityInstances(w http.ResponseWriter, r *http.Request) {
 	labels, err := h.vmInstanceLabels(`up{job="node-exporter"}`)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
+	// VM 查询失败或无实例时回退到 K8s 节点（真实可观测目标）
+	if err != nil || len(labels) == 0 {
+		fallback := []string{}
+		for _, n := range k8sNodes() {
+			if n.Name != "" {
+				fallback = append(fallback, n.Name)
+			}
+		}
+		if len(fallback) > 0 {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"instances": fallback,
+				"count":     len(fallback),
+				"source":    "k8s",
+			})
+			return
+		}
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			return
+		}
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"instances": labels,
 		"count":     len(labels),
+		"source":    "victoriametrics",
 	})
 }
