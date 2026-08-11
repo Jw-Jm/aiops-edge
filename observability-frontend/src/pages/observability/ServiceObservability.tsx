@@ -120,20 +120,29 @@ const ServiceObservability: React.FC = () => {
   }, [loading, nodes, searchParams, drawerOpen, selectedNode])
 
   useEffect(() => {
-    if (view !== 'topo' || !chartRef.current) return
-    // Issue3: 离开 topo 视图后 chartRef 容器会卸载重建；若 chartInst 仍指向旧(已脱离DOM)实例，
-    // 复用会导致白屏。故在 view 非 topo 时清空并释放，回到 topo 时重新 init。
-    if (view === 'topo' && chartInst.current && chartInst.current.isDisposed()) {
-      chartInst.current = null
+    // Issue1/2 根因修复：chartRef 容器在视图切换时会被卸载重建。必须确保：
+    // (a) 离开 topo 视图时 dispose 实例并清空引用；
+    // (b) 回到 topo 时若实例为 null/已 dispose/绑定的是旧容器(脱离 DOM)，重新 init。
+    // 否则复用绑定在已卸载 div 上的旧实例，setOption 渲染到脱离 DOM 的 canvas 上 → 拓扑空白/白屏。
+    if (view !== 'topo') {
+      if (chartInst.current) {
+        try { chartInst.current.dispose() } catch { /* ignore */ }
+        chartInst.current = null
+      }
+      return
     }
-    if (!chartInst.current) chartInst.current = echarts.init(chartRef.current)
+    if (!chartRef.current) return
+    if (!chartInst.current || chartInst.current.isDisposed() || chartInst.current.getDom() !== chartRef.current) {
+      if (chartInst.current) { try { chartInst.current.dispose() } catch { /* ignore */ } }
+      chartInst.current = echarts.init(chartRef.current)
+    }
     const inst = chartInst.current
     const nodeScale = Math.max(1, nodes.length / 8) // 节点多则加大斥力
-    // 计算边的最大调用量，用于边宽缩放；将 lineStyle 放到每个 link 上以实现按调用量缩放
+    // Issue3: 边宽按调用量缩放，但整体调细（0.7 + 1.3 缩放，最大约 2），避免太粗
     const maxCalls = Math.max(1, ...links.map((l: any) => Number(l.value) || 1))
     const linksWithWidth = links.map((l: any) => ({
       ...l,
-      lineStyle: { width: 1 + 3.5 * (Number(l.value) || 0) / maxCalls },
+      lineStyle: { width: 0.7 + 1.3 * (Number(l.value) || 0) / maxCalls },
     }))
     // 环形初始坐标（像素，基于容器尺寸），让节点在画布范围内开始受力，避免飞出页面
     const cw = chartRef.current.clientWidth || 800
@@ -145,6 +154,7 @@ const ServiceObservability: React.FC = () => {
       x: cx + R * Math.cos((2 * Math.PI * i) / N),
       y: cy + R * Math.sin((2 * Math.PI * i) / N),
     }))
+    try {
     inst.setOption({
       tooltip: {
         trigger: 'item',
@@ -187,20 +197,19 @@ const ServiceObservability: React.FC = () => {
         itemStyle: { color: '#2f54eb', borderColor: '#fff', borderWidth: 1 },
       }],
     })
+    } catch (err) {
+      // Issue1: 任何 ECharts setOption 异常都不应冒泡导致 React 崩溃（白屏），静默降级
+      console.error('[ServiceObservability] setOption 失败:', err)
+    }
     // Issue3: 先 off 再 on，避免每次 nodes/links 变化重复注册 click 监听导致 handler 累积、
     // 点击一次触发多次 openDetail（抽屉闪开关）进而白屏。
     inst.off('click')
     inst.on('click', (p: any) => { if (p.dataType === 'node' && p.data?.name) openDetail(p.data.name) })
-    const onResize = () => inst.resize()
+    const onResize = () => { try { inst.resize() } catch { /* ignore */ } }
     window.addEventListener('resize', onResize)
     return () => {
       window.removeEventListener('resize', onResize)
-      // Issue3: 离开 topo 视图时 dispose 实例并清空引用，避免复用已脱离 DOM 的旧实例导致白屏
-      if (view !== 'topo') {
-        inst.off('click')
-        inst.dispose()
-        if (chartInst.current === inst) chartInst.current = null
-      }
+      // 实例生命周期已在 effect 顶部（view!=='topo' 分支）处理 dispose；此处仅清理事件
     }
   }, [view, nodes, links])
 
@@ -230,12 +239,17 @@ const ServiceObservability: React.FC = () => {
       return
     }
     if (!drawerOpen || drawerLoading || !trendChartRef.current) return
-    if (!trendInst.current) trendInst.current = echarts.init(trendChartRef.current)
+    // Issue1: 抽屉 destroyOnClose 后趋势图容器重建；若实例绑定的是旧容器则重 init，避免渲染到脱离 DOM 的 canvas
+    if (!trendInst.current || trendInst.current.isDisposed() || trendInst.current.getDom() !== trendChartRef.current) {
+      if (trendInst.current) { try { trendInst.current.dispose() } catch { /* ignore */ } }
+      trendInst.current = echarts.init(trendChartRef.current)
+    }
     const mt = METRIC_TYPES.find((m) => m.value === metricType) || METRIC_TYPES[0]
     const trend = nodeDetail?.trend || nodeDetail?.metrics?.trend || []
     const x = trend.map((t: any) => t?.t || t?.time || '')
     const data = trend.map((t: any) => Number(mt.key(t) || 0))
     const inst = trendInst.current
+    try {
     inst.setOption({
       tooltip: { trigger: 'axis' },
       grid: { left: 44, right: 16, top: 20, bottom: 28 },
@@ -243,7 +257,10 @@ const ServiceObservability: React.FC = () => {
       yAxis: { type: 'value', axisLabel: { color: '#7a8794', fontSize: 10 }, splitLine: { lineStyle: { color: '#eef2f7' } } },
       series: [{ name: mt.label, type: 'line', smooth: true, symbol: 'none', data, itemStyle: { color: '#2f54eb' }, areaStyle: { opacity: 0.08 } }],
     })
-    const onResize = () => inst.resize()
+    } catch (err) {
+      console.error('[ServiceObservability] 趋势图 setOption 失败:', err)
+    }
+    const onResize = () => { try { inst.resize() } catch { /* ignore */ } }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [drawerOpen, drawerLoading, nodeDetail, metricType])
@@ -277,9 +294,8 @@ const ServiceObservability: React.FC = () => {
     apdex: nd?.apdex ?? nd?.metrics?.apdex ?? null,
     errorRate: nd?.error_rate ?? nd?.metrics?.error_rate ?? null,
   })
-  const upData = desc.up.map((n, i) => ({ key: `${n}-${i}`, name: n, count: edgeCountFor(n, 'in') }))
-  const downData = desc.down.map((n, i) => ({ key: `${n}-${i}`, name: n, count: edgeCountFor(n, 'out') }))
-  // 2.3 调用次数：从边数据里按 source/target 关联统计
+  // 2.3 调用次数：从边数据里按 source/target 关联统计（须在 upData/downData 之前声明，
+  // 否则 map 回调引用 const 触发 TDZ：Cannot access 'X' before initialization → 白屏）
   const edgeCountFor = (name: string, dir: 'out' | 'in') => {
     let total = 0
     for (const l of links) {
@@ -289,6 +305,8 @@ const ServiceObservability: React.FC = () => {
     }
     return total
   }
+  const upData = desc.up.map((n, i) => ({ key: `${n}-${i}`, name: n, count: edgeCountFor(n, 'in') }))
+  const downData = desc.down.map((n, i) => ({ key: `${n}-${i}`, name: n, count: edgeCountFor(n, 'out') }))
   const relCols = [
     { title: '服务', dataIndex: 'name', key: 'name', render: (v: string) => <a onClick={() => openServiceDetail(v)} style={{ color: 'var(--primary)' }}>{v}</a> },
     { title: '调用次数', dataIndex: 'count', key: 'count', width: 90, render: (v: number) => (v ?? 0).toLocaleString() },
