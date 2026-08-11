@@ -161,6 +161,12 @@ async def ai_chat(req: ChatRequest, request: Request):
                         _create_chat_suggestion_task(event, req, thread_id)
                     event_queue.put(event)
                 event_queue.put(None)  # sentinel: done
+                # Issue4: 会话完成后更新 session_store（提供 updated_at 供历史会话按时间倒序）
+                try:
+                    from session_store import session_store
+                    session_store.save(thread_id, req.intent, req.service or "", [])
+                except Exception:
+                    pass
             except Exception as e:
                 event_queue.put({"type": "error", "text": str(e)[:200]})
                 event_queue.put(None)
@@ -404,8 +410,17 @@ async def ai_flow_run(key: str, body: dict = None):
 async def list_sessions():
     try:
         rows = _get_brain()._conn.execute(
-            "SELECT DISTINCT thread_id FROM checkpoints ORDER BY thread_id DESC LIMIT 50"
+            "SELECT DISTINCT thread_id FROM checkpoints LIMIT 200"
         ).fetchall()
+        # Issue4: 用 session_store 的 updated_at 提供真实时间戳，历史会话按最近活跃时间倒序
+        meta = {}
+        try:
+            from session_store import SessionStore
+            store = SessionStore()
+            for s in store.list_sessions(500):
+                meta[s["session_id"]] = s.get("updated_at", "") or ""
+        except Exception:
+            pass
         sessions, seen = [], set()
         for (tid,) in rows:
             if tid in seen: continue
@@ -413,16 +428,26 @@ async def list_sessions():
             try:
                 state = _get_brain().graph.get_state({"configurable": {"thread_id": tid}})
                 vals = state.values if state else {}
+                updated = meta.get(tid, "")
                 sessions.append({
                     "session_id": tid,
                     "preview": (vals.get("user_message", "") or vals.get("final_response", "") or tid)[:80],
                     "intent": vals.get("intent", ""),
-                    "created_at": "",
+                    "created_at": updated,
                 })
             except:
-                sessions.append({"session_id": tid, "preview": tid, "intent": "", "created_at": ""})
+                sessions.append({"session_id": tid, "preview": tid, "intent": "", "created_at": meta.get(tid, "")})
+        # 按 updated_at 倒序（有时间的优先，无时间的排后），保持最近会话在最前
+        # 注意: created_at 可能是 float(epoch) 或 ""，排序 key 需统一为数值，避免 float/str 混比报错
+        def _key(s):
+            ts = s.get("created_at")
+            if isinstance(ts, (int, float)):
+                return float(ts)
+            return 0.0
+        sessions.sort(key=_key, reverse=True)
         return {"sessions": sessions}
-    except:
+    except Exception as _e:
+        print(f"[sessions] list error: {_e}")
         return {"sessions": []}
 
 
@@ -450,9 +475,41 @@ async def delete_session(sid: str):
         _get_brain()._conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (sid,))
         _get_brain()._conn.execute("DELETE FROM writes WHERE thread_id = ?", (sid,))
         _get_brain()._conn.commit()
+        # Issue4: 同步删除 session_store 中的元数据，保证列表与清除一致
+        try:
+            from session_store import SessionStore
+            store = SessionStore()
+            conn = _get_brain()._conn
+            import sqlite3
+            _sc = sqlite3.connect(store.db_path)
+            _sc.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+            _sc.commit(); _sc.close()
+        except Exception:
+            pass
         return {"message": "session deleted", "session_id": sid}
     except Exception as e:
         raise HTTPException(500, f"delete failed: {e}")
+
+
+@app.delete("/api/v1/ai/sessions")
+async def clear_sessions():
+    """Issue4: 清除全部历史会话（checkpoints + writes + session_store 元数据）。"""
+    try:
+        _get_brain()._conn.execute("DELETE FROM checkpoints")
+        _get_brain()._conn.execute("DELETE FROM writes")
+        _get_brain()._conn.commit()
+        try:
+            from session_store import SessionStore
+            store = SessionStore()
+            import sqlite3
+            _sc = sqlite3.connect(store.db_path)
+            _sc.execute("DELETE FROM sessions")
+            _sc.commit(); _sc.close()
+        except Exception:
+            pass
+        return {"message": "all sessions cleared"}
+    except Exception as e:
+        raise HTTPException(500, f"clear failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════

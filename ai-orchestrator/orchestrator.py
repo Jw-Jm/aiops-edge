@@ -478,10 +478,49 @@ def node_rag(state: AgentState) -> dict:
     return {"similar_cases": "", "messages": [f"[{_now()}] RAG: 无相似案例"]}
 
 
+def _deterministic_diagnosis(state: dict) -> str:
+    """无 LLM 时的确定性诊断：基于已采集的实时数据逐项汇总为结构化巡检/诊断结论。
+    确保即使未配置 LLM，AI 也能输出完整的诊断内容（含健康状态/问题/风险/建议），
+    供 node_summarize 拼装完整报告，也供 node_plan 生成处置方案。"""
+    svc = state.get("service", "")
+    intent = state.get("intent", "inspection")
+    lines = []
+    if intent == "diagnosis":
+        lines.append(f"### 诊断结论（确定性分析）\n- **目标服务**: {svc or '未知'}")
+    # 服务 RED 指标
+    red = state.get("red_metrics", "")
+    if red:
+        lines.append(f"- **服务指标**: {red[:600]}")
+    # 服务总览（traces/错误率）
+    svc_data = state.get("services_data", "")
+    if svc_data:
+        lines.append(f"- **服务数据**: {svc_data[:800]}")
+    # 基础设施
+    infra = state.get("infra_data", "")
+    if infra:
+        lines.append(f"- **基础设施**: {infra[:500]}")
+    # 告警
+    alerts = state.get("alert_data", "")
+    if alerts:
+        lines.append(f"- **活跃告警**: {alerts[:600]}")
+    # 根因
+    rca = state.get("rca_evidence", "")
+    if rca:
+        lines.append(f"- **根因线索**: {rca[:600]}")
+    # K8s
+    k8s = state.get("k8sgpt_raw", "")
+    if k8s:
+        lines.append(f"- **K8s 诊断**: {k8s[:600]}")
+    if len(lines) <= 1:
+        lines.append("- 未采集到实时数据，请检查数据采集链路或稍后重试。")
+    return "\n".join(lines)
+
+
 def node_crewai(state: AgentState) -> dict:
     cfg = state.get("llm_config")
     if not _llm_key_ready():
-        return {"crewai_result": ""}
+        # Issue1: 无 LLM 时用确定性诊断兜底，保证报告/任务有实质内容
+        return {"crewai_result": _deterministic_diagnosis(state)}
 
     # LLM 动态路由: 根据用户消息匹配最佳专家
     user_msg = state.get("user_message", "")
@@ -548,11 +587,36 @@ def node_holmes(state: AgentState) -> dict:
     return {"holmesgpt_result": result, "messages": [f"[{_now()}] HolmesGPT 分析完成"]}
 
 
+def _deterministic_plan(state: dict) -> dict:
+    """无 LLM 时基于诊断生成确定性处置方案（plan + script）。
+    按告警/指标/异常类型给出可操作的恢复建议与只读诊断命令。"""
+    svc = state.get("service", "") or "default"
+    red = state.get("red_metrics", "") or ""
+    alerts = state.get("alert_data", "") or ""
+    analysis = state.get("crewai_result", "") or ""
+    lines = [f"## 处置方案（确定性建议）\n- **目标服务**: {svc}"]
+    # 按告警类型给出动作
+    if "restart" in alerts.lower() or "restart" in red.lower():
+        lines.append("- **动作**: 滚动重启异常服务以恢复\n  - `kubectl rollout restart deployment/%s -n observability`" % svc)
+    elif "high" in alerts.lower() or "cpu" in red.lower() or "load" in red.lower():
+        lines.append("- **动作**: 排查高负载来源并扩容/限流\n  - `kubectl top pods -n observability`\n  - `kubectl describe pod -l app=%s -n observability`" % svc)
+    else:
+        lines.append("- **动作**: 常规巡检与诊断\n  - `kubectl get pods -n observability -l app=%s`\n  - `kubectl describe pod -l app=%s -n observability`" % (svc, svc))
+    lines.append("- **风险**: 低（只读诊断 / 受控重启）")
+    if analysis:
+        lines.append(f"- **依据**: {analysis[:300]}")
+    plan = "\n".join(lines)
+    # 提取脚本（把 k8s 相关行收集为可执行命令）
+    script = "\n".join(l.strip() for l in plan.splitlines() if l.strip().startswith("kubectl"))
+    return {"plan": plan, "script": script}
+
+
 def node_plan(state: AgentState) -> dict:
     """Generate execution plan + shell script."""
     cfg = state.get("llm_config")
-    if not cfg:
-        return {"plan": "", "script": ""}
+    if not _llm_key_ready() or not cfg:
+        # Issue1: 无 LLM 时用确定性处置方案兜底，任务工作台/AI chat 也能给出可审批的处置建议
+        return _deterministic_plan(state)
     analysis = state.get("crewai_result", "")[:2000]
     prompt = f"基于诊断结果，生成执行计划 + Shell/K8s 命令。只输出可执行的脚本。诊断:\n{analysis}"
     result = _llm(cfg, "你是 K8s 运维工程师。生成可直接执行的 Shell 脚本。", prompt, "运维工程师")
@@ -1045,15 +1109,19 @@ class BrainOrchestrator:
                             _t.sleep(0.01)
             # 从分析结果中提取可执行的 kubectl/curl 命令作为操作建议
             analysis = suggestion.get("crewai_result", "")
-            plan = suggestion.get("final_response", "")[:2000]
-            script = _extract_script(analysis or plan)
+            full_resp = suggestion.get("final_response", "")
+            plan = suggestion.get("plan", "") or full_resp[:2000]
+            script = _extract_script(analysis or plan or full_resp)
+            # Issue1: 无 LLM 时 node_plan 已产出确定性 plan/script，兜底给全量
+            if not script and full_resp:
+                script = _extract_script(full_resp)
             if script or plan:
                 yield {"type": "suggestion", "text": "已生成操作建议，可在任务工作台审批执行",
                        "plan": plan,
                        "script": script[:1000],
                        "risk_score": suggestion.get("risk_score", 0),
                        "risk_reason": suggestion.get("risk_reason", ""),
-                       "final_response": suggestion.get("final_response", "")[:3000]}
+                       "final_response": full_resp[:3000]}
                 # 内联审批卡事件：task_id 由调用方(main.py)捕获后回填
                 yield {"type": "approval_pending",
                        "task_id": thread_id,
@@ -1062,7 +1130,8 @@ class BrainOrchestrator:
                        "risk_score": suggestion.get("risk_score", 0),
                        "risk_reason": suggestion.get("risk_reason", "需要人工确认后执行"),
                        "requires_approval": True}
-            yield {"type": "done", "text": suggestion.get("final_response", "")[:500]}
+            # Issue2: done 事件携带完整报告文本（不截断），供报告中心持久化完整巡检内容
+            yield {"type": "done", "text": full_resp}
         except Exception as e:
             # DAG 执行异常，返回错误信息而不是卡死
             import traceback
