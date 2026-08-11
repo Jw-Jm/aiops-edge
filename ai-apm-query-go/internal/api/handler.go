@@ -129,6 +129,26 @@ func extractTenantID(r *http.Request) string {
 	return "default"
 }
 
+// extractClusterClause 返回按 cluster_id 过滤的 SQL 片段。
+// 语义：cluster_id 为空或 "all" → 返回空串（查询所有集群，不追加过滤）；
+// 其他值 → 返回 " AND cluster_id='xxx'"（仅查询该集群）。
+func extractClusterClause(r *http.Request) string {
+	cid := r.URL.Query().Get("cluster_id")
+	if cid == "" || cid == "all" {
+		return ""
+	}
+	return " AND cluster_id=" + chQuote(cid)
+}
+
+// extractClusterID 返回原始 cluster_id 值（供响应透传；空或 all 表示全部）。
+func extractClusterID(r *http.Request) string {
+	cid := r.URL.Query().Get("cluster_id")
+	if cid == "" {
+		return "all"
+	}
+	return cid
+}
+
 // chQuote 对拼入 ClickHouse SQL 的字符串字面量做安全转义，防止 SQL 注入。
 // ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ''，反斜杠转义为 \\。
 // 所有由用户/外部输入拼入 SQL 的值都必须经过本函数后再嵌入。
@@ -304,9 +324,10 @@ func parseRows(body []byte) ([]map[string]interface{}, error) {
 // ListServices handles GET /api/v1/services
 func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	sql := fmt.Sprintf(
-		"SELECT service_name, count(DISTINCT trace_id) as traces, count() as spans, avg(duration_ns)/1000000 as avg_ms, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s AND date >= today()-1 GROUP BY service_name ORDER BY spans DESC",
-		chQuote(tid),
+		"SELECT service_name, count(DISTINCT trace_id) as traces, count() as spans, avg(duration_ns)/1000000 as avg_ms, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 GROUP BY service_name ORDER BY spans DESC",
+		chQuote(tid), clusterClause,
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -335,6 +356,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 // ServiceDetail handles GET /api/v1/services/{name}
 func (h *Handler) ServiceDetail(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	// Extract service name from URL path: strip "/api/v1/services/" prefix
 	name := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
 	name = strings.TrimRight(name, "/")
@@ -344,8 +366,8 @@ func (h *Handler) ServiceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT toStartOfMinute(start_time) as t, count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
-		chQuote(tid), chQuote(name),
+		"SELECT toStartOfMinute(start_time) as t, count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
+		chQuote(tid), clusterClause, chQuote(name),
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -375,6 +397,7 @@ func (h *Handler) ServiceDetail(w http.ResponseWriter, r *http.Request) {
 // ListTraces handles GET /api/v1/traces
 func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	limit := 20
 	offset := 0
 
@@ -395,9 +418,15 @@ func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 		serviceClause = fmt.Sprintf("AND service_name=%s", chQuote(serviceFilter))
 	}
 
+	// 2.7 搜索框：支持按 trace_id / operation / http_url 文本搜索
+	searchClause := ""
+	if s := r.URL.Query().Get("search"); s != "" {
+		searchClause = fmt.Sprintf(" AND (trace_id LIKE %s OR operation_name LIKE %s OR http_url LIKE %s)", chLike(s), chLike(s), chLike(s))
+	}
+
 	sql := fmt.Sprintf(
-		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s %s GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d",
-		chQuote(tid), serviceClause, limit, offset,
+		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s %s GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d",
+		chQuote(tid), clusterClause, searchClause, serviceClause, limit, offset,
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -437,6 +466,7 @@ func (h *Handler) TraceRouter(w http.ResponseWriter, r *http.Request) {
 // TraceDetail handles GET /api/v1/traces/{id}
 func (h *Handler) TraceDetail(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	traceID := strings.TrimPrefix(r.URL.Path, "/api/v1/traces/")
 	traceID = strings.TrimRight(traceID, "/")
 	if traceID == "" {
@@ -445,8 +475,8 @@ func (h *Handler) TraceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT span_id, parent_span_id, service_name, operation_name, span_kind, start_time, duration_ns/1000000 as ms, is_error FROM observability.trace_spans WHERE tenant_id=%s AND trace_id=%s ORDER BY start_time",
-		chQuote(tid), chQuote(traceID),
+		"SELECT span_id, parent_span_id, service_name, operation_name, span_kind, start_time, duration_ns/1000000 as ms, is_error FROM observability.trace_spans WHERE tenant_id=%s%s AND trace_id=%s ORDER BY start_time",
+		chQuote(tid), clusterClause, chQuote(traceID),
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -477,6 +507,7 @@ func (h *Handler) TraceDetail(w http.ResponseWriter, r *http.Request) {
 // 数据血缘闭环：返回该 trace 关联的日志(log_records by trace_id) + 服务时段指标 + 关联告警
 func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/traces/")
 	path = strings.TrimRight(path, "/")
 	traceID := strings.TrimSuffix(path, "/context")
@@ -490,8 +521,8 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 
 	// 1. 获取该 trace 涉及的服务
 	svcSQL := fmt.Sprintf(
-		"SELECT DISTINCT service_name FROM observability.trace_spans WHERE tenant_id=%s AND trace_id=%s LIMIT 1",
-		chQuote(tid), chQuote(traceID),
+		"SELECT DISTINCT service_name FROM observability.trace_spans WHERE tenant_id=%s%s AND trace_id=%s LIMIT 1",
+		chQuote(tid), clusterClause, chQuote(traceID),
 	)
 	svcBody, err := h.queryClickHouse(ctx, svcSQL)
 	if err != nil {
@@ -507,8 +538,8 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 	logs := []map[string]interface{}{}
 	if traceID != "" {
 		logSQL := fmt.Sprintf(
-			"SELECT timestamp, service_name, severity, body FROM observability.log_records WHERE tenant_id=%s AND trace_id=%s ORDER BY timestamp DESC LIMIT 50",
-			chQuote(tid), chQuote(traceID),
+			"SELECT timestamp, service_name, severity, body FROM observability.log_records WHERE tenant_id=%s%s AND trace_id=%s ORDER BY timestamp DESC LIMIT 50",
+			chQuote(tid), clusterClause, chQuote(traceID),
 		)
 		logBody, err := h.queryClickHouse(ctx, logSQL)
 		if err == nil {
@@ -545,8 +576,8 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 	metrics := []map[string]interface{}{}
 	if serviceName != "" {
 		mSQL := fmt.Sprintf(
-			"SELECT toStartOfMinute(start_time) as t, count() as call_count, countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s AND service_name=%s AND start_time >= now() - INTERVAL 30 MINUTE GROUP BY t ORDER BY t",
-			chQuote(tid), chQuote(serviceName),
+			"SELECT toStartOfMinute(start_time) as t, count() as call_count, countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL 30 MINUTE GROUP BY t ORDER BY t",
+			chQuote(tid), clusterClause, chQuote(serviceName),
 		)
 		if mBody, err := h.queryClickHouse(ctx, mSQL); err == nil {
 			metrics, _ = parseRows(mBody)
@@ -587,6 +618,7 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 // QueryMetrics handles GET /api/v1/metrics/query?service={name}
 func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	service := r.URL.Query().Get("service")
 	if service == "" {
 		respondError(w, http.StatusBadRequest, "service parameter required")
@@ -594,8 +626,8 @@ func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT toStartOfMinute(start_time) as t, count() as call_count, countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms, quantile(0.50)(duration_ns)/1000000 as p50_ms, quantile(0.95)(duration_ns)/1000000 as p95_ms, quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE tenant_id=%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
-		chQuote(tid), chQuote(service),
+		"SELECT toStartOfMinute(start_time) as t, count() as call_count, countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms, quantile(0.50)(duration_ns)/1000000 as p50_ms, quantile(0.95)(duration_ns)/1000000 as p95_ms, quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
+		chQuote(tid), clusterClause, chQuote(service),
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -626,12 +658,13 @@ func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 // 聚合服务 RED + 拓扑边数，返回平台总览统计。
 func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
 	sql := fmt.Sprintf(
-		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 20",
-		chQuote(tid),
+		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 20",
+		chQuote(tid), clusterClause,
 	)
 	body, err := h.queryClickHouse(ctx, sql)
 	if err != nil {
@@ -662,7 +695,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	stats := biz.AggregateStats(items)
 
 	// 拓扑边数
-	edgeSQL := fmt.Sprintf("SELECT count() FROM observability.service_topology WHERE tenant_id=%s AND date >= today()-1", chQuote(tid))
+	edgeSQL := fmt.Sprintf("SELECT count() FROM observability.service_topology WHERE tenant_id=%s%s AND date >= today()-1", chQuote(tid), clusterClause)
 	if eb, err := h.queryClickHouse(ctx, edgeSQL); err == nil {
 		if er, perr := parseRows(eb); perr == nil && len(er) > 0 {
 			if n, ok := toInt64(er[0]["count()"]); ok {
@@ -671,11 +704,11 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// P95 延迟
-	p95SQL := fmt.Sprintf("SELECT round(quantile(0.95)(duration_ns)/1000000, 2) FROM observability.trace_spans WHERE tenant_id=%s AND date >= today()-1", chQuote(tid))
+	// P95 延迟（给聚合列加别名，避免 ClickHouse 将 / 规范化为 divide() 导致 key 匹配失败）
+	p95SQL := fmt.Sprintf("SELECT round(quantile(0.95)(duration_ns)/1000000, 2) AS p95_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1", chQuote(tid), clusterClause)
 	if pb, err := h.queryClickHouse(ctx, p95SQL); err == nil {
 		if pr, perr := parseRows(pb); perr == nil && len(pr) > 0 {
-			if v, ferr := toFloat64(pr[0]["round(quantile(0.95)(duration_ns)/1000000, 2)"]); ferr == nil {
+			if v, ferr := toFloat64(pr[0]["p95_ms"]); ferr == nil {
 				stats.LatencyP95 = v
 			}
 		}
@@ -684,8 +717,8 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// 近 24h 调用/错误趋势（按小时）
 	trendSQL := fmt.Sprintf(
 		"SELECT toString(toStartOfHour(start_time)) AS t, count() AS calls, countIf(is_error=1) AS errors "+
-			"FROM observability.trace_spans WHERE tenant_id=%s AND date >= today()-1 "+
-			"GROUP BY t ORDER BY t LIMIT 24", chQuote(tid))
+			"FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 "+
+			"GROUP BY t ORDER BY t LIMIT 24", chQuote(tid), clusterClause)
 	if tb, err := h.queryClickHouse(ctx, trendSQL); err == nil {
 		if tr, perr := parseRows(tb); perr == nil {
 			for _, row := range tr {
@@ -700,7 +733,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// TOP 错误服务分布
 	teSQL := fmt.Sprintf(
 		"SELECT service_name AS s, countIf(is_error=1) AS errors FROM observability.trace_spans "+
-			"WHERE tenant_id=%s AND date >= today()-1 AND is_error=1 GROUP BY s ORDER BY errors DESC LIMIT 10", chQuote(tid))
+			"WHERE tenant_id=%s%s AND date >= today()-1 AND is_error=1 GROUP BY s ORDER BY errors DESC LIMIT 10", chQuote(tid), clusterClause)
 	if tb, err := h.queryClickHouse(ctx, teSQL); err == nil {
 		if tr, perr := parseRows(tb); perr == nil {
 			for _, row := range tr {
@@ -761,10 +794,10 @@ func topologyNodeType(name string) (typ string, rank int) {
 // 前端参考 DeepFlow 风格（从左到右分层、节点卡片含图标+延迟+请求量、连线带箭头与颜色）
 func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 
-	// 时间过滤：minutes 参数，默认 15 分钟（对应前端"近 15 分钟"）
-	// 使用 time_bucket（分钟精度时间戳）过滤，确保"近 N 分钟"窗口精确生效
-	minutes := 15
+	// 时间过滤：minutes 参数（前端"近 N 分钟"），默认 24 小时，避免清理/低流量期出现空拓扑
+	minutes := 1440
 	if m := r.URL.Query().Get("minutes"); m != "" {
 		if v, err := strconv.Atoi(m); err == nil && v > 0 {
 			minutes = v
@@ -775,15 +808,14 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	// 边聚合（真实 trace）：通过 parent_span_id 关联，子 span(s1) 的服务调用其父 span(s2) 的服务
+	// 边聚合：优先 service_topology（真实调用边），无数据时回退到 trace_spans 按服务对聚合
+	// service_topology 用 time_bucket 列做时间过滤
+	edgeCond := fmt.Sprintf(" AND time_bucket >= now() - INTERVAL %d MINUTE", minutes)
 	edgeSQL := fmt.Sprintf(
-		"SELECT s2.service_name AS source_service, s1.service_name AS target_service, "+
-			"count() AS calls, countIf(s1.is_error=1) AS errs, avg(s1.duration_ns) AS avg_ns "+
-			"FROM observability.trace_spans s1 "+
-			"INNER JOIN observability.trace_spans s2 ON s1.parent_span_id = s2.span_id AND s2.tenant_id=s1.tenant_id "+
-			"WHERE s1.tenant_id=%s%s AND s1.service_name != s2.service_name "+
-			"GROUP BY s2.service_name, s1.service_name ORDER BY calls DESC LIMIT 200",
-		chQuote(tid), timeCond,
+		"SELECT source_service, target_service, sum(call_count) AS calls, sum(error_count) AS errs, avg(avg_duration_ns) AS avg_ns "+
+			"FROM observability.service_topology WHERE tenant_id=%s%s%s "+
+			"GROUP BY source_service, target_service ORDER BY calls DESC LIMIT 200",
+		chQuote(tid), clusterClause, edgeCond,
 	)
 	edgeBody, err := h.queryClickHouse(ctx, edgeSQL)
 	if err != nil {
@@ -797,12 +829,28 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "parse failed")
 		return
 	}
+	// P0-2: 若 service_topology 无调用边，回退到 trace_spans 按 trace 内相邻 span 的服务对聚合（尽力而为）
+	if len(edgeRows) == 0 {
+		fallbackSQL := fmt.Sprintf(
+			"SELECT s1.service_name AS source_service, s2.service_name AS target_service, count() AS calls, 0 AS errs, avg(s2.duration_ns) AS avg_ns "+
+				"FROM observability.trace_spans AS s1 "+
+				"JOIN observability.trace_spans AS s2 ON s1.trace_id = s2.trace_id AND s1.span_id = s2.parent_span_id "+
+				"WHERE s1.tenant_id=%s%s AND s1.start_time >= now() - INTERVAL %d MINUTE "+
+				"GROUP BY s1.service_name, s2.service_name ORDER BY calls DESC LIMIT 200",
+			chQuote(tid), clusterClause, minutes,
+		)
+		if fb, err := h.queryClickHouse(ctx, fallbackSQL); err == nil {
+			if fr, perr := parseRows(fb); perr == nil {
+				edgeRows = fr
+			}
+		}
+	}
 
 	// 节点聚合（真实 trace）：按 service_name 聚合调用量、错误、平均延迟
 	nodeSQL := fmt.Sprintf(
 		"SELECT service_name AS service, count() AS calls, countIf(is_error=1) AS errs, avg(duration_ns) AS avg_ns "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s GROUP BY service_name ORDER BY calls DESC LIMIT 200",
-		chQuote(tid), timeCond,
+			"FROM observability.trace_spans WHERE tenant_id=%s%s%s GROUP BY service_name ORDER BY calls DESC LIMIT 200",
+		chQuote(tid), clusterClause, timeCond,
 	)
 	nodeBody, err := h.queryClickHouse(ctx, nodeSQL)
 	if err != nil {
@@ -940,6 +988,7 @@ func buildSyntheticNode(name string) map[string]interface{} {
 // 当请求时间窗（minutes）内无 trace 数据时，自动放宽到最近 7 天，确保抽屉始终有内容
 func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	name := strings.TrimPrefix(r.URL.Path, "/api/v1/topology/node/")
 	if name == "" {
 		respondError(w, http.StatusBadRequest, "node name required")
@@ -958,10 +1007,10 @@ func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// 先按请求时间窗查询
-	m, trendRows, traceRows, spanRows := h.queryNodeDetail(ctx, tid, name, minutes)
+	m, trendRows, traceRows, spanRows := h.queryNodeDetail(ctx, tid, name, minutes, clusterClause)
 	// 若趋势与调用链都为空（数据已过期），自动放宽到最近 7 天
 	if len(trendRows) == 0 && len(traceRows) == 0 {
-		m, trendRows, traceRows, spanRows = h.queryNodeDetail(ctx, tid, name, 60*24*7)
+		m, trendRows, traceRows, spanRows = h.queryNodeDetail(ctx, tid, name, 60*24*7, clusterClause)
 	}
 
 	calls := toFloat(m["calls"])
@@ -995,7 +1044,7 @@ func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // queryNodeDetail 按给定时间窗（分钟）聚合节点的指标、趋势、调用链与 span 明细
-func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes int) (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}) {
+func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes int, clusterClause string) (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}) {
 	empty := func() (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}) {
 		return map[string]interface{}{}, nil, nil, nil
 	}
@@ -1003,8 +1052,8 @@ func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes
 	// 1. 指标卡：从 trace_spans 聚合（用 start_time 过滤更精确，兼容历史 date 数据）
 	metricSQL := fmt.Sprintf(
 		"SELECT count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms, max(duration_ns)/1000000 as max_ms "+
-			"FROM observability.trace_spans WHERE tenant_id=%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-		chQuote(tid), chQuote(name), minutes,
+			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+		chQuote(tid), clusterClause, chQuote(name), minutes,
 	)
 	metricBody, err := h.queryClickHouse(ctx, metricSQL)
 	if err != nil {
@@ -1024,9 +1073,9 @@ func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes
 	// 2. 趋势：按分钟聚合
 	trendSQL := fmt.Sprintf(
 		"SELECT toStartOfMinute(start_time) as t, count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms "+
-			"FROM observability.trace_spans WHERE tenant_id=%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
+			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
 			"GROUP BY t ORDER BY t",
-		chQuote(tid), chQuote(name), minutes,
+		chQuote(tid), clusterClause, chQuote(name), minutes,
 	)
 	trendBody, err := h.queryClickHouse(ctx, trendSQL)
 	if err != nil {
@@ -1043,9 +1092,9 @@ func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes
 	traceSQL := fmt.Sprintf(
 		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, "+
 			"max(duration_ns)/1000000 as max_ms, sum(is_error) as errors "+
-			"FROM observability.trace_spans WHERE tenant_id=%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
+			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
 			"GROUP BY trace_id ORDER BY start DESC LIMIT 20",
-		chQuote(tid), chQuote(name), minutes,
+		chQuote(tid), clusterClause, chQuote(name), minutes,
 	)
 	traceBody, err := h.queryClickHouse(ctx, traceSQL)
 	if err != nil {
@@ -1061,9 +1110,9 @@ func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes
 	// 4. 最近 5 条 span 明细（用于表格展示），统一用 start_time 过滤
 	spanSQL := fmt.Sprintf(
 		"SELECT start_time, operation_name, duration_ns/1000000 as ms, is_error, http_url "+
-			"FROM observability.trace_spans WHERE tenant_id=%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
+			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
 			"ORDER BY start_time DESC LIMIT 5",
-		chQuote(tid), chQuote(name), minutes,
+		chQuote(tid), clusterClause, chQuote(name), minutes,
 	)
 	spanBody, err := h.queryClickHouse(ctx, spanSQL)
 	if err != nil {
@@ -1115,17 +1164,27 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	service := r.URL.Query().Get("service")
 	queryText := r.URL.Query().Get("query")
-	minutes := 15
+	minutes := 1440 // 默认近 24 小时
 
 	if m := r.URL.Query().Get("minutes"); m != "" {
 		if v, err := strconv.Atoi(m); err == nil && v > 0 {
 			minutes = v
+		}
+	} else if h := r.URL.Query().Get("hours"); h != "" {
+		// P0-1 修复：兼容前端 hours 参数（hours*60 = minutes）
+		if v, err := strconv.Atoi(h); err == nil && v > 0 {
+			minutes = v * 60
 		}
 	}
 
 	// Build WHERE clause dynamically
 	var conditions []string
 	conditions = append(conditions, fmt.Sprintf("tenant_id=%s", chQuote(tid)))
+
+	// 多集群过滤：cluster_id 为空或 all 时不追加（查询所有集群）
+	if cc := extractClusterClause(r); cc != "" {
+		conditions = append(conditions, strings.TrimPrefix(cc, " AND "))
+	}
 
 	if service != "" {
 		conditions = append(conditions, fmt.Sprintf("service_name LIKE %s", chLike(service)))
@@ -1175,11 +1234,16 @@ func (h *Handler) LogAggregate(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	service := r.URL.Query().Get("service")
 	queryText := r.URL.Query().Get("query")
-	minutes := 60
+	minutes := 1440
 	interval := 5
 	if v := r.URL.Query().Get("minutes"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			minutes = n
+		}
+	} else if h := r.URL.Query().Get("hours"); h != "" {
+		// P0-1 修复：兼容前端 hours 参数
+		if n, err := strconv.Atoi(h); err == nil && n > 0 {
+			minutes = n * 60
 		}
 	}
 	if v := r.URL.Query().Get("interval"); v != "" {
@@ -1188,6 +1252,10 @@ func (h *Handler) LogAggregate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	conditions := []string{fmt.Sprintf("tenant_id=%s", chQuote(tid))}
+	// 多集群过滤：cluster_id 为空或 all 时不追加（查询所有集群）
+	if cc := extractClusterClause(r); cc != "" {
+		conditions = append(conditions, strings.TrimPrefix(cc, " AND "))
+	}
 	if service != "" {
 		conditions = append(conditions, fmt.Sprintf("service_name LIKE %s", chLike(service)))
 	}

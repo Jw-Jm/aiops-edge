@@ -175,17 +175,26 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/sessions", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/session/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/shell/check", handler.ProxyAI)
+	// NL2SQL：代理到 ai-orchestrator（/ai/nl2sql/translate、/ai/nl2sql/{id}/execute、/ai/nl2sql/{id}）
+	mux.HandleFunc("/api/v1/ai/nl2sql/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/nl2sql", handler.ProxyAI)
 	// WebShell WebSocket：AuthMiddleware 已放行该路径（WebSocket 无 header），
 	// handler 内部从 ?token= 验证 JWT 并代理到 orchestrator（注入 INTERNAL_TOKEN）。
 	mux.HandleFunc("/api/v1/shell/ws", handler.ProxyShellWS)
 	mux.HandleFunc("/api/v1/mcp/tools", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/mcp/call", handler.ProxyAI)
+	// 自研工作流引擎：代理到 ai-orchestrator（/ai/workflows CRUD + run + runs + resume）
+	mux.HandleFunc("/api/v1/ai/workflows/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/workflows", handler.ProxyAI)
 	// Hardware / IPMI：代理到 ai-orchestrator（其上有 /ipmi/sensors、/node/health 等端点）。
 	// 经 AuthMiddleware 完成 JWT 鉴权，ProxyAI 注入内部 token，避免直连 orchestrator。
 	mux.HandleFunc("/api/v1/ipmi/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ipmi", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/node/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/node", handler.ProxyAI)
+	// SNMP：代理到 ai-orchestrator（其上有 /snmp/devices、/interfaces、/collect 等端点）。
+	mux.HandleFunc("/api/v1/snmp/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/snmp", handler.ProxyAI)
 	// 安全：/api/v1/health 是公开健康端点，必须返回本服务自身状态，
 	// 绝不能接到 ProxyAI（否则会成为未鉴权代理入口，绕到 ai-orchestrator）。
 	mux.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {

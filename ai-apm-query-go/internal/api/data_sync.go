@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -104,41 +103,46 @@ func (h *Handler) StartLogShipper() {
 
 					var latestTS string
 					lines := strings.Split(text, "\n")
+					batch := make([]string, 0, len(lines))
 					for _, line := range lines {
 						line = strings.TrimSpace(line)
 						if line == "" {
 							continue
 						}
-						// K8s timestamped log format: "2026-07-28T09:00:00.123456789Z message..."
-						idx := strings.Index(line, " ")
-						if idx <= 0 {
-							continue
+						// 健壮时间戳解析：仅当行首为 RFC3339 时间戳时用作 _time；否则用当前时间
+						msg := line
+						ts := time.Now().UTC().Format(time.RFC3339Nano)
+						if idx := strings.Index(line, " "); idx > 0 {
+							if _, err := time.Parse(time.RFC3339Nano, line[:idx]); err == nil {
+								ts = line[:idx]
+								msg = line[idx+1:]
+								latestTS = ts
+							}
 						}
-						ts := line[:idx]
-						msg := line[idx+1:]
-						latestTS = ts
-
 						if len(msg) > 2000 {
 							msg = msg[:2000]
 						}
 						payload := map[string]string{
-							"_time":       ts,
-							"_msg":        msg,
-							"service":     ns + "/" + pname,
-							"namespace":   ns,
-							"pod":         pname,
-							"phase":       pod.Status.Phase,
+							"_time":     ts,
+							"_msg":      msg,
+							"service":   ns + "/" + pname,
+							"namespace": ns,
+							"pod":       pname,
+							"phase":     pod.Status.Phase,
 						}
 						data, _ := json.Marshal(payload)
-						vlReq, _ := http.NewRequest("POST", vlURL, bytes.NewReader(data))
+						batch = append(batch, string(data))
+					}
+					// 批量推送（JSON Lines），避免逐条 HTTP 请求
+					if len(batch) > 0 {
+						body := strings.Join(batch, "\n")
+						vlReq, _ := http.NewRequest("POST", vlURL, strings.NewReader(body))
 						vlReq.Header.Set("Content-Type", "application/json")
-						vlResp, err := httpClient.Do(vlReq)
-						if err == nil {
+						if vlResp, err := httpClient.Do(vlReq); err == nil {
 							vlResp.Body.Close()
-							roundShipped++
+							roundShipped += len(batch)
 						}
 					}
-
 					// Update cursor for next round
 					if latestTS != "" {
 						logCursors.Lock()

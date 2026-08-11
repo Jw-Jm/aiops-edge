@@ -317,13 +317,14 @@ func catalogTypeForService(name string) string {
 // 返回写入的节点/边数量。
 func (h *Handler) SyncTopologyCatalog(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
+	clusterClause := extractClusterClause(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
 
 	// 节点聚合
 	nodeSQL := fmt.Sprintf(
 		"SELECT service_name AS service, count() AS calls FROM observability.trace_spans "+
-			"WHERE tenant_id=%s AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 500", chQuote(tid))
+			"WHERE tenant_id=%s%s AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 500", chQuote(tid), clusterClause)
 	nodeBody, err := h.queryClickHouse(ctx, nodeSQL)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "trace query failed: "+err.Error())
@@ -363,8 +364,8 @@ func (h *Handler) SyncTopologyCatalog(w http.ResponseWriter, r *http.Request) {
 	// 同一 trace 内按各服务最早 start_time 排序，相邻服务建立调用边（时序早者→晚者）。
 	edgeSQL := fmt.Sprintf(
 		"SELECT trace_id, service_name, toUnixTimestamp(min(start_time)) AS first_ts "+
-			"FROM observability.trace_spans WHERE tenant_id=%s AND date >= today()-1 "+
-			"GROUP BY trace_id, service_name", chQuote(tid))
+			"FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 "+
+			"GROUP BY trace_id, service_name", chQuote(tid), clusterClause)
 	edgeBody, err := h.queryClickHouse(ctx, edgeSQL)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "trace edge query failed: "+err.Error())

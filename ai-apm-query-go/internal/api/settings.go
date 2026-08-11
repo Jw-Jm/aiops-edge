@@ -282,13 +282,26 @@ func (h *Handler) SettingsLLM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	settingsMu.RLock()
 	defer settingsMu.RUnlock()
-	// Mask API key for display
-	display := settings.LLM
-	if len(display.APIKey) > 4 {
-		display.APIKey = display.APIKey[:4] + "***" + display.APIKey[len(display.APIKey)-4:]
+	llm := settings.LLM
+	// 判断是否已配置生效：provider/model/base_url/api_key 任一存在即视为已配置
+	configured := llm.Provider != "" || llm.Model != "" || llm.BaseURL != "" || llm.APIKey != ""
+	apiKeySet := llm.APIKey != ""
+	// 脱敏展示（仅 mask，不清空），避免前端二次脱敏导致显示混乱
+	masked := llm.APIKey
+	if len(masked) > 8 {
+		masked = masked[:4] + "********" + masked[len(masked)-4:]
+	} else if masked != "" {
+		masked = "********"
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"data": display,
+		"data": map[string]interface{}{
+			"provider":      llm.Provider,
+			"model":         llm.Model,
+			"base_url":      llm.BaseURL,
+			"configured":    configured,
+			"api_key_set":   apiKeySet,
+			"api_key_masked": masked,
+		},
 	})
 }
 

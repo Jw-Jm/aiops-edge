@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -213,8 +215,51 @@ func clusterKubeconfig(id int64) (string, error) {
 	return c.Kubeconfig, nil
 }
 
-// kubeList 执行 kubectl；若给定 kubeconfig 则写临时文件后 --kubeconfig 切换。
+// inClusterKubeconfig 从容器内 ServiceAccount 生成 kubeconfig，使 kubectl 可在集群内访问 API。
+// 返回空串表示当前不是运行在 K8s 集群内（本地开发/无 SA 时回退到默认 context）。
+func inClusterKubeconfig() string {
+	host := os.Getenv("KUBERNETES_SERVICE_HOST")
+	port := os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" {
+		return ""
+	}
+	token, err := os.ReadFile(saTokenFile)
+	if err != nil {
+		return ""
+	}
+	caData, _ := os.ReadFile(saCACertFile)
+	server := "https://" + host
+	if port != "" {
+		server += ":" + port
+	}
+	// kubeconfig：cluster + user(SA token) + context
+	cfg := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: in-cluster
+  cluster:
+    server: %s
+    certificate-authority-data: %s
+users:
+- name: sa
+  user:
+    token: %s
+contexts:
+- name: in-cluster
+  context:
+    cluster: in-cluster
+    user: sa
+current-context: in-cluster
+`, server, base64.StdEncoding.EncodeToString(caData), strings.TrimSpace(string(token)))
+	return cfg
+}
+
+// kubeList 执行 kubectl；若给定 kubeconfig 则写临时文件后 --kubeconfig 切换；
+// 若未给定 kubeconfig，则在集群内自动用 ServiceAccount 生成 in-cluster kubeconfig。
 func kubeList(kubeconfig string, args ...string) (string, error) {
+	if kubeconfig == "" {
+		kubeconfig = inClusterKubeconfig()
+	}
 	if kubeconfig != "" {
 		tmp, err := os.CreateTemp("", "kc-*.yaml")
 		if err != nil {

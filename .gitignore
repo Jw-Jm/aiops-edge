@@ -17,6 +17,9 @@ coverage/
 *.out
 /bin/
 /tmp/
+# query-api 本地编译产物（Mach-O arm64，勿入库）
+ai-apm-query-go/api
+ai-apm-ingest-go/ingest
 
 # Python 缓存
 __pycache__/
@@ -49,6 +52,13 @@ deploy/helm/aiops/charts/
 # playwright-cli 临时 snapshot 文件（测试产物，不入库）
 .playwright-cli/
 
-.playwright-cli/
+# 测试/审计截图（不入库）
+*.png
 postlogin
+
+# 本地下载的运维二进制（随镜像离线打包，不入库）
+ai-apm-query-go/docker/
+
+# 前端 v2 旧版备份（redesign 后不再引用，不入库）
+observability-frontend/src_legacy_v2/
 

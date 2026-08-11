@@ -453,11 +453,12 @@ func saveAlertEvents() {
 
 // transitionStatus 执行告警事件状态迁移；非法迁移返回 false 且不修改。
 // 合法：firing -> acknowledged -> resolved，或 firing -> resolved。
+// 兼容：历史/未显式标记状态的事件 status 可能为空串，按 firing 处理。
 func transitionStatus(ev *AlertEvent, to, by string) bool {
 	now := time.Now().Format(time.RFC3339)
 	switch to {
 	case "acknowledged":
-		if ev.Status != "firing" {
+		if ev.Status != "" && ev.Status != "firing" {
 			return false
 		}
 		ev.Status = to
