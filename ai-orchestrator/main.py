@@ -116,11 +116,8 @@ async def _scheduled_anomaly_scan():
                 "request_rate": float(svc.get("traces", 0) or 0),
             }
             for metric, val in metrics_vals.items():
-                results = detector.detect(name, metric, val)
-                if results:
-                    # detect() 已在内部 vote + _persist_anomaly；此处显式 vote
-                    # 仅保留语义占位（纯函数，无副作用，不会双写 MySQL）
-                    detector.vote(results)
+                # detect() 内部已完成 vote + _persist_anomaly，无需重复调用 vote
+                detector.detect(name, metric, val)
     except Exception as e:
         print(f"[scheduler] anomaly scan error: {e}")
 
@@ -1316,6 +1313,7 @@ async def scan_anomalies(request: Request):
 @app.get("/api/v1/ops/anomalies")
 async def list_anomalies(service: str = "", limit: int = 50):
     """查询历史异常事件（从 MySQL anomaly_events 表）"""
+    limit = max(1, min(limit, 500))  # 上界 500，防止超大分页查询
     try:
         from db import db_available, get_conn
         import pymysql.cursors
