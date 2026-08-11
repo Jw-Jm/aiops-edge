@@ -151,7 +151,7 @@ func extractClusterID(r *http.Request) string {
 }
 
 // chQuote 对拼入 ClickHouse SQL 的字符串字面量做安全转义，防止 SQL 注入。
-// ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ”，反斜杠转义为 \\。
+// ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ''，反斜杠转义为 \\。
 // 所有由用户/外部输入拼入 SQL 的值都必须经过本函数后再嵌入。
 func chQuote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
