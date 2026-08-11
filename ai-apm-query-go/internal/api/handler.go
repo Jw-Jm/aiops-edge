@@ -151,7 +151,7 @@ func extractClusterID(r *http.Request) string {
 }
 
 // chQuote 对拼入 ClickHouse SQL 的字符串字面量做安全转义，防止 SQL 注入。
-// ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ''，反斜杠转义为 \\。
+// ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ”，反斜杠转义为 \\。
 // 所有由用户/外部输入拼入 SQL 的值都必须经过本函数后再嵌入。
 func chQuote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
@@ -686,11 +686,11 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 			if t, err := time.Parse(time.RFC3339, ev.LastTimestamp); err == nil {
 				if now.Sub(t) <= 30*time.Minute {
 					alerts = append(alerts, map[string]interface{}{
-						"rule_name":  ev.RuleName,
-						"severity":   ev.Severity,
-						"message":    ev.Message,
-						"count":      ev.Count,
-						"last_time":  ev.LastTimestamp,
+						"rule_name": ev.RuleName,
+						"severity":  ev.Severity,
+						"message":   ev.Message,
+						"count":     ev.Count,
+						"last_time": ev.LastTimestamp,
 					})
 				}
 			}
@@ -709,18 +709,26 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 }
 
 // QueryMetrics handles GET /api/v1/metrics/query?service={name}
+// service 参数可选：有则按服务过滤，无则返回全局聚合
 func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	clusterClause := extractClusterClause(r)
 	service := r.URL.Query().Get("service")
-	if service == "" {
-		respondError(w, http.StatusBadRequest, "service parameter required")
-		return
+
+	serviceClause := ""
+	if service != "" {
+		serviceClause = fmt.Sprintf(" AND service_name=%s", chQuote(service))
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT toStartOfMinute(start_time) as t, count() as call_count, countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms, quantile(0.50)(duration_ns)/1000000 as p50_ms, quantile(0.95)(duration_ns)/1000000 as p95_ms, quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
-		chQuote(tid), clusterClause, chQuote(service),
+		"SELECT toStartOfMinute(start_time) as t, count() as call_count, "+
+			"countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms, "+
+			"quantile(0.50)(duration_ns)/1000000 as p50_ms, "+
+			"quantile(0.95)(duration_ns)/1000000 as p95_ms, "+
+			"quantile(0.99)(duration_ns)/1000000 as p99_ms "+
+			"FROM observability.trace_spans WHERE tenant_id=%s%s%s AND date >= today()-1 "+
+			"GROUP BY t ORDER BY t",
+		chQuote(tid), clusterClause, serviceClause,
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -1058,8 +1066,8 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes": nodes,
-		"edges": edges,
+		"nodes":      nodes,
+		"edges":      edges,
 		"node_count": len(nodes),
 		"edge_count": len(edges),
 	})

@@ -146,6 +146,54 @@ func TestListServicesCHErrorReturns500(t *testing.T) {
 	}
 }
 
+// newTestHandler 构造一个指向 mock ClickHouse 的 Handler，供 QueryMetrics 等
+// handler 的单元测试使用。mock CH 始终返回空 JSONEachRow 数据（即 0 行），
+// 使测试聚焦于参数校验逻辑而非真实查询结果。server 在测试结束时自动关闭。
+func newTestHandler(t *testing.T) *Handler {
+	t.Helper()
+	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// 空响应 = 0 行
+		_, _ = w.Write([]byte(""))
+	}))
+	t.Cleanup(chSrv.Close)
+
+	h := &Handler{client: &http.Client{}}
+	host, port := splitHostPort(chSrv.URL)
+	h.chHost = host
+	h.chPort = port
+	return h
+}
+
+// TestQueryMetricsWithoutServiceDoesNotError 验证 service 参数为空时不再返回
+// 400 "service parameter required"，而是放行到查询阶段（200 空结果或 500 CH 错误）。
+func TestQueryMetricsWithoutServiceDoesNotError(t *testing.T) {
+	h := newTestHandler(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/metrics/query", nil)
+	w := httptest.NewRecorder()
+	h.QueryMetrics(w, req)
+
+	if w.Code == 400 {
+		t.Fatalf("expected non-400 for empty service, got 400: %s", w.Body.String())
+	}
+	// 应该是 200 或 500（如果 CH 查询失败），但不应该是 400 "service parameter required"
+}
+
+// TestQueryMetricsWithServiceStillWorks 验证带 service 参数时仍正常工作（非 400）。
+func TestQueryMetricsWithServiceStillWorks(t *testing.T) {
+	h := newTestHandler(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/metrics/query?service=frontend", nil)
+	w := httptest.NewRecorder()
+	h.QueryMetrics(w, req)
+
+	if w.Code == 400 {
+		t.Fatalf("expected non-400 for service=frontend, got 400: %s", w.Body.String())
+	}
+}
+
 // TestListServicesEmptyResult 验证 CH 返回空数据时返回空列表（非 nil）。
 func TestListServicesEmptyResult(t *testing.T) {
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
