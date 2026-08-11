@@ -17,4 +17,4 @@ prometheus-client>=0.20
 pymysql>=1.1
 DBUtils>=3.0
 pysnmp>=7.0
-apscheduler>=3.10
+apscheduler>=3.10,<4.0
