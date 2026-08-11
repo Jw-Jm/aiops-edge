@@ -42,7 +42,7 @@ clickhouse:
   storageClass: ""
   storage: 20Gi
   resources:
-    requests: { cpu: "500m", memory: "1Gi" }
+    requests: { cpu: "500m", memory: "2Gi" }
     limits: { cpu: "2", memory: "4Gi" }
 
 victoriaMetrics:
@@ -103,8 +103,8 @@ mysql:
   storageClass: ""
   storage: 10Gi
   resources:
-    requests: { cpu: "200m", memory: "512Mi" }
-    limits: { cpu: "1", memory: "1Gi" }
+    requests: { cpu: "200m", memory: "2Gi" }
+    limits: { cpu: "1", memory: "2Gi" }
 
 # vmalert 已关闭：告警引擎为 query-api 内置 evaluateAlerts（真引擎）。
 # vmalert 原部署为空壳（无 rules volume、notifier 为空），属空转组件，关闭以省内存、消除伪双引擎。
@@ -190,7 +190,7 @@ aiOrchestrator:
   dataStorageClass: ""
   dataStorage: 5Gi
   resources:
-    requests: { cpu: "500m", memory: "1Gi" }
+    requests: { cpu: "500m", memory: "1500Mi" }
     limits: { cpu: "2", memory: "3Gi" }
 
 # deepflow 子 chart（完整装；enabled=false 则不装）
