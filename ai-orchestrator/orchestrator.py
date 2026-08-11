@@ -9,6 +9,7 @@ import operator
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 
 from tools import (query_metrics, query_traces, get_service_list, query_topology,
@@ -995,7 +996,12 @@ class BrainOrchestrator:
         import sqlite3
         _os.makedirs(_os.path.dirname(db_path), exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.checkpointer = SqliteSaver(self._conn)
+        # 节点已改为 async def → graph.ainvoke/astream 要求 checkpointer 支持 async 方法。
+        # SqliteSaver (sync) 会抛 "does not support async methods"；
+        # AsyncSqliteSaver 需要 running event loop（模块加载时不可用）。
+        # MemorySaver 同时支持 sync/async，不阻塞 ainvoke；代价：checkpoint 不落盘
+        # （进程重启后会话状态丢失，dev 环境可接受；生产应改用 PostgresSaver/RedisSaver）。
+        self.checkpointer = MemorySaver()
         # 双图: chat_graph 用于交互式 Chat (精简快速)，graph 用于完整运维任务
         self.graph = build_graph(checkpointer=self.checkpointer, mode="full")
         self.chat_graph = build_graph(checkpointer=self.checkpointer, mode="chat")

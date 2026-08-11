@@ -38,6 +38,9 @@ RUN echo ">>> [3/6] 解压 Python 依赖 (site-packages + console scripts 离线
     tar xzf /tmp/pybin.tar.gz -C /usr/local/bin/ && \
     chmod +x /usr/local/bin/uvicorn /usr/local/bin/chroma 2>/dev/null; \
     rm -f /tmp/sp.tar.gz /tmp/pybin.tar.gz
+# sp.tar.gz 为离线快照，可能滞后于 requirements.txt。此处补装 sp.tar.gz 之后新增的依赖
+# （如 apscheduler>=3.10，Task 8/9 引入用于 APScheduler 周期巡检），保证镜像与 requirements 一致。
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple "apscheduler>=3.10,<4.0"
 
 # 嵌入模型缓存（完全离线）：从本地 bin/hf.tar.gz 直接解压 HF 模型缓存（bge-small-zh）
 COPY bin/hf.tar.gz /tmp/hf.tar.gz
