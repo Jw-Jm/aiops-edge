@@ -14,7 +14,12 @@ QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.
 
 def _get_json(path: str) -> dict:
     try:
-        req = urllib.request.Request(f"{QUERY_API}{path}", headers={"X-Tenant-ID": "default"})
+        # 携带 INTERNAL_TOKEN（若有）供 query-api 内部鉴权放行，避免 401 导致拓扑/服务数据拉取失败
+        headers = {"X-Tenant-ID": "default"}
+        it = os.environ.get("INTERNAL_TOKEN", "")
+        if it:
+            headers["X-Internal-Token"] = it
+        req = urllib.request.Request(f"{QUERY_API}{path}", headers=headers)
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read())
     except:

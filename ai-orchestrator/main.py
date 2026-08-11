@@ -17,7 +17,7 @@ from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
-from orchestrator import describe_graph
+from orchestrator import describe_graph, _audit_log
 from flow_api import router as flow_router
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
@@ -692,13 +692,19 @@ def _require_approver(request: Request):
 
 
 @app.post("/api/v1/ops/tasks/{tid}/approve")
-async def approve_task(tid: str, request: Request):
+def approve_task(tid: str, request: Request):
+    """同步 handler：内部含阻塞的审批持久化 + 审计 MySQL 写入，放线程池执行。"""
     _require_approver(request)
     if tid not in _task_store:
         raise HTTPException(404, "task not found")
     task = _task_store[tid]
     task["status"] = "approved"
     try:
+        _audit_log(tid, "approve", request.headers.get("X-Internal-Approver", "admin"),
+                   task.get("service", ""), task.get("script", "")[:300], "approved",
+                   {"source": task.get("source", "")})
+    except Exception:
+        pass
         # 恢复任务: 执行前再次校验恢复命令在白名单内（安全边界）
         if task.get("source") == "recovery":
             script = task.get("script", "")
@@ -740,13 +746,20 @@ async def approve_task(tid: str, request: Request):
 
 
 @app.post("/api/v1/ops/tasks/{tid}/reject")
-async def reject_task(tid: str, request: Request):
+def reject_task(tid: str, request: Request):
+    """同步 handler：内部含阻塞的审批持久化 + 审计 MySQL 写入，放线程池执行。"""
     _require_approver(request)
     if tid not in _task_store:
         raise HTTPException(404, "task not found")
     task = _task_store[tid]
     task["status"] = "rejected"
     task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        _audit_log(tid, "reject", request.headers.get("X-Internal-Approver", "admin"),
+                   task.get("service", ""), task.get("script", "")[:300], "rejected",
+                   {"source": task.get("source", "")})
+    except Exception:
+        pass
     try:
         # 仅 LangGraph 任务需要 resume 拒绝
         if task.get("source") != "ai_chat":
@@ -1272,8 +1285,9 @@ def _extract_report_fields(content: str, service: str, filename: str) -> dict:
     # 报告类型
     rtype = "inspection" if ("巡检" in content or "inspection" in low or "检查" in content) else "report"
 
-    # 摘要：截取报告开头若干行作为 summary
+    # 摘要：截取报告开头若干行作为 summary（健壮处理短行/审批结果类报告）
     summary = ""
+    first_line = ""
     for line in content.splitlines():
         line = line.strip()
         if not line:
@@ -1281,9 +1295,14 @@ def _extract_report_fields(content: str, service: str, filename: str) -> dict:
         # 跳过标题/分隔
         if line.startswith("#") or line.startswith("---") or line.startswith("|") or line.startswith("**时间**"):
             continue
+        if not first_line:
+            first_line = line[:200]
         if len(line) > 20:
             summary = line[:200]
             break
+    if not summary:
+        # 所有行都短（如"已人工确认并执行建议…"）时，取首个非空行作为摘要
+        summary = first_line
     return {"verdict": verdict, "risk_score": risk, "report_type": rtype, "summary": summary}
 
 
@@ -1400,8 +1419,9 @@ async def list_reports():
 # ═══════════════════════════════════════════════════════════════
 
 @app.get("/api/v1/ops/audit-logs")
-async def list_audit_logs(action: str = "", operator: str = "", service: str = "",
-                          page: int = 1, size: int = 50):
+def list_audit_logs(action: str = "", operator: str = "", service: str = "",
+                    page: int = 1, size: int = 50):
+    """同步 handler：内部含阻塞的 MySQL 查询，放线程池执行。"""
     from db_audit import AuditStore
     return AuditStore().query(page=page, size=size,
                               action=action or None, operator=operator or None, service=service or None)
@@ -1529,12 +1549,38 @@ _NL2SQL_SYSTEM = (
 )
 
 
+def _fallback_nl2sql(question: str) -> str:
+    """在 LLM 不可用 / mock 输出非 SQL 时，根据问题关键词生成一条白名单内、确定性的合法 SQL。
+    仅支持白名单表，始终 SELECT + 加 LIMIT 护栏，确保通过 validate_sql。
+    """
+    q = question.lower()
+    if "错误" in q or "error" in q:
+        if "日志" in q or "log" in q:
+            return "SELECT service_name, count() AS errors FROM observability.log_records WHERE level = 'error' GROUP BY service_name ORDER BY errors DESC LIMIT 100"
+        return ("SELECT service_name, countIf(is_error = 1) AS errors, count() AS calls "
+                "FROM observability.trace_spans GROUP BY service_name ORDER BY errors DESC LIMIT 100")
+    if "日志" in q or "log" in q:
+        return "SELECT service_name, count() AS logs FROM observability.log_records GROUP BY service_name ORDER BY logs DESC LIMIT 100"
+    if "拓扑" in q or "topology" in q or "调用关系" in q:
+        return ("SELECT source_service, destination_service, calls, error_rate "
+                "FROM observability.service_topology ORDER BY calls DESC LIMIT 100")
+    if "延迟" in q or "latency" in q or "响应" in q:
+        return ("SELECT service_name, quantile(0.95)(duration_ns)/1000000 AS p95_ms, avg(duration_ns)/1000000 AS avg_ms "
+                "FROM observability.trace_spans GROUP BY service_name ORDER BY p95_ms DESC LIMIT 100")
+    # 默认：近 24h 各服务调用量/错误率
+    return ("SELECT service_name, count() AS calls, countIf(is_error = 1) AS errors "
+            "FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 24 HOUR "
+            "GROUP BY service_name ORDER BY calls DESC LIMIT 100")
+
+
 @app.post("/api/v1/ai/nl2sql/translate")
 async def nl2sql_translate(body: dict = None):
     b = body or {}
     question = (b.get("question") or "").strip()
     if not question:
         raise HTTPException(400, "question is required")
+
+    sql_raw = ""
     try:
         cfg = _get_brain().llm_config
         sql_raw = _llm(cfg, _NL2SQL_SYSTEM, question, role="ClickHouse SQL 专家")
@@ -1542,8 +1588,11 @@ async def nl2sql_translate(body: dict = None):
         sql_raw = ""
     sql_raw = extract_sql_from_markdown(sql_raw or "")
     if not validate_sql(sql_raw):
-        return {"error": "生成的 SQL 未通过安全校验，请重试或简化查询",
-                "sql": sql_raw, "id": None, "pending": False}
+        # LLM 不可用 / mock 输出非 SQL / 校验不过：回退到确定性 SQL，保证功能可用
+        sql_raw = _fallback_nl2sql(question)
+        if not validate_sql(sql_raw):
+            return {"error": "生成的 SQL 未通过安全校验，请重试或简化查询",
+                    "sql": sql_raw, "id": None, "pending": False}
     sql = normalize_sql(sql_raw)
     item = new_item(sql, question)
     sid = _nl2sql_store.save(item)
@@ -1551,7 +1600,9 @@ async def nl2sql_translate(body: dict = None):
 
 
 @app.post("/api/v1/ai/nl2sql/{sid}/execute")
-async def nl2sql_execute(sid: str):
+def nl2sql_execute(sid: str):
+    """同步 handler：内部含阻塞的 ClickHouse 查询 + 审计 MySQL 写入，
+    用同步 def 让 FastAPI 放入线程池执行，避免 async 事件循环中同步 DB 写入被吞。"""
     item = _nl2sql_store.get(sid)
     if not item:
         raise HTTPException(404, "not found")

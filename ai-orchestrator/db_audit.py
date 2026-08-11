@@ -1,6 +1,29 @@
-"""AuditStore — 审计日志持久化。MySQL 不可用降级为内存。"""
+"""AuditStore — 审计日志持久化。MySQL 不可用降级为内存。
+
+注意：审计写入发生在 FastAPI async handler 中。dbutils.PooledDB 的
+连接在线程池/协程交错场景下可能复用被污染连接导致静默失败，
+因此这里为每次写入独立建立 pymysql 连接，写完即关，避开池化问题。
+"""
 import json
-import db
+import os
+import time
+import pymysql
+
+_CFG = None
+
+
+def _mysql_cfg():
+    """读取 MySQL 连接配置（与 db.py 同源 env）。"""
+    global _CFG
+    if _CFG is None:
+        _CFG = {
+            "host": os.environ.get("MYSQL_HOST", "127.0.0.1"),
+            "port": int(os.environ.get("MYSQL_PORT", "3306")),
+            "user": os.environ.get("MYSQL_USER", "root"),
+            "password": os.environ.get("MYSQL_PASSWORD", ""),
+            "database": os.environ.get("MYSQL_DB", "aiops"),
+        }
+    return _CFG
 
 
 class AuditStore:
@@ -9,15 +32,18 @@ class AuditStore:
 
     def log(self, action: str, operator: str, target: str, command: str,
             result: str, detail: dict = None, task_id: str = ""):
-        import time
         entry = {
             "task_id": task_id, "action": action, "operator": operator,
             "target_service": target, "command": command, "result": result,
             "detail": json.dumps(detail, ensure_ascii=False) if detail else "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-        if db.db_available():
-            conn = db.get_conn()
+        # 独立短连接写入，规避 PooledDB 在 async 上下文被污染的连接
+        try:
+            cfg = _mysql_cfg()
+            conn = pymysql.connect(host=cfg["host"], port=cfg["port"], user=cfg["user"],
+                                   password=cfg["password"], database=cfg["database"],
+                                   charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor)
             try:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -27,16 +53,22 @@ class AuditStore:
                          entry["target_service"], entry["command"], entry["result"], entry["detail"]),
                     )
                 conn.commit()
-            except Exception:
-                pass
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass  # 审计失败不影响主流程，降级为内存
         self._mem.append(entry)
 
     def query(self, page=1, size=50, action=None, operator=None, service=None):
         offset = (page - 1) * size
-        if db.db_available():
-            conn = db.get_conn()
+        try:
+            cfg = _mysql_cfg()
+            conn = pymysql.connect(host=cfg["host"], port=cfg["port"], user=cfg["user"],
+                                   password=cfg["password"], database=cfg["database"],
+                                   charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor)
             try:
                 where = []
                 vals = []
@@ -55,10 +87,13 @@ class AuditStore:
                     rows = cur.fetchall()
                 if rows is not None:
                     return {"items": [dict(r) for r in rows], "total": total}
-            except Exception:
-                pass
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
         mem = self._mem
         if action:
             mem = [e for e in mem if e["action"] == action]
