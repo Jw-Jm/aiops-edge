@@ -20,7 +20,8 @@ const LogMetrics: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
 
-  const search = () => {
+  const search = (targetMode?: 'logs' | 'aggregate') => {
+    const m = targetMode || mode
     setLoading(true)
     setErr('')
     const p: Record<string, unknown> = {
@@ -30,11 +31,24 @@ const LogMetrics: React.FC = () => {
       ...(q ? { query: q } : {}),
       ...(level !== 'all' ? { level } : {}),
     }
-    const req = mode === 'logs' ? queryLogs(p) : aggregateLogs({ ...p, group_by: 'service_name' })
+    const req = m === 'logs' ? queryLogs(p) : aggregateLogs({ ...p, group_by: 'service_name' })
     req.then((r) => {
       const d = r.data
-      if (mode === 'logs') setRows(Array.isArray(d) ? d : d?.data || d?.rows || [])
-      else setAggs(Array.isArray(d) ? d : d?.data || d?.rows || [])
+      if (m === 'logs') {
+        // Issue5: 后端日志字段为 timestamp/severity/body，前端列用 ts/level/message → 归一化
+        const raw: any[] = Array.isArray(d) ? d : d?.data || d?.rows || []
+        setRows(raw.map((x: any) => ({
+          ...x,
+          ts: x.ts || x.timestamp,
+          level: x.level || x.severity,
+          message: x.message || x.body,
+        })))
+      } else {
+        // Issue5: 后端聚合返回 { services: [{service,count}], trend, levels } 对象而非数组；
+        // 取 services 并映射 service→service_name 供表格展示
+        const svc = Array.isArray(d) ? d : (d?.services || d?.data || d?.rows || [])
+        setAggs(svc.map((x: any) => ({ ...x, service_name: x.service_name || x.service, count: Number(x.count ?? x.cnt ?? 0) })))
+      }
     }).catch((e) => {
       setErr(e?.response?.data?.error || '查询失败')
       setRows([]); setAggs([])
@@ -58,7 +72,7 @@ const LogMetrics: React.FC = () => {
 
       <div className="card" style={{ padding: 16 }}>
         <Space wrap style={{ width: '100%' }}>
-          <Segmented value={mode} onChange={(v) => { setMode(v as any); setRows([]); setAggs([]) }}
+          <Segmented value={mode} onChange={(v) => { const m = v as any; setMode(m); setRows([]); setAggs([]); search(m) }}
             options={[{ label: '日志检索', value: 'logs' }, { label: '聚合统计', value: 'aggregate' }]} />
           <Tooltip title="ClickHouse 为平台默认日志存储；VictoriaLogs 可选">
             <Select value={source} onChange={(v) => setSource(v as any)} style={{ width: 140 }}
@@ -68,8 +82,8 @@ const LogMetrics: React.FC = () => {
             options={[{ value: 'all', label: '全部级别' }, { value: 'error', label: 'error' }, { value: 'warning', label: 'warning' }, { value: 'info', label: 'info' }, { value: 'debug', label: 'debug' }]} />
           <Select value={hours} onChange={setHours} style={{ width: 100 }}
             options={[{ value: 1, label: '近 1 小时' }, { value: 6, label: '近 6 小时' }, { value: 24, label: '近 24 小时' }, { value: 168, label: '近 7 天' }]} />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} onPressEnter={search} placeholder="搜索关键词，如 error / 服务名" style={{ width: 360 }} />
-          <Button type="primary" onClick={search} loading={loading}>查询</Button>
+          <Input value={q} onChange={(e) => setQ(e.target.value)} onPressEnter={() => search()} placeholder="搜索关键词，如 error / 服务名" style={{ width: 360 }} />
+          <Button type="primary" onClick={() => search()} loading={loading}>查询</Button>
         </Space>
         {err && <div style={{ marginTop: 10, color: 'var(--danger)', fontSize: 12 }}>⚠ {err}</div>}
       </div>

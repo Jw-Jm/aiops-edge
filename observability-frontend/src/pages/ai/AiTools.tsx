@@ -69,8 +69,7 @@ const AiTools: React.FC = () => {
                 <Table rowKey="key" dataSource={skills} size="small" pagination={false}
                   locale={{ emptyText: <Empty /> }}
                   columns={[{ title: '技能', dataIndex: 'name', key: 'name', render: (_: any, r: any) => r.name || r.key },
-                    { title: '描述', dataIndex: 'description', key: 'description', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '-'}</span> },
-                    { title: '类型', dataIndex: 'category', key: 'category', render: (v: string) => v && <Tag>{v}</Tag> }]} />
+                    { title: '描述', dataIndex: 'description', key: 'description', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '-'}</span> }]} />
               </div>
             ),
           },

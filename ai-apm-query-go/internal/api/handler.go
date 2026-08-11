@@ -1152,8 +1152,9 @@ func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes
 	}
 
 	// 4. 最近 5 条 span 明细（用于表格展示），统一用 start_time 过滤
+	// Issue4: 补充 service_name/span_id/trace_id 字段，前端 span 明细表"服务"列及行 key 才有值
 	spanSQL := fmt.Sprintf(
-		"SELECT start_time, operation_name, duration_ns/1000000 as ms, is_error, http_url "+
+		"SELECT span_id, trace_id, start_time, service_name, operation_name, duration_ns/1000000 as ms, is_error, http_url "+
 			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
 			"ORDER BY start_time DESC LIMIT 5",
 		chQuote(tid), clusterClause, chQuote(name), minutes,
