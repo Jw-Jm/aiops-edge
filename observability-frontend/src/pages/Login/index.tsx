@@ -1,11 +1,9 @@
 import React, { useState } from 'react'
-import { Card, Form, Input, Button, Typography, message } from 'antd'
-import { UserOutlined, LockOutlined, LoginOutlined, ThunderboltOutlined, DatabaseOutlined, SafetyCertificateOutlined } from '@ant-design/icons'
+import { Form, Input, Button, message } from 'antd'
+import { UserOutlined, LockOutlined, LoginOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { login } from '../../api/client'
 import { useAuthStore } from '../../store/authStore'
-
-const { Title, Text } = Typography
 
 const Login: React.FC = () => {
   const navigate = useNavigate()
@@ -17,128 +15,73 @@ const Login: React.FC = () => {
       const res = await login(values.username, values.password)
       const token = res.data?.token || res.data?.data?.token
       if (token) {
-        useAuthStore.getState().login(
-          token,
-          res.data?.username || values.username,
-          res.data?.role || 'user',
-          res.data?.display_name || '',
-        )
+        useAuthStore.getState().login(token, res.data?.username || values.username, res.data?.role || 'user', res.data?.display_name || '')
         message.success('登录成功')
-        navigate('/')
+        navigate('/overview')
       } else {
         message.error('登录失败：未收到 token')
       }
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.response?.data?.error || '登录失败，请检查用户名和密码'
-      message.error(msg)
+      message.error(err?.response?.data?.message || err?.response?.data?.error || '登录失败，请检查用户名和密码')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        background: 'radial-gradient(circle at 20% 20%, rgba(22,119,255,0.15), transparent 45%), radial-gradient(circle at 80% 80%, rgba(114,46,209,0.18), transparent 45%), #0a0f1c',
-      }}
-    >
-      <Card
-        style={{
-          width: 400,
-          boxShadow: '0 12px 40px rgba(0, 0, 0, 0.45)',
-          borderRadius: 16,
-          background: 'rgba(18,24,38,0.9)',
-          border: '1px solid rgba(255,255,255,0.1)',
-          backdropFilter: 'blur(12px)',
-        }}
-        styles={{ body: { padding: '40px 36px' } }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div
-            style={{
-              width: 56,
-              height: 56,
-              background: 'linear-gradient(135deg, #1677ff, #722ed1)',
-              borderRadius: 14,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 16px',
-              boxShadow: '0 6px 20px rgba(22,119,255,0.4)',
-            }}
-          >
-            <ThunderboltOutlined style={{ color: '#fff', fontSize: 26 }} />
+    <div className="login-bg">
+      <aside className="login-aside">
+        <div className="brand" style={{ border: 'none', padding: 0, height: 'auto' }}>
+          <div className="brand__logo">观</div>
+          <div>
+            <div className="brand__name">智能可观测平台</div>
+            <div className="brand__sub">AIOps Observability</div>
           </div>
-          <Title level={3} style={{ margin: 0, color: '#fff' }}>
-            AIOps 智能运维平台
-          </Title>
-          <Text style={{ color: 'rgba(255,255,255,0.5)' }}>统一可观测性 · 智能诊断 · 自动化运维</Text>
         </div>
-
-        <Form
-          name="login"
-          onFinish={onFinish}
-          layout="vertical"
-          size="large"
-          autoComplete="off"
-        >
-          <Form.Item
-            name="username"
-            rules={[{ required: true, message: '请输入用户名' }]}
-          >
-            <Input
-              prefix={<UserOutlined style={{ color: 'rgba(255,255,255,0.35)' }} />}
-              placeholder="用户名"
-              autoComplete="username"
-              style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}
-            />
-          </Form.Item>
-
-          <Form.Item
-            name="password"
-            rules={[{ required: true, message: '请输入密码' }]}
-          >
-            <Input.Password
-              prefix={<LockOutlined style={{ color: 'rgba(255,255,255,0.35)' }} />}
-              placeholder="密码"
-              autoComplete="current-password"
-              style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}
-            />
-          </Form.Item>
-
-          <Form.Item style={{ marginBottom: 12 }}>
-            <Button
-              type="primary"
-              htmlType="submit"
-              icon={<LoginOutlined />}
-              loading={loading}
-              block
-              style={{
-                height: 44,
-                background: 'linear-gradient(135deg, #1677ff, #722ed1)',
-                border: 'none',
-                borderRadius: 8,
-                boxShadow: '0 6px 16px rgba(22,119,255,0.3)',
-              }}
-            >
-              登录
-            </Button>
-          </Form.Item>
-
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginTop: 8 }}>
-            <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>
-              <DatabaseOutlined /> 指标 · 链路 · 日志
-            </Text>
-            <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>
-              <SafetyCertificateOutlined /> 安全接入
-            </Text>
+        <div className="hero">
+          <h1>把复杂留给我们，<br />把清醒还给运维。</h1>
+          <p>统一指标、日志、链路与告警，结合 AI 根因分析与一键应急处置，让每一次故障都更快定位、更少误判。</p>
+          <div className="feature-list">
+            <div className="feature">
+              <div className="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg></div>
+              <div><h4>统一可观测</h4><p>Metrics / Logs / Traces 一张图看全。</p></div>
+            </div>
+            <div className="feature">
+              <div className="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /></svg></div>
+              <div><h4>智能告警收敛</h4><p>相似告警自动聚合降噪，紧急事件一目了然。</p></div>
+            </div>
+            <div className="feature">
+              <div className="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg></div>
+              <div><h4>一键应急处置</h4><p>预置恢复剧本与审批流，闭环可追溯。</p></div>
+            </div>
           </div>
-        </Form>
-      </Card>
+        </div>
+        <div className="text-sm muted">© 2026 智能可观测平台 · 演示环境</div>
+      </aside>
+
+      <div className="login-card-wrap">
+        <div className="login-card">
+          <h2>欢迎回来</h2>
+          <div className="text-sm secondary" style={{ marginBottom: 24 }}>登录以进入运维控制台</div>
+          <Form name="login" onFinish={onFinish} layout="vertical" autoComplete="off">
+            <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
+              <Input prefix={<UserOutlined style={{ color: 'var(--text-muted)' }} />} placeholder="用户名" autoComplete="username" size="large"
+                style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }} />
+            </Form.Item>
+            <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+              <Input.Password prefix={<LockOutlined style={{ color: 'var(--text-muted)' }} />} placeholder="密码" autoComplete="current-password" size="large"
+                style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }} />
+            </Form.Item>
+            <Form.Item style={{ marginBottom: 8 }}>
+              <Button type="primary" htmlType="submit" icon={<LoginOutlined />} loading={loading} block size="large"
+                style={{ height: 44, borderRadius: 8, boxShadow: '0 2px 6px rgba(47,84,235,.20)' }}>
+                登 录
+              </Button>
+            </Form.Item>
+          </Form>
+          <div className="login-hint">演示账号：admin / admin123</div>
+        </div>
+      </div>
     </div>
   )
 }

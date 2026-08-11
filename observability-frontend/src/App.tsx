@@ -1,342 +1,256 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react'
+import React, { useState, lazy, Suspense, useEffect } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { Layout, Menu, ConfigProvider, theme, Space, Input, Tag, Avatar, Dropdown, Tooltip, Spin } from 'antd'
-import zhCN from 'antd/locale/zh_CN'
+import { Dropdown, Spin } from 'antd'
 import { useUIStore } from './store/uiStore'
+import { useAuthStore } from './store/authStore'
 import CommandPalette from './components/CommandPalette'
-import AgentSidePanel from './components/AgentSidePanel'
-import {
-  RobotOutlined, AlertOutlined, SettingOutlined,
-  RadarChartOutlined, FileSearchOutlined, ToolOutlined,
-  ApartmentOutlined, DatabaseOutlined, NodeIndexOutlined, CloudServerOutlined,
-  BulbOutlined, SearchOutlined, BellOutlined, DownOutlined, ThunderboltOutlined,
-  DashboardOutlined, DeploymentUnitOutlined, AuditOutlined, SafetyCertificateOutlined,
-  BookOutlined, ThunderboltFilled, TeamOutlined, ClusterOutlined, DesktopOutlined, HddOutlined,
-  ApiOutlined, ControlOutlined, LineChartOutlined, LogoutOutlined,
-} from '@ant-design/icons'
+import AiDock from './components/AiDock'
+import ClusterSwitcher from './components/ClusterSwitcher'
+import AppIcon, { AppIconName } from './components/AppIcons'
 import RequireAuth from './components/RequireAuth'
 
-// 懒加载页面（代码分割，减少首屏 bundle）
-const AIChat = lazy(() => import('./pages/AIChat'))
-const ChatThread = lazy(() => import('./pages/AIChat/ChatThread'))
-const Alerts = lazy(() => import('./pages/Alerts'))
-const IncidentDetail = lazy(() => import('./pages/Alerts/IncidentDetail'))
-const SLO = lazy(() => import('./pages/SLO'))
-const Skills = lazy(() => import('./pages/Skills'))
-const Agents = lazy(() => import('./pages/Agents'))
-const Workflows = lazy(() => import('./pages/Workflows'))
-const WorkflowEditor = lazy(() => import('./pages/Workflows/Editor'))
-const WorkflowDetail = lazy(() => import('./pages/Workflows/Detail'))
-const Settings = lazy(() => import('./pages/Settings'))
-const DeepFlow = lazy(() => import('./pages/DeepFlow'))
+// ===== 懒加载页面（全新 IA）=====
 const Login = lazy(() => import('./pages/Login'))
-const Logs = lazy(() => import('./pages/Logs'))
-const Tasks = lazy(() => import('./pages/Tasks'))
-const Services = lazy(() => import('./pages/Services'))
-const ServiceDetail = lazy(() => import('./pages/ServiceDetail'))
-const Topology = lazy(() => import('./pages/Topology'))
-const TopologyCatalog = lazy(() => import('./pages/TopologyCatalog'))
-const Traces = lazy(() => import('./pages/Traces'))
-const TraceDetail = lazy(() => import('./pages/TraceDetail'))
 const Overview = lazy(() => import('./pages/Overview'))
-const Monitor = lazy(() => import('./pages/Monitor'))
-const Capacity = lazy(() => import('./pages/Capacity'))
-const Approvals = lazy(() => import('./pages/Approvals'))
-const Audit = lazy(() => import('./pages/Audit'))
-const Knowledge = lazy(() => import('./pages/Knowledge'))
-const Rules = lazy(() => import('./pages/Rules'))
-const NL2SQL = lazy(() => import('./pages/NL2SQL'))
-const Users = lazy(() => import('./pages/Users'))
-const Shell = lazy(() => import('./pages/Shell'))
-const Reports = lazy(() => import('./pages/Reports'))
-const Artifacts = lazy(() => import('./pages/Artifacts'))
-const Catalog = lazy(() => import('./pages/Catalog'))
-const Devices = lazy(() => import('./pages/Devices'))
-const Clusters = lazy(() => import('./pages/Clusters'))
-const Infrastructure = lazy(() => import('./pages/Infrastructure'))
-const Snmp = lazy(() => import('./pages/SNMP'))
-const Hardware = lazy(() => import('./pages/Hardware'))
-const Mcp = lazy(() => import('./pages/Mcp'))
-const Admin = lazy(() => import('./pages/Admin'))
+const ServiceObservability = lazy(() => import('./pages/observability/ServiceObservability'))
+const Trace = lazy(() => import('./pages/observability/Trace'))
+const LogMetrics = lazy(() => import('./pages/observability/LogMetrics'))
+const AlertEvents = lazy(() => import('./pages/alerts/AlertEvents'))
+const AlertRules = lazy(() => import('./pages/alerts/AlertRules'))
+const AiChat = lazy(() => import('./pages/ai/AiChat'))
+const AiTasks = lazy(() => import('./pages/ai/AiTasks'))
+const AiWorkflow = lazy(() => import('./pages/ai/AiWorkflow'))
+const AiTools = lazy(() => import('./pages/ai/AiTools'))
+const Capacity = lazy(() => import('./pages/capacity/Capacity'))
+const Report = lazy(() => import('./pages/report/Report'))
+const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
+const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'))
 
-const { Sider, Content, Header } = Layout
+// ===== 侧栏导航：7 大板块 =====
+interface NavItem { path: string; label: string; icon: AppIconName; badge?: string }
+interface NavGroup { title: string; collapsed?: boolean; footer?: boolean; items: NavItem[] }
 
-// 菜单：8 区段布局
-const menuGroups = [
+const NAV_GROUPS: NavGroup[] = [
   {
     title: '总览',
-    items: [
-      { key: '/', icon: <DashboardOutlined />, label: '平台总览' },
-    ],
+    items: [{ path: '/overview', label: '工作台首页', icon: 'overview' }],
   },
   {
     title: '可观测',
     items: [
-      { key: '/services', icon: <DatabaseOutlined />, label: '服务列表' },
-      { key: '/topology', icon: <ApartmentOutlined />, label: '服务拓扑' },
-      { key: '/topology/catalog', icon: <ApartmentOutlined />, label: '拓扑目录' },
-      { key: '/traces', icon: <NodeIndexOutlined />, label: '链路追踪' },
-      { key: '/logs', icon: <FileSearchOutlined />, label: '日志查询' },
-      { key: '/deepflow', icon: <CloudServerOutlined />, label: 'DeepFlow' },
+      { path: '/observability/service', label: '服务全景', icon: 'topology' },
+      { path: '/observability/trace', label: '链路追踪', icon: 'traces' },
+      { path: '/observability/log', label: '日志与指标', icon: 'logs' },
     ],
   },
   {
-    title: '监控',
+    title: '告警',
     items: [
-      { key: '/monitor', icon: <RadarChartOutlined />, label: '监控面板' },
-      { key: '/capacity', icon: <LineChartOutlined />, label: '容量预测' },
+      { path: '/alerts/events', label: '告警事件', icon: 'alerts', badge: '12' },
+      { path: '/alerts/rules', label: '告警规则', icon: 'settings' },
     ],
   },
   {
     title: '智能运维',
     items: [
-      { key: '/aichat', icon: <RobotOutlined />, label: 'AI 诊断' },
-      { key: '/skills', icon: <ToolOutlined />, label: '技能目录' },
-      { key: '/agents', icon: <RobotOutlined />, label: 'AI 助理' },
-      { key: '/workflows', icon: <DeploymentUnitOutlined />, label: '工作流' },
-      { key: '/alerts', icon: <AlertOutlined />, label: '告警中心' },
-      { key: '/slo', icon: <RadarChartOutlined />, label: 'SLO 管理' },
-      { key: '/approvals', icon: <SafetyCertificateOutlined />, label: '审批中心' },
-      { key: '/audit', icon: <AuditOutlined />, label: '审计日志' },
-      { key: '/nl2sql', icon: <ThunderboltFilled />, label: 'SQL 查询' },
-      { key: '/mcp', icon: <ApiOutlined />, label: 'MCP 工具' },
+      { path: '/ai/chat', label: 'AI 对话', icon: 'chat' },
+      { path: '/ai/tasks', label: '任务工作台', icon: 'tasks' },
+      { path: '/ai/workflow', label: '工作流', icon: 'workflow' },
+      { path: '/ai/tools', label: 'AI 工具', icon: 'nl2sql' },
     ],
   },
   {
-    title: '管理',
+    title: '容量与资源',
     items: [
-      { key: '/admin', icon: <ControlOutlined />, label: '管理门户' },
+      { path: '/capacity', label: '容量预测', icon: 'capacity' },
     ],
   },
   {
-    title: '任务',
+    title: '报告',
     items: [
-      { key: '/tasks', icon: <ToolOutlined />, label: '任务工作台' },
+      { path: '/report', label: '报告中心', icon: 'reports' },
     ],
   },
   {
-    title: '智能资产',
+    title: '系统管理',
+    footer: true,
     items: [
-      { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
-      { key: '/rules', icon: <SettingOutlined />, label: '规则管理' },
-    ],
-  },
-  {
-    title: '基础设施',
-    items: [
-      { key: '/catalog', icon: <ClusterOutlined />, label: '服务目录' },
-      { key: '/devices', icon: <DesktopOutlined />, label: '设备管理' },
-      { key: '/clusters', icon: <CloudServerOutlined />, label: '集群管理' },
-      { key: '/infrastructure', icon: <ControlOutlined />, label: 'K8s 资源' },
-      { key: '/snmp', icon: <ClusterOutlined />, label: 'SNMP 网络设备' },
-      { key: '/hardware', icon: <HddOutlined />, label: '硬件健康' },
-    ],
-  },
-  {
-    title: '运维工具',
-    items: [
-      { key: '/shell', icon: <CloudServerOutlined />, label: 'WebShell' },
-      { key: '/reports', icon: <FileSearchOutlined />, label: '报告中心' },
-      { key: '/artifacts', icon: <ControlOutlined />, label: '产物中心' },
-    ],
-  },
-  {
-    title: '设置',
-    items: [
-      { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
-      { key: '/users', icon: <TeamOutlined />, label: '用户管理' },
+      { path: '/admin/users', label: '用户管理', icon: 'users' },
+      { path: '/admin/settings', label: '系统设置', icon: 'settings' },
     ],
   },
 ]
 
-const allMenuItems = menuGroups.flatMap(g => g.items)
+const allNav = NAV_GROUPS.flatMap((g) => g.items)
 
-const AppLayout: React.FC = () => {
+function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const collapsed = useUIStore((s) => s.collapsed)
   const toggleCollapsed = useUIStore((s) => s.toggleCollapsed)
-  const darkMode = useUIStore((s) => s.darkMode)
-  const setDarkMode = useUIStore((s) => s.setDarkMode)
+  const setCommandOpen = useUIStore((s) => s.setCommandOpen)
+  const refreshClusters = useUIStore((s) => s.refreshClusters)
+  const logout = useAuthStore((s) => s.logout)
   const [clock, setClock] = useState('')
-  const seg = location.pathname.split('/')[1]
-  const selectedKey = seg ? '/' + seg : '/'
-  const currentLabel = allMenuItems.find(m => m.key === selectedKey)?.label || 'AIOps 智能运维平台'
+  const [navCollapsed, setNavCollapsed] = useState<Record<string, boolean>>({})
 
-  // 时钟
+  // 初始化拉取集群列表（多集群纳管入口）
   useEffect(() => {
-    const tick = () => {
+    refreshClusters()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 高亮当前路由
+  const pathname = location.pathname
+  const selectedKey = allNav.find((it) => it.path === pathname)?.path
+    || allNav.find((it) => pathname.startsWith(it.path + '/'))?.path
+    || '/overview'
+  const currentLabel = allNav.find((m) => m.path === selectedKey)?.label || ''
+
+  useEffect(() => {
+    const t = setInterval(() => {
       const d = new Date()
-      const p = (n: number) => String(n).padStart(2, '0')
-      setClock(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`)
-    }
-    tick()
-    const t = setInterval(tick, 1000)
+      setClock(`${d.toLocaleDateString('zh-CN')} ${d.toLocaleTimeString('zh-CN', { hour12: false })}`)
+    }, 1000)
     return () => clearInterval(t)
   }, [])
 
-  const toggleDark = () => {
-    setDarkMode(!darkMode)
-  }
-
-  // 深色主题 token（zinc 语义色板）
-  const darkToken = {
-    colorPrimary: '#1677ff',
-    borderRadius: 8,
-    colorBgLayout: '#09090b',
-    colorBgContainer: '#18181b',
-    colorBgElevated: '#27272a',
-    colorText: '#f4f4f5',
-    colorTextSecondary: '#a1a1aa',
-    colorBorder: 'rgba(255,255,255,0.12)',
-    colorBorderSecondary: 'rgba(255,255,255,0.08)',
-    colorSplit: 'rgba(255,255,255,0.08)',
-  }
+  const displayName = (localStorage.getItem('display_name') || localStorage.getItem('username') || 'admin').slice(0, 1).toUpperCase()
 
   return (
-    <ConfigProvider locale={zhCN} theme={{ algorithm: darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm, token: darkMode ? darkToken : { colorPrimary: '#1677ff', borderRadius: 8 } }}>
-      <Layout style={{ minHeight: '100vh' }}>
-        {/* 侧边栏 */}
-        <Sider collapsible collapsed={collapsed} onCollapse={toggleCollapsed} width={230} theme="dark"
-          style={{ background: 'linear-gradient(180deg, #0d1526 0%, #0a0f1c 100%)', borderRight: '1px solid rgba(255,255,255,0.06)' }}>
-          {/* Logo */}
-          <div style={{ height: 64, display: 'flex', alignItems: 'center', padding: collapsed ? '0 12px' : '0 20px', gap: 10, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            <div style={{ width: 34, height: 34, flexShrink: 0, background: 'linear-gradient(135deg, #1677ff, #722ed1)', borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(22,119,255,0.4)' }}>
-              <ThunderboltOutlined style={{ color: '#fff', fontSize: 18 }} />
+    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
+      {/* 侧栏 */}
+      <aside className="sidebar" style={{ width: collapsed ? 64 : 232, flexShrink: 0, transition: 'width .2s' }}>
+        <div className="brand" style={{ padding: collapsed ? '16px 12px' : undefined, justifyContent: collapsed ? 'center' : undefined }}>
+          <div className="brand__logo">观</div>
+          {!collapsed && (
+            <div>
+              <div className="brand__name">智能可观测平台</div>
+              <div className="brand__sub">AIOps</div>
             </div>
-            {!collapsed && (
-              <div>
-                <div style={{ color: '#fff', fontSize: 15, fontWeight: 700, letterSpacing: 0.5, lineHeight: 1.2 }}>AIOps</div>
-                <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11 }}>智能可观测平台</div>
-              </div>
-            )}
+          )}
+        </div>
+
+        {!collapsed && (
+          <div style={{ padding: '6px 12px 2px' }}>
+            <div className="nav__hero" onClick={() => navigate('/ai/chat')}>
+              <span className="nh-ic"><AppIcon name="chat" /></span>
+              <span className="nh-txt"><span className="nh-title">AI 运维助手</span><span className="nh-sub">自然语言指挥</span></span>
+            </div>
           </div>
+        )}
 
-          {/* 分组菜单 */}
-          <Menu theme="dark" mode="inline" selectedKeys={[selectedKey]} onClick={({ key }) => navigate(key)}
-            style={{ background: 'transparent', borderRight: 0, marginTop: 8 }}
-            items={menuGroups.map(g => ({
-              key: g.title,
-              type: 'group',
-              label: collapsed ? null : <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', letterSpacing: 1, paddingLeft: 4 }}>{g.title}</span>,
-              children: g.items.map(it => ({ key: it.key, icon: it.icon, label: it.label })),
-            }))}
-          />
-        </Sider>
+        <div className="sidebar__scroll">
+          <nav className="nav">
+            {NAV_GROUPS.filter((g) => !g.footer).map((g) => {
+              const isCollapsed = navCollapsed[g.title]
+              return (
+                <div key={g.title} className={'nav__group' + (isCollapsed ? ' is-collapsed' : '')}>
+                  <div className="nav__group-label" onClick={() => setNavCollapsed((s) => ({ ...s, [g.title]: !s[g.title] }))}>
+                    <span>{g.title}</span>
+                    <span className="chev"><AppIcon name="chevron" size={12} /></span>
+                  </div>
+                  <div className="nav__group-items">
+                    {g.items.map((it) => (
+                      <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
+                        onClick={() => navigate(it.path)} title={collapsed ? it.label : undefined}>
+                        <AppIcon name={it.icon} />
+                        {!collapsed && <span>{it.label}</span>}
+                        {!collapsed && it.badge && <span className="nav__badge">{it.badge}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+          </nav>
+        </div>
 
-        <Layout style={{ background: darkMode ? '#0a0f1c' : '#f0f2f5' }}>
-          {/* 顶部 */}
-          <Header style={{ background: darkMode ? '#0d1526' : '#fff', padding: '0 24px', borderBottom: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 56, lineHeight: '56px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <span style={{ fontSize: 16, fontWeight: 600, color: darkMode ? 'rgba(255,255,255,0.92)' : '#000' }}>{currentLabel}</span>
-              {/* 环境标签从构建变量注入（可移植）：生产 VITE_ENV=production 显示"生产环境"，默认"演示环境" */}
-              {(() => {
-                const env = (import.meta.env.VITE_ENV as string) || 'demo'
-                const envMap: Record<string, [string, string]> = { production: ['生产环境', 'blue'], staging: ['预发环境', 'purple'], demo: ['演示环境', 'green'] }
-                const [text, color] = envMap[env] || ['演示环境', 'green']
-                return <Tag color={color} style={{ marginLeft: 4 }}>{text}</Tag>
-              })()}
+        <div className="nav__footer">
+          {NAV_GROUPS.filter((g) => g.footer).map((g) => (
+            <div key={g.title}>
+              {!collapsed && <div className="nav__group-label">{g.title}</div>}
+              {g.items.map((it) => (
+                <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
+                  onClick={() => navigate(it.path)} title={collapsed ? it.label : undefined}>
+                  <AppIcon name={it.icon} />
+                  {!collapsed && <span>{it.label}</span>}
+                </div>
+              ))}
             </div>
-            <Space size={16} align="center">
-              <Input
-                prefix={<SearchOutlined style={{ color: 'rgba(255,255,255,0.4)' }} />}
-                placeholder="搜索日志 / 服务 / 告警...（⌘K 全局导航）"
-                style={{ width: 280, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6 }}
-                onPressEnter={(e: any) => { const v = e.target.value.trim(); if (v) navigate(`/logs?q=${encodeURIComponent(v)}`) }}
-              />
-              <Tooltip title="告警中心">
-                <BellOutlined style={{ fontSize: 16, color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => navigate('/alerts')} />
-              </Tooltip>
-              <span style={{ fontSize: 12, color: darkMode ? 'rgba(255,255,255,0.5)' : '#999', fontVariantNumeric: 'tabular-nums' }}>{clock}</span>
-              <Tooltip title={darkMode ? '切换浅色' : '切换深色'}>
-                <BulbOutlined style={{ fontSize: 16, color: darkMode ? '#faad14' : 'var(--text-muted)', cursor: 'pointer' }} onClick={toggleDark} />
-              </Tooltip>
-              <Dropdown
-                menu={{
-                  items: [
-                    { key: 'settings', icon: <SettingOutlined />, label: '系统设置', onClick: () => navigate('/settings') },
-                    { type: 'divider' },
-                    { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true, onClick: () => {
-                        localStorage.removeItem('token')
-                        localStorage.removeItem('username')
-                        localStorage.removeItem('display_name')
-                        localStorage.removeItem('role')
-                        navigate('/login')
-                        window.location.reload()
-                      } },
-                  ],
-                }}
-              >
-                <Space style={{ cursor: 'pointer' }}>
-                  <Avatar size={28} style={{ background: 'linear-gradient(135deg, #1677ff, #722ed1)' }}>A</Avatar>
-                  <DownOutlined style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }} />
-                </Space>
-              </Dropdown>
-            </Space>
-          </Header>
+          ))}
+        </div>
 
-          {/* 内容 */}
-          <Content style={{ margin: 16, minHeight: 'calc(100vh - 88px)' }}>
-            <div style={{ background: darkMode ? '#121826' : '#fff', padding: 20, borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)', boxShadow: '0 8px 24px rgba(0,0,0,0.2)', minHeight: '100%' }}>
-              <Suspense fallback={<div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>}>
-              <Routes>
-                <Route path="/" element={<Overview />} />
-                <Route path="/aichat" element={<AIChat />} />
-                <Route path="/chat/:sessionId" element={<ChatThread />} />
-                <Route path="/skills" element={<Skills />} />
-                <Route path="/agents" element={<Agents />} />
-                <Route path="/workflows" element={<Workflows />} />
-                <Route path="/workflows/editor" element={<WorkflowEditor />} />
-                <Route path="/workflows/:id" element={<WorkflowDetail />} />
-                <Route path="/services" element={<Services />} />
-                <Route path="/services/:name" element={<ServiceDetail />} />
-                <Route path="/topology" element={<Topology />} />
-                <Route path="/topology/catalog" element={<TopologyCatalog />} />
-                <Route path="/traces" element={<Traces />} />
-                <Route path="/traces/:traceId" element={<TraceDetail />} />
-                <Route path="/logs" element={<Logs />} />
-                <Route path="/monitor" element={<Monitor />} />
-                <Route path="/capacity" element={<Capacity />} />
-                <Route path="/deepflow" element={<DeepFlow />} />
-                <Route path="/alerts" element={<Alerts />} />
-                <Route path="/alerts/incidents/:id" element={<IncidentDetail />} />
-                <Route path="/slo" element={<SLO />} />
-                <Route path="/tasks" element={<Tasks />} />
-                <Route path="/approvals" element={<Approvals />} />
-                <Route path="/audit" element={<Audit />} />
-                <Route path="/knowledge" element={<Knowledge />} />
-                <Route path="/rules" element={<Rules />} />
-                <Route path="/nl2sql" element={<NL2SQL />} />
-                <Route path="/shell" element={<Shell />} />
-                <Route path="/reports" element={<Reports />} />
-                <Route path="/artifacts" element={<Artifacts />} />
-                <Route path="/users" element={<Users />} />
-                <Route path="/catalog" element={<Catalog />} />
-                <Route path="/devices" element={<Devices />} />
-                <Route path="/clusters" element={<Clusters />} />
-                <Route path="/infrastructure" element={<Infrastructure />} />
-                <Route path="/snmp" element={<Snmp />} />
-                <Route path="/hardware" element={<Hardware />} />
-                <Route path="/mcp" element={<Mcp />} />
-                <Route path="/admin" element={<Admin />} />
-                <Route path="/settings" element={<Settings />} />
-              </Routes>
-              </Suspense>
+        <div className="nav__collapse-btn" onClick={toggleCollapsed}>
+          <AppIcon name="collapse" />
+          {!collapsed && <span style={{ flex: 1 }}>收起菜单</span>}
+        </div>
+      </aside>
+
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* 顶栏 */}
+        <header className="topbar">
+          <div className="search-trigger" onClick={() => setCommandOpen(true)}>
+            <AppIcon name="search" /><span>搜索页面、资源、告警…</span><span className="kbd">⌘ K</span>
+          </div>
+          <ClusterSwitcher />
+          <div className="topbar__spacer" />
+          {currentLabel && <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>{currentLabel}</span>}
+          <div className="env-switch"><span className="dot" />演示环境</div>
+          <div className="topbar__icon-btn" title="通知" onClick={() => navigate('/alerts/events')}><span className="ping" /><AppIcon name="bell" /></div>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{clock}</span>
+          <Dropdown
+            menu={{
+              items: [
+                { key: 'settings', label: '系统设置', onClick: () => navigate('/admin/settings') },
+                { type: 'divider' },
+                { key: 'logout', label: '退出登录', danger: true, onClick: () => { logout(); navigate('/login'); window.location.reload() } },
+              ],
+            }}
+          >
+            <div className="user-chip" style={{ cursor: 'pointer' }}>
+              <div className="avatar">{displayName}</div>
+              <span className="text-sm">{localStorage.getItem('display_name') || localStorage.getItem('username') || 'admin'}</span>
             </div>
-          </Content>
-        </Layout>
-      </Layout>
+          </Dropdown>
+        </header>
+
+        {/* 内容区 */}
+        <main style={{ flex: 1, padding: '20px 24px', overflow: 'auto', minHeight: 0 }}>
+          <Suspense fallback={<div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>}>
+            <Routes>
+              <Route path="/overview" element={<Overview />} />
+              <Route path="/observability/service" element={<ServiceObservability />} />
+              <Route path="/observability/trace" element={<Trace />} />
+              <Route path="/observability/log" element={<LogMetrics />} />
+              <Route path="/alerts/events" element={<AlertEvents />} />
+              <Route path="/alerts/rules" element={<AlertRules />} />
+              <Route path="/ai/chat" element={<AiChat />} />
+              <Route path="/ai/tasks" element={<AiTasks />} />
+              <Route path="/ai/workflow" element={<AiWorkflow />} />
+              <Route path="/ai/tools" element={<AiTools />} />
+              <Route path="/capacity" element={<Capacity />} />
+              <Route path="/report" element={<Report />} />
+              <Route path="/admin/users" element={<AdminUsers />} />
+              <Route path="/admin/settings" element={<AdminSettings />} />
+              <Route path="/" element={<Overview />} />
+              <Route path="*" element={<Overview />} />
+            </Routes>
+          </Suspense>
+        </main>
+      </div>
+
       <CommandPalette />
-      <AgentSidePanel />
-    </ConfigProvider>
+      <AiDock />
+    </div>
   )
 }
 
-const App: React.FC = () => (
-  <Routes>
-    <Route path="/login" element={<Login />} />
-    <Route path="/*" element={<RequireAuth><AppLayout /></RequireAuth>} />
-  </Routes>
-)
-
-export default App
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<Suspense fallback={<Spin />}><Login /></Suspense>} />
+      <Route path="*" element={<RequireAuth><AppLayout /></RequireAuth>} />
+    </Routes>
+  )
+}

@@ -9,8 +9,7 @@ interface AuthState {
   logout: () => void
 }
 
-/** authStore：登录态集中管理。token/用户名/角色仅存一份 localStorage（client.ts 的 axios
- *  拦截器为唯一读取来源），不重复落 zustand persist，避免同一份凭据被多次暴露。 */
+/** authStore：登录态集中管理。token/用户名/角色仅存一份 localStorage（client.ts 的 axios 拦截器为唯一读取来源）。 */
 export const useAuthStore = create<AuthState>()((set) => ({
   token: localStorage.getItem('token') || '',
   username: localStorage.getItem('username') || '',

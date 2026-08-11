@@ -1,0 +1,96 @@
+import React, { useEffect, useState } from 'react'
+import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Drawer, message } from 'antd'
+import { useNavigate } from 'react-router-dom'
+import { getAlertRules, createAlertRule, deleteAlertRule } from '../../api/client'
+import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
+
+interface Rule { id: string; name?: string; rule_name?: string; service_name?: string; metric?: string; threshold?: number; severity?: string; enabled?: boolean; condition?: string; duration?: number; cooldown?: number }
+
+const AlertRules: React.FC = () => {
+  const navigate = useNavigate()
+  const [data, setData] = useState<Rule[]>([])
+  const [loading, setLoading] = useState(true)
+  const [open, setOpen] = useState(false)
+  const [view, setView] = useState<Rule | null>(null) // 2.11 规则查看
+  const [form] = Form.useForm()
+
+  const load = () => {
+    setLoading(true)
+    getAlertRules().then((r) => {
+      const d = Array.isArray(r.data) ? r.data : r.data?.rules || r.data?.data || []
+      setData(d)
+    }).catch(() => setData([])).finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [])
+
+  const submit = async () => {
+    const v = await form.validateFields()
+    createAlertRule({ rule_name: v.name, service_name: v.service, metric: v.metric, threshold: v.threshold, severity: v.severity })
+      .then(() => { message.success('已创建'); setOpen(false); load() })
+      .catch((e) => message.error(e?.response?.data?.error || '创建失败'))
+  }
+
+  const cols = [
+    { title: '规则名', dataIndex: 'name', key: 'name', render: (_: any, r: Rule) => r.name || r.rule_name },
+    { title: '服务', dataIndex: 'service_name', key: 'service_name' },
+    { title: '指标', dataIndex: 'metric', key: 'metric' },
+    { title: '阈值', dataIndex: 'threshold', key: 'threshold', render: (v: number) => v ?? '-' },
+    { title: '严重度', dataIndex: 'severity', key: 'severity', render: (v: string) => <StatusBadge text={v || 'warning'} tone={v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'info'} /> },
+    { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80, render: (v: boolean) => <StatusBadge text={v ? '启用' : '停用'} tone={v ? 'ok' : 'muted'} /> },
+    { title: '操作', key: 'op', width: 200, render: (_: any, r: Rule) => (
+        <span style={{ display: 'inline-flex', gap: 4 }}>
+          <Button size="small" type="link" onClick={() => setView(r)}>详情</Button>
+          <Button size="small" type="link" onClick={() => navigate(`/alerts/events?rule=${encodeURIComponent(r.id || r.name || '')}`)}>历史告警</Button>
+          <Button size="small" type="link" danger onClick={() => deleteAlertRule(String(r.id)).then(() => { message.success('已删除'); load() }).catch(() => message.error('删除失败'))}>删除</Button>
+        </span>
+      ) },
+  ]
+
+  return (
+    <div>
+      <Breadcrumb items={[{ t: '告警' }, { t: '告警规则' }]} />
+      <PageHeader title="告警规则" desc="管理阈值 / 异常检测 / 燃烧速率等告警策略"
+        actions={<Button type="primary" onClick={() => setOpen(true)}>新建规则</Button>} />
+      <div className="card" style={{ padding: 0 }}>
+        <Table rowKey="id" loading={loading} columns={cols} dataSource={data} size="middle"
+          pagination={false} locale={{ emptyText: <Empty text="暂无告警规则" /> }} />
+      </div>
+
+      <Modal title="新建告警规则" open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose>
+        <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+          <Form.Item name="name" label="规则名称" rules={[{ required: true }]}><Input placeholder="如：order-svc 错误率过高" /></Form.Item>
+          <Form.Item name="service" label="服务名称"><Input placeholder="服务名" /></Form.Item>
+          <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}><Input placeholder="如：error_rate" /></Form.Item>
+          <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}><InputNumber style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="severity" label="严重度" initialValue="warning"><Select options={[{ value: 'critical', label: '严重' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }]} /></Form.Item>
+          <Form.Item name="enabled" label="启用" valuePropName="checked" initialValue={true}><Switch /></Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 2.11 规则查看：完整配置 */}
+      <Drawer width={440} open={!!view} onClose={() => setView(null)} title="规则详情" styles={{ body: { padding: 16 } }}>
+        {view && (
+          <Table rowKey="k" size="small" pagination={false} showHeader={false}
+            dataSource={[
+              { k: '规则名', v: view.name || view.rule_name || '-' },
+              { k: '服务', v: view.service_name || '-' },
+              { k: '指标', v: view.metric || '-' },
+              { k: '阈值', v: view.threshold != null ? `${view.threshold}` : '-' },
+              { k: '条件', v: view.condition || 'threshold' },
+              { k: '严重度', v: view.severity || 'warning' },
+              { k: '持续时间', v: view.duration != null ? `${view.duration} 分钟` : '-' },
+              { k: '冷却期', v: view.cooldown != null ? `${view.cooldown} 秒` : '-' },
+              { k: '状态', v: view.enabled ? '启用' : '停用' },
+            ]}
+            columns={[
+              { title: '', dataIndex: 'k', key: 'k', width: 100, render: (v: string) => <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{v}</span> },
+              { title: '', dataIndex: 'v', key: 'v', render: (v: string) => <span>{v}</span> },
+            ]}
+          />
+        )}
+      </Drawer>
+    </div>
+  )
+}
+
+export default AlertRules

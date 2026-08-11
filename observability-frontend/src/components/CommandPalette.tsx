@@ -1,52 +1,56 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useUIStore } from '../store/uiStore'
+import AppIcon from './AppIcons'
 
-const COMMANDS = [
-  // 总览
-  { label: '平台总览', path: '/', keywords: 'overview home dashboard 总览' },
-  // 可观测
-  { label: '服务列表', path: '/services', keywords: 'service 服务' },
-  { label: '服务拓扑', path: '/topology', keywords: 'topology graph 拓扑' },
-  { label: '拓扑目录', path: '/topology/catalog', keywords: 'catalog 目录' },
-  { label: '链路追踪', path: '/traces', keywords: 'trace traceid 链路' },
-  { label: '日志查询', path: '/logs', keywords: 'log 日志 victorialogs' },
-  { label: 'DeepFlow', path: '/deepflow', keywords: 'deepflow 网络' },
-  // 监控
-  { label: '监控面板', path: '/monitor', keywords: 'monitor panel 监控 dashboard' },
-  { label: '容量预测', path: '/capacity', keywords: 'capacity forecast 容量 预测' },
-  // 智能运维
-  { label: 'AI 诊断', path: '/aichat', keywords: 'ai chat assistant 诊断' },
-  { label: '技能目录', path: '/skills', keywords: 'skill 技能' },
-  { label: 'AI 助理', path: '/agents', keywords: 'agent 助理' },
-  { label: '工作流', path: '/workflows', keywords: 'workflow 工作流 flow' },
-  { label: '告警中心', path: '/alerts', keywords: 'alert 告警 incidents' },
-  { label: 'SLO 管理', path: '/slo', keywords: 'slo 服务等级' },
-  { label: '审批中心', path: '/approvals', keywords: 'approval 审批' },
-  { label: '审计日志', path: '/audit', keywords: 'audit 审计' },
-  { label: 'SQL 查询', path: '/nl2sql', keywords: 'sql nl2sql 查询 clickhouse' },
-  { label: 'MCP 工具', path: '/mcp', keywords: 'mcp tool 工具' },
-  // 管理
-  { label: '管理门户', path: '/admin', keywords: 'admin 管理' },
-  // 任务
-  { label: '任务工作台', path: '/tasks', keywords: 'task 任务' },
-  // 智能资产
-  { label: '知识库', path: '/knowledge', keywords: 'knowledge 知识 rag' },
-  { label: '规则管理', path: '/rules', keywords: 'rule 规则' },
-  // 基础设施
-  { label: '服务目录', path: '/catalog', keywords: 'catalog 目录' },
-  { label: '设备管理', path: '/devices', keywords: 'device 设备' },
-  { label: '集群管理', path: '/clusters', keywords: 'cluster 集群' },
-  { label: 'K8s 资源', path: '/infrastructure', keywords: 'k8s kubernetes infrastructure 资源' },
-  { label: 'SNMP 网络设备', path: '/snmp', keywords: 'snmp 网络设备' },
-  { label: '硬件健康', path: '/hardware', keywords: 'hardware 硬件' },
-  // 运维工具
-  { label: 'WebShell', path: '/shell', keywords: 'shell terminal webshell 终端' },
-  { label: '报告中心', path: '/reports', keywords: 'report 报告' },
-  { label: '产物中心', path: '/artifacts', keywords: 'artifact 产物' },
-  // 设置
-  { label: '系统设置', path: '/settings', keywords: 'settings config 设置' },
-  { label: '用户管理', path: '/users', keywords: 'user 用户' },
+interface Cmd { icon: string; label: string; keywords?: string; path?: string; kbd?: string }
+
+const GROUPS: { title: string; items: Cmd[] }[] = [
+  {
+    title: '总览',
+    items: [
+      { icon: 'overview', label: '工作台首页', path: '/overview', kbd: 'G O' },
+    ],
+  },
+  {
+    title: '可观测',
+    items: [
+      { icon: 'topology', label: '服务全景', path: '/observability/service', kbd: 'G S' },
+      { icon: 'traces', label: '链路追踪', path: '/observability/trace', kbd: 'G T' },
+      { icon: 'logs', label: '日志检索', path: '/observability/log', kbd: 'G L' },
+      { icon: 'monitor', label: '监控面板', path: '/monitor', kbd: 'G M' },
+      { icon: 'capacity', label: '容量预测', path: '/capacity' },
+    ],
+  },
+  {
+    title: '告警',
+    items: [
+      { icon: 'alerts', label: '告警事件', path: '/alerts/events', kbd: 'G A' },
+      { icon: 'settings', label: '告警规则', path: '/alerts/rules' },
+    ],
+  },
+  {
+    title: '智能运维',
+    items: [
+      { icon: 'chat', label: 'AI 对话', path: '/ai/chat', kbd: 'G C' },
+      { icon: 'tasks', label: '任务工作台', path: '/ai/tasks' },
+      { icon: 'workflow', label: '工作流', path: '/ai/workflow' },
+      { icon: 'nl2sql', label: 'AI 工具', path: '/ai/tools' },
+    ],
+  },
+  {
+    title: '管理与基础设施',
+    items: [
+      { icon: 'users', label: '用户管理', path: '/admin/users' },
+      { icon: 'settings', label: '系统设置', path: '/admin/settings' },
+    ],
+  },
+  {
+    title: '报告与合规',
+    items: [
+      { icon: 'reports', label: '报告中心', path: '/report' },
+    ],
+  },
 ]
 
 const CommandPalette: React.FC = () => {
@@ -71,47 +75,30 @@ const CommandPalette: React.FC = () => {
   }, [open, setOpen])
 
   if (!open) return null
-  const list = COMMANDS.filter(
-    (c) =>
-      !q ||
-      c.label.toLowerCase().includes(q.toLowerCase()) ||
-      c.keywords.includes(q.toLowerCase()),
-  )
+
+  const run = (c: Cmd) => { setOpen(false); setQ(''); if (c.path) navigate(c.path) }
+
+  const filtered = GROUPS.map((g) => ({
+    title: g.title,
+    items: g.items.filter((c) => !q || c.label.toLowerCase().includes(q.toLowerCase()) || (c.keywords || '').includes(q.toLowerCase())),
+  })).filter((g) => g.items.length > 0)
+
   return (
-    <div
-      onClick={() => setOpen(false)}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.6)',
-        display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18vh',
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 480, background: 'var(--surface)', border: '1px solid var(--border)',
-          borderRadius: 12, padding: 12, boxShadow: '0 16px 48px rgba(0,0,0,0.4)',
-        }}
-      >
-        <input
-          autoFocus
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="输入命令或搜索页面…"
-          style={{
-            width: '100%', background: 'transparent', border: 'none', outline: 'none',
-            color: 'var(--text)', fontSize: 15, padding: '8px 4px',
-          }}
-        />
-        <div style={{ marginTop: 8 }}>
-          {list.map((c) => (
-            <div
-              key={c.path}
-              onClick={() => { setOpen(false); navigate(c.path) }}
-              style={{ padding: '8px 10px', borderRadius: 8, cursor: 'pointer', color: 'var(--text)' }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            >
-              {c.label}
+    <div className="cmdk-backdrop open" onClick={() => setOpen(false)}>
+      <div className="cmdk" onClick={(e) => e.stopPropagation()}>
+        <input className="cmdk__input" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="搜索页面…  (Esc 关闭)" />
+        <div className="cmdk__list">
+          {filtered.map((g) => (
+            <div key={g.title}>
+              <div className="cmdk__group">{g.title}</div>
+              {g.items.map((c) => (
+                <div key={g.title + c.label} className="cmdk__item" onClick={() => run(c)}>
+                  <AppIcon name={c.icon} />
+                  <span>{c.label}</span>
+                  {c.kbd && <span className="kbd">{c.kbd}</span>}
+                </div>
+              ))}
             </div>
           ))}
         </div>

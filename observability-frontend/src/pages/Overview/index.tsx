@@ -1,195 +1,128 @@
-import React, { useEffect, useState, useCallback } from 'react'
-import { Row, Col, Card, Statistic, Space, Typography, Button, Empty } from 'antd'
-import {
-  DatabaseOutlined, AlertOutlined, FileSearchOutlined,
-  ApartmentOutlined, NodeIndexOutlined, ThunderboltOutlined, ArrowRightOutlined,
-  RobotOutlined, ThunderboltFilled,
-} from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
-import ReactECharts from 'echarts-for-react'
-import { getDashboardStats, DashboardStats } from '../../api/client'
+import React, { useEffect, useState } from 'react'
+import { Row, Col, Button, Space, Input, Tag } from 'antd'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { getDashboardStats, DashboardStats, listApprovalTasks } from '../../api/client'
+import { PageHeader, StatCard, StatusBadge, PaneCard, Empty, Breadcrumb } from '../../components/ui/PageKit'
+import AppIcon from '../../components/AppIcons'
+import { useUIStore } from '../../store/uiStore'
 
-const { Text } = Typography
-
-const darkText = '#e8e8e8'
-const gridColor = '#1f1f1f'
-const tooltipStyle = { background: '#1a1a1a', border: '1px solid #333', textStyle: { color: '#e8e8e8' } }
+function sparkPts(arr: number[], w = 120, h = 40): string {
+  if (!arr || arr.length < 2) return ''
+  const max = Math.max(...arr), min = Math.min(...arr)
+  const range = max - min || 1
+  return arr.map((v, i) => `${((i / (arr.length - 1)) * w).toFixed(1)},${(h - ((v - min) / range) * (h - 4) - 2).toFixed(1)}`).join(' ')
+}
 
 const Overview: React.FC = () => {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [pending, setPending] = useState<number>(0)
+  const [aiQ, setAiQ] = useState(searchParams.get('q') || '')
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const clusters = useUIStore((s) => s.clusters)
+  // 当前集群显示名：all → 全部集群；否则按集群 name（主集群 default 映射回其 name）
+  const curClusterName =
+    currentClusterId === 'all'
+      ? '全部集群'
+      : (() => {
+          const c = clusters.find((x) => (x.id === 1 ? 'default' : x.name) === currentClusterId)
+          return c ? c.name : currentClusterId
+        })()
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await getDashboardStats()
-      setStats(res.data)
-    } catch { /* ignore */ } finally {
-      setLoading(false)
-    }
+  useEffect(() => {
+    Promise.all([getDashboardStats(), listApprovalTasks({ limit: 1 })])
+      .then(([s, t]) => {
+        setStats(s.data)
+        const tasks = (t.data as any)?.tasks || []
+        setPending(tasks.filter((x: any) => x.status === 'waiting').length)
+      })
+      .finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => { load() }, [load])
-
-  // 趋势折线图（近 24h 调用+错误）
-  const trendOption = {
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', ...tooltipStyle },
-    legend: { data: ['调用量', '错误量'], textStyle: { color: darkText }, top: 0 },
-    grid: { left: 50, right: 20, top: 30, bottom: 30 },
-    xAxis: { type: 'category', data: (stats?.trend || []).map(t => t.t.slice(11, 16)), axisLabel: { color: '#999' }, axisLine: { lineStyle: { color: gridColor } } },
-    yAxis: { type: 'value', axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: gridColor } } },
-    series: [
-      { name: '调用量', type: 'line', smooth: true, data: (stats?.trend || []).map(t => t.calls), itemStyle: { color: '#1677ff' }, areaStyle: { opacity: 0.15 } },
-      { name: '错误量', type: 'line', smooth: true, data: (stats?.trend || []).map(t => t.errors), itemStyle: { color: '#ff4d4f' } },
-    ],
-  }
-
-  // 错误分布柱状图（y 轴为服务名，左侧需留足空间防裁剪）
-  const errorsOption = {
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', ...tooltipStyle },
-    grid: { left: 110, right: 20, top: 20, bottom: 30, containLabel: false },
-    xAxis: { type: 'value', axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: gridColor } } },
-    yAxis: {
-      type: 'category',
-      data: (stats?.top_errors || []).map(e => e.service).reverse(),
-      axisLabel: { color: '#ccc', fontSize: 11 },
-      inverse: false,
-    },
-    series: [{ name: '错误数', type: 'bar', data: (stats?.top_errors || []).map(e => e.errors).reverse(), itemStyle: { color: '#ff4d4f', borderRadius: [0, 4, 4, 0] }, barWidth: 14 }],
-  }
-
-  // 告警环形图
-  // 当某个级别告警为 0 时保留该项并以淡灰色展示，避免出现「全红环」等视觉误导。
-  const alerts = stats?.alerts || { total: 0, critical: 0, warning: 0, info: 0, by_service: [] }
-  const alertSeriesData = [
-    { value: alerts.critical, name: '严重', itemStyle: { color: alerts.critical > 0 ? '#ff4d4f' : '#3a3a3a' } },
-    { value: alerts.warning,  name: '警告', itemStyle: { color: alerts.warning  > 0 ? '#faad14' : '#3a3a3a' } },
-    { value: alerts.info,     name: '信息', itemStyle: { color: alerts.info     > 0 ? '#1677ff' : '#3a3a3a' } },
-  ]
-  const alertOption = {
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'item', ...tooltipStyle },
-    legend: { bottom: 0, textStyle: { color: darkText } },
-    series: [{
-      type: 'pie', radius: ['45%', '70%'], center: ['50%', '44%'],
-      avoidLabelOverlap: false, label: { show: false }, emphasis: { label: { show: true, color: '#fff' } },
-      data: alertSeriesData,
-    }],
-  }
-
-  // TOP 服务调用量条形图（与 TOP 错误服务对称布局）
-  const topSvcOption = {
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis', ...tooltipStyle },
-    grid: { left: 110, right: 20, top: 20, bottom: 30, containLabel: false },
-    xAxis: { type: 'value', axisLabel: { color: '#999' }, splitLine: { lineStyle: { color: gridColor } } },
-    yAxis: { type: 'category', data: (stats?.top_services || []).slice(0, 10).map(s => s.service).reverse(), axisLabel: { color: '#ccc', fontSize: 11 } },
-    series: [{ name: '调用量', type: 'bar', data: (stats?.top_services || []).slice(0, 10).map(s => s.calls).reverse(), itemStyle: { color: '#1677ff', borderRadius: [0, 4, 4, 0] }, barWidth: 12 }],
-  }
-
-  const statCards = [
-    { title: '服务数量', value: stats?.services ?? 0, icon: <DatabaseOutlined />, color: '#1677ff', path: '/services', desc: '已观测服务' },
-    { title: '拓扑调用', value: stats?.edges ?? 0, icon: <ApartmentOutlined />, color: '#722ed1', path: '/topology', desc: '服务调用关系' },
-    { title: '错误率', value: `${(stats?.error_rate ?? 0).toFixed(2)}%`, icon: <AlertOutlined />, color: '#fa8c16', path: '/alerts', desc: '近 24h 请求错误率' },
-    { title: 'P95 延迟', value: `${(stats?.latency_p95 ?? 0).toFixed(1)}ms`, icon: <ThunderboltOutlined />, color: '#52c41a', path: '/traces', desc: '近 24h P95 延迟' },
-  ]
+  const a = stats?.alerts
+  const healthScore = stats ? Math.max(0, Math.min(100, Math.round(100 - (stats.error_rate ?? 0)))) : null
+  const sparkCalls = sparkPts((stats?.trend || []).map((t) => t.calls))
+  const sparkErrors = sparkPts((stats?.trend || []).map((t) => t.errors))
 
   return (
     <div>
-      {/* 欢迎横幅 */}
-      <div style={{ padding: '20px 24px', borderRadius: 12, marginBottom: 16, background: 'linear-gradient(135deg, #1677ff 0%, #722ed1 100%)', color: '#fff', position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', right: -30, top: -30, width: 180, height: 180, borderRadius: '50%', background: 'rgba(255,255,255,0.08)' }} />
-        <div style={{ position: 'absolute', right: 60, top: 40, width: 100, height: 100, borderRadius: '50%', background: 'rgba(255,255,255,0.06)' }} />
-        <Space size={12}>
-          <ThunderboltOutlined style={{ fontSize: 28 }} />
-          <div>
-            <div style={{ fontSize: 20, fontWeight: 700 }}>AIOps 智能运维平台</div>
-            <div style={{ fontSize: 13, opacity: 0.9 }}>全栈可观测 · AI 诊断 · 智能告警 · SQL 查询</div>
+      <Breadcrumb items={[{ t: '总览' }, { t: '工作台首页' }]} />
+      <PageHeader title="工作台首页" desc="平台运行态势一览 · 聚焦关键风险与待办" />
+
+      {/* 态势横幅 */}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div className="card" style={{ flex: 2, minWidth: 320, marginBottom: 0, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>当前态势</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>近 24h 告警与系统健康</div>
+            </div>
+            <Tag color="blue" style={{ borderRadius: 999 }}>{curClusterName}</Tag>
           </div>
-        </Space>
-        <Space style={{ position: 'absolute', right: 24, bottom: 20 }}>
-          <Button ghost icon={<ArrowRightOutlined />} onClick={() => navigate('/aichat')}>进入 AI 诊断</Button>
-          <Button ghost icon={<ThunderboltFilled />} onClick={() => navigate('/nl2sql')}>SQL 查询</Button>
-        </Space>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+            <div><StatusBadge text={`严重 ${a?.critical ?? 0}`} tone={(a?.critical ?? 0) > 0 ? 'crit' : 'muted'} /></div>
+            <div><StatusBadge text={`警告 ${a?.warning ?? 0}`} tone={(a?.warning ?? 0) > 0 ? 'warn' : 'muted'} /></div>
+            <div><StatusBadge text={`信息 ${a?.info ?? 0}`} tone="info" /></div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>系统健康度</span>
+            <span style={{ fontSize: 34, fontWeight: 700, color: healthScore !== null && healthScore >= 90 ? 'var(--success)' : healthScore !== null && healthScore >= 75 ? 'var(--warning)' : 'var(--danger)' }}>
+              {healthScore ?? '—'}
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>/ 100</span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>依据：近 24h 请求错误率（100 − 错误率%）加权计算</div>
+        </div>
+        <div className="card" style={{ flex: 1, minWidth: 300, marginBottom: 0, padding: 20, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>待办</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: pending > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>{pending} 项待审批</div>
+          <Button type="link" style={{ padding: 0, alignSelf: 'flex-start' }} onClick={() => navigate('/ai/tasks')}>前往任务工作台 →</Button>
+        </div>
       </div>
 
-      {/* KPI 卡片 */}
+      {/* 集中 KPI */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={12} md={6}><StatCard label="服务数量" value={loading ? '…' : (stats?.services ?? 0)} unit="个" spark={sparkCalls} sparkColor="var(--primary)" /></Col>
+        <Col xs={12} md={6}><StatCard label="调用总量" value={loading ? '…' : (stats?.total_calls ?? 0).toLocaleString()} unit="次" /></Col>
+        <Col xs={12} md={6}><StatCard label="请求错误率" value={loading ? '…' : `${(stats?.error_rate ?? 0).toFixed(2)}`} unit="%" trend={`${(stats?.error_rate ?? 0).toFixed(2)}%`} trendDir={(stats?.error_rate ?? 0) > 0 ? 'up' : 'flat'} spark={sparkErrors} sparkColor="var(--danger)" /></Col>
+        <Col xs={12} md={6}><StatCard label="P95 延迟" value={loading ? '…' : `${(stats?.latency_p95 ?? 0).toFixed(1)}`} unit="ms" /></Col>
+      </Row>
+
+      {/* AI 快问 + 告警分布 */}
       <Row gutter={[16, 16]}>
-        {statCards.map(c => (
-          <Col xs={12} md={6} key={c.title}>
-            <Card size="small" hoverable onClick={() => navigate(c.path)} style={{ cursor: 'pointer' }}>
-              <Space align="center" size={12}>
-                <div style={{ width: 40, height: 40, borderRadius: 10, background: c.color + '1a', color: c.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>{c.icon}</div>
-                <div>
-                  <Statistic title={c.title} value={c.value} loading={loading} valueStyle={{ fontSize: 24, fontWeight: 700 }} />
-                  <Text type="secondary" style={{ fontSize: 11 }}>{c.desc}</Text>
-                </div>
-              </Space>
-            </Card>
-          </Col>
-        ))}
-      </Row>
-
-      {/* 趋势 + 告警 */}
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} lg={16}>
-          <Card size="small" title="调用 / 错误趋势" extra={
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>近 24 小时</Typography.Text>
-          }>
-            {(stats?.trend || []).length ? <ReactECharts option={trendOption} style={{ height: 280 }} />
-              : <Empty description="暂无趋势数据" />}
-          </Card>
+        <Col xs={24} lg={14}>
+          <PaneCard title="AI 快问快答" action={<Button type="link" onClick={() => navigate('/ai/chat')}>进入 AI 对话 →</Button>}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Input
+                value={aiQ}
+                onChange={(e) => setAiQ(e.target.value)}
+                onPressEnter={() => { if (aiQ.trim()) navigate(`/ai/chat?q=${encodeURIComponent(aiQ)}`) }}
+                placeholder="用自然语言提问，例如：分析 prod 集群故障根因"
+                style={{ flex: 1, minWidth: 240 }}
+                suffix={<span style={{ cursor: 'pointer', display: 'flex' }} onClick={() => { if (aiQ.trim()) navigate(`/ai/chat?q=${encodeURIComponent(aiQ)}`) }}><AppIcon name="send" /></span>}
+              />
+              <Button onClick={() => navigate('/ai/chat?q=分析 prod 集群故障根因')}>分析根因</Button>
+              <Button onClick={() => navigate('/ai/chat?q=巡检所有 K8s 集群')}>集群巡检</Button>
+            </div>
+          </PaneCard>
         </Col>
-        <Col xs={24} lg={8}>
-          <Card size="small" title={`告警分布（${alerts.total}）`}>
-            {alerts.total > 0
-              ? <ReactECharts option={alertOption} style={{ height: 280 }} />
-              : <Empty description="暂无告警" />}
-          </Card>
+        <Col xs={24} lg={10}>
+          <PaneCard title="告警按服务分布">
+            {(a?.by_service || []).length === 0
+              ? <Empty text="暂无告警分布数据" />
+              : (a?.by_service || []).slice(0, 6).map((s) => (
+                  <div key={s.service} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border-soft)' }}>
+                    <span style={{ flex: 1, fontSize: 13 }}>{s.service}</span>
+                    <Space size={6}>
+                      {s.critical > 0 && <StatusBadge text={`严重 ${s.critical}`} tone="crit" />}
+                      {s.warning > 0 && <StatusBadge text={`警告 ${s.warning}`} tone="warn" />}
+                    </Space>
+                  </div>
+                ))}
+          </PaneCard>
         </Col>
-      </Row>
-
-      {/* 错误分布 + TOP 服务 */}
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} lg={12}>
-          <Card size="small" title="TOP 错误服务">
-            {(stats?.top_errors || []).length ? <ReactECharts option={errorsOption} style={{ height: 300 }} />
-              : <Empty description="暂无错误数据" />}
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card size="small" title="TOP 服务调用量">
-            {(stats?.top_services || []).length ? <ReactECharts option={topSvcOption} style={{ height: 300 }} />
-              : <Empty description="暂无服务数据" />}
-          </Card>
-        </Col>
-      </Row>
-
-      {/* 功能入口 */}
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        {[
-          { title: '服务拓扑', desc: '查看服务调用关系', icon: <ApartmentOutlined />, color: '#1677ff', path: '/topology' },
-          { title: '链路追踪', desc: '分析请求调用链', icon: <NodeIndexOutlined />, color: '#722ed1', path: '/traces' },
-          { title: '日志查询', desc: '检索平台日志', icon: <FileSearchOutlined />, color: '#52c41a', path: '/logs' },
-          { title: 'SQL 查询', desc: '自然语言查 ClickHouse', icon: <ThunderboltFilled />, color: '#13c2c2', path: '/nl2sql' },
-          { title: '告警中心', desc: '告警规则与事件', icon: <AlertOutlined />, color: '#ff4d4f', path: '/alerts' },
-          { title: '任务工作台', desc: 'AI 诊断任务', icon: <ThunderboltOutlined />, color: '#13c2c2', path: '/tasks' },
-        ].map(f => (
-          <Col xs={12} md={8} key={f.title}>
-            <Card size="small" hoverable onClick={() => navigate(f.path)} style={{ cursor: 'pointer' }}>
-              <Space align="center" size={12}>
-                <div style={{ width: 36, height: 36, borderRadius: 9, background: f.color + '1a', color: f.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>{f.icon}</div>
-                <div>
-                  <div style={{ fontWeight: 600 }}>{f.title}</div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>{f.desc}</Text>
-                </div>
-              </Space>
-            </Card>
-          </Col>
-        ))}
       </Row>
     </div>
   )

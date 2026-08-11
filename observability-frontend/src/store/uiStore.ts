@@ -1,33 +1,76 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { listClusters, type ClusterItem } from '../api/client'
+
+export interface ClusterOption {
+  id: number
+  name: string
+  status: string
+  node_count: number
+}
 
 interface UIState {
   collapsed: boolean
-  darkMode: boolean
   commandOpen: boolean
-  activeCommand: string
+  aiDockOpen: boolean
+  // 多集群纳管：当前选中的集群 id（'all' = 全部集群），持久化
+  currentClusterId: string
+  clusters: ClusterOption[]
+  // 集群是否加载中/失败
+  clusterLoading: boolean
   toggleCollapsed: () => void
-  setDarkMode: (v: boolean) => void
   setCommandOpen: (v: boolean) => void
-  setActiveCommand: (v: string) => void
+  setAiDockOpen: (v: boolean) => void
+  setCurrentCluster: (id: string) => void
+  setClusters: (clusters: ClusterOption[]) => void
+  refreshClusters: () => Promise<void>
 }
 
 export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
       collapsed: false,
-      darkMode: localStorage.getItem('darkMode') !== 'false',
       commandOpen: false,
-      activeCommand: '',
+      aiDockOpen: false,
+      currentClusterId: 'all',
+      clusters: [],
+      clusterLoading: false,
       toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
-      setDarkMode: (v) => {
-        set({ darkMode: v })
-        localStorage.setItem('darkMode', String(v))
-        document.body.classList.toggle('light', !v)
-      },
       setCommandOpen: (v) => set({ commandOpen: v }),
-      setActiveCommand: (v) => set({ activeCommand: v }),
+      setAiDockOpen: (v) => set({ aiDockOpen: v }),
+      setCurrentCluster: (id) => set({ currentClusterId: id || 'all' }),
+      setClusters: (clusters) => set({ clusters }),
+      refreshClusters: async () => {
+        set({ clusterLoading: true })
+        try {
+          const res = await listClusters()
+          const data = res.data
+          const list = Array.isArray(data)
+            ? data
+            : (data?.data ?? data?.clusters ?? [])
+          const options: ClusterOption[] = (list as ClusterItem[]).map((c) => ({
+            id: c.id,
+            name: c.name,
+            status: c.status,
+            node_count: c.node_count,
+          }))
+          set({ clusters: options, clusterLoading: false })
+        } catch (e) {
+          // 集群接口失败不阻塞页面：保持已缓存列表，仅清 loading
+          set({ clusterLoading: false })
+          void e
+        }
+      },
     }),
-    { name: 'aiops-ui' },
+    {
+      name: 'aiops-ui-v3',
+      // 仅持久化用户选择项，不持久化动态集群列表
+      partialize: (s) => ({
+        collapsed: s.collapsed,
+        commandOpen: s.commandOpen,
+        aiDockOpen: s.aiDockOpen,
+        currentClusterId: s.currentClusterId,
+      }),
+    },
   ),
 )

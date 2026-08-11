@@ -15,11 +15,31 @@ if (token) {
   api.defaults.headers.common['Authorization'] = `Bearer ${token}`
 }
 
-// Request interceptor: set Authorization header
+// 从持久化的 uiStore 读取当前集群选择（'all' = 全部集群），避免与 uiStore 循环依赖。
+function readCurrentClusterId(): string {
+  try {
+    const raw = localStorage.getItem('aiops-ui-v3')
+    if (!raw) return 'all'
+    const parsed = JSON.parse(raw)
+    const cid = parsed?.state?.currentClusterId
+    return cid || 'all'
+  } catch {
+    return 'all'
+  }
+}
+
+// Request interceptor: set Authorization header + 多集群过滤参数
 api.interceptors.request.use((config) => {
   const t = localStorage.getItem('token')
   if (t) {
     config.headers.Authorization = `Bearer ${t}`
+  }
+  const cid = readCurrentClusterId()
+  // 跳过对集群管理接口自身注入 cluster_id（避免干扰集群 CRUD）
+  const url = config.url || ''
+  const isClusterApi = url.startsWith('/clusters')
+  if (!isClusterApi && cid !== 'all') {
+    config.params = { ...(config.params || {}), cluster_id: cid }
   }
   return config
 })
@@ -96,6 +116,14 @@ export const chatWithAI = (data: Record<string, unknown>) =>
 
 // LLM Settings
 export const getLLMSettings = () => api.get('/settings/llm')
+export const saveLLMSettings = (data: Record<string, unknown>) => api.post('/settings/llm', data)
+export const testLLMConnection = (data: Record<string, unknown>) => api.post('/settings/llm/test', data)
+export const listLLMModels = (data: Record<string, unknown>) => api.post('/settings/llm/models', data)
+export const listLLMProviders = () => api.get('/settings/llm/providers')
+export const createLLMProvider = (data: Record<string, unknown>) => api.post('/settings/llm/providers', data)
+export const updateLLMProvider = (id: number, data: Record<string, unknown>) => api.put(`/settings/llm/providers/${id}`, data)
+export const deleteLLMProvider = (id: number) => api.delete(`/settings/llm/providers/${id}`)
+export const enableLLMProvider = (id: number) => api.post(`/settings/llm/providers/${id}/enable`)
 
 // Auth
 export const login = (username: string, password: string) => api.post('/auth/login', { username, password })
@@ -153,6 +181,7 @@ export const topoSyncCatalog = () => api.post('/topology/sync-catalog')
 
 // ===== FlowEditor (self-built engine) =====
 // 用户自定义工作流 CRUD 走 /ai/workflows（内置 DAG 描述走 /ai/flows，路径分离避免冲突）
+export const listWorkflows = () => api.get('/ai/workflows')
 export const listNodeTypes = () => api.get('/ai/workflows/node-types')
 export const createFlow = (data: Record<string, unknown>) => api.post('/ai/workflows', data)
 export const updateFlow = (id: string, data: Record<string, unknown>) => api.put(`/ai/workflows/${encodeURIComponent(id)}`, data)
