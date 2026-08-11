@@ -20,6 +20,26 @@ const AiChat: React.FC = () => {
   const loadSessions = async () => {
     try { const r = await api.get('/ai/sessions'); setSessions(r.data?.sessions || []) } catch {}
   }
+  // Issue4: 清除单个会话（checkpoints + session_store）
+  const clearOne = async (e: React.MouseEvent, sid: string) => {
+    e.stopPropagation()
+    if (!window.confirm('确认删除该会话？')) return
+    try { await api.delete(`/ai/session/${sid}`) } catch {}
+    setSessions((p) => p.filter((s) => s.session_id !== sid))
+    if (activeSession === sid) { setActiveSession(''); setMessages([]) }
+  }
+  // Issue4: 清除全部会话
+  const clearAll = async () => {
+    if (!window.confirm(`确认清空全部 ${sessions.length} 个历史会话？`)) return
+    try { await api.delete('/ai/sessions') } catch {}
+    setSessions([]); setActiveSession(''); setMessages([])
+  }
+  const fmtTime = (ts: any) => {
+    if (!ts) return ''
+    const n = typeof ts === 'number' ? ts * 1000 : (typeof ts === 'string' && !isNaN(Date.parse(ts)) ? Date.parse(ts) : 0)
+    if (!n) return ''
+    return new Date(n).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  }
   const loadSession = async (sid: string) => {
     try {
       const d = (await getSession(sid)).data
@@ -110,14 +130,23 @@ const AiChat: React.FC = () => {
     <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 116px)' }}>
       {/* 会话列表 */}
       <div className="card" style={{ width: 240, flexShrink: 0, marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
-        <div className="card__head"><span className="card__title">会话</span><Button size="small" type="primary" onClick={newSession}>新对话</Button></div>
+        <div className="card__head"><span className="card__title">会话</span>
+          <span>
+            <Button size="small" type="primary" onClick={newSession}>新对话</Button>
+            {sessions.length > 0 && <Button size="small" danger style={{ marginLeft: 6 }} onClick={clearAll}>清空</Button>}
+          </span>
+        </div>
         <div style={{ flex: 1, overflow: 'auto', padding: 8 }}>
           {sessions.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无会话" />}
           {sessions.map((s) => (
             <div key={s.session_id} onClick={() => loadSession(s.session_id)}
-              style={{ padding: '8px 10px', borderRadius: 8, cursor: 'pointer', marginBottom: 2, background: activeSession === s.session_id ? 'var(--primary-soft)' : 'transparent' }}>
-              <div style={{ fontSize: 12 }}>{s.preview || s.session_id?.slice(0, 20)}</div>
-              {s.intent && <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{s.intent}</div>}
+              style={{ padding: '8px 10px', borderRadius: 8, cursor: 'pointer', marginBottom: 2, background: activeSession === s.session_id ? 'var(--primary-soft)' : 'transparent', position: 'relative' }}>
+              <div style={{ fontSize: 12, paddingRight: 16 }}>{s.preview || s.session_id?.slice(0, 20)}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+                <span>{s.intent || ''}</span><span>{fmtTime(s.created_at)}</span>
+              </div>
+              <Button size="small" type="text" danger onClick={(e) => clearOne(e, s.session_id)}
+                style={{ position: 'absolute', right: 2, top: 2, padding: 0, width: 20, height: 20, fontSize: 12 }} title="删除会话">✕</Button>
             </div>
           ))}
         </div>
