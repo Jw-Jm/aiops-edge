@@ -19,7 +19,6 @@ const LogMetrics = lazy(() => import('./pages/observability/LogMetrics'))
 const AlertEvents = lazy(() => import('./pages/alerts/AlertEvents'))
 const AlertRules = lazy(() => import('./pages/alerts/AlertRules'))
 const AiChat = lazy(() => import('./pages/ai/AiChat'))
-const AiTasks = lazy(() => import('./pages/ai/AiTasks'))
 const AiTools = lazy(() => import('./pages/ai/AiTools'))
 const Capacity = lazy(() => import('./pages/capacity/Capacity'))
 const Report = lazy(() => import('./pages/report/Report'))
@@ -54,7 +53,6 @@ const NAV_GROUPS: NavGroup[] = [
     title: '智能运维',
     items: [
       { path: '/ai/chat', label: 'AI 对话', icon: 'chat' },
-      { path: '/ai/tasks', label: '任务工作台', icon: 'tasks' },
       { path: '/ai/tools', label: 'AI 工具', icon: 'nl2sql' },
     ],
   },
@@ -245,7 +243,7 @@ function AppLayout() {
               <Route path="/alerts/events" element={<AlertEvents />} />
               <Route path="/alerts/rules" element={<AlertRules />} />
               <Route path="/ai/chat" element={<AiChat />} />
-              <Route path="/ai/tasks" element={<AiTasks />} />
+
               <Route path="/ai/tools" element={<AiTools />} />
               <Route path="/capacity" element={<Capacity />} />
               <Route path="/report" element={<Report />} />

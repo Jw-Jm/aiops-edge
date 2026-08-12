@@ -78,7 +78,7 @@ const Overview: React.FC = () => {
         <div className="card" style={{ flex: 1, minWidth: 300, marginBottom: 0, padding: 20, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>待办</div>
           <div style={{ fontSize: 28, fontWeight: 700, color: pending > 0 ? 'var(--warning)' : 'var(--text-muted)' }}>{pending} 项待审批</div>
-          <Button type="link" style={{ padding: 0, alignSelf: 'flex-start' }} onClick={() => navigate('/ai/tasks')}>前往任务工作台 →</Button>
+
         </div>
       </div>
 

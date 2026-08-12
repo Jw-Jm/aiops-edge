@@ -33,7 +33,6 @@ const GROUPS: { title: string; items: Cmd[] }[] = [
     title: '智能运维',
     items: [
       { icon: 'chat', label: 'AI 对话', path: '/ai/chat', kbd: 'G C' },
-      { icon: 'tasks', label: '任务工作台', path: '/ai/tasks' },
       { icon: 'nl2sql', label: 'AI 工具', path: '/ai/tools' },
     ],
   },
