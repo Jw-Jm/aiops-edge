@@ -228,7 +228,7 @@ const AiChat: React.FC = () => {
                   {m.plan && <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--text-muted)' }}>{(m.plan.length > 220 ? m.plan.slice(0, 220) + '…' : m.plan)}</div>}
                   {/* P3-3: 无命令时不显示空命令块 */}
                   {m.script ? (
-                    <div style={{ fontFamily: 'monospace', background: 'var(--surface-3)', padding: '6px 8px', borderRadius: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>{m.script}</div>
+                    <div style={{ fontFamily: 'monospace', background: 'var(--surface-3)', padding: '6px 8px', borderRadius: 6, marginBottom: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-all', overflow: 'auto', maxHeight: 200 }}>{m.script}</div>
                   ) : (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>未生成可执行命令，可在下方输入自定义命令，或让 AI 补充命令。</div>
                   )}
