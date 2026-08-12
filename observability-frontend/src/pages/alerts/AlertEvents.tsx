@@ -48,7 +48,7 @@ const AlertEvents: React.FC = () => {
   const cols = [
     { title: '严重度', key: 'severity', width: 90, render: (_: any, r: AlertEvent) => { const s = severity(r); return <StatusBadge text={s === 'critical' || s === '严重' ? '严重' : s === 'warning' || s === '警告' ? '警告' : '信息'} tone={sevTone(s)} /> } },
     { title: '摘要', key: 'summary', render: (_: any, r: any) => <a onClick={() => setDetail(r)} style={{ color: 'var(--text)' }}>{r.rule_name || r.message || r.summary || r.labels?.alertname || '告警'}</a> },
-    { title: '服务', key: 'service', render: (_: any, r: any) => r.service || r.labels?.service || '-' },
+    { title: '告警对象', key: 'object', render: (_: any, r: any) => r.object || r.labels?.pod || r.labels?.deployment || r.labels?.service || r.service || '-' },
     { title: '次数', key: 'count', width: 80, render: (_: any, r: any) => <span style={{ color: 'var(--text-muted)' }}>{r.count ?? 1}</span> },
     { title: '触发时间', key: 'time', render: (_: any, r: any) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{r.last_timestamp || r.first_timestamp || '-'}</span> },
     { title: '操作', key: 'op', width: 110, render: (_: any, r: any) => (
