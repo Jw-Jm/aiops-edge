@@ -151,7 +151,7 @@ frontend:
 
 queryApi:
   enabled: true
-  image: "query-api:v1.1.11"
+  image: "query-api:v1.3.6"
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
