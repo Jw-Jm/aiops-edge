@@ -1280,20 +1280,18 @@ class BrainOrchestrator:
             if not script and full_resp:
                 script = _extract_script(full_resp)
             if script or plan:
-                yield {"type": "suggestion", "text": "已生成操作建议，可在任务工作台审批执行",
-                       "plan": plan,
-                       "script": script[:1000],
-                       "risk_score": suggestion.get("risk_score", 0),
-                       "risk_reason": suggestion.get("risk_reason", ""),
-                       "final_response": full_resp[:3000]}
-                # 内联审批卡事件：task_id 由调用方(main.py)捕获后回填
-                yield {"type": "approval_pending",
+                # Issue1: 每次分析只 yield 一个 suggestion 事件（内联审批卡），
+                # 不再同时 yield suggestion + approval_pending（会导致前端出现 2 个
+                # 内容一致的"处置建议·待确认"卡片）。task_id=thread_id 由前端回传确认。
+                yield {"type": "suggestion",
+                       "text": "已生成处置建议，请确认执行或自定义命令",
                        "task_id": thread_id,
                        "plan": plan,
                        "script": script[:1000],
                        "risk_score": suggestion.get("risk_score", 0),
                        "risk_reason": suggestion.get("risk_reason", "需要人工确认后执行"),
-                       "requires_approval": True}
+                       "requires_approval": True,
+                       "final_response": full_resp[:3000]}
             # Issue2: done 事件携带完整报告文本（不截断），供报告中心持久化完整巡检内容
             yield {"type": "done", "text": full_resp}
         except Exception as e:

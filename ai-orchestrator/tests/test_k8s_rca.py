@@ -92,5 +92,30 @@ def test_k8s_rca_with_llm_uses_hypothesis_engine():
         assert "deepflow-grafana" not in json.dumps(res, ensure_ascii=False)
 
 
+def test_k8s_rca_differs_by_rule_name():
+    """Issue4: 三个不同 K8s 告警（Deployment不可用/OOM/Pod重启）即使 rule_id 缺失，
+    也能按 rule_name 反推，返回不同处置方案，避免三个根因分析内容一致。"""
+    from rca import full_rca_analysis
+
+    scenarios = [
+        {"rule_id": "", "rule_name": "Pod 频繁重启", "expect": ["CrashLoopBackOff", "logs", "重启"]},
+        {"rule_id": "", "rule_name": "Pod OOMKilled", "expect": ["OOM", "内存", "Memory"]},
+        {"rule_id": "", "rule_name": "Deployment 不可用", "expect": ["rollout", "不可用", "Deployment"]},
+    ]
+    plans = []
+    for s in scenarios:
+        ev = {"service": "kubernetes", "rule_id": s["rule_id"], "rule_name": s["rule_name"],
+              "severity": "critical", "message": s["rule_name"]}
+        result = full_rca_analysis("kubernetes", anomaly_event=ev)
+        res = result.get("result", result)
+        txt = json.dumps(res, ensure_ascii=False)
+        assert any(k in txt for k in s["expect"]), \
+            f"rule_name={s['rule_name']} 处置方案未针对性: {txt[:200]}"
+        plans.append(txt)
+    # 三个方案的 root_cause/action 应互不相同（rule-specific）
+    assert plans[0] != plans[1] != plans[2], \
+        "三个 K8s 告警的根因分析内容仍一致"
+
+
 if __name__ == "__main__":
     unittest.main()

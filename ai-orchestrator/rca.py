@@ -605,6 +605,15 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
     rule_name = (anomaly_event or {}).get("rule_name", "")
     message = (anomaly_event or {}).get("message", "")
     severity = (anomaly_event or {}).get("severity", "")
+    # Issue4: rule_id 缺失时按 rule_name 反推规则，确保不同告警的处置方案不同
+    if rule_id in ("", "k8s-alert"):
+        _name_map = {
+            "Deployment 不可用": "k8s-deployment-unavailable",
+            "Pod OOMKilled": "k8s-oom-killed",
+            "Pod 频繁重启": "k8s-pod-crash",
+            "Pod Pending": "k8s-pod-pending",
+        }
+        rule_id = _name_map.get(rule_name, rule_id)
     count = (anomaly_event or {}).get("count", 0)
 
     # 告警类型 → 针对性诊断/处置方案（确定性兜底，与告警相关，绝不指向无关微服务）
