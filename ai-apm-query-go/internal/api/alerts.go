@@ -121,6 +121,7 @@ type AggAlertEvent struct {
 	RuleID         string `json:"rule_id"`
 	RuleName       string `json:"rule_name"`
 	Service        string `json:"service"`
+	Object         string `json:"object"` // 具体告警对象（Pod 名/Deployment 名等），替代"服务"归纳
 	Severity       string `json:"severity"`
 	Message        string `json:"message"`
 	Count          int    `json:"count"`
@@ -673,6 +674,10 @@ func (h *Handler) AlertEvents(w http.ResponseWriter, r *http.Request) {
 	// 转切片
 	aggList := make([]AggAlertEvent, 0, len(aggMap))
 	for _, a := range aggMap {
+		// Task2: 为 K8s 告警补充具体告警对象（Pod 名/Deployment 名），而非仅归纳为 kubernetes 服务
+		if a.Object == "" {
+			a.Object = k8sAlertObjects(a.RuleID)
+		}
 		aggList = append(aggList, *a)
 	}
 
@@ -1537,6 +1542,120 @@ func (h *Handler) evalK8sOOMCount() float64 {
 		}
 	}
 	return float64(count)
+}
+
+// k8sAlertObjects 查询 K8s 中触发告警的具体对象名（Pod 名 / Deployment 名），
+// 供告警事件展示"具体告警对象"而非仅归纳为 kubernetes 服务（Task2）。
+// 按 ruleID 分派：pod 类返回 crash/oom 的 Pod 名；deployment 类返回不可用副本的 Deployment 名。
+func k8sAlertObjects(ruleID string) string {
+	switch ruleID {
+	case "k8s-pod-crash", "k8s-pod-pending", "k8s-oom-killed":
+		return k8sCrashPods(ruleID)
+	case "k8s-deployment-unavailable":
+		return k8sUnavailableDeployments()
+	default:
+		return ""
+	}
+}
+
+// k8sCrashPods 返回处于异常状态的 Pod 名（OOMKilled / CrashLoopBackOff / Pending / 高重启）。
+func k8sCrashPods(ruleID string) string {
+	data, err := k8sAPI("/api/v1/pods")
+	if err != nil {
+		return ""
+	}
+	var r struct {
+		Items []struct {
+			Metadata struct {
+				Name      string            `json:"name"`
+				Namespace string            `json:"namespace"`
+				Labels    map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Status struct {
+				Phase             string `json:"phase"`
+				ContainerStatuses []struct {
+					RestartCount int `json:"restartCount"`
+					State        struct {
+						Waiting struct {
+							Reason string `json:"reason"`
+						} `json:"waiting"`
+					} `json:"state"`
+					LastTerminationState struct {
+						Terminated struct {
+							Reason string `json:"reason"`
+						} `json:"terminated"`
+					} `json:"lastState"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(data, &r) != nil {
+		return ""
+	}
+	names := []string{}
+	seen := map[string]bool{}
+	for _, p := range r.Items {
+		hit := false
+		switch ruleID {
+		case "k8s-oom-killed":
+			for _, cs := range p.Status.ContainerStatuses {
+				if cs.State.Waiting.Reason == "CrashLoopBackOff" || cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+					hit = true
+				}
+			}
+		case "k8s-pod-pending":
+			hit = p.Status.Phase == "Pending"
+		default: // k8s-pod-crash
+			for _, cs := range p.Status.ContainerStatuses {
+				if cs.RestartCount > 3 {
+					hit = true
+				}
+			}
+		}
+		if hit && !seen[p.Metadata.Name] {
+			seen[p.Metadata.Name] = true
+			names = append(names, p.Metadata.Name)
+		}
+	}
+	if len(names) > 5 {
+		names = names[:5] // 只展示前 5 个对象，避免超长
+	}
+	return strings.Join(names, ", ")
+}
+
+// k8sUnavailableDeployments 返回存在不可用副本的 Deployment 名。
+func k8sUnavailableDeployments() string {
+	data, err := k8sAPI("/apis/apps/v1/deployments")
+	if err != nil {
+		return ""
+	}
+	var r struct {
+		Items []struct {
+			Metadata struct {
+				Name      string            `json:"name"`
+				Namespace string            `json:"namespace"`
+				Labels    map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Status struct {
+				UnavailableReplicas *int32 `json:"unavailableReplicas"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(data, &r) != nil {
+		return ""
+	}
+	names := []string{}
+	seen := map[string]bool{}
+	for _, d := range r.Items {
+		if d.Status.UnavailableReplicas != nil && *d.Status.UnavailableReplicas > 0 && !seen[d.Metadata.Name] {
+			seen[d.Metadata.Name] = true
+			names = append(names, d.Metadata.Name)
+		}
+	}
+	if len(names) > 5 {
+		names = names[:5]
+	}
+	return strings.Join(names, ", ")
 }
 
 func checkCondition(value float64, condition string, threshold float64) bool {
