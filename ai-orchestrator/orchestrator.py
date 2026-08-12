@@ -389,7 +389,7 @@ async def node_collect(state: AgentState) -> dict:
     except: pass
     # Infra
     try:
-        result["infra_data"] = (await asyncio.to_thread(get_infrastructure)).replace("## K8s 基础设施\n", "").strip()[:2000]
+        result["infra_data"] = (await asyncio.to_thread(get_infrastructure)).replace("## K8s 基础设施\n", "").strip()[:20000]
     except: pass
     # Alerts — 告警态势（规则 + 事件聚合）
     try:
@@ -414,7 +414,7 @@ async def node_collect(state: AgentState) -> dict:
                 result["red_metrics"] = "\n".join(lines)
                 result["before_metrics"] = f"总调用={total_calls} 错误率={err_rate:.2f}% P50延迟={avg_lat:.1f}ms"
         except: pass
-        try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc))[:3000]
+        try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc))[:30000]
         except: pass
     # 日志 — 每次对话无条件采集（结合日志分析）
     try:
@@ -1379,7 +1379,7 @@ class BrainOrchestrator:
                        "risk_score": suggestion.get("risk_score", 0),
                        "risk_reason": suggestion.get("risk_reason", "需要人工确认后执行"),
                        "requires_approval": True,
-                       "final_response": full_resp[:3000]}
+                       "final_response": full_resp}
             # Issue2: done 事件携带完整报告文本（不截断），供报告中心持久化完整巡检内容
             yield {"type": "done", "text": full_resp}
         except Exception as e:
@@ -1429,9 +1429,9 @@ class BrainOrchestrator:
                     continue
                 try:
                     r = subprocess.run(line, shell=True, capture_output=True, text=True, timeout=30)
-                    outputs.append(f"$ {line}\n{r.stdout[:500]}")
+                    outputs.append(f"$ {line}\n{r.stdout[:30000]}")
                     if r.stderr:
-                        outputs.append(f"[stderr] {r.stderr[:200]}")
+                        outputs.append(f"[stderr] {r.stderr[:10000]}")
                 except subprocess.TimeoutExpired:
                     outputs.append(f"$ {line}\n(命令超时)")
                 except Exception as e:
@@ -1441,7 +1441,7 @@ class BrainOrchestrator:
                        service, script[:500],
                        "success" if not any("失败" in o or "超时" in o for o in outputs) else "error",
                        {"output_preview": "\n".join(outputs)[:200]})
-            return "\n".join(outputs)[:2000] or "(命令无输出)"
+            return "\n".join(outputs) or "(命令无输出)"
         except Exception as e:
             return f"执行异常: {str(e)[:200]}"
 
