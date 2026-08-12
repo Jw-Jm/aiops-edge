@@ -1791,7 +1791,15 @@ _NL2SQL_SYSTEM = (
     "duration_ns,is_error,response_status,peer_service), "
     "observability.service_topology(source_service,destination_service,calls,error_rate,p95_latency_ns,window), "
     "observability.log_records(service_name,log_time,level,message,digest). "
-    "只返回 SQL 本体，不要任何解释、注释或 markdown 代码块。"
+    "严格遵守以下规则："
+    "1. 用户提到时间（近24小时/近1小时/近7天等）时，必须在 WHERE 加时间过滤，例如 "
+    "trace_spans 用 `start_time >= now() - INTERVAL 24 HOUR`，log_records 用 `log_time >= now() - INTERVAL 24 HOUR`。"
+    "2. 用户要求'调用量最高/最多'时用 `ORDER BY count() DESC` 或 `ORDER BY calls DESC`；"
+    "'错误率最高'用 `ORDER BY error_rate DESC`；严格按用户指定的指标排序，不要随意改排序字段。"
+    "3. 用户要求前 N 个（如5个）时用 `LIMIT N`，且 N 等于用户数字。"
+    "4. 计算错误率用 `round(countIf(is_error=1)/count()*100, 2) AS error_rate`（trace_spans）。"
+    "5. 涉及 trace_spans 聚合时 GROUP BY 之后才可 SELECT 聚合与分组成员。"
+    "6. 只返回 SQL 本体，不要任何解释、注释或 markdown 代码块。"
 )
 
 
