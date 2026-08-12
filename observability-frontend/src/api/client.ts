@@ -315,6 +315,7 @@ export const syncClusters = () => api.post('/clusters/sync')
 export const updateCluster = (id: number, data: Record<string, unknown>) => api.put(`/clusters/${id}`, data)
 export const deleteCluster = (id: number) => api.delete(`/clusters/${id}`)
 export const listClusterNodes = (id: number) => api.get(`/clusters/${id}/nodes`)
+export const getNodeMetrics = () => api.get('/nodes/metrics')
 
 // ===== SNMP 网络设备 =====
 export interface SnmpDevice {

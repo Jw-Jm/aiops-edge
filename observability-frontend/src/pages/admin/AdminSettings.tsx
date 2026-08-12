@@ -19,6 +19,7 @@ import {
   getClusterNamespaces,
   getClusterEvents,
   listAuditLogs,
+  getNodeMetrics,
   type ClusterItem,
   type ClusterNodeItem,
 } from '../../api/client'
@@ -46,6 +47,7 @@ function ClusterManager() {
   const [detail, setDetail] = useState<ClusterItem | null>(null)
   const [detailTab, setDetailTab] = useState<'nodes' | 'namespaces' | 'events'>('nodes')
   const [nodes, setNodes] = useState<ClusterNodeItem[]>([])
+  const [nodeMetrics, setNodeMetrics] = useState<Record<string, any>>({})
   const [namespaces, setNamespaces] = useState<string[]>([])
   const [events, setEvents] = useState<unknown[]>([])
 
@@ -63,6 +65,17 @@ function ClusterManager() {
   }
 
   useEffect(() => { load() }, [])
+
+  // viewDetail 加载节点时并行获取实时用量
+  useEffect(() => {
+    if (!detail) return
+    getNodeMetrics().then((r) => {
+      const m: Record<string, any> = {}
+      ;(r.data?.nodes || []).forEach((n: any) => { m[n.node] = n })
+      setNodeMetrics(m)
+    }).catch(() => {})
+  }, [detail])
+
 
   const onSubmit = async () => {
     const v = await form.validateFields()
@@ -183,8 +196,8 @@ function ClusterManager() {
                   { title: '状态', dataIndex: 'status', width: 100, render: (s) => <StatusBadge text={s} tone={clusterTone(s)} /> },
                   { title: 'IP', dataIndex: 'ip', width: 130 },
                   { title: 'OS', dataIndex: 'os', ellipsis: true },
-                  { title: 'CPU', dataIndex: 'cpu', width: 90 },
-                  { title: '内存', dataIndex: 'memory', width: 90 },
+                  { title: 'CPU 用量', width: 120, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.cpu_usage_pct}% (${m.cpu_usage}/${m.cpu_capacity})` : (r.cpu || '-') } },
+                  { title: '内存用量', width: 130, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.mem_usage_pct}% (${m.mem_usage}/${m.mem_capacity})` : (r.memory || '-') } },
                 ]} />
               )},
               { key: 'namespaces', label: `命名空间 (${namespaces.length})`, children: (
