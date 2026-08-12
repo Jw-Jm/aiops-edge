@@ -73,24 +73,21 @@ def get_service_list(tenant_id: str = "default") -> str:
 
 
 def execute_shell(command: str, timeout: int = 30) -> str:
-    import shlex
     from shell_policy import ShellPolicy
     policy = ShellPolicy()
     reject = policy.check(command)
     if reject:
         return f"命令被安全策略拒绝: {reject}"
     try:
-        # 安全: 使用 shlex.split() + shell=False 防止命令注入
-        args = shlex.split(command)
-        result = subprocess.run(args, shell=False, capture_output=True, text=True, timeout=timeout)
+        # 已按产品要求放宽：命令支持管道/重定向（shell=True），执行前经人工审批，
+        # 因此按 shell 语义执行（`kubectl ... | grep` 等管道生效）。
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
         output = result.stdout[:2000]
         if result.stderr:
             output += "\n[stderr]: " + result.stderr[:500]
         return output or "(no output)"
     except subprocess.TimeoutExpired:
         return f"命令超时 (>{timeout}s)"
-    except ValueError as e:
-        return f"命令解析失败: {str(e)}"
     except Exception as e:
         return f"执行失败: {str(e)}"
 

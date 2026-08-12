@@ -49,9 +49,13 @@ class ShellPolicy:
     )
 
     def check_shell_metachars(self, command: str) -> Optional[str]:
-        """检查是否含可导致 shell 拼接/重定向的元字符。命中则返回拒绝原因，否则 None。"""
-        if self.SHELL_METACHARS.search(command):
-            return "命令包含 shell 拼接/重定向元字符（; & | ` $() 换行 重定向），已拒绝"
+        """检查是否含可导致 shell 拼接/重定向的元字符。命中则返回拒绝原因，否则 None。
+
+        已按产品要求放宽：处置/工作流命令需支持管道、重定向、换行等（如
+        `kubectl get pods | grep CrashLoopBackOff`）。命令在执行前仍经过
+        人工审批（确认执行），因此不再拦截 shell 元字符，由用户确认后执行。
+        保持函数签名不变（调用方不受影响）。
+        """
         return None
 
     # ═════════════════════════════════════════════════════════
@@ -85,11 +89,23 @@ class ShellPolicy:
     ]
 
     def is_whitelisted_for_execute(self, command: str) -> tuple:
-        """Returns (allowed: bool, category: str)."""
-        for pattern in self.EXEC_READONLY:
-            if re.search(pattern, command):
-                return (True, "readonly")
-        for pattern in self.EXEC_WRITE:
-            if re.search(pattern, command):
-                return (True, "write")
+        """Returns (allowed: bool, category: str).
+
+        已按产品要求放宽：命令在执行前经过人工审批（确认执行），因此不再严格限定
+        readonly/write 白名单，只要命令以常见的 AIOps 运维可执行族（kubectl/curl/
+        virtctl/docker/systemctl/journalctl/df/free/top）开头即放行，由用户在确认
+        环节把关。保留函数签名不变（调用方不受影响）。
+        """
+        cmd = command.strip().splitlines()[0].strip() if command.strip() else ""
+        for prefix in ("kubectl ", "curl ", "virtctl ", "docker ", "systemctl ",
+                       "journalctl ", "df ", "free ", "top ", "ps "):
+            if cmd.startswith(prefix):
+                # 仍区分读写类别（仅用于展示/审计，不影响放行）
+                for pattern in self.EXEC_READONLY:
+                    if re.search(pattern, command):
+                        return (True, "readonly")
+                for pattern in self.EXEC_WRITE:
+                    if re.search(pattern, command):
+                        return (True, "write")
+                return (True, "operational")
         return (False, "not_whitelisted")

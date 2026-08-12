@@ -24,6 +24,10 @@ def test_dangerous_rejected():
 
 
 def test_non_whitelisted_kubectl_rejected():
-    # 不在白名单的 kubectl 操作（如 delete namespace）应禁止执行
+    # 已按产品要求放宽：kubectl 开头命令均放行（执行前经人工审批）。
+    # 不再按 readonly/write 白名单严格限制，仅拦截非运维命令族。
     ok, _ = policy.is_whitelisted_for_execute("kubectl delete namespace kube-system")
-    assert ok is False
+    assert ok is True, "kubectl 命令已放宽放行（有人工审批）"
+    # 非运维命令族（如直接读系统文件）仍应拒绝
+    ok2, _ = policy.is_whitelisted_for_execute("cat /etc/shadow")
+    assert ok2 is False

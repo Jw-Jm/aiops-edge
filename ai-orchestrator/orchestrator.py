@@ -1407,16 +1407,16 @@ class BrainOrchestrator:
         if not allowed:
             return "命令不在可执行白名单内，已拒绝执行（可手动在控制台执行）"
         try:
-            import subprocess, shlex
-            # 逐行执行安全，避免注入
+            import subprocess
+            # 已按产品要求放宽：命令支持管道/重定向/换行（shell=True），
+            # 执行前有人工审批确认，因此按 shell 语义执行（`kubectl ... | grep` 等管道生效）。
             outputs = []
             for line in script.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                args = shlex.split(line)
                 try:
-                    r = subprocess.run(args, shell=False, capture_output=True, text=True, timeout=30)
+                    r = subprocess.run(line, shell=True, capture_output=True, text=True, timeout=30)
                     outputs.append(f"$ {line}\n{r.stdout[:500]}")
                     if r.stderr:
                         outputs.append(f"[stderr] {r.stderr[:200]}")
