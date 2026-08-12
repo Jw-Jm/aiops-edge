@@ -1,12 +1,14 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -229,5 +231,165 @@ func TestListServicesEmptyResult(t *testing.T) {
 	}
 	if resp["total"].(float64) != 0 {
 		t.Errorf("expected total=0, got %v", resp["total"])
+	}
+}
+
+// ===== loadServiceMetadata sqlmock 单测（MySQL 富化路径，不依赖真实 DB）=====
+
+func TestLoadServiceMetadata_SQLConstructionAndScan(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	// 期望：IN 子句有 2 个占位符，参数为 frontend/backend
+	rows := sqlmock.NewRows([]string{"service_name", "owner", "team", "tier", "description"}).
+		AddRow("frontend", "team-a", "sre", "critical", "web frontend")
+	mock.ExpectQuery("SELECT service_name, owner, team, tier, description FROM service_metadata WHERE service_name IN").
+		WithArgs("frontend", "backend").
+		WillReturnRows(rows)
+
+	meta := loadServiceMetadata([]string{"frontend", "backend"}, db)
+
+	if len(meta) != 1 {
+		t.Fatalf("expected 1 enriched service, got %d", len(meta))
+	}
+	frontend, ok := meta["frontend"]
+	if !ok {
+		t.Fatalf("expected frontend in meta")
+	}
+	if frontend.Owner != "team-a" || frontend.Team != "sre" ||
+		frontend.Tier != "critical" || frontend.Description != "web frontend" {
+		t.Errorf("frontend metadata mismatch: %+v", frontend)
+	}
+	// backend 无对应行 → 不在结果中（LEFT JOIN 语义）
+	if _, exists := meta["backend"]; exists {
+		t.Errorf("backend should not be present (no row)")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+func TestLoadServiceMetadata_NilDBReturnsEmpty(t *testing.T) {
+	meta := loadServiceMetadata([]string{"frontend"}, nil)
+	if len(meta) != 0 {
+		t.Fatalf("expected empty meta for nil db, got %d", len(meta))
+	}
+}
+
+func TestLoadServiceMetadata_EmptyServicesReturnsEmpty(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+	meta := loadServiceMetadata([]string{}, db)
+	if len(meta) != 0 {
+		t.Fatalf("expected empty meta for empty services, got %d", len(meta))
+	}
+}
+
+func TestLoadServiceMetadata_QueryErrorReturnsEmpty(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT service_name.*FROM service_metadata").
+		WillReturnError(sql.ErrConnDone)
+
+	meta := loadServiceMetadata([]string{"frontend"}, db)
+	if len(meta) != 0 {
+		t.Fatalf("expected empty meta on query error, got %d", len(meta))
+	}
+}
+
+// ===== P0-1: VictoriaLogs 数据源归一化（source=victorialogs 不应返回 ClickHouse 数据）=====
+
+func TestNormalizeVictoriaLogsRows(t *testing.T) {
+	body := []byte(`{"_msg":"2026-08-12T00:49:23Z","_time":"2026-08-12T00:49:31Z","namespace":"deepflow","pod":"deepflow-clickhouse-0","service":"deepflow/deepflow-clickhouse-0"}
+{"_msg":"hello world","_time":"2026-08-12T00:50:00Z","namespace":"observability","pod":"query-api-abc","service":"observability/query-api-abc"}
+not-json-line`)
+	rows := normalizeVictoriaLogsRows(body)
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 normalized rows, got %d", len(rows))
+	}
+	// 第 1 行：service_name 去掉 namespace 前缀
+	r0 := rows[0]
+	if r0["service_name"] != "deepflow-clickhouse-0" {
+		t.Errorf("expected service_name=deepflow-clickhouse-0 (namespace stripped), got %v", r0["service_name"])
+	}
+	if r0["timestamp"] != "2026-08-12T00:49:31Z" {
+		t.Errorf("expected timestamp from _time, got %v", r0["timestamp"])
+	}
+	if r0["body"] != "2026-08-12T00:49:23Z" {
+		t.Errorf("expected body from _msg, got %v", r0["body"])
+	}
+	if r0["source"] != "victorialogs" {
+		t.Errorf("expected source=victorialogs, got %v", r0["source"])
+	}
+	if r0["severity"] != "info" {
+		t.Errorf("expected severity=info (pod events have no level), got %v", r0["severity"])
+	}
+	// 第 2 行：body 取真实消息
+	if rows[1]["body"] != "hello world" {
+		t.Errorf("expected body=hello world, got %v", rows[1]["body"])
+	}
+}
+
+func TestBuildVictoriaLogsSQL(t *testing.T) {
+	// 仅时间过滤
+	q1 := buildVictoriaLogsSQL("", "", 60)
+	if !strings.Contains(q1, "_time:60m") {
+		t.Errorf("expected _time:60m in query, got %q", q1)
+	}
+	// 服务过滤 + 关键词
+	q2 := buildVictoriaLogsSQL("query-api", "error", 1440)
+	if !strings.Contains(q2, `service:"query-api"*`) {
+		t.Errorf("expected service fuzzy match in query, got %q", q2)
+	}
+	if !strings.Contains(q2, `"error"`) {
+		t.Errorf("expected keyword in query, got %q", q2)
+	}
+}
+
+// ===== P1-1: DashboardStats 边数在 service_topology 为空时回退到 MySQL topology_relations =====
+
+func TestDashboardStatsEdgesFallsBackToMySQL(t *testing.T) {
+	// Mock ClickHouse：service_topology count=0（无边数据）
+	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("query")
+		switch {
+		case strings.Contains(q, "FROM observability.service_topology"):
+			// 返回 count=0
+			_, _ = w.Write([]byte(`{"count()":"0"}` + "\n"))
+		case strings.Contains(q, "FROM observability.trace_spans"):
+			// 服务调用 / P95 聚合：给一条空结果即可
+			_, _ = w.Write([]byte(""))
+		default:
+			_, _ = w.Write([]byte(""))
+		}
+	}))
+	defer chSrv.Close()
+
+	h := &Handler{client: &http.Client{}}
+	host, port := splitHostPort(chSrv.URL)
+	h.chHost = host
+	h.chPort = port
+
+	req := httptest.NewRequest("GET", "/api/v1/dashboard/stats", nil)
+	rr := httptest.NewRecorder()
+	h.DashboardStats(rr, req)
+
+	// MySQL 不可达（store.GetDB()==nil）时 loadTopologyEdgesFromMySQL 返回 nil，
+	// 因此 edges 应为 0（不 panic），且不因 CH 空返回导致错误。
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

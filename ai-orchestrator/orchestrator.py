@@ -295,7 +295,7 @@ async def node_collect(state: AgentState) -> dict:
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
-        data = _parse(get_service_list())
+        data = _parse(await asyncio.to_thread(get_service_list))
         if isinstance(data, list):
             lines = []
             for s in data:
@@ -313,7 +313,7 @@ async def node_collect(state: AgentState) -> dict:
     except: pass
     # Infra
     try:
-        result["infra_data"] = get_infrastructure().replace("## K8s 基础设施\n", "").strip()[:2000]
+        result["infra_data"] = (await asyncio.to_thread(get_infrastructure)).replace("## K8s 基础设施\n", "").strip()[:2000]
     except: pass
     # Alerts — 告警态势（规则 + 事件聚合）
     try:
@@ -324,7 +324,7 @@ async def node_collect(state: AgentState) -> dict:
     svc = state.get("service", "")
     if svc:
         try:
-            raw = query_metrics(svc)
+            raw = await asyncio.to_thread(query_metrics, svc)
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -338,7 +338,7 @@ async def node_collect(state: AgentState) -> dict:
                 result["red_metrics"] = "\n".join(lines)
                 result["before_metrics"] = f"总调用={total_calls} 错误率={err_rate:.2f}% P50延迟={avg_lat:.1f}ms"
         except: pass
-        try: result["trace_data"] = query_traces(svc)[:3000]
+        try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc))[:3000]
         except: pass
     # K8sGPT — 快速失败不阻塞, timeout 5s
     # 安全：明文 key 不写入子进程 argv（ps 可见），改用临时环境变量传递。
@@ -350,10 +350,16 @@ async def node_collect(state: AgentState) -> dict:
                 backend = cfg.get("backend", "openai")
                 env = dict(os.environ)
                 env["OPENAI_API_KEY"] = api_key
-                subprocess.run(["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o")],
-                               capture_output=True, text=True, timeout=5, env=env)
-                r = subprocess.run(["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
-                                   capture_output=True, text=True, timeout=10, env=env)
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o")],
+                    capture_output=True, text=True, timeout=5, env=env,
+                )
+                r = await asyncio.to_thread(
+                    subprocess.run,
+                    ["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
+                    capture_output=True, text=True, timeout=10, env=env,
+                )
                 if r.returncode == 0 and r.stdout.strip() and len(r.stdout.strip()) > 50:
                     result["k8sgpt_raw"] = r.stdout[:2000]
         except: pass
@@ -445,7 +451,7 @@ async def node_rca(state: AgentState) -> dict:
     """
     svc = state.get("service", "")
     if not svc:
-        svc = _top_anomaly_service()
+        svc = await asyncio.to_thread(_top_anomaly_service)
         if not svc:
             return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
     try:
@@ -733,7 +739,7 @@ async def node_verify(state: AgentState) -> dict:
         # 二次取样 (间隔 30s 确认非瞬时波动)
         samples = []
         for _ in range(2):
-            raw = query_metrics(svc)
+            raw = await asyncio.to_thread(query_metrics, svc)
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -759,12 +765,12 @@ async def node_verify(state: AgentState) -> dict:
         # 副作用检测: 关联服务
         side_effect = False
         try:
-            topo_raw = query_topology()
+            topo_raw = await asyncio.to_thread(query_topology)
             topo_data = _parse(topo_raw)
             edges = topo_data.get("edges", []) if topo_data else []
             downstreams = [e.get("target_service", e.get("target", "")) for e in edges if e.get("source_service", e.get("source", "")) == svc]
             for ds in downstreams[:3]:
-                ds_data = _parse(query_metrics(ds))
+                ds_data = _parse(await asyncio.to_thread(query_metrics, ds))
                 if ds_data and isinstance(ds_data.get("data"), list):
                     ds_lat = sum(float(i.get("avg_ms", 0)) for i in ds_data["data"]) / max(len(ds_data["data"]), 1)
                     if ds_lat > before_lat * 1.5 and before_lat > 0:
@@ -993,15 +999,24 @@ class BrainOrchestrator:
         if db_path is None:
             db_path = _os.path.join(_os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops"), "ai-sessions.db")
         self.llm_config = None
+        self._db_path = db_path
         import sqlite3
         _os.makedirs(_os.path.dirname(db_path), exist_ok=True)
+        # 同步 sqlite3 连接：仅供 main.py 直接 SQL 查询/删除 checkpoints 表使用
+        # （list_sessions / delete_session 端点）。AsyncSqliteSaver 落盘到同一文件，
+        # 该连接可读到 saver 写入的行（SQLite WAL 模式支持并发读）。
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         # 节点已改为 async def → graph.ainvoke/astream 要求 checkpointer 支持 async 方法。
         # SqliteSaver (sync) 会抛 "does not support async methods"；
-        # AsyncSqliteSaver 需要 running event loop（模块加载时不可用）。
-        # MemorySaver 同时支持 sync/async，不阻塞 ainvoke；代价：checkpoint 不落盘
-        # （进程重启后会话状态丢失，dev 环境可接受；生产应改用 PostgresSaver/RedisSaver）。
+        # AsyncSqliteSaver 需要 running event loop（模块加载时不可用，因 __init__ 在
+        # `brain = BrainOrchestrator()` 模块加载期执行，无 running loop）。
+        # 方案: __init__ 用 MemorySaver 占位（同时支持 sync/async，不阻塞 ainvoke），
+        # 首次 ainvoke/astream 前在 async context 中调 _ensure_async_checkpointer()
+        # 延迟切换为 AsyncSqliteSaver，使 checkpoint 落盘到 SQLite 文件。
         self.checkpointer = MemorySaver()
+        self._async_saver_initialized = False
+        self._async_saver_loop = None  # saver 绑定的 event loop（用于跨 loop 检测）
+        self._async_conn = None        # aiosqlite 连接（saver 持有，此处保引用防 GC）
         # 双图: chat_graph 用于交互式 Chat (精简快速)，graph 用于完整运维任务
         self.graph = build_graph(checkpointer=self.checkpointer, mode="full")
         self.chat_graph = build_graph(checkpointer=self.checkpointer, mode="chat")
@@ -1009,6 +1024,59 @@ class BrainOrchestrator:
         # 初始化 Skill Registry
         from skill_registry import _init_defaults
         _init_defaults()
+
+    async def _ensure_async_checkpointer(self):
+        """在 async context 中延迟初始化 AsyncSqliteSaver，替换占位 MemorySaver。
+
+        为什么需要延迟初始化:
+        - AsyncSqliteSaver.__init__ 调 `asyncio.get_running_loop()`，要求当前线程已有
+          running event loop。但 BrainOrchestrator 在模块加载期（`brain = BrainOrchestrator()`）
+          实例化，此时无 running loop → 不能在 __init__ 中直接创建。
+        - 故 __init__ 用 MemorySaver 占位，首次 ainvoke/astream 前在 async context 中
+          调本方法切换为 AsyncSqliteSaver，使 checkpoint 落盘。
+
+        跨 event loop 兼容:
+        - main.py 的 sync handler 用 `asyncio.run()` 每次新建临时 event loop；
+          AsyncSqliteSaver 把 aiosqlite 的回调绑定到创建时的 loop（self.loop）。
+          若第一次 asyncio.run() 结束（loop 关闭），第二次 asyncio.run() 复用旧 saver，
+          aiosqlite 会向已关闭的 loop 提交协程 → RuntimeError。
+        - 解法: 检测当前 running loop 与 saver 绑定的 loop 是否一致且仍存活；
+          不一致时关闭旧 aiosqlite 连接并重建 saver（同一 db 文件，checkpoint 不丢）。
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 本方法是 async def，正常情况下一定有 running loop；防御性处理
+            current_loop = None
+
+        # 已初始化且绑定到当前仍存活的 loop → 复用，避免重复创建
+        if (self._async_saver_initialized
+                and self._async_saver_loop is not None
+                and self._async_saver_loop is current_loop
+                and not self._async_saver_loop.is_closed()):
+            return
+
+        # loop 变了（或首次初始化）→ 关闭旧 aiosqlite 连接，重建 saver
+        if self._async_conn is not None:
+            try:
+                await self._async_conn.close()
+            except Exception:
+                pass
+            self._async_conn = None
+            self._async_saver_initialized = False
+
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        import aiosqlite
+        conn = await aiosqlite.connect(self._db_path)
+        self._async_conn = conn
+        self.checkpointer = AsyncSqliteSaver(conn)
+        await self.checkpointer.setup()  # 建表（首次，幂等）
+        # 重建图，绑定新 checkpointer（旧图持有的是 MemorySaver 引用）
+        self.graph = build_graph(checkpointer=self.checkpointer, mode="full")
+        self.chat_graph = build_graph(checkpointer=self.checkpointer, mode="chat")
+        self.dual_graph = build_graph(checkpointer=self.checkpointer, mode="dual")
+        self._async_saver_loop = current_loop
+        self._async_saver_initialized = True
 
     def set_llm_config(self, config: dict | None):
         if config is None:
@@ -1038,7 +1106,8 @@ class BrainOrchestrator:
         return await self._run_dag(intent, service, message, thread_id)
 
     async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
-        if not service: service = self._detect_service(message)
+        await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
+        if not service: service = await asyncio.to_thread(self._detect_service, message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "llm_config": self.llm_config,
@@ -1065,7 +1134,8 @@ class BrainOrchestrator:
         节点为 async def，必须用 graph.astream (不能用 sync graph.stream, 会在
         已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
         """
-        if not service: service = self._detect_service(message)
+        await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
+        if not service: service = await asyncio.to_thread(self._detect_service, message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "llm_config": self.llm_config,
@@ -1179,6 +1249,7 @@ class BrainOrchestrator:
 
     async def approve_and_resume(self, thread_id: str, approved: bool = True):
         """Resume interrupted graph with approval decision. (async — 调用方需 await)"""
+        await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
         config = {"configurable": {"thread_id": thread_id}}
         resume_value = {"approved": approved}
         # 节点为 async def，必须用 ainvoke 恢复中断的图

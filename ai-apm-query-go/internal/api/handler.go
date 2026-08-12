@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -361,7 +362,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. 从 MySQL 拿富化元数据（LEFT JOIN 语义：缺失则用默认值）
-	meta := h.loadServiceMetadata(services)
+	meta := h.loadServiceMetadataForHandler(services)
 
 	// 3. 组装响应：每个服务一行，富化字段缺失时走默认值
 	result := make([]map[string]interface{}, 0, len(services))
@@ -407,14 +408,13 @@ type serviceMeta struct {
 }
 
 // loadServiceMetadata 批量加载服务富化元数据。
-// MySQL 不可达（store.GetDB() 返回 nil）时返回空 map，调用方降级为默认值。
+// db 为 nil 时返回空 map，调用方降级为默认值。
 // 这实现了 LEFT JOIN 语义：CH 中存在的服务即使 MySQL 无对应行也保留，富化字段走默认。
-func (h *Handler) loadServiceMetadata(services []string) map[string]*serviceMeta {
+func loadServiceMetadata(services []string, db *sql.DB) map[string]*serviceMeta {
 	result := make(map[string]*serviceMeta)
 	if len(services) == 0 {
 		return result
 	}
-	db := store.GetDB()
 	if db == nil {
 		return result
 	}
@@ -444,6 +444,12 @@ func (h *Handler) loadServiceMetadata(services []string) map[string]*serviceMeta
 		result[name] = &serviceMeta{Owner: owner, Team: team, Tier: tier, Description: desc}
 	}
 	return result
+}
+
+// loadServiceMetadataForHandler 是 Handler 对包级 loadServiceMetadata 的封装，
+// 从全局 store.GetDB() 取连接（MySQL 不可达时返回空 map，调用方降级）。
+func (h *Handler) loadServiceMetadataForHandler(services []string) map[string]*serviceMeta {
+	return loadServiceMetadata(services, store.GetDB())
 }
 
 // ServiceDetail handles GET /api/v1/services/{name}
@@ -795,14 +801,20 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := biz.AggregateStats(items)
 
-	// 拓扑边数
+	// 拓扑边数（与 GlobalTopology 一致的降级链：service_topology → MySQL topology_relations）
+	edgeCount := int64(0)
 	edgeSQL := fmt.Sprintf("SELECT count() FROM observability.service_topology WHERE tenant_id=%s%s AND date >= today()-1", chQuote(tid), clusterClause)
 	if eb, err := h.queryClickHouse(ctx, edgeSQL); err == nil {
 		if er, perr := parseRows(eb); perr == nil && len(er) > 0 {
 			if n, ok := toInt64(er[0]["count()"]); ok {
-				stats.Edges = n
+				edgeCount = n
 			}
 		}
+	}
+	if edgeCount > 0 {
+		stats.Edges = edgeCount
+	} else if mysqlEdges := loadTopologyEdgesFromMySQL(); len(mysqlEdges) > 0 {
+		stats.Edges = int64(len(mysqlEdges))
 	}
 
 	// P95 延迟（给聚合列加别名，避免 ClickHouse 将 / 规范化为 divide() 导致 key 匹配失败）
@@ -1305,10 +1317,13 @@ func round1(v float64) float64 {
 }
 
 // QueryLogs handles GET /api/v1/logs/query?service={name}&query={text}&minutes=15
+// source 参数：clickhouse（默认）或 victorialogs。切到 victorialogs 时路由到 VictoriaLogs 并归一化字段，
+// 避免 UI 显示 VictoriaLogs 标签但实际返回 ClickHouse 数据（P0-1）。
 func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	service := r.URL.Query().Get("service")
 	queryText := r.URL.Query().Get("query")
+	source := r.URL.Query().Get("source")
 	minutes := 1440 // 默认近 24 小时
 
 	if m := r.URL.Query().Get("minutes"); m != "" {
@@ -1320,6 +1335,23 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 		if v, err := strconv.Atoi(h); err == nil && v > 0 {
 			minutes = v * 60
 		}
+	}
+
+	// P0-1 修复：source=victorialogs 时路由到 VictoriaLogs（K8s pod 日志），归一化后返回
+	if strings.EqualFold(source, "victorialogs") {
+		rows, err := h.queryVictoriaLogs(service, queryText, minutes)
+		if err != nil {
+			log.Printf("QueryLogs(victorialogs) error: %v", err)
+			respondError(w, http.StatusBadGateway, "VictoriaLogs unavailable: "+err.Error())
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"data":    rows,
+			"count":   len(rows),
+			"minutes": minutes,
+			"source":  "victorialogs",
+		})
+		return
 	}
 
 	// Build WHERE clause dynamically
@@ -1463,6 +1495,86 @@ func (h *Handler) LogAggregate(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"trend": trend, "levels": levels, "services": services, "minutes": minutes, "interval": interval,
 	})
+}
+
+// queryVictoriaLogs 查询 VictoriaLogs（K8s pod 日志）并归一化为与 ClickHouse 行同构的结构。
+// 返回 []map[string]interface{}{timestamp, service_name, severity, body, trace_id, source}，
+// 前端统一按 body/service_name/severity/timestamp 字段展示（P0-1 修复）。
+func (h *Handler) queryVictoriaLogs(service, queryText string, minutes int) ([]map[string]interface{}, error) {
+	logsQL := buildVictoriaLogsSQL(service, queryText, minutes)
+	vlURL := fmt.Sprintf("http://victoria-logs.observability.svc.cluster.local:9428/select/logsql/query?query=%s&limit=100",
+		url.QueryEscape(logsQL))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", vlURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeVictoriaLogsRows(body), nil
+}
+
+// buildVictoriaLogsSQL 构造 VictoriaLogs LogsQL 查询串（时间过滤 + 可选服务/关键词）。
+func buildVictoriaLogsSQL(service, queryText string, minutes int) string {
+	parts := []string{fmt.Sprintf("_time:%dm", minutes)}
+	if service != "" {
+		// service 字段形如 "observability/query-api-xxx"，用 LogsQL 模糊匹配 service:"xxx"*
+		parts = append(parts, fmt.Sprintf("service:%q*", service))
+	}
+	if queryText != "" {
+		parts = append(parts, fmt.Sprintf("%q", queryText))
+	}
+	return strings.Join(parts, " ")
+}
+
+// normalizeVictoriaLogsRows 将 VictoriaLogs JSON Lines 归一化为前端期望的字段结构。
+// 字段映射：timestamp ← _time；service_name ← service（去 namespace 前缀）或 pod；body ← _msg。
+func normalizeVictoriaLogsRows(body []byte) []map[string]interface{} {
+	rows := []map[string]interface{}{}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			continue
+		}
+		ts, _ := obj["_time"].(string)
+		svcName := ""
+		if s, ok := obj["service"].(string); ok {
+			svcName = s
+			if idx := strings.Index(svcName, "/"); idx >= 0 {
+				svcName = svcName[idx+1:]
+			}
+		}
+		if svcName == "" {
+			if p, ok := obj["pod"].(string); ok {
+				svcName = p
+			} else {
+				svcName = "-"
+			}
+		}
+		msg, _ := obj["_msg"].(string)
+		rows = append(rows, map[string]interface{}{
+			"timestamp":    ts,
+			"service_name": svcName,
+			"severity":     "info", // pod 生命周期事件无级别，统一 info
+			"body":         msg,
+			"trace_id":     "",
+			"source":       "victorialogs",
+		})
+	}
+	return rows
 }
 
 // ProxyVictoriaLogs handles GET/POST /api/v1/logs/victorialogs

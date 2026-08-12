@@ -7,6 +7,7 @@ import re
 import uuid
 import asyncio
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
@@ -28,28 +29,65 @@ os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
 if os.environ.get("LLM_MOCK", "").lower() in ("true", "1", "yes"):
     print("[WARN] LLM_MOCK=true：AI 诊断/RCA/NL2SQL 将返回模拟内容，仅适用于本地演示；生产必须设 LLM_MOCK=false", flush=True)
 
-app = FastAPI(title="AIOps Orchestrator", version="5.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-shell_policy = ShellPolicy()
-app.include_router(flow_router)
-
 # ═══════════════════════════════════════════════════════════════
 #  APScheduler — 定时异常扫描（每 5 分钟，只检测+持久化，不触发 LLM）
 # ═══════════════════════════════════════════════════════════════
 scheduler = AsyncIOScheduler()
 
 
-@app.on_event("startup")
-async def start_scheduler():
-    """启动定时异常扫描（每 5 分钟）"""
-    scheduler.add_job(_scheduled_anomaly_scan, 'interval', minutes=5,
-                      id='anomaly_scan', replace_existing=True)
-    scheduler.start()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """统一生命周期：startup + shutdown（替代废弃的 @app.on_event）。
+
+    管理：APScheduler 定时扫描、SNMP 采集/MySQL 迁移/知识库加载、AsyncSqliteSaver 连接。
+    各启动项均可降级，失败不阻塞服务启动。
+    """
+    # === startup ===
+    # 1. APScheduler 定时异常扫描
+    try:
+        scheduler.add_job(_scheduled_anomaly_scan, 'interval', minutes=5,
+                          id='anomaly_scan', replace_existing=True)
+        scheduler.start()
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] scheduler error: {e}", flush=True)
+    # 2. SNMP 采集 + MySQL 迁移 + 知识库自动加载（均可降级，失败不阻塞）
+    try:
+        from db import migrate
+        migrate()
+    except Exception:
+        pass
+    try:
+        asyncio.create_task(_snmp_collector.run_forever())
+    except Exception:
+        pass
+    try:
+        import threading
+        threading.Thread(target=_seed_knowledge_bg, daemon=True).start()
+    except Exception:
+        pass
+
+    yield
+
+    # === shutdown ===
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception:  # noqa: BLE001
+        pass
+    # AsyncSqliteSaver 连接关闭（如已初始化，避免进程退出资源泄漏）
+    try:
+        from orchestrator import brain
+        if getattr(brain, "_async_conn", None) is not None:
+            await brain._async_conn.close()
+            brain._async_conn = None
+            brain._async_saver_initialized = False
+    except Exception:  # noqa: BLE001
+        pass
 
 
-@app.on_event("shutdown")
-async def stop_scheduler():
-    scheduler.shutdown(wait=False)
+app = FastAPI(title="AIOps Orchestrator", version="5.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+shell_policy = ShellPolicy()
+app.include_router(flow_router)
 
 
 async def _scheduled_anomaly_scan():
@@ -63,7 +101,7 @@ async def _scheduled_anomaly_scan():
         from detector import detector
         from tools import get_service_list
         import json as _json
-        raw = get_service_list()
+        raw = await asyncio.to_thread(get_service_list)
         try:
             svc_data = _json.loads(raw)
         except Exception:
@@ -78,11 +116,8 @@ async def _scheduled_anomaly_scan():
                 "request_rate": float(svc.get("traces", 0) or 0),
             }
             for metric, val in metrics_vals.items():
-                results = detector.detect(name, metric, val)
-                if results:
-                    # detect() 已在内部 vote + _persist_anomaly；此处显式 vote
-                    # 仅保留语义占位（纯函数，无副作用，不会双写 MySQL）
-                    detector.vote(results)
+                # detect() 内部已完成 vote + _persist_anomaly，无需重复调用 vote
+                detector.detect(name, metric, val)
     except Exception as e:
         print(f"[scheduler] anomaly scan error: {e}")
 
@@ -1228,7 +1263,7 @@ async def scan_anomalies(request: Request):
     import json as _json
 
     anomalies = []
-    raw = get_service_list()
+    raw = await asyncio.to_thread(get_service_list)
     try:
         svc_data = _json.loads(raw)
     except Exception:
@@ -1278,6 +1313,7 @@ async def scan_anomalies(request: Request):
 @app.get("/api/v1/ops/anomalies")
 async def list_anomalies(service: str = "", limit: int = 50):
     """查询历史异常事件（从 MySQL anomaly_events 表）"""
+    limit = max(1, min(limit, 500))  # 上界 500，防止超大分页查询
     try:
         from db import db_available, get_conn
         import pymysql.cursors
@@ -1847,26 +1883,6 @@ async def metrics():
 # ═══════════════════════════════════════════════════════════════
 
 _snmp_collector = SNMPCollector()
-
-
-@app.on_event("startup")
-async def _start_snmp_collector():
-    """启动初始化：MySQL 迁移 + 后台 SNMP 采集 + 知识库自动加载（均可降级，失败不阻塞）。"""
-    try:
-        from db import migrate
-        migrate()
-    except Exception:
-        pass
-    try:
-        asyncio.create_task(_snmp_collector.run_forever())
-    except Exception:
-        pass
-    # 启动时自动加载/增量导入知识库（幂等去重；上线后可新增 data/knowledge_cases.json 内容）
-    try:
-        import threading
-        threading.Thread(target=_seed_knowledge_bg, daemon=True).start()
-    except Exception:
-        pass
 
 
 def _seed_knowledge_bg():

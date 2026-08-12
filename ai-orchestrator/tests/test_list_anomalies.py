@@ -78,3 +78,42 @@ def test_list_anomalies_no_service_filter_no_where():
     sql_arg = mock_cursor.execute.call_args[0][0]
     assert "WHERE" not in sql_arg
     assert "LIMIT %s" in sql_arg
+
+
+def test_list_anomalies_limit_capped_at_500():
+    """limit=999999 应被截断为 500，不报错（防止超大分页查询）。"""
+    main = _make_app()
+    from unittest.mock import patch, MagicMock
+    import asyncio
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
+    with patch('db.db_available', return_value=True), \
+         patch('db.get_conn', return_value=mock_conn):
+        # limit=999999 → SQL 里的 LIMIT 参数应为 500
+        asyncio.run(main.list_anomalies(limit=999999))
+
+    args = mock_cursor.execute.call_args[0][1]
+    assert args[-1] == 500, f"limit should be capped at 500, got {args}"
+
+
+def test_list_anomalies_limit_min_one():
+    """limit=0 或负数应被抬高为至少 1，不产生非法 LIMIT。"""
+    main = _make_app()
+    from unittest.mock import patch, MagicMock
+    import asyncio
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+
+    with patch('db.db_available', return_value=True), \
+         patch('db.get_conn', return_value=mock_conn):
+        asyncio.run(main.list_anomalies(limit=0))
+
+    args = mock_cursor.execute.call_args[0][1]
+    assert args[-1] >= 1, f"limit should be at least 1, got {args}"
