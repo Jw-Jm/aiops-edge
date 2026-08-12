@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -247,10 +248,12 @@ async def ai_chat(req: ChatRequest, request: Request):
             async def _astream():
                 async for event in _get_brain().stream_sync(
                         req.intent, req.service or "", req.message, thread_id,
-                        mode="dual" if req.dual_agent else "chat"):
-                    # 捕获操作建议 → 自动创建待审批任务到任务工作台
+                        mode="dual" if req.dual_agent else "chat",
+                        exec_context=req.exec_result, iteration=(req.exec_result and 2 or 1)):
+                    # 操作建议不再落任务工作台，直接以 thread_id 作为确认标识发往前端内联审批
                     if event.get("type") == "suggestion":
-                        _create_chat_suggestion_task(event, req, thread_id)
+                        event["thread_id"] = thread_id
+                        event["exec_context"] = req.exec_result
                     event_queue.put(event)
             try:
                 asyncio.run(_astream())
@@ -323,10 +326,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                     # 关键修复: yield done 后立即结束流, 避免前端 reader.read() 永远等不到 done
                     break
                 elif event.get("type") == "approval_pending":
-                    # 创建待审批任务并回填真实 task_id 供前端审批卡绑定
-                    tid = _create_chat_suggestion_task(event, req, thread_id)
-                    if tid:
-                        event["task_id"] = tid
+                    # 不再创建任务工作台任务；以内联 thread_id 为确认标识，前端审批卡直接使用
+                    event["thread_id"] = thread_id
                     yield _format_sse(event)
                 elif event.get("type") == "error":
                     yield _format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
@@ -498,6 +499,44 @@ async def ai_flow_run(key: str, body: dict = None):
     # execute_sync_full 已改为 async（节点 async def），直接 await（不再 run_in_executor）
     result = await brain.execute_sync_full(intent, service, message, "workflow-run")
     return {"run_id": f"run_{int(time.time()*1000)}", "result": result}
+
+class SuggestionRequest(BaseModel):
+    thread_id: str = ""
+    script: str = ""        # 要执行的命令（AI 建议或用户自定义）
+    service: str = ""
+    context: str = ""       # 分析上下文（诊断文本），供 execute_suggestion 用
+    approved: bool = True   # True=确认执行, False=驳回
+
+
+@app.post("/api/v1/ai/suggestion/execute")
+def execute_suggestion_command(req: SuggestionRequest, request: Request):
+    """需求2/3: aichat 内嵌审批——确认后执行处置命令（AI 建议或用户自定义）。
+
+    安全：复用 execute_suggestion 的 ShellPolicy 黑名单 + 白名单强制（读写动作分级），
+    用户确认后才会执行。返回执行结果，前端据此发起下一轮深入分析。
+    """
+    _require_approver(request)  # 复用审批人校验（与任务工作台一致）
+    script = (req.script or "").strip()
+    if not script:
+        raise HTTPException(400, "script is required")
+    if not req.approved:
+        return {"thread_id": req.thread_id, "approved": False, "exec_result": "已驳回，未执行"}
+    try:
+        exec_result = _get_brain().execute_suggestion(
+            req.service or "", script, req.context or "")
+    except Exception as e:
+        return {"thread_id": req.thread_id, "approved": True,
+                "exec_result": f"执行失败: {e}", "error": True}
+    # 审计
+    try:
+        _audit_log(req.thread_id or "suggestion", "approve",
+                   request.headers.get("X-Internal-Approver", "admin"),
+                   req.service or "", script[:300], "approved",
+                   {"source": "ai_chat"})
+    except Exception:
+        pass
+    return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result}
+
 
 @app.get("/api/v1/ai/sessions")
 async def list_sessions():

@@ -80,6 +80,11 @@ class AgentState(TypedDict):
     report: str
     error: str
 
+    # 需求2/3: 多轮处置闭环。exec_context = 上一轮已确认执行的处置脚本的结果，
+    # iteration = 当前第几轮（防死循环，上限由调用方控制）
+    exec_context: str
+    iteration: int
+
 
 # ═══════════════════════════════════════════════════════════════
 #  LLM call
@@ -535,6 +540,11 @@ def _deterministic_diagnosis(state: dict) -> str:
     k8s = state.get("k8sgpt_raw", "")
     if k8s:
         lines.append(f"- **K8s 诊断**: {k8s[:600]}")
+    # 需求2/3: 无 LLM 时也纳入上一轮执行结果，基于处置结果继续深入分析
+    exec_ctx = state.get("exec_context", "")
+    if exec_ctx:
+        lines.append(f"### 处置结果分析（第 {state.get('iteration', 1)} 轮）\n- **已执行操作结果**: {exec_ctx[:800]}")
+        lines.append("- **深入分析**: 需结合处置结果判断是否仍有异常、是否需要下一轮处置。")
     if len(lines) <= 1:
         lines.append("- 未采集到实时数据，请检查数据采集链路或稍后重试。")
     return "\n".join(lines)
@@ -576,7 +586,14 @@ async def node_crewai(state: AgentState) -> dict:
     for k in ["similar_cases", "services_data", "infra_data", "alert_data", "red_metrics", "trace_data", "k8sgpt_raw", "rca_evidence"]:
         v = state.get(k)
         if v: ctx_parts.append(v)
-    context = "\n\n".join(ctx_parts)[:6000]
+    # 需求2/3: 若存在上一轮已确认执行的处置结果，作为深入分析的上下文
+    exec_ctx = state.get("exec_context", "")
+    if exec_ctx:
+        ctx_parts.append(
+            "【上一步已执行的处置操作结果】\n" + exec_ctx[:2500] +
+            "\n请基于该执行结果，深入分析：处置是否生效、是否还有残留问题、是否需要进一步处置。"
+        )
+    context = "\n\n".join(ctx_parts)[:6500]
     if not context:
         context = "(未采集到实时数据)"
 
@@ -1166,10 +1183,12 @@ class BrainOrchestrator:
         except Exception as e:
             return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
 
-    async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default", mode: str = "chat"):
+    async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
+                          mode: str = "chat", exec_context: str = "", iteration: int = 1):
         """异步生成器: async for event in brain.stream_sync(...)。
         节点为 async def，必须用 graph.astream (不能用 sync graph.stream, 会在
         已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
+        exec_context: 需求2/3 多轮闭环——上一轮已确认执行的处置脚本的结果，作为下一轮深入分析的上下文。
         """
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
         if not service: service = await asyncio.to_thread(self._detect_service, message)
@@ -1184,6 +1203,7 @@ class BrainOrchestrator:
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
+            "exec_context": exec_context, "iteration": iteration,
         }
         config = {"configurable": {"thread_id": thread_id}}
         step_names = {"collect": "数据采集", "clean": "数据清洗", "rca": "根因分析", "rag": "案例匹配",

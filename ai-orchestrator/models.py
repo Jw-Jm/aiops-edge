@@ -10,6 +10,11 @@ class ChatRequest(BaseModel):
     stream: bool = True
     session_id: Optional[str] = None
     dual_agent: bool = False   # 批3: 双层 Agent 开关（默认关闭，零回归）
+    # 需求2/3: 审批内嵌 aichat。确认后继续分析时，前端携 script 与执行结果回传，
+    # 后端据此进行下一轮深入分析（复用同一 thread_id，直至输出最终报告）
+    script: str = ""           # 待确认/已确认执行的处置脚本
+    approved: Optional[bool] = None  # None=未知, True=确认执行, False=驳回
+    exec_result: str = ""      # 上一轮处置脚本的执行结果（作为下一轮分析上下文）
 
 
 class ShellCheckRequest(BaseModel):

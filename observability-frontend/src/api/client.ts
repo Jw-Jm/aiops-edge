@@ -128,6 +128,11 @@ export const enableLLMProvider = (id: number) => api.post(`/settings/llm/provide
 // Auth
 export const login = (username: string, password: string) => api.post('/auth/login', { username, password })
 
+// ===== 需求2/3: aichat 内嵌审批——确认执行处置命令（AI 建议或用户自定义）=====
+export const executeSuggestion = (data: {
+  thread_id?: string; script: string; service?: string; context?: string; approved?: boolean
+}) => api.post('/ai/suggestion/execute', data)
+
 // Alert Rules
 export const getAlertRules = () => api.get('/alerts/rules')
 export const createAlertRule = (data: Record<string, unknown>) => api.post('/alerts/rules', data)

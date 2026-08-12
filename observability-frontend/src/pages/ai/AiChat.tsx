@@ -1,10 +1,14 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { Button, Input, Empty } from 'antd'
-import api, { TENANT_ID, getSession } from '../../api/client'
+import api, { TENANT_ID, getSession, executeSuggestion } from '../../api/client'
 import { useSearchParams } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
 
-interface ChatMessage { id: string; role: 'user' | 'assistant'; content: string; timestamp: string }
+interface ChatMessage {
+  id: string; role: 'user' | 'assistant'; content: string; timestamp: string
+  kind?: 'text' | 'suggestion' | 'execresult'
+  plan?: string; script?: string; threadId?: string; riskScore?: number; riskReason?: string
+}
 
 const AiChat: React.FC = () => {
   const [searchParams] = useSearchParams()
@@ -68,12 +72,14 @@ const AiChat: React.FC = () => {
 
   const newSession = () => { setMessages([]); setActiveSession(''); setInput('') }
 
-  const handleSend = async (preset?: string) => {
+  // 需求2/3: 多轮闭环。execResult 非空表示"上一轮处置命令已确认执行"，本轮基于执行结果继续深入分析
+  const handleSend = async (preset?: string, execResult?: string) => {
     const text = (preset ?? input).trim()
-    if (!text || loading) return
+    if (!text && !execResult) return
+    if (loading) return
     const sessionId = activeSession
     setInput('')
-    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content: text, timestamp: new Date().toISOString() }])
+    if (text) setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content: text, timestamp: new Date().toISOString() }])
     setLoading(true); setProgress('正在分析…')
     const controller = new AbortController()
     abortRef.current = controller
@@ -87,12 +93,13 @@ const AiChat: React.FC = () => {
       const resp = await fetch(`${api.defaults.baseURL}/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID, Authorization: (api.defaults.headers.common.Authorization as string) || '' },
-        body: JSON.stringify({ intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, cluster_id: clusterId }),
+        body: JSON.stringify({ intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, cluster_id: clusterId, exec_result: execResult || '' }),
         signal: controller.signal,
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const reader = resp.body?.getReader(); if (!reader) throw new Error('No stream')
       const decoder = new TextDecoder(); let buf = ''; let fullText = ''
+      const pendingSuggestions: any[] = []
       while (true) {
         const { done, value } = await reader.read(); if (done) break
         buf += decoder.decode(value, { stream: true })
@@ -112,18 +119,54 @@ const AiChat: React.FC = () => {
             else if (evName === 'assistant') fullText = ev.content ?? ev.text ?? fullText
             else if (evName === 'done' && !fullText) fullText = ev.text ?? ev.assistant_message?.content ?? ''
             else if (evName === 'error') fullText = `⚠️ ${ev.error ?? ev.text ?? ''}`
+            else if (evName === 'suggestion' || evName === 'approval_pending') {
+              // 需求2/3: 渲染处置建议确认卡片（确认/驳回/自定义命令）
+              pendingSuggestions.push({
+                plan: ev.plan ?? ev.text ?? '', script: ev.script ?? '', threadId: ev.thread_id ?? sessionId,
+                riskScore: ev.risk_score ?? 0, riskReason: ev.risk_reason ?? '',
+              })
+            }
           } catch {}
         }
       }
       const aiText = fullText || 'LLM 分析未返回结果，请检查配置后重试。'
-      setMessages((prev) => [...prev, { id: `a-${Date.now()}`, role: 'assistant', content: aiText, timestamp: new Date().toISOString() }])
-      if (fullText) { setActiveSession(sessionId); loadSessions() }
+      const newMsgs: ChatMessage[] = [{ id: `a-${Date.now()}`, role: 'assistant', content: aiText, timestamp: new Date().toISOString() }]
+      pendingSuggestions.forEach((s, idx) => {
+        newMsgs.push({ id: `sugg-${Date.now()}-${idx}`, role: 'assistant', content: '', kind: 'suggestion',
+          plan: s.plan, script: s.script, threadId: s.threadId, riskScore: s.riskScore, riskReason: s.riskReason, timestamp: new Date().toISOString() })
+      })
+      setMessages((prev) => [...prev, ...newMsgs])
+      if (fullText || pendingSuggestions.length) { setActiveSession(sessionId); loadSessions() }
     } catch (err: any) {
       const msg = err?.name === 'AbortError' ? '⏱️ 已中断 / 超时 (120s)' : `❌ 请求失败：${err?.message || ''}`
       setMessages((prev) => [...prev, { id: `e-${Date.now()}`, role: 'assistant', content: msg, timestamp: new Date().toISOString() }])
     } finally {
       setLoading(false); setProgress(''); abortRef.current = null
     }
+  }
+
+  // 需求2/3: 确认/自定义命令执行 → 基于执行结果自动发起下一轮深入分析
+  const handleExecute = async (m: ChatMessage, customScript?: string) => {
+    if (loading) return
+    const script = (customScript ?? m.script ?? '').trim()
+    if (!script) return
+    const isCustom = !!customScript
+    // 显示执行中状态
+    setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, content: isCustom ? `⚙️ 执行自定义命令：\n${script}\n\n执行中…` : `⚙️ 确认执行建议命令：\n${script}\n\n执行中…` } : x))
+    try {
+      const r = await executeSuggestion({ thread_id: m.threadId, script, service: '', context: m.plan || '', approved: true })
+      const execResult = r.data?.exec_result || `命令已执行（无输出）\n${script}`
+      setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, kind: 'execresult', content: `✅ 已执行命令：\n${script}\n\n执行结果：\n${execResult}` } : x))
+      // 自动发起下一轮深入分析（带执行结果作为上下文）
+      await handleSend(undefined, `${script}\n---执行结果---\n${execResult}`)
+    } catch (err: any) {
+      setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, content: `❌ 执行失败：${err?.message || ''}` } : x))
+    }
+  }
+
+  // 需求2/3: 驳回处置建议（不执行，仅记录）
+  const handleReject = (m: ChatMessage) => {
+    setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, kind: 'execresult', content: '⛔ 已驳回该处置建议，未执行。' } : x))
   }
 
   return (
@@ -170,10 +213,23 @@ const AiChat: React.FC = () => {
           {messages.map((m) => (
             <div key={m.id} style={{ display: 'flex', gap: 10, marginBottom: 14, justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
               {m.role === 'assistant' && <div className="ai-msg__av">AI</div>}
-              <div style={{ maxWidth: '82%', padding: '10px 14px', borderRadius: 10, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.7,
-                background: m.role === 'user' ? 'var(--primary-soft)' : 'var(--surface-2)', border: m.role === 'user' ? 'none' : '1px solid var(--border)' }}>
-                {m.content}
-              </div>
+              {m.kind === 'suggestion' ? (
+                <div style={{ maxWidth: '86%', width: '100%', padding: '12px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.7,
+                  background: 'var(--surface-2)', border: '1px solid var(--warning)', borderLeft: '3px solid var(--warning)' }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>🛠️ 处置建议 · 待确认</div>
+                  {m.plan && <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--text-muted)' }}>{m.plan}</div>}
+                  <div style={{ fontFamily: 'monospace', background: 'var(--surface-3)', padding: '6px 8px', borderRadius: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>{m.script || '(无命令)'}</div>
+                  <div style={{ fontSize: 12, color: m.riskScore && m.riskScore > 60 ? 'var(--danger)' : 'var(--text-muted)', marginBottom: 8 }}>
+                    {m.riskScore ? `风险: ${m.riskScore}/100 ${m.riskReason || ''}` : ''}
+                  </div>
+                  <ConfirmCard m={m} onExecute={handleExecute} onReject={handleReject} />
+                </div>
+              ) : (
+                <div style={{ maxWidth: '82%', padding: '10px 14px', borderRadius: 10, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.7,
+                  background: m.role === 'user' ? 'var(--primary-soft)' : 'var(--surface-2)', border: m.role === 'user' ? 'none' : '1px solid var(--border)' }}>
+                  {m.content}
+                </div>
+              )}
             </div>
           ))}
           {progress && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0' }}>{progress}</div>}
@@ -184,6 +240,23 @@ const AiChat: React.FC = () => {
             placeholder="描述问题，例如：分析 order-svc 错误率突增的根因…" />
           <Button type="primary" loading={loading} icon={<AppIcon name="send" />} onClick={() => handleSend()} style={{ height: 36 }}>发送</Button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// 需求2/3: 处置建议确认卡——确认执行 / 驳回 / 用户自定义命令执行
+const ConfirmCard: React.FC<{ m: ChatMessage; onExecute: (m: ChatMessage, script?: string) => void; onReject: (m: ChatMessage) => void }> = ({ m, onExecute, onReject }) => {
+  const [custom, setCustom] = useState('')
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+        <Button size="small" type="primary" onClick={() => onExecute(m)}>确认执行</Button>
+        <Button size="small" onClick={() => onReject(m)}>驳回</Button>
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <Input size="small" placeholder="或输入自定义命令后点击执行…" value={custom} onChange={(e) => setCustom(e.target.value)} />
+        <Button size="small" disabled={!custom.trim()} onClick={() => onExecute(m, custom)}>执行自定义命令</Button>
       </div>
     </div>
   )
