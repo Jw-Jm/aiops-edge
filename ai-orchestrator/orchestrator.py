@@ -1406,6 +1406,9 @@ class BrainOrchestrator:
         allowed, category = policy.is_whitelisted_for_execute(script)
         if not allowed:
             return "命令不在可执行白名单内，已拒绝执行（可手动在控制台执行）"
+        # G/H 黑名单：禁止外部部署 / 日志清理 / 批量删除
+        if blk := policy.check_extra_blacklist(script):
+            return f"命令被安全策略拒绝: {blk}"
         try:
             import subprocess
             # 已按产品要求放宽：命令支持管道/重定向/换行（shell=True），

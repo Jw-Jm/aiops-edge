@@ -109,3 +109,29 @@ class ShellPolicy:
                         return (True, "write")
                 return (True, "operational")
         return (False, "not_whitelisted")
+
+    # ═════════════════════════════════════════════════════════
+    #  Extra blacklist (G: external deploy, H: log/resource cleanup)
+    #  ═════════════════════════════════════════════════════════
+    EXTRA_BLACKLIST = [
+        # G — 部署/拉取外部组件
+        (r"\bhelm\s+(install|upgrade|create|add|repo|pull)\b", "external-deploy", "禁止 helm 部署/拉取外部组件"),
+        (r"\bkubectl\s+(apply|create)\s+(-f|-k|-R)", "external-deploy", "禁止应用外部 manifest"),
+        (r"curl\s+.*\|\s*kubectl\s+(apply|create)", "external-deploy", "禁止网络脚本注入 kubectl"),
+        (r"\bdocker\s+(pull|run|build|push)\b", "external-deploy", "禁止拉取/构建/推送容器镜像"),
+        (r"\bgit\s+clone\b", "external-deploy", "禁止克隆外部仓库"),
+        # H — 日志/资源清理
+        (r"\bjournalctl\s+--vacuum", "log-cleanup", "禁止日志清理"),
+        (r"\brm\s+(-[rR]f\s*)+", "resource-cleanup", "禁止递归强制删除"),
+        (r"\btruncate\b", "resource-cleanup", "禁止清空文件"),
+        (r"\bkubectl\s+delete\s+\S+\s+--all\b", "batch-delete", "禁止批量删除资源"),
+        (r"\bkubectl\s+delete\s+\S+\s+-l\b", "batch-delete", "禁止按标签批量删除资源"),
+    ]
+
+    def check_extra_blacklist(self, command: str) -> Optional[str]:
+        """G/H 范围收窄：在 is_whitelisted_for_execute 放行后二次拦截。
+        命中则返回拒绝原因，否则 None。"""
+        for pattern, cat, desc in self.EXTRA_BLACKLIST:
+            if re.search(pattern, command, re.IGNORECASE):
+                return f"命令超出允许范围: [{cat}] {desc}"
+        return None

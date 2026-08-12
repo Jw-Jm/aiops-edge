@@ -78,6 +78,8 @@ def execute_shell(command: str, timeout: int = 30) -> str:
     reject = policy.check(command)
     if reject:
         return f"命令被安全策略拒绝: {reject}"
+    if blk := policy.check_extra_blacklist(command):
+        return f"命令被安全策略拒绝: {blk}"
     try:
         # 已按产品要求放宽：命令支持管道/重定向（shell=True），执行前经人工审批，
         # 因此按 shell 语义执行（`kubectl ... | grep` 等管道生效）。
