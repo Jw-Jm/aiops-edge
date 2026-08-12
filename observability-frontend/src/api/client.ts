@@ -132,8 +132,9 @@ export const login = (username: string, password: string) => api.post('/auth/log
 export const executeSuggestion = (data: {
   thread_id?: string; script: string; service?: string; context?: string; approved?: boolean
 }) => api.post('/ai/suggestion/execute', data)
+// 最终版本报告：LLM 长耗时生成，覆盖默认 15s 超时为 180s
 export const finalReport = (data: { session_id?: string; service?: string }) =>
-  api.post('/ai/final_report', data)
+  api.post('/ai/final_report', data, { timeout: 180000 })
 
 // Alert Rules
 export const getAlertRules = () => api.get('/alerts/rules')

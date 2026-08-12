@@ -52,6 +52,9 @@ deploy/helm/aiops/charts/
 # playwright-cli 临时 snapshot 文件（测试产物，不入库）
 .playwright-cli/
 
+# subagent-driven-development 流程产物（brief/report/ledger/diff，可重建，不入库）
+.superpowers/
+
 # 测试/审计截图（不入库）
 *.png
 postlogin

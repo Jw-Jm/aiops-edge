@@ -143,7 +143,7 @@ nodeExporterTarget: ""
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true
-  image: "observability-frontend:v3.4.4"
+  image: "observability-frontend:v3.4.6"
   nodePort: 30253
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
@@ -151,7 +151,7 @@ frontend:
 
 queryApi:
   enabled: true
-  image: "query-api:v1.3.10"
+  image: "query-api:v1.3.11"
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -181,7 +181,7 @@ ingest:
 
 aiOrchestrator:
   enabled: true
-  image: "ai-orchestrator:v1.1.19"
+  image: "ai-orchestrator:v1.1.20"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   minioEndpoint: "minio.observability.svc.cluster.local:9000"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"

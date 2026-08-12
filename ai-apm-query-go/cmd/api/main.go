@@ -179,6 +179,8 @@ func main() {
 	// 使 orchestrator 的 _require_approver 通过（否则 nginx 直连 orchestrator 缺 token → 403）。
 	mux.HandleFunc("/api/v1/ai/suggestion/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/suggestion", handler.ProxyAI)
+	// aichat 最终版本报告：代理到 ai-orchestrator（/ai/final_report，汇总会话执行历史生成报告）
+	mux.HandleFunc("/api/v1/ai/final_report", handler.ProxyAI)
 	// NL2SQL：代理到 ai-orchestrator（/ai/nl2sql/translate、/ai/nl2sql/{id}/execute、/ai/nl2sql/{id}）
 	mux.HandleFunc("/api/v1/ai/nl2sql/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/nl2sql", handler.ProxyAI)
