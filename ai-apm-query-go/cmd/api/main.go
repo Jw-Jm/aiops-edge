@@ -129,6 +129,7 @@ func main() {
 	mux.HandleFunc("/api/v1/infrastructure/pods", handler.Pods)
 	mux.HandleFunc("/api/v1/infrastructure/deployments", handler.Deployments)
 	mux.HandleFunc("/api/v1/infrastructure/namespaces", handler.Namespaces)
+	mux.HandleFunc("/api/v1/nodes/metrics", handler.NodesMetrics)
 	// Settings (LLM + K8s)
 	mux.HandleFunc("/api/v1/settings/llm", handler.SettingsLLM)
 	mux.HandleFunc("/api/v1/settings/llm/internal", handler.GetInternalLLMSettings)

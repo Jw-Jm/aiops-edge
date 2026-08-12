@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -110,6 +111,9 @@ func k8sAPI(path string) ([]byte, error) {
 
 func kubectlFallback(path string) ([]byte, error) {
 	args := []string{"get"}
+	if strings.Contains(path, "/metrics.k8s.io") {
+		return exec.Command("kubectl", "top", "nodes", "-o", "json").Output()
+	}
 	switch {
 	case strings.Contains(path, "/nodes"):
 		args = append(args, "nodes", "-o", "json")
@@ -209,4 +213,82 @@ func parseNamespaces(data []byte) []map[string]interface{} {
 		nss = append(nss, map[string]interface{}{"name": it.Metadata.Name, "status": it.Status.Phase})
 	}
 	return nss
+}
+
+// parseQuantity 解析 K8s Quantity 为浮点值（CPU 核心数 / 内存 MiB 基数的 KB 数）。
+// 支持 CPU: "250m"(0.25核), "2"(2核)；内存: "1Gi"=1024, "500Mi"=500, "12345Ki"=12345。
+// 返回的数值统一到"原单位"的数值：CPU 返回核心数，内存返回以 Ki 为基数（1Gi=1024Ki）。
+func parseQuantity(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" { return 0 }
+	// 后缀映射：CPU 的 m=0.001；内存的 Ki/Mi/Gi 以 Ki 为基数
+	mult := 1.0
+	numStr := s
+	lower := strings.ToLower(s)
+	switch {
+	case strings.HasSuffix(lower, "m"):
+		mult = 0.001
+		numStr = s[:len(s)-1]
+	case strings.HasSuffix(lower, "ki"):
+		mult = 1.0; numStr = s[:len(s)-2]
+	case strings.HasSuffix(lower, "mi"):
+		mult = 1024.0; numStr = s[:len(s)-2]
+	case strings.HasSuffix(lower, "gi"):
+		mult = 1024.0 * 1024.0; numStr = s[:len(s)-2]
+	case strings.HasSuffix(lower, "k"):
+		mult = 1000.0; numStr = s[:len(s)-1]
+	case strings.HasSuffix(lower, "g"):
+		mult = 1e9; numStr = s[:len(s)-1]
+	}
+	v, err := strconv.ParseFloat(numStr, 64)
+	if err != nil { return 0 }
+	return v * mult
+}
+
+// parseNodeMetrics 解析 MetricsList + capacity，返回每节点实时用量（usage_pct）。
+func parseNodeMetrics(data []byte, capacities map[string]map[string]string) []map[string]interface{} {
+	var r struct {
+		Items []struct {
+			Metadata struct{ Name string } `json:"metadata"`
+			Usage    map[string]string     `json:"usage"`
+		} `json:"items"`
+	}
+	json.Unmarshal(data, &r)
+	out := []map[string]interface{}{}
+	for _, it := range r.Items {
+		cpuUsage := parseQuantity(it.Usage["cpu"])       // 核心数
+		memUsage := parseQuantity(it.Usage["memory"])    // Ki 基数
+		cpuCap := parseQuantity(capacities[it.Metadata.Name]["cpu"])
+		memCap := parseQuantity(capacities[it.Metadata.Name]["memory"])
+		cpuPct := 0.0
+		if cpuCap > 0 { cpuPct = cpuUsage / cpuCap * 100 }
+		memPct := 0.0
+		if memCap > 0 { memPct = memUsage / memCap * 100 }
+		out = append(out, map[string]interface{}{
+			"node": it.Metadata.Name,
+			"cpu_usage": it.Usage["cpu"], "cpu_capacity": capacities[it.Metadata.Name]["cpu"],
+			"cpu_usage_pct": round2(cpuPct),
+			"mem_usage": it.Usage["memory"], "mem_capacity": capacities[it.Metadata.Name]["memory"],
+			"mem_usage_pct": round2(memPct),
+		})
+	}
+	return out
+}
+
+// k8sAPIFn 可注入（测试用）；默认指向 k8sAPI。
+var k8sAPIFn = k8sAPI
+
+// NodesMetrics 处理 GET /api/v1/nodes/metrics — 节点实时 CPU/内存用量（metrics-server）。
+func (h *Handler) NodesMetrics(w http.ResponseWriter, r *http.Request) {
+	data, err := k8sAPIFn("/apis/metrics.k8s.io/v1beta1/nodes")
+	if err != nil {
+		respondJSON(w, 200, map[string]interface{}{"nodes": []map[string]interface{}{}, "error": err.Error()})
+		return
+	}
+	// capacity 从 /api/v1/nodes 读取
+	capMap := map[string]map[string]string{}
+	for _, n := range k8sNodes() {
+		capMap[n.Name] = map[string]string{"cpu": n.CPU, "memory": n.Memory}
+	}
+	respondJSON(w, 200, map[string]interface{}{"nodes": parseNodeMetrics(data, capMap)})
 }
