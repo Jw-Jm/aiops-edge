@@ -44,6 +44,13 @@ const AlertEvents: React.FC = () => {
       if (status === 'resolved') return st === 'resolved'
       return true
     })
+    // Issue2: 每个告警对象单独一行。聚合行 object 为逗号分隔的多个对象名时，
+    // 展开为多行，每行展示该对象 + 同一告警内容/次数/最后触发时间。
+    .flatMap((e: any) => {
+      const objs = (e.object || '').split(',').map((s: string) => s.trim()).filter(Boolean)
+      if (objs.length <= 1) return [e]
+      return objs.map((obj: string) => ({ ...e, object: obj }))
+    })
 
   const cols = [
     { title: '严重度', key: 'severity', width: 90, render: (_: any, r: AlertEvent) => { const s = severity(r); return <StatusBadge text={s === 'critical' || s === '严重' ? '严重' : s === 'warning' || s === '警告' ? '警告' : '信息'} tone={sevTone(s)} /> } },
@@ -90,7 +97,13 @@ const AlertEvents: React.FC = () => {
   const runRca = (r: any) => {
     setRcaLoading(true)
     setRca('')
-    rcaAlertAnalysis({ summary: r.rule_name || r.message || '', service: r.service || '', severity: severity(r) })
+    // Issue4: 必须传 rule_id/message，否则三个 K8s 告警都只传 service=kubernetes，
+    // 后端无法区分规则 → 三个根因分析内容一致。
+    rcaAlertAnalysis({
+      summary: r.rule_name || r.message || '', service: r.service || '', severity: severity(r),
+      rule_id: r.rule_id || r.id || '', rule_name: r.rule_name || '', message: r.message || r.summary || '',
+      count: r.count, last_timestamp: r.last_timestamp || r.first_timestamp || '',
+    })
       .then((res) => setRca(typeof res.data === 'string' ? res.data : JSON.stringify(res.data)))
       .catch((e) => setRca(`RCA 分析失败：${e?.response?.data?.error || e.message}`))
       .finally(() => setRcaLoading(false))

@@ -119,12 +119,17 @@ const AiChat: React.FC = () => {
             else if (evName === 'assistant') fullText = ev.content ?? ev.text ?? fullText
             else if (evName === 'done' && !fullText) fullText = ev.text ?? ev.assistant_message?.content ?? ''
             else if (evName === 'error') fullText = `⚠️ ${ev.error ?? ev.text ?? ''}`
-            else if (evName === 'suggestion' || evName === 'approval_pending') {
-              // 需求2/3: 渲染处置建议确认卡片（确认/驳回/自定义命令）
-              pendingSuggestions.push({
-                plan: ev.plan ?? ev.text ?? '', script: ev.script ?? '', threadId: ev.thread_id ?? sessionId,
-                riskScore: ev.risk_score ?? 0, riskReason: ev.risk_reason ?? '',
-              })
+            else if (evName === 'suggestion') {
+              // Issue1: 每次分析只渲染一张处置建议确认卡。后端每次分析只发一个 suggestion
+              // 事件（已去重），此处仅收集 suggestion 类型，避免把 approval_pending 也当一张卡
+              // 导致"多个内容一致的处置建议·待确认"。按 threadId 去重（同轮只一张）。
+              const tid = ev.thread_id ?? ev.task_id ?? sessionId
+              if (!pendingSuggestions.some((s: any) => s.threadId === tid)) {
+                pendingSuggestions.push({
+                  plan: ev.plan ?? ev.text ?? '', script: ev.script ?? '', threadId: tid,
+                  riskScore: ev.risk_score ?? 0, riskReason: ev.risk_reason ?? '',
+                })
+              }
             }
           } catch {}
         }
