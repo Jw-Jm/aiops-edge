@@ -118,3 +118,44 @@ def test_checkpointer_survives_across_event_loops():
         if getattr(brain, "_async_conn", None) is not None:
             await brain._async_conn.close()
     asyncio.run(_second())
+
+
+def test_get_session_state_reads_checkpoint_synchronously():
+    """修复 P0: main.py get_session/list_sessions 改用同步 `get_session_state()` 读 checkpoint
+    state，不再用 `graph.get_state()`（AsyncSqliteSaver 主线程同步调用会抛 InvalidStateError /
+    跨 loop 抛 RuntimeError → HTTP 500 → 前端历史会话点击无反应）。
+
+    验证: 写入 checkpoint 后，用同步 get_session_state 能在任意 loop（即使 saver 绑定到已关闭 loop）
+    读到 user_message/final_response/intent，不抛异常。
+    """
+    from orchestrator import BrainOrchestrator
+
+    brain = BrainOrchestrator()
+    thread_id = f"get-state-{uuid.uuid4().hex[:8]}"
+
+    # loop 1: 写一个 checkpoint（模拟首次会话，saver 绑定到该临时 loop）
+    async def _write():
+        await brain._ensure_async_checkpointer()
+        cfg = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        ckpt = _make_checkpoint(f"ckpt-{thread_id}")
+        ckpt["channel_values"] = {
+            "messages": [], "user_message": "诊断 service-a",
+            "final_response": "已定位根因，建议重启 service-a", "intent": "diagnosis",
+        }
+        await brain.checkpointer.aput(cfg, ckpt, {}, {})
+    asyncio.run(_write())
+    # 第一次 loop 已关闭
+
+    # 同步读取（模拟 get_session 主线程调用）：不依赖 event loop，应能读到
+    vals = brain.get_session_state(thread_id)
+    assert vals is not None, "get_session_state should return state"
+    assert vals.get("user_message") == "诊断 service-a", f"unexpected user_message: {vals}"
+    assert vals.get("final_response", "").startswith("已定位根因"), \
+        f"unexpected final_response: {vals.get('final_response')}"
+    assert vals.get("intent") == "diagnosis", f"unexpected intent: {vals}"
+
+    # 清理 aiosqlite 连接，避免资源泄漏
+    async def _cleanup():
+        if getattr(brain, "_async_conn", None) is not None:
+            await brain._async_conn.close()
+    asyncio.run(_cleanup())

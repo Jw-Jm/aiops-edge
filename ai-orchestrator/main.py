@@ -518,18 +518,18 @@ async def list_sessions():
         for (tid,) in rows:
             if tid in seen: continue
             seen.add(tid)
-            try:
-                state = _get_brain().graph.get_state({"configurable": {"thread_id": tid}})
-                vals = state.values if state else {}
-                updated = meta.get(tid, "")
+            # P0: 用同步 get_session_state 读 checkpoint state（不再用 graph.get_state，避免跨 loop 崩溃）
+            vals = _get_brain().get_session_state(tid)
+            updated = meta.get(tid, "")
+            if vals:
                 sessions.append({
                     "session_id": tid,
                     "preview": (vals.get("user_message", "") or vals.get("final_response", "") or tid)[:80],
                     "intent": vals.get("intent", ""),
                     "created_at": updated,
                 })
-            except:
-                sessions.append({"session_id": tid, "preview": tid, "intent": "", "created_at": meta.get(tid, "")})
+            else:
+                sessions.append({"session_id": tid, "preview": tid, "intent": "", "created_at": updated})
         # 按 updated_at 倒序（有时间的优先，无时间的排后），保持最近会话在最前
         # 注意: created_at 可能是 float(epoch) 或 ""，排序 key 需统一为数值，避免 float/str 混比报错
         def _key(s):
@@ -546,9 +546,11 @@ async def list_sessions():
 
 @app.get("/api/v1/ai/session/{sid}")
 async def get_session(sid: str):
-    state = _get_brain().graph.get_state({"configurable": {"thread_id": sid}})
-    if state and state.values:
-        vals = state.values
+    # P0: 改用同步 SQLite 读取 checkpoint state（get_session_state），
+    # 不再用 graph.get_state()（AsyncSqliteSaver 主线程同步调用会抛 InvalidStateError /
+    # 跨 loop 抛 RuntimeError → HTTP 500 → 前端历史会话点击无反应）。
+    vals = _get_brain().get_session_state(sid)
+    if vals:
         msgs = []
         if vals.get("user_message"):
             msgs.append({"role": "user", "content": vals["user_message"]})

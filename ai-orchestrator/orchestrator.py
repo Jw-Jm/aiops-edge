@@ -1078,6 +1078,43 @@ class BrainOrchestrator:
         self._async_saver_loop = current_loop
         self._async_saver_initialized = True
 
+    def get_session_state(self, thread_id: str) -> dict | None:
+        """同步读取某会话（thread）的最终 checkpoint state（主线程安全，不依赖 event loop）。
+
+        P0 修复: main.py 的 get_session/list_sessions 曾用 `graph.get_state()`（sync 包装），
+        但 AsyncSqliteSaver 在 get_tuple 中检测 `asyncio.get_running_loop() is self.loop` 时会抛
+        InvalidStateError（主线程同步调用），或绑定到已关闭的 loop 抛 RuntimeError。
+        这里改为直接从同步 `self._conn` 读 checkpoints 表并反序列化 checkpoint，
+        完全绕开 async checkpointer，跨 event loop 安全。
+
+        返回: {"user_message","final_response","intent","service"} 或 None。
+        """
+        if self._conn is None:
+            return None
+        try:
+            cur = self._conn.execute(
+                "SELECT type, checkpoint FROM checkpoints WHERE thread_id = ? "
+                "ORDER BY checkpoint_id DESC LIMIT 1",
+                (thread_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            type_, blob = row
+            from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+            serde = JsonPlusSerializer()
+            ckpt = serde.loads_typed((type_, bytes(blob)))
+            values = (ckpt or {}).get("channel_values") or {}
+            return {
+                "user_message": values.get("user_message", ""),
+                "final_response": values.get("final_response", ""),
+                "intent": values.get("intent", ""),
+                "service": values.get("service", ""),
+            }
+        except Exception as _e:
+            print(f"[get_session_state] error for {thread_id}: {_e}")
+            return None
+
     def set_llm_config(self, config: dict | None):
         if config is None:
             self.llm_config = None
