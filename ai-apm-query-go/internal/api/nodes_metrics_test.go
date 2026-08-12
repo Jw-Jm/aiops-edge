@@ -50,12 +50,19 @@ func TestParseNodeMetrics(t *testing.T) {
 	}
 }
 
-// 验证 handler：注入 k8sAPI 返回 MetricsList，assert usage_pct 计算与 200。
+// 验证 handler：注入 k8sAPI 分别返回 MetricsList 与 /api/v1/nodes（capacity），assert usage_pct 计算与 200。
 func TestNodesMetricsHandler(t *testing.T) {
 	h := &Handler{}
 	orig := k8sAPIFn
 	k8sAPIFn = func(path string) ([]byte, error) {
-		return []byte(`{"items":[{"metadata":{"name":"orbstack"},"usage":{"cpu":"250m","memory":"2Gi"}}]}`), nil
+		if path == "/apis/metrics.k8s.io/v1beta1/nodes" {
+			return []byte(`{"items":[{"metadata":{"name":"orbstack"},"usage":{"cpu":"250m","memory":"2Gi"}}]}`), nil
+		}
+		if path == "/api/v1/nodes" {
+			// capacity：CPU="2" memory="4Gi"（K8s node status.capacity）
+			return []byte(`{"items":[{"metadata":{"name":"orbstack"},"status":{"capacity":{"cpu":"2","memory":"4Gi"}}}]}`), nil
+		}
+		return nil, nil
 	}
 	defer func() { k8sAPIFn = orig }()
 	req := httptest.NewRequest("GET", "/api/v1/nodes/metrics", nil)
@@ -66,4 +73,13 @@ func TestNodesMetricsHandler(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	nodes := resp["nodes"].([]interface{})
 	if len(nodes) != 1 { t.Fatalf("expected 1 node, got %d", len(nodes)) }
+	m := nodes[0].(map[string]interface{})
+	if m["node"] != "orbstack" { t.Fatalf("expected node orbstack, got %v", m["node"]) }
+	// usage 250m/2 *100 = 12.5；mem 2Gi/4Gi*100 = 50
+	if pct := m["cpu_usage_pct"].(float64); pct < 12.4 || pct > 12.6 {
+		t.Errorf("cpu_usage_pct=%v want ~12.5", pct)
+	}
+	if pct := m["mem_usage_pct"].(float64); pct < 49.9 || pct > 50.1 {
+		t.Errorf("mem_usage_pct=%v want ~50", pct)
+	}
 }

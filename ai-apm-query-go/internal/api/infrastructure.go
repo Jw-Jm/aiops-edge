@@ -285,10 +285,17 @@ func (h *Handler) NodesMetrics(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 200, map[string]interface{}{"nodes": []map[string]interface{}{}, "error": err.Error()})
 		return
 	}
-	// capacity 从 /api/v1/nodes 读取
+	// capacity 从 in-cluster /api/v1/nodes 读取（不依赖 kubectl）
 	capMap := map[string]map[string]string{}
-	for _, n := range k8sNodes() {
-		capMap[n.Name] = map[string]string{"cpu": n.CPU, "memory": n.Memory}
+	if nd, nerr := k8sAPIFn("/api/v1/nodes"); nerr == nil {
+		for _, n := range parseNodes(nd) {
+			name, _ := n["name"].(string)
+			cpu, _ := n["cpu"].(string)
+			mem, _ := n["memory"].(string)
+			if name != "" {
+				capMap[name] = map[string]string{"cpu": cpu, "memory": mem}
+			}
+		}
 	}
 	respondJSON(w, 200, map[string]interface{}{"nodes": parseNodeMetrics(data, capMap)})
 }
