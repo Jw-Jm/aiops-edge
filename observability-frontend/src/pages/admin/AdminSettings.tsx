@@ -9,6 +9,38 @@ function clusterTone(s?: string): StatusTone {
   if (s === 'unhealthy' || s === 'error' || s === 'degraded') return 'crit'
   return 'info'
 }
+
+// 节点实时用量格式化：CPU（metrics-server 返回 nanocores，如 "2472171400n"，转为核数）
+function fmtNodeCpu(s?: string): string {
+  if (!s) return '-'
+  const t = s.trim()
+  if (t.endsWith('n')) {
+    const n = parseFloat(t.slice(0, -1))
+    return isNaN(n) ? t : `${(n / 1e9).toFixed(2)}`
+  }
+  if (t.endsWith('m')) {
+    const n = parseFloat(t.slice(0, -1))
+    return isNaN(n) ? t : `${(n / 1000).toFixed(2)}`
+  }
+  return t
+}
+
+// 节点实时用量格式化：内存（Ki 为基数，转为人类可读的 Gi/Mi）
+function fmtNodeMem(s?: string): string {
+  if (!s) return '-'
+  const t = s.trim()
+  const num = parseFloat(t)
+  if (isNaN(num)) return t
+  const base = t.endsWith('i') ? t.slice(-2) : '' // Ki/Mi/Gi
+  let ki: number
+  if (base === 'Ki') ki = num
+  else if (base === 'Mi') ki = num * 1024
+  else if (base === 'Gi') ki = num * 1024 * 1024
+  else return t
+  if (ki >= 1024 * 1024) return `${(ki / 1024 / 1024).toFixed(1)}Gi`
+  if (ki >= 1024) return `${(ki / 1024).toFixed(1)}Mi`
+  return `${ki.toFixed(0)}Ki`
+}
 import {
   getLLMSettings, saveLLMSettings, testLLMConnection, listLLMModels,
   listClusters,
@@ -196,8 +228,8 @@ function ClusterManager() {
                   { title: '状态', dataIndex: 'status', width: 100, render: (s) => <StatusBadge text={s} tone={clusterTone(s)} /> },
                   { title: 'IP', dataIndex: 'ip', width: 130 },
                   { title: 'OS', dataIndex: 'os', ellipsis: true },
-                  { title: 'CPU 用量', width: 120, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.cpu_usage_pct}% (${m.cpu_usage}/${m.cpu_capacity})` : (r.cpu || '-') } },
-                  { title: '内存用量', width: 130, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.mem_usage_pct}% (${m.mem_usage}/${m.mem_capacity})` : (r.memory || '-') } },
+                  { title: 'CPU 用量', width: 130, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.cpu_usage_pct}% (${fmtNodeCpu(m.cpu_usage)}/${m.cpu_capacity})` : (r.cpu || '-') } },
+                  { title: '内存用量', width: 150, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.mem_usage_pct}% (${fmtNodeMem(m.mem_usage)}/${fmtNodeMem(m.mem_capacity)})` : (r.memory || '-') } },
                 ]} />
               )},
               { key: 'namespaces', label: `命名空间 (${namespaces.length})`, children: (

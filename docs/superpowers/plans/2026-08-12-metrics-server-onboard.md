@@ -102,7 +102,8 @@ import (
 func TestParseQuantity(t *testing.T) {
 	cases := map[string]float64{
 		"1000m": 1.0, "1536m": 1.536, "2": 2.0, "0.5": 0.5,
-		"12345Ki": 12345.0, "1Gi": 1024.0, "500Mi": 500.0, "3Gi": 3072.0,
+		// 内存统一换算到 Ki 基数：1Mi=1024Ki，1Gi=1024Mi=1048576Ki
+		"12345Ki": 12345.0, "1Gi": 1048576.0, "500Mi": 512000.0, "3Gi": 3145728.0,
 		"": 0.0,
 	}
 	for in, want := range cases {

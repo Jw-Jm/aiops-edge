@@ -12,6 +12,8 @@ func TestParseQuantity(t *testing.T) {
 		"1000m": 1.0, "1536m": 1.536, "2": 2.0, "0.5": 0.5,
 		// 内存统一换算到 Ki 基数：1Mi=1024Ki，1Gi=1024Mi=1048576Ki
 		"12345Ki": 12345.0, "1Gi": 1048576.0, "500Mi": 512000.0, "3Gi": 3145728.0,
+		// metrics-server CPU nanocores（用规整值避免浮点精度误差）
+		"1000000000n": 1.0, "500000000n": 0.5,
 		"": 0.0,
 	}
 	for in, want := range cases {
@@ -25,9 +27,9 @@ func TestParseQuantity(t *testing.T) {
 func TestParseNodeMetrics(t *testing.T) {
 	body := []byte(`{"kind":"NodeMetricsList","items":[
 		{"metadata":{"name":"orbstack"},
-		 "usage":{"cpu":"250m","memory":"3212084Ki"}},
+		 "usage":{"cpu":"250000000n","memory":"3212084Ki"}},
 		{"metadata":{"name":"worker-1"},
-		 "usage":{"cpu":"1","memory":"2Gi"}}
+		 "usage":{"cpu":"1000000000n","memory":"2Gi"}}
 	]}`)
 	// capacity 来自 k8sNodes：CPU="2" memory="4Gi"
 	nodes := parseNodeMetrics(body, map[string]map[string]string{

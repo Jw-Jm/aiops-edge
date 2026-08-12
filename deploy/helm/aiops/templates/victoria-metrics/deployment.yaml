@@ -19,6 +19,7 @@ spec:
       labels:
         app: victoria-metrics
     spec:
+      serviceAccountName: victoria-metrics
       containers:
         - name: victoria-metrics
           image: {{ .Values.victoriaMetrics.image }}

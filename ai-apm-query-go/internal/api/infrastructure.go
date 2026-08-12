@@ -226,6 +226,10 @@ func parseQuantity(s string) float64 {
 	numStr := s
 	lower := strings.ToLower(s)
 	switch {
+	case strings.HasSuffix(lower, "n"):
+		// metrics-server 的 CPU usage 以 nanocores 返回（如 "1113552929n"），1n=1e-9 核
+		mult = 1e-9
+		numStr = s[:len(s)-1]
 	case strings.HasSuffix(lower, "m"):
 		mult = 0.001
 		numStr = s[:len(s)-1]

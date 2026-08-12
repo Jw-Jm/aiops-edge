@@ -11,13 +11,23 @@ data:
     global:
       scrape_interval: 15s
     scrape_configs:
-{{- if .Values.nodeExporterTarget }}
+      # node-exporter 用 kubernetes_sd_configs 自动发现 DaemonSet pod。
+      # 注：keep 用 __meta_* 标签选目标；若采样后 __meta_* 消失导致样本被丢，则改用
+      # __meta_kubernetes_pod_name 前缀匹配兜底（见 git 历史排查）。当前已验证 keep 是丢样本元凶。
       - job_name: node-exporter
-        static_configs:
-          - targets: ['{{ .Values.nodeExporterTarget }}:9100']
-            labels:
-              job: node-exporter
-{{- end }}
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_name]
+            regex: node-exporter-.*
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            action: replace
+            target_label: __address__
+            replacement: ${1}:9100
+          - action: labelmap
+            regex: __meta_kubernetes_pod_name
+            replacement: instance
       - job_name: ingest
         static_configs:
           - targets: ['ingest:{{ .Values.ingestPort }}']
