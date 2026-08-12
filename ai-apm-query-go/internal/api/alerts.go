@@ -1617,6 +1617,20 @@ func k8sCrashPods(ruleID string) string {
 			names = append(names, p.Metadata.Name)
 		}
 	}
+	// Issue3: 集群已恢复（实时无异常对象）时，回退到最近 K8s 事件中记录的对象名，
+	// 使历史告警也能展示具体的 Pod/Deployment 对象
+	if len(names) == 0 {
+		var evReasons map[string]bool
+		switch ruleID {
+		case "k8s-oom-killed":
+			evReasons = map[string]bool{"OOMKilled": true, "CrashLoopBackOff": true}
+		case "k8s-pod-pending":
+			evReasons = map[string]bool{"FailedScheduling": true, "Pending": true}
+		default:
+			evReasons = map[string]bool{"CrashLoopBackOff": true, "BackOff": true}
+		}
+		names = k8sEventObjects(evReasons, seen)
+	}
 	if len(names) > 5 {
 		names = names[:5] // 只展示前 5 个对象，避免超长
 	}
@@ -1624,38 +1638,81 @@ func k8sCrashPods(ruleID string) string {
 }
 
 // k8sUnavailableDeployments 返回存在不可用副本的 Deployment 名。
+// 若当前无不可用副本（集群已恢复），回退到最近 K8s 事件中记录的异常 Deployment 名。
 func k8sUnavailableDeployments() string {
-	data, err := k8sAPI("/apis/apps/v1/deployments")
-	if err != nil {
-		return ""
-	}
-	var r struct {
-		Items []struct {
-			Metadata struct {
-				Name      string            `json:"name"`
-				Namespace string            `json:"namespace"`
-				Labels    map[string]string `json:"labels"`
-			} `json:"metadata"`
-			Status struct {
-				UnavailableReplicas *int32 `json:"unavailableReplicas"`
-			} `json:"status"`
-		} `json:"items"`
-	}
-	if json.Unmarshal(data, &r) != nil {
-		return ""
-	}
 	names := []string{}
 	seen := map[string]bool{}
-	for _, d := range r.Items {
-		if d.Status.UnavailableReplicas != nil && *d.Status.UnavailableReplicas > 0 && !seen[d.Metadata.Name] {
-			seen[d.Metadata.Name] = true
-			names = append(names, d.Metadata.Name)
+	data, err := k8sAPI("/apis/apps/v1/deployments")
+	if err == nil {
+		var r struct {
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+				Status struct {
+					UnavailableReplicas *int32 `json:"unavailableReplicas"`
+				} `json:"status"`
+			} `json:"items"`
 		}
+		if json.Unmarshal(data, &r) == nil {
+			for _, d := range r.Items {
+				if d.Status.UnavailableReplicas != nil && *d.Status.UnavailableReplicas > 0 && !seen[d.Metadata.Name] {
+					seen[d.Metadata.Name] = true
+					names = append(names, d.Metadata.Name)
+				}
+			}
+		}
+	}
+	// 回退：从最近 K8s 事件中找与 Deployment 不可用相关的对象（FailedUpdate / Unavailable）
+	if len(names) == 0 {
+		names = k8sEventObjects(map[string]bool{
+			"FailedUpdate": true, "Unavailable": true, "FailedCreate": true,
+			"FailedScheduling": true,
+		}, seen)
 	}
 	if len(names) > 5 {
 		names = names[:5]
 	}
 	return strings.Join(names, ", ")
+}
+
+// k8sEventObjects 从 K8s 最近事件中提取对象名（Pod/Deployment），reason 命中即纳入。
+func k8sEventObjects(reasons map[string]bool, seen map[string]bool) []string {
+	data, err := k8sAPI("/api/v1/events?limit=50")
+	if err != nil {
+		return []string{}
+	}
+	var r struct {
+		Items []struct {
+			InvolvedObject struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"involvedObject"`
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(data, &r) != nil {
+		return []string{}
+	}
+	names := []string{}
+	for _, e := range r.Items {
+		if (reasons[e.Reason] || reasonsContain(reasons, e.Message)) && e.InvolvedObject.Name != "" && !seen[e.InvolvedObject.Name] {
+			seen[e.InvolvedObject.Name] = true
+			names = append(names, e.InvolvedObject.Name)
+		}
+	}
+	return names
+}
+
+// reasonsContain 在消息中命中任一 reason 关键词（如 OOMKilled / CrashLoopBackOff）。
+func reasonsContain(reasons map[string]bool, msg string) bool {
+	for k := range reasons {
+		if strings.Contains(msg, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func checkCondition(value float64, condition string, threshold float64) bool {

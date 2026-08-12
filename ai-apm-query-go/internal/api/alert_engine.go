@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -142,13 +143,21 @@ func (h *Handler) evaluateAlerts() {
 				}
 			} else {
 				// 窗口外新事件
+				// Issue3: K8s 指标告警（Deployment 不可用 / OOM / Pod 重启等）在触发时把
+				// 具体告警对象名写入 Message，避免事件只显示"count>threshold"而无对象。
+				msg := fmt.Sprintf("%s: %s %.2f > threshold %.2f", rule.Name, rule.Metric, value, rule.Threshold)
+				if rule.Service == "kubernetes" || strings.HasPrefix(rule.ID, "k8s-") {
+					if objs := k8sAlertObjects(rule.ID); objs != "" {
+						msg += fmt.Sprintf(" | 对象: %s", objs)
+					}
+				}
 				event := AlertEvent{
 					ID:             generateID(),
 					RuleID:         rule.ID,
 					RuleName:       rule.Name,
 					Service:        rule.Service,
 					Severity:       rule.Severity,
-					Message:        fmt.Sprintf("%s: %s %.2f > threshold %.2f", rule.Name, rule.Metric, value, rule.Threshold),
+					Message:        msg,
 					Value:          value,
 					Threshold:      rule.Threshold,
 					Timestamp:      nowStr,
