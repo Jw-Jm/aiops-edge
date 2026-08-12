@@ -195,8 +195,18 @@ def _extract_script(text: str) -> str:
         for line in b.splitlines():
             line = line.strip()
             if line and not line.startswith("#") and not line.startswith("$") \
-               and ("kubectl" in line or "curl" in line or "kubectl" in line):
+               and ("kubectl" in line or "curl" in line):
                 script_lines.append(line)
+    # 优先提取『## 处置命令』小节中的 kubectl/curl 命令（LLM 结构化输出）
+    if not script_lines:
+        section = re.split(r"#{1,3}\s*处置命令", text, flags=re.IGNORECASE)
+        if len(section) > 1:
+            for line in section[-1].splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("-") or line.startswith("*"):
+                    continue
+                if line.startswith("kubectl") or line.startswith("curl"):
+                    script_lines.append(line)
     # 如果没有代码块，直接从全文提取以 kubectl/curl 开头的行
     if not script_lines:
         for line in text.splitlines():
@@ -213,6 +223,66 @@ def _extract_script(text: str) -> str:
         if len(result) >= 10:
             break
     return "\n".join(result)
+
+
+def _fallback_script(text: str, service: str = "") -> str:
+    """当 LLM 分析未产出可执行命令时，基于分析文本/告警类型生成确定性可执行命令。
+
+    目的：处置建议卡必须给出**具体的可执行命令**（kubectl/curl），而非只罗列分析报告。
+    按文本特征（重启/OOM/负载/不可用）分派到对应的只读诊断命令。
+    """
+    svc = service or "default"
+    low = (text or "").lower()
+    cmds = []
+    # 重启类
+    if any(k in low for k in ["重启", "restart", "crashloop", "crash loop"]):
+        cmds = [
+            "kubectl get pods -n observability | grep -E 'CrashLoopBackOff|Error'",
+            f"kubectl describe pod -l app={svc} -n observability | tail -60",
+            f"kubectl logs -l app={svc} -n observability --tail=100 --prefix",
+        ]
+    # OOM / 内存
+    elif any(k in low for k in ["oom", "内存", "memory", "killed"]):
+        cmds = [
+            f"kubectl get pods -n observability | grep OOMKilled",
+            f"kubectl describe pod -l app={svc} -n observability | grep -iE 'Memory|OOMKilled'",
+            f"kubectl top pod -l app={svc} -n observability",
+        ]
+    # 高负载 / CPU
+    elif any(k in low for k in ["cpu", "负载", "load", "高"]):
+        cmds = [
+            f"kubectl top pods -n observability",
+            f"kubectl describe pod -l app={svc} -n observability | tail -40",
+        ]
+    # Deployment 不可用
+    elif any(k in low for k in ["不可用", "unavailable", "部署", "deployment"]):
+        cmds = [
+            f"kubectl get deploy -n observability | grep -vE '1/1|2/2|3/3|4/4|5/5'",
+            f"kubectl rollout status deploy/{svc} -n observability",
+            f"kubectl get pods -n observability | grep {svc}",
+        ]
+    # 通用诊断
+    else:
+        cmds = [
+            f"kubectl get pods -n observability -l app={svc}",
+            f"kubectl describe pod -l app={svc} -n observability | tail -40",
+        ]
+    return "\n".join(cmds)
+
+
+def _action_summary(script: str, analysis: str, service: str = "") -> str:
+    """生成简洁的处置动作摘要（命令 + 一句依据），避免卡片只罗列整篇分析报告。"""
+    svc = service or "default"
+    lines = [f"**目标**: {svc}"]
+    if script:
+        lines.append(f"**建议执行命令**:")
+        lines.append("```bash\n" + script[:600] + "\n```")
+    # 依据取分析文本首句（去空白）
+    if analysis:
+        first = " ".join(analysis.split())[:180]
+        if first:
+            lines.append(f"**依据**: {first}…")
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -602,16 +672,18 @@ async def node_crewai(state: AgentState) -> dict:
             f"你是{expert.role}。{expert.goal}。\n\n"
             f"你的专业领域技能:\n{chr(10).join(skill_prompts) if skill_prompts else '(通用分析)'}\n\n"
             f"【重要】以下已采集到的系统数据可直接用于分析，请【直接给出巡检/诊断结论】。\n"
-            f"不要输出调用工具、查询命令、代码块或执行步骤，不要说要先调用哪个工具。\n"
-            f"直接基于数据逐项分析，给出具体的健康状态、发现的问题、风险和建议。\n"
-            f"如果数据不足，明确说明缺少哪些数据即可。"
+            f"先逐项分析，给出具体的健康状态、发现的问题、风险和建议；不要罗列采集过程或工具调用步骤。\n"
+            f"然后在末尾用『## 处置命令』小节，给出 1~3 条**可直接执行的 kubectl/curl 命令**"
+            f"（每行一条，不要反引号包裹），用于定位/处置发现的问题。\n"
+            f"若数据不足，明确说明缺少哪些数据即可。"
         )
     else:
         system_prompt = (
             f"你是巡检专家。执行全量环境巡检。\n\n"
             f"【重要】以下已采集到的系统数据可直接用于分析，请【直接给出巡检结论】。\n"
-            f"不要输出调用工具、查询命令、代码块或执行步骤，不要说要先调用哪个工具。\n"
-            f"直接基于数据逐项分析，给出具体的健康状态、发现的问题、风险和建议。"
+            f"先逐项分析，给出具体的健康状态、发现的问题、风险和建议；不要罗列采集过程。\n"
+            f"然后在末尾用『## 处置命令』小节，给出 1~3 条**可直接执行的 kubectl/curl 命令**"
+            f"（每行一条，不要反引号包裹），用于定位/处置发现的问题。"
         )
 
     result = await _llm_async(cfg, system_prompt, f"用户问题:「{user_msg}」\n已采集数据:\n{context}", expert.role if expert else "巡检专家")
@@ -1274,11 +1346,18 @@ class BrainOrchestrator:
             # 从分析结果中提取可执行的 kubectl/curl 命令作为操作建议
             analysis = suggestion.get("crewai_result", "")
             full_resp = suggestion.get("final_response", "")
-            plan = suggestion.get("plan", "") or full_resp[:2000]
-            script = _extract_script(analysis or plan or full_resp)
-            # Issue1: 无 LLM 时 node_plan 已产出确定性 plan/script，兜底给全量
-            if not script and full_resp:
-                script = _extract_script(full_resp)
+            plan = suggestion.get("plan", "")
+            script = suggestion.get("script", "")
+            # 从分析文本/报告提取命令（优先已有 plan/script，其次从分析结果提取）
+            if not script:
+                script = _extract_script(analysis or full_resp)
+            # Issue5: 若仍无具体可执行命令（LLM 分析是报告文本而非命令），
+            # 生成确定性可执行命令兜底，避免卡片只罗列分析报告而无命令。
+            if not script:
+                script = _fallback_script(analysis or full_resp, service)
+            # plan 用简洁的动作摘要（命令+简短说明），而非整篇分析报告
+            if not plan:
+                plan = _action_summary(script, analysis or full_resp, service)
             if script or plan:
                 # Issue1: 每次分析只 yield 一个 suggestion 事件（内联审批卡），
                 # 不再同时 yield suggestion + approval_pending（会导致前端出现 2 个
