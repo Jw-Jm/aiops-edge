@@ -1,0 +1,8 @@
+# 离线增量构建：基于已就绪的 observability-frontend:v3.3.14（nginx 运行时层），
+# 仅替换 /usr/share/nginx/html 下的 dist 静态资源（含任务工作台删除 + aichat 建议确认卡）。
+# 避免重新拉取 node:20-alpine / nginx:1.27-alpine（国内网络不稳定）。
+FROM observability-frontend:v3.3.14
+COPY dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

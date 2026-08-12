@@ -143,7 +143,7 @@ nodeExporterTarget: ""
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true
-  image: "observability-frontend:v1.1.11"
+  image: "observability-frontend:v3.4.0"
   nodePort: 30253
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
@@ -181,7 +181,7 @@ ingest:
 
 aiOrchestrator:
   enabled: true
-  image: "ai-orchestrator:v1.1.12"
+  image: "ai-orchestrator:v1.1.13"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   minioEndpoint: "minio.observability.svc.cluster.local:9000"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
