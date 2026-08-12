@@ -556,9 +556,15 @@ def full_rca_analysis(affected_service: str, anomaly_event: dict = None) -> dict
     rule_id = (anomaly_event or {}).get("rule_id", "") or ""
     is_k8s_alert = affected_service == "kubernetes" or rule_id.startswith("k8s-")
 
-    # Phase 1: 确定性（仅对微服务生效；K8s 集群告警无微服务拓扑，跳过）
+    # Task3: K8s 集群告警（Pod 重启/OOM/Deployment 不可用）没有微服务拓扑，
+    # 直接走 K8s 针对性诊断 + 假设引擎，避免 diagnose_root_cause 把 kubernetes 当微服务
+    # 查拓扑 → 返回"排查 deepflow-grafana"等与告警无关的错误处置方案。
+    if is_k8s_alert:
+        return _k8s_rca(affected_service, anomaly_event)
+
+    # Phase 1: 确定性（仅对微服务生效）
     det_result = diagnose_root_cause(affected_service)
-    if not is_k8s_alert and det_result.get("confidence", 0) > 0.6:
+    if det_result.get("confidence", 0) > 0.6:
         return {"mode": "deterministic", "result": det_result}
 
     # Phase 2: 假设引擎 (需要 LLM)
@@ -584,3 +590,89 @@ def full_rca_analysis(affected_service: str, anomaly_event: dict = None) -> dict
 
     hyp_result = hypothesis_falsification_loop(hypotheses, affected_service)
     return {"mode": "hypothesis_engine", "result": {**det_result, "hypothesis_result": hyp_result}}
+
+
+def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
+    """K8s 集群告警的针对性 RCA（Task3）。
+
+    不走微服务拓扑的 diagnose_root_cause（会把 kubernetes 当微服务查拓扑，
+    返回与告警无关的处置方案）。改用告警上下文（rule_id/message）驱动：
+    - 有 LLM：LLM 基于真实告警信号生成 K8s 针对性假设 + cluster_check 证伪；
+    - 无 LLM：基于告警类型（Pod 重启/OOM/Deployment 不可用）生成确定性处置方案。
+    """
+    from orchestrator import brain
+    rule_id = (anomaly_event or {}).get("rule_id", "") or "k8s-alert"
+    rule_name = (anomaly_event or {}).get("rule_name", "")
+    message = (anomaly_event or {}).get("message", "")
+    severity = (anomaly_event or {}).get("severity", "")
+    count = (anomaly_event or {}).get("count", 0)
+
+    # 告警类型 → 针对性诊断/处置方案（确定性兜底，与告警相关，绝不指向无关微服务）
+    plan_map = {
+        "k8s-pod-crash": {
+            "cause": "检测到 Pod 频繁重启（restartCount 高），通常由容器崩溃、镜像拉取失败、"
+                     "资源限制（OOM）或探针失效导致。需定位具体 CrashLoopBackOff 的 Pod 排查。",
+            "action": ("1. `kubectl get pods -n <ns> | grep -E 'CrashLoopBackOff|Error'` 定位异常 Pod；\n"
+                       "2. `kubectl logs <pod> -n <ns> --previous` 查看崩溃前日志；\n"
+                       "3. `kubectl describe pod <pod> -n <ns>` 查看容器状态/资源限制/探针；\n"
+                       "4. 若为 OOM：调大 `resources.limits.memory` 或修复内存泄漏；\n"
+                       "5. 若为探针失败：修复 readiness/liveness 探针路径。"),
+        },
+        "k8s-oom-killed": {
+            "cause": "Pod 容器因超过内存限制被 OOMKilled，通常由内存泄漏或 limits.memory 过小导致。"
+                     "需定位被 OOM 的 Pod 及其实际内存占用。",
+            "action": ("1. `kubectl get pods -n <ns> | grep OOMKilled` 定位被 OOM 的 Pod；\n"
+                       "2. `kubectl describe pod <pod> -n <ns> | grep -i 'OOMKilled|Memory'` 查看内存限制与实际使用；\n"
+                       "3. `kubectl top pod <pod> -n <ns>` 查看实时内存占用；\n"
+                       "4. 调大 `resources.limits.memory` 或修复应用内存泄漏。"),
+        },
+        "k8s-deployment-unavailable": {
+            "cause": "Deployment 存在不可用副本（unavailableReplicas>0），可能由滚动更新失败、"
+                     "镜像拉取失败、资源不足或 Pod 崩溃导致。",
+            "action": ("1. `kubectl get deploy -n <ns> | grep -vE '1/1|2/2'` 定位不可用的 Deployment；\n"
+                       "2. `kubectl rollout status deploy/<name> -n <ns>` 查看滚动状态；\n"
+                       "3. `kubectl rollout history deploy/<name> -n <ns> --revision=0` 查看最近变更；\n"
+                       "4. `kubectl get pods -n <ns> | grep <deploy>` 定位异常 Pod 并查日志。"),
+        },
+    }
+    plan = plan_map.get(rule_id, {
+        "cause": f"检测到 K8s 告警（{rule_name or rule_id}），需基于告警消息分析：{message[:200]}",
+        "action": "1. `kubectl get events -n observability --sort-by=.lastTimestamp | tail -20` 查看最近事件；\n"
+                  "2. `kubectl get pods -n observability | grep -vE 'Running|Completed'` 定位异常资源；\n"
+                  "3. 结合告警消息定位具体对象并排查。",
+    })
+
+    # 尝试 LLM 假设引擎（已配置时），让"重新分析"产生新结果
+    if brain.llm_config and brain.llm_config.get("api_key"):
+        try:
+            hypotheses = generate_hypotheses({
+                "service": affected_service,
+                "abnormal_dimensions": [rule_name or rule_id],
+                "normal_dimensions": ["error_rate_normal"],
+            }, alert_context=anomaly_event)
+            if hypotheses:
+                hyp_result = hypothesis_falsification_loop(hypotheses, affected_service)
+                return {
+                    "mode": "hypothesis_engine",
+                    "result": {
+                        "root_cause": plan["cause"],
+                        "root_cause_type": "kubernetes",
+                        "recommendation": plan["action"],
+                        "hypothesis_result": hyp_result,
+                        "confidence": 0.8,
+                    },
+                    "message": "K8s 集群告警假设引擎分析完成",
+                }
+        except Exception as _e:
+            pass
+
+    return {
+        "mode": "deterministic",
+        "result": {
+            "root_cause": plan["cause"],
+            "root_cause_type": "kubernetes",
+            "recommendation": plan["action"],
+            "confidence": 0.8,
+        },
+        "message": "K8s 集群告警确定性分析",
+    }
