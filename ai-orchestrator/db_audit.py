@@ -102,3 +102,27 @@ class AuditStore:
         if service:
             mem = [e for e in mem if e["target_service"] == service]
         return {"items": mem[offset:offset + size], "total": len(mem)}
+
+    def query_by_task(self, task_id: str):
+        """查询某会话(task_id)的执行记录（处置建议执行历史）。"""
+        try:
+            cfg = _mysql_cfg()
+            conn = pymysql.connect(host=cfg["host"], port=cfg["port"], user=cfg["user"],
+                                   password=cfg["password"], database=cfg["database"],
+                                   charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT task_id, action, target_service, command, result, detail, created_at "
+                        "FROM audit_logs WHERE task_id=%s ORDER BY id ASC",
+                        (task_id,),
+                    )
+                    return [dict(r) for r in cur.fetchall()]
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return [e for e in self._mem if e["task_id"] == task_id]

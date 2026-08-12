@@ -538,6 +538,51 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
     return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result}
 
 
+class FinalReportRequest(BaseModel):
+    session_id: str = ""
+    service: str = ""
+
+
+@app.post("/api/v1/ai/final_report")
+async def final_report(req: FinalReportRequest):
+    """输出最终版本报告：汇总该会话全部上下文（含多次处置执行），调 LLM 生成。"""
+    if not req.session_id:
+        raise HTTPException(400, "session_id is required")
+    brain = _get_brain()
+    vals = brain.get_session_state(req.session_id) or {}
+    # 执行历史（审计）
+    try:
+        from db_audit import AuditStore
+        exec_history = AuditStore().query_by_task(req.session_id)
+    except Exception:
+        exec_history = []
+    # 组装上下文
+    parts = []
+    parts.append(f"## 用户原始问题\n{vals.get('user_message','') or '(无)'}")
+    parts.append(f"## 初步分析\n{vals.get('final_response','') or '(无)'}")
+    if exec_history:
+        h = []
+        for e in exec_history:
+            h.append(f"- [{e.get('created_at','')}] action={e.get('action','')} target={e.get('target_service','')}\n"
+                     f"  命令: {e.get('command','')}\n  结果: {e.get('result','')}")
+        parts.append("## 处置执行历史（多次）\n" + "\n".join(h))
+    else:
+        parts.append("## 处置执行历史\n(无已执行记录)")
+    service = req.service or vals.get("service", "")
+    context = "\n\n".join(parts)
+    # LLM 配置：与 main.py 既有模式一致（`_get_brain().llm_config`）
+    from orchestrator import _llm, _llm_key_ready
+    if not _llm_key_ready():
+        return {"report": f"### 最终版本报告\n\n（LLM 未配置，基于已有分析汇总）\n\n{context[:4000]}"}
+    system = ("你是资深 SRE 报告撰写员。基于用户原始问题、初步分析、以及全部处置执行历史，"
+              "输出**最终版本报告**，包含：1) 根因结论 2) 处置过程（哪些命令已执行、结果）"
+              "3) 当前状态与执行结果 4) 遗留风险 5) 后续建议。用 Markdown，条理清晰，完整不省略。")
+    cfg = brain.llm_config or {}
+    # _llm 为同步阻塞调用，放到线程池避免阻塞 event loop
+    report = await asyncio.to_thread(_llm, cfg, system, f"服务: {service}\n\n{context}", "最终报告")
+    return {"report": report}
+
+
 @app.get("/api/v1/ai/sessions")
 async def list_sessions():
     try:
