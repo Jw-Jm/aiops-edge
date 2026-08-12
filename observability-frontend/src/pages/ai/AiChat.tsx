@@ -1,13 +1,13 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { Button, Input, Empty } from 'antd'
-import api, { TENANT_ID, getSession, executeSuggestion } from '../../api/client'
+import api, { TENANT_ID, getSession, executeSuggestion, finalReport } from '../../api/client'
 import { useSearchParams } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
 
 interface ChatMessage {
   id: string; role: 'user' | 'assistant'; content: string; timestamp: string
-  kind?: 'text' | 'suggestion' | 'execresult'
-  plan?: string; script?: string; threadId?: string; riskScore?: number; riskReason?: string
+  kind?: 'text' | 'suggestion' | 'execresult' | 'report'
+  plan?: string; script?: string; threadId?: string; riskScore?: number; riskReason?: string; service?: string
 }
 
 const AiChat: React.FC = () => {
@@ -176,6 +176,21 @@ const AiChat: React.FC = () => {
     setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, kind: 'execresult', content: '⛔ 已驳回该处置建议，未执行。' } : x))
   }
 
+  // 需求2/3: 生成最终版本报告，作为普通消息追加到对话
+  const handleFinalReport = async (m: ChatMessage) => {
+    if (loading) return
+    setLoading(true); setProgress('正在生成最终版本报告…')
+    try {
+      const r = await finalReport({ session_id: activeSession || m.threadId, service: m.service || '' })
+      const report = r.data?.report || '（未生成报告）'
+      setMessages((prev) => [...prev, { id: `rep-${Date.now()}`, role: 'assistant', kind: 'report',
+        content: report, timestamp: new Date().toISOString() }])
+    } catch (err: any) {
+      setMessages((prev) => [...prev, { id: `re-${Date.now()}`, role: 'assistant',
+        content: `❌ 生成最终报告失败：${err?.message || ''}`, timestamp: new Date().toISOString() }])
+    } finally { setLoading(false); setProgress('') }
+  }
+
   return (
     <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 116px)' }}>
       {/* 会话列表 */}
@@ -222,13 +237,18 @@ const AiChat: React.FC = () => {
               {m.role === 'assistant' && <div className="ai-msg__av">AI</div>}
               {m.kind === 'suggestion' ? (
                 <div style={{ maxWidth: '86%', width: '100%', padding: '12px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.7,
-                  background: 'var(--surface-2)', border: '1px solid var(--warning)', borderLeft: '3px solid var(--warning)' }}>
+                  background: 'var(--surface-2)', border: '1px solid var(--warning)', borderLeft: '3px solid var(--warning)',
+                  minWidth: 0, overflow: 'hidden' }}>
                   <div style={{ fontWeight: 700, marginBottom: 6 }}>🛠️ 处置建议 · 待确认</div>
-                  {/* P2-14: plan 只展示方案要点（前 220 字），避免与上方完整分析报告重复 */}
-                  {m.plan && <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--text-muted)' }}>{(m.plan.length > 220 ? m.plan.slice(0, 220) + '…' : m.plan)}</div>}
+                  {/* P2-14: plan 全量展示（不再截断） */}
+                  {m.plan && <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--text-muted)' }}>{m.plan}</div>}
                   {/* P3-3: 无命令时不显示空命令块 */}
                   {m.script ? (
-                    <div style={{ fontFamily: 'monospace', background: 'var(--surface-3)', padding: '6px 8px', borderRadius: 6, marginBottom: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-all', overflow: 'auto', maxHeight: 200 }}>{m.script}</div>
+                    <div style={{ maxWidth: '100%', overflow: 'auto' }}>
+                      <div style={{ fontFamily: 'monospace', background: 'var(--surface-3)', padding: '6px 8px', borderRadius: 6,
+                        whiteSpace: 'pre-wrap', wordBreak: 'break-all', overflow: 'auto', maxHeight: 220,
+                        maxWidth: '100%', boxSizing: 'border-box' }}>{m.script}</div>
+                    </div>
                   ) : (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>未生成可执行命令，可在下方输入自定义命令，或让 AI 补充命令。</div>
                   )}
@@ -236,7 +256,7 @@ const AiChat: React.FC = () => {
                   <div style={{ fontSize: 12, color: m.riskScore && m.riskScore > 60 ? 'var(--danger)' : m.riskScore && m.riskScore > 30 ? 'var(--warning)' : 'var(--success)', marginBottom: 8 }}>
                     {`风险评分: ${m.riskScore ?? 0}/100${m.riskReason ? `（${m.riskReason}）` : ''}`}
                   </div>
-                  <ConfirmCard m={m} onExecute={handleExecute} onReject={handleReject} />
+                  <ConfirmCard m={m} onExecute={handleExecute} onReject={handleReject} onFinalReport={handleFinalReport} />
                 </div>
               ) : (
                 <div style={{ maxWidth: '82%', padding: '10px 14px', borderRadius: 10, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.7,
@@ -260,14 +280,15 @@ const AiChat: React.FC = () => {
 }
 
 // 需求2/3: 处置建议确认卡——确认执行 / 驳回 / 用户自定义命令执行
-const ConfirmCard: React.FC<{ m: ChatMessage; onExecute: (m: ChatMessage, script?: string) => void; onReject: (m: ChatMessage) => void }> = ({ m, onExecute, onReject }) => {
+const ConfirmCard: React.FC<{ m: ChatMessage; onExecute: (m: ChatMessage, script?: string) => void; onReject: (m: ChatMessage) => void; onFinalReport: (m: ChatMessage) => void }> = ({ m, onExecute, onReject, onFinalReport }) => {
   const [custom, setCustom] = useState('')
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
         {/* P3-3: 无命令时不显示"确认执行"，仅保留自定义命令与驳回 */}
         {m.script && <Button size="small" type="primary" onClick={() => onExecute(m)}>确认执行</Button>}
         <Button size="small" onClick={() => onReject(m)}>驳回</Button>
+        <Button size="small" onClick={() => onFinalReport(m)}>输出最终版本报告</Button>
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
         <Input size="small" placeholder="输入自定义命令后点击执行…" value={custom} onChange={(e) => setCustom(e.target.value)} />

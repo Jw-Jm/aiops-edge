@@ -132,6 +132,8 @@ export const login = (username: string, password: string) => api.post('/auth/log
 export const executeSuggestion = (data: {
   thread_id?: string; script: string; service?: string; context?: string; approved?: boolean
 }) => api.post('/ai/suggestion/execute', data)
+export const finalReport = (data: { session_id?: string; service?: string }) =>
+  api.post('/ai/final_report', data)
 
 // Alert Rules
 export const getAlertRules = () => api.get('/alerts/rules')
