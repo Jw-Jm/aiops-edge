@@ -361,20 +361,65 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. 从 MySQL 拿富化元数据（LEFT JOIN 语义：缺失则用默认值）
+	// 2. 从 ClickHouse 拿各服务指标聚合（调用量/错误数/平均延迟，近 7 天）
+	//    解决服务列表三项指标(calls/errors/avg_latency_ms)恒为 0 的问题。
+	metricsSQL := `SELECT service_name AS service, count() AS calls,
+	                     countIf(is_error=1) AS errs, avg(duration_ns)/1000000 AS avg_ms
+	              FROM observability.trace_spans
+	              WHERE date >= today()-7
+	              GROUP BY service_name`
+	metricsBody, err := h.queryClickHouse(ctx, metricsSQL)
+	if err != nil {
+		log.Printf("ListServices CH metrics query error: %v", err)
+	}
+	metrics := make(map[string]map[string]interface{})
+	if mrows, perr := parseRows(metricsBody); perr == nil {
+		for _, row := range mrows {
+			svc, _ := row["service"].(string)
+			if svc == "" {
+				continue
+			}
+			// count()/countIf() 在 ClickHouse JSONEachRow 中可能返回字符串（如 "3579"），
+			// 用 toFloat 兼容数字/字符串两种类型，避免类型断言失败导致 calls/errors 为 0。
+			calls := toFloat(row["calls"])
+			errs := toFloat(row["errs"])
+			avgMS := toFloat(row["avg_ms"])
+			errorRate := 0.0
+			if calls > 0 {
+				errorRate = errs / calls
+			}
+			metrics[svc] = map[string]interface{}{
+				"calls":          int64(calls),
+				"errors":         int64(errs),
+				"error_rate":     errorRate,
+				"avg_latency_ms": round2(avgMS),
+			}
+		}
+	}
+
+	// 3. 从 MySQL 拿富化元数据（LEFT JOIN 语义：缺失则用默认值）
 	meta := h.loadServiceMetadataForHandler(services)
 
-	// 3. 组装响应：每个服务一行，富化字段缺失时走默认值
+	// 4. 组装响应：每个服务一行，富化字段缺失时走默认值，指标缺失时为 0
 	result := make([]map[string]interface{}, 0, len(services))
 	for _, svc := range services {
 		m := meta[svc]
 		item := map[string]interface{}{
-			"service_name": svc,
-			"owner":        "",
-			"team":         "",
-			"tier":         "standard",
-			"description":  "",
-			"source":       "trace",
+			"service_name":    svc,
+			"owner":           "",
+			"team":            "",
+			"tier":            "standard",
+			"description":     "",
+			"source":          "trace",
+			"calls":           int64(0),
+			"errors":          int64(0),
+			"error_rate":      0.0,
+			"avg_latency_ms":  0.0,
+		}
+		if mm, ok := metrics[svc]; ok {
+			for k, v := range mm {
+				item[k] = v
+			}
 		}
 		if m != nil {
 			if m.Owner != "" {
@@ -951,6 +996,7 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	}
 	// P0-2: 若 service_topology 无调用边，回退到 trace_spans 按 trace 内相邻 span 的服务对聚合（尽力而为）
 	if len(edgeRows) == 0 {
+		// 第一级：parent_span_id self-join（最准确，依赖完整调用链）
 		fallbackSQL := fmt.Sprintf(
 			"SELECT s1.service_name AS source_service, s2.service_name AS target_service, count() AS calls, 0 AS errs, avg(s2.duration_ns) AS avg_ns "+
 				"FROM observability.trace_spans AS s1 "+
@@ -960,7 +1006,33 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 			chQuote(tid), clusterClause, minutes,
 		)
 		if fb, err := h.queryClickHouse(ctx, fallbackSQL); err == nil {
-			if fr, perr := parseRows(fb); perr == nil {
+			if fr, perr := parseRows(fb); perr == nil && len(fr) > 0 {
+				edgeRows = fr
+			}
+		}
+	}
+	// P0-2b: 若仍无边（数据无 parent_span_id 关联），改用 trace 内服务时序的相邻调用统计。
+	// 不依赖父子链：按 trace 分组后，统计同一 trace 内相邻出现(按 start_time 排序)的不同服务对，
+	// 能反映真实的服务间调用关系与调用量。
+	// 注：用 lagInFrame 窗口函数（neighbor 在 ClickHouse 24.8 已弃用会报错）。
+	if len(edgeRows) == 0 {
+		seqSQL := fmt.Sprintf(
+			"SELECT source_service, target_service, count() AS calls, 0 AS errs, avg(target_dur_ns) AS avg_ns FROM ( "+
+				"  SELECT service_name AS target_service, "+
+				"         lagInFrame(service_name, 1, '') OVER (ORDER BY trace_id, rn) AS source_service, "+
+				"         duration_ns AS target_dur_ns "+
+				"  FROM ( "+
+				"    SELECT trace_id, service_name, duration_ns, "+
+				"           row_number() OVER (PARTITION BY trace_id ORDER BY start_time) AS rn "+
+				"    FROM observability.trace_spans "+
+				"    WHERE tenant_id=%s%s AND start_time >= now() - INTERVAL %d MINUTE "+
+				"  ) "+
+				") WHERE source_service != '' AND source_service != target_service "+
+				"GROUP BY source_service, target_service ORDER BY calls DESC LIMIT 200",
+			chQuote(tid), clusterClause, minutes,
+		)
+		if fb, err := h.queryClickHouse(ctx, seqSQL); err == nil {
+			if fr, perr := parseRows(fb); perr == nil && len(fr) > 0 {
 				edgeRows = fr
 			}
 		}

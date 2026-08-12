@@ -1835,10 +1835,10 @@ _NL2SQL_SYSTEM = (
     "可用表：observability.trace_spans(span_id,parent_span_id,trace_id,service_name,start_time,"
     "duration_ns,is_error,response_status,peer_service), "
     "observability.service_topology(source_service,destination_service,calls,error_rate,p95_latency_ns,window), "
-    "observability.log_records(service_name,log_time,level,message,digest). "
+    "observability.log_records(service_name,timestamp,severity,body,trace_id). "
     "严格遵守以下规则："
     "1. 用户提到时间（近24小时/近1小时/近7天等）时，必须在 WHERE 加时间过滤，例如 "
-    "trace_spans 用 `start_time >= now() - INTERVAL 24 HOUR`，log_records 用 `log_time >= now() - INTERVAL 24 HOUR`。"
+    "trace_spans 用 `start_time >= now() - INTERVAL 24 HOUR`，log_records 用 `timestamp >= now() - INTERVAL 24 HOUR`。"
     "2. 用户要求'调用量最高/最多'时用 `ORDER BY count() DESC` 或 `ORDER BY calls DESC`；"
     "'错误率最高'用 `ORDER BY error_rate DESC`；严格按用户指定的指标排序，不要随意改排序字段。"
     "3. 用户要求前 N 个（如5个）时用 `LIMIT N`，且 N 等于用户数字。"
@@ -1855,7 +1855,7 @@ def _fallback_nl2sql(question: str) -> str:
     q = question.lower()
     if "错误" in q or "error" in q:
         if "日志" in q or "log" in q:
-            return "SELECT service_name, count() AS errors FROM observability.log_records WHERE level = 'error' GROUP BY service_name ORDER BY errors DESC LIMIT 100"
+            return "SELECT service_name, count() AS errors FROM observability.log_records WHERE severity = 'error' GROUP BY service_name ORDER BY errors DESC LIMIT 100"
         return ("SELECT service_name, countIf(is_error = 1) AS errors, count() AS calls "
                 "FROM observability.trace_spans GROUP BY service_name ORDER BY errors DESC LIMIT 100")
     if "日志" in q or "log" in q:

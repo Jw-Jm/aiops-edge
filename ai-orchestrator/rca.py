@@ -651,6 +651,33 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
                   "3. 结合告警消息定位具体对象并排查。",
     })
 
+    # P1-2: 采集真实集群状态（只读 kubectl），让 RCA 针对具体告警对象而非模板。
+    # 从告警上下文提取命名空间，采集异常 Pod / 最近事件 / 节点状态，注入 cause 与 action。
+    namespace = (anomaly_event or {}).get("namespace", "") or "observability"
+    _real = {}
+    try:
+        _real["abnormal_pods"] = _run_kubectl_safe(
+            f"kubectl get pods -n {namespace} -o wide | grep -E 'CrashLoopBackOff|Error|OOMKilled|Pending|ImagePullBackOff'",
+            15,
+        )
+        _real["recent_events"] = _run_kubectl_safe(
+            f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -15",
+            15,
+        )
+        _real["nodes"] = _run_kubectl_safe("kubectl get nodes -o wide", 15)
+    except Exception:
+        _real = {}
+    if _real.get("abnormal_pods") and "[不安全" not in _real["abnormal_pods"] and _real["abnormal_pods"].strip():
+        plan["cause"] += f"\n\n**真实集群状态（{namespace}）**：\n异常 Pod：\n{_real['abnormal_pods'][:800]}"
+        plan["action"] = (
+            f"1. 针对异常 Pod：`kubectl describe pod <异常Pod> -n {namespace}` 查看状态/资源/探针；\n"
+            f"2. 查看崩溃前日志：`kubectl logs <异常Pod> -n {namespace} --previous`；\n"
+            f"3. 确认是否为 OOM/探针失败后执行相应修复；\n"
+            f"{plan['action']}"
+        )
+    if _real.get("recent_events") and "[不安全" not in _real["recent_events"] and _real["recent_events"].strip():
+        plan["cause"] += f"\n最近事件：\n{_real['recent_events'][:800]}"
+
     # 尝试 LLM 假设引擎（已配置时），让"重新分析"产生新结果
     if brain.llm_config and brain.llm_config.get("api_key"):
         try:

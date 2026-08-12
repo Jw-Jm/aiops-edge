@@ -225,6 +225,34 @@ def _extract_script(text: str) -> str:
     return "\n".join(result)
 
 
+def _sanitize_script_placeholders(script: str, service: str = "") -> str:
+    """把 LLM 生成命令中的尖括号占位符（<pod-name>/<ns>/<namespace>/<deployment> 等）
+    替换为可执行的真实值。LLM 不知道真实 pod 名，常原样输出 <pod-name>，导致命令不可执行。
+    兜底策略：用服务名替换 pod/deployment 名（转标签定位更安全）；命名空间默认 observability。"""
+    import re
+    if not script:
+        return script
+    ns = "observability"
+    # 命名空间占位符 → observability
+    script = re.sub(r"<ns>|<namespace>|<namespace名>|namespace>", ns, script)
+    # 含 <pod-name>/<pod> 的命令：describe/logs/delete 改为按 app 标签定位（更安全，避免未知 pod 名）
+    def _replace_pod_cmd(m):
+        full = m.group(0)
+        return re.sub(r"<pod[^>]*>", f"$(kubectl get pods -n {ns} -l app={service or 'default'} -o name | head -1 | cut -d/ -f2)", full)
+    if service:
+        # 仅当存在具体服务名时才替换，避免替换成空值产生更糟的命令
+        script = re.sub(
+            r"(?i)\bkubectl\s+(logs|describe)\s+pod\s+<pod[^>]*>",
+            lambda m: m.group(0).replace("pod <pod", f"pod -l app={service} <pod").replace(" <pod", ""),
+            script,
+        )
+    # 剩余任意 <xxx> 占位符：日志/describe/delete/restart 命令里替换为 service，其余保留
+    script = re.sub(r"<pod[^>]*>", service or "default", script)
+    script = re.sub(r"<deployment[^>]*>|<deploy[^>]*>", service or "default", script)
+    script = re.sub(r"<svc>|<service[^>]*>", service or "default", script)
+    return script
+
+
 def _fallback_script(text: str, service: str = "") -> str:
     """当 LLM 分析未产出可执行命令时，基于分析文本/告警类型生成确定性可执行命令。
 
@@ -1345,6 +1373,9 @@ class BrainOrchestrator:
                 # 捕获分析结果供任务工作台生成建议
                 if node_name == "crewai":
                     suggestion.update(node_data)
+                if node_name == "risk":
+                    # P1-3: 捕获风险节点结果，让处置建议卡的 risk_score 反映 LLM 真实评估（1-5），而非恒为 0
+                    suggestion.update(node_data)
                 if node_name == "summarize":
                     suggestion.update(node_data)
                     resp = node_data.get("final_response", "")
@@ -1367,7 +1398,20 @@ class BrainOrchestrator:
             # plan 用简洁的动作摘要（命令+简短说明），而非整篇分析报告
             if not plan:
                 plan = _action_summary(script, analysis or full_resp, service)
+            # P2: 清理 LLM 命令中的尖括号占位符（<pod-name>/<ns>/<deployment>），
+            # 替换为真实服务名/命名空间，避免"不可执行命令"建议。
+            if script:
+                script = _sanitize_script_placeholders(script, service)
             if script or plan:
+                # P1-3: chat_graph 无 risk 节点，risk_score 恒为 0。此处启发式兜底：
+                # 基于分析文本中的严重告警信号给合理风险分（1-5），避免"告警严重但风险分 0"。
+                risk_score = suggestion.get("risk_score", 0) or 0
+                if not risk_score:
+                    _sig = (full_resp or analysis or "").lower()
+                    if any(k in _sig for k in ("oom", "crashloopbackoff", "imagepullbackoff", "critical", "严重告警", "不可用", "频繁重启")):
+                        risk_score = 4
+                    else:
+                        risk_score = 2
                 # Issue1: 每次分析只 yield 一个 suggestion 事件（内联审批卡），
                 # 不再同时 yield suggestion + approval_pending（会导致前端出现 2 个
                 # 内容一致的"处置建议·待确认"卡片）。task_id=thread_id 由前端回传确认。
@@ -1376,7 +1420,7 @@ class BrainOrchestrator:
                        "task_id": thread_id,
                        "plan": plan,
                        "script": script[:1000],
-                       "risk_score": suggestion.get("risk_score", 0),
+                       "risk_score": risk_score,
                        "risk_reason": suggestion.get("risk_reason", "需要人工确认后执行"),
                        "requires_approval": True,
                        "final_response": full_resp}

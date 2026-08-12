@@ -42,7 +42,14 @@ const Overview: React.FC = () => {
   }, [])
 
   const a = stats?.alerts
-  const healthScore = stats ? Math.max(0, Math.min(100, Math.round(100 - (stats.error_rate ?? 0)))) : null
+  // 系统健康度 = 100 扣除错误率与活跃告警严重度（critical 每个 -30，warning 每个 -10，info -3），
+  // 避免"严重告警 3 个但健康度 100/100"的矛盾感知。
+  const healthScore = stats
+    ? Math.max(
+        0,
+        Math.min(100, Math.round(100 - (stats.error_rate ?? 0) - (a?.critical ?? 0) * 30 - (a?.warning ?? 0) * 10 - (a?.info ?? 0) * 3)),
+      )
+    : null
   const sparkCalls = sparkPts((stats?.trend || []).map((t) => t.calls))
   const sparkErrors = sparkPts((stats?.trend || []).map((t) => t.errors))
 
@@ -73,7 +80,7 @@ const Overview: React.FC = () => {
             </span>
             <span style={{ color: 'var(--text-muted)' }}>/ 100</span>
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>依据：近 24h 请求错误率（100 − 错误率%）加权计算</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>依据：100 − 错误率 − 告警严重度（critical×30 / warning×10 / info×3）</div>
         </div>
         <div className="card" style={{ flex: 1, minWidth: 300, marginBottom: 0, padding: 20, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>待办</div>

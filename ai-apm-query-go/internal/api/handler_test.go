@@ -20,12 +20,20 @@ import (
 // ClickHouse 通过 httptest.Server mock（无需真实 CH）。
 // MySQL 不可达时（store.GetDB() 返回 nil）跳过富化断言，但仍验证 CH 发现路径。
 func TestListServicesReturnsCHServicesWithMetadata(t *testing.T) {
-	// 1. Mock ClickHouse：返回两条 trace_spans 服务（JSONEachRow 格式，每行一个 JSON 对象）
+	// 1. Mock ClickHouse：区分两种查询——服务发现（DISTINCT service_name）与指标聚合（count()）。
+	//    指标聚合返回 service/calls/errs/avg_ms 结构，供 ListServices 补全列表指标。
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		q := r.URL.Query().Get("query")
 		if !strings.Contains(q, "FROM observability.trace_spans") {
 			t.Errorf("unexpected CH query, want trace_spans, got: %s", q)
+		}
+		if strings.Contains(q, "count()") && strings.Contains(q, "GROUP BY service_name") {
+			// 指标聚合查询
+			_, _ = w.Write([]byte(
+				`{"service":"frontend","calls":100,"errs":2,"avg_ms":35.5}` + "\n" +
+					`{"service":"backend","calls":50,"errs":0,"avg_ms":20.1}` + "\n"))
+			return
 		}
 		if !strings.Contains(q, "DISTINCT service_name") {
 			t.Errorf("expected DISTINCT service_name in query, got: %s", q)
@@ -93,6 +101,15 @@ func TestListServicesReturnsCHServicesWithMetadata(t *testing.T) {
 		}
 	}
 
+	// 验证新增的指标聚合字段（calls/errors/error_rate/avg_latency_ms），修复服务列表全 0 问题
+	frontendItem := services[0].(map[string]interface{})
+	if calls, ok := frontendItem["calls"]; !ok || calls == nil || calls == float64(0) {
+		t.Errorf("expected frontend calls>0 from metric aggregation, got %v", frontendItem["calls"])
+	}
+	if _, ok := frontendItem["avg_latency_ms"]; !ok {
+		t.Errorf("expected frontend avg_latency_ms field present, got keys: %v", frontendItem)
+	}
+
 	// 验证 frontend 排在最前（CH 返回按 service_name ORDER BY，frontend < backend）
 	first := services[0].(map[string]interface{})
 	if first["service_name"] != "frontend" {
@@ -101,12 +118,12 @@ func TestListServicesReturnsCHServicesWithMetadata(t *testing.T) {
 
 	// MySQL 可达时验证富化字段（LEFT JOIN）
 	if hasMySQL {
-		frontendItem := first
-		if frontendItem["owner"] != "team-a" {
-			t.Errorf("expected frontend owner=team-a (enriched), got %v", frontendItem["owner"])
+		fItem := first
+		if fItem["owner"] != "team-a" {
+			t.Errorf("expected frontend owner=team-a (enriched), got %v", fItem["owner"])
 		}
-		if frontendItem["tier"] != "critical" {
-			t.Errorf("expected frontend tier=critical (enriched), got %v", frontendItem["tier"])
+		if fItem["tier"] != "critical" {
+			t.Errorf("expected frontend tier=critical (enriched), got %v", fItem["tier"])
 		}
 
 		// backend 无富化数据 → 走默认值（tier=standard, owner="")
