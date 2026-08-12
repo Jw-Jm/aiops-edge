@@ -42,6 +42,28 @@ def query_traces(service: str = "", tenant_id: str = "default") -> str:
     return json.dumps(data, indent=2, ensure_ascii=False)[:4000]
 
 
+def query_logs(service: str = "", minutes: int = 30) -> str:
+    """查询最近 N 分钟日志（ClickHouse log_records，经 query-api）。
+    空 service 走全量最近日志。"""
+    params = []
+    if service:
+        params.append(f"service={service}")
+    params.append(f"minutes={minutes}")
+    url = f"{QUERY_API}/logs/query?" + "&".join(params)
+    data = _get_json(url)
+    if isinstance(data, dict) and "error" in data:
+        return f"日志查询失败: {data['error']}"
+    rows = data.get("data", []) if isinstance(data, dict) else []
+    if not rows:
+        return "（近 30 分钟无日志）"
+    lines = []
+    for r in rows[:50]:
+        sev = r.get("severity", "")
+        body = (r.get("body", "") or "").strip().replace("\n", " ")
+        lines.append(f"[{r.get('timestamp','')}] {r.get('service_name','')} {sev}: {body[:200]}")
+    return "\n".join(lines)
+
+
 def query_topology(tenant_id: str = "default") -> str:
     data = _get_json(f"{QUERY_API}/topology/global")
     if isinstance(data, dict) and "error" in data:

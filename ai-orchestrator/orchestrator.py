@@ -12,7 +12,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 
-from tools import (query_metrics, query_traces, get_service_list, query_topology,
+from tools import (query_metrics, query_traces, query_logs, get_service_list, query_topology,
                    execute_shell, k8sgpt_diagnose, deepflow_status, get_infrastructure)
 from rag import rag
 from rca import full_rca_analysis
@@ -367,6 +367,7 @@ def _audit_log(task_id: str, action: str, operator: str,
 async def node_collect(state: AgentState) -> dict:
     """数据采集节点（async: 与 LangGraph async 图统一；内部 HTTP/子进程调用有短超时兜底）。"""
     cfg = state.get("llm_config")
+    api_key = _LLM_KEY_HOLDER.get("api_key", "")
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
@@ -415,28 +416,32 @@ async def node_collect(state: AgentState) -> dict:
         except: pass
         try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc))[:3000]
         except: pass
-    # K8sGPT — 快速失败不阻塞, timeout 5s
-    # 安全：明文 key 不写入子进程 argv（ps 可见），改用临时环境变量传递。
-    api_key = _LLM_KEY_HOLDER.get("api_key", "")
-    if api_key and cfg:
+    # 日志 — 每次对话无条件采集（结合日志分析）
+    try:
+        result["logs_data"] = await asyncio.to_thread(query_logs, svc, 30)
+    except:
+        result["logs_data"] = ""
+    # K8sGPT — 每次对话无条件调用，失败快速跳过不阻塞（timeout 10s）
+    import shutil
+    if shutil.which("k8sgpt"):
         try:
-            import shutil
-            if shutil.which("k8sgpt"):
-                backend = cfg.get("backend", "openai")
-                env = dict(os.environ)
+            env = dict(os.environ)
+            if api_key:
                 env["OPENAI_API_KEY"] = api_key
+            if cfg:
+                backend = cfg.get("backend", "openai")
                 await asyncio.to_thread(
                     subprocess.run,
                     ["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o")],
                     capture_output=True, text=True, timeout=5, env=env,
                 )
-                r = await asyncio.to_thread(
-                    subprocess.run,
-                    ["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
-                    capture_output=True, text=True, timeout=10, env=env,
-                )
-                if r.returncode == 0 and r.stdout.strip() and len(r.stdout.strip()) > 50:
-                    result["k8sgpt_raw"] = r.stdout[:2000]
+            r = await asyncio.to_thread(
+                subprocess.run,
+                ["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            if r.returncode == 0 and r.stdout.strip() and len(r.stdout.strip()) > 50:
+                result["k8sgpt_raw"] = r.stdout[:20000]
         except: pass
     result["messages"] = [f"[{_now()}] 数据采集完成"]
     return result
@@ -610,6 +615,10 @@ def _deterministic_diagnosis(state: dict) -> str:
     k8s = state.get("k8sgpt_raw", "")
     if k8s:
         lines.append(f"- **K8s 诊断**: {k8s[:600]}")
+    # 日志
+    logs = state.get("logs_data", "")
+    if logs:
+        lines.append(f"- **日志**: {logs[:1500]}")
     # 需求2/3: 无 LLM 时也纳入上一轮执行结果，基于处置结果继续深入分析
     exec_ctx = state.get("exec_context", "")
     if exec_ctx:
@@ -653,7 +662,7 @@ async def node_crewai(state: AgentState) -> dict:
         )
 
     ctx_parts = []
-    for k in ["similar_cases", "services_data", "infra_data", "alert_data", "red_metrics", "trace_data", "k8sgpt_raw", "rca_evidence"]:
+    for k in ["similar_cases", "services_data", "infra_data", "alert_data", "red_metrics", "trace_data", "logs_data", "k8sgpt_raw", "rca_evidence"]:
         v = state.get(k)
         if v: ctx_parts.append(v)
     # 需求2/3: 若存在上一轮已确认执行的处置结果，作为深入分析的上下文
