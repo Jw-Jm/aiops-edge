@@ -64,7 +64,8 @@ const ServiceObservability: React.FC = () => {
   // Issue5: 拓扑/服务数据加载；抽成函数以便定时刷新（默认 30s 轮询，接近实时）
   const loadData = (silent = false) => {
     if (!silent) setLoading(true)
-    Promise.all([getTopology({ minutes: 60 }), getServices()])
+    // P1: 时间窗由 1h 放宽到 24h，与总览口径一致（trace/log 为种子数据，1h 窗口会全零）
+    Promise.all([getTopology({ minutes: 1440 }), getServices()])
       .then(([t, s]) => {
         const td = t.data
         const rawNodes: any[] = (td.nodes || []).map((n: any, i: number) => ({

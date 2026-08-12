@@ -11,6 +11,26 @@ const METRICS: { key: 'cpu' | 'memory' | 'disk'; label: string; threshold: numbe
   { key: 'disk', label: '磁盘使用率', threshold: 85 },
 ]
 
+// P1: ETT（触达阈值时间）展示。基于 ewma 预测的 ett_seconds；已越阈值/超预测窗口时给出明确文案。
+const ettText = (d: CapacityForecast | null): string => {
+  if (!d) return '-'
+  const ewma = d.forecasts?.ewma
+  if (!ewma) return '-'
+  if (ewma.already_breached) return '已触达阈值'
+  if (!ewma.within_horizon || !ewma.ett_seconds || ewma.ett_seconds <= 0) return '预测窗口内不触达'
+  const h = Math.floor(ewma.ett_seconds / 3600)
+  const m = Math.floor((ewma.ett_seconds % 3600) / 60)
+  return h > 0 ? `${h} 小时 ${m} 分后` : `${m} 分后`
+}
+const ettTone = (d: CapacityForecast | null): string => {
+  if (!d) return 'var(--text-muted)'
+  const ewma = d.forecasts?.ewma
+  if (!ewma) return 'var(--text-muted)'
+  if (ewma.already_breached) return 'var(--danger)'
+  if (!ewma.within_horizon || !ewma.ett_seconds || ewma.ett_seconds <= 0) return 'var(--success)'
+  return ewma.ett_seconds <= 24 * 3600 ? 'var(--warning)' : 'var(--text)'
+}
+
 const Capacity: React.FC = () => {
   const chartRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [instances, setInstances] = useState<string[]>([])
@@ -79,9 +99,12 @@ const Capacity: React.FC = () => {
           return (
             <div className="card" style={{ padding: 16, marginBottom: 16 }} key={m.key}>
               <Row gutter={[16, 16]} style={{ marginBottom: 12 }}>
-                <Col span={8}><Statistic title={`${m.label} · 当前值`} value={d ? d.current : 0} precision={2} suffix="%" valueStyle={{ color: d && d.current > m.threshold ? 'var(--danger)' : 'var(--text)' }} /></Col>
-                <Col span={8}><Statistic title="阈值" value={m.threshold} suffix="%" /></Col>
-                <Col span={8}><Statistic title="环比变化" value={d ? d.change_pct : 0} precision={2} suffix="%" valueStyle={{ color: d && d.change_pct > 0 ? 'var(--danger)' : 'var(--success)' }} /></Col>
+                <Col span={6}><Statistic title={`${m.label} · 当前值`} value={d ? d.current : 0} precision={2} suffix="%" valueStyle={{ color: d && d.current > m.threshold ? 'var(--danger)' : 'var(--text)' }} /></Col>
+                <Col span={6}><Statistic title="阈值" value={m.threshold} suffix="%" /></Col>
+                <Col span={6}><Statistic title="环比变化" value={d ? d.change_pct : 0} precision={2} suffix="%" valueStyle={{ color: d && d.change_pct > 0 ? 'var(--danger)' : 'var(--success)' }} /></Col>
+                <Col span={6}>
+                  <Statistic title="预计触达阈值" value={ettText(d)} valueStyle={{ color: ettTone(d) }} />
+                </Col>
               </Row>
               <div ref={(el) => { chartRefs.current[m.key] = el }} style={{ width: '100%', height: 300 }} />
             </div>

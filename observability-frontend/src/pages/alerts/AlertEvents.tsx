@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Segmented, Button, Space, Drawer, Spin } from 'antd'
+import { useSearchParams } from 'react-router-dom'
 import { getAlertEvents, rcaAlertAnalysis } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 
@@ -8,6 +9,7 @@ interface AlertEvent { id: string | number; severity?: string; labels?: any; sum
 const sevTone = (s: string): 'crit' | 'warn' | 'info' => (s === 'critical' || s === '严重' ? 'crit' : s === 'warning' || s === '警告' ? 'warn' : 'info')
 
 const AlertEvents: React.FC = () => {
+  const [searchParams] = useSearchParams()
   const [sev, setSev] = useState<string>('all')
   const [status, setStatus] = useState<string>('all') // 2.10 当前/历史告警
   const [data, setData] = useState<AlertEvent[]>([])
@@ -16,14 +18,19 @@ const AlertEvents: React.FC = () => {
   const [rca, setRca] = useState('')
   const [rcaLoading, setRcaLoading] = useState(false)
 
+  // P1: 从规则页"历史告警"跳转携带 ?rule=，按 rule_id 过滤
+  const ruleFilter = searchParams.get('rule') || ''
+
   const load = () => {
     setLoading(true)
-    getAlertEvents({ limit: 200 }).then((r) => {
+    const params: Record<string, unknown> = { limit: 200 }
+    if (ruleFilter) params.rule = ruleFilter
+    getAlertEvents(params).then((r) => {
       const d = Array.isArray(r.data) ? r.data : r.data?.events || r.data?.data || []
       setData(d)
     }).catch(() => setData([])).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [ruleFilter])
 
   const severity = (e: AlertEvent) => e.severity || e.labels?.severity || e.labels?.level || 'warning'
   const eventStatus = (e: any) => e.status || e.state || (e.resolved_at ? 'resolved' : 'firing')

@@ -25,7 +25,19 @@ const AlertRules: React.FC = () => {
 
   const submit = async () => {
     const v = await form.validateFields()
-    createAlertRule({ rule_name: v.name, service_name: v.service, metric: v.metric, threshold: v.threshold, severity: v.severity })
+    // P0: 契约对齐后端 AlertRule 结构体字段（name/service 而非 rule_name/service_name）。
+    // 后端 AlertRule 结构体 json tag 为 name/service，且 service 必填。
+    createAlertRule({
+      name: v.name,
+      service: v.service,
+      metric: v.metric,
+      threshold: v.threshold,
+      severity: v.severity,
+      condition: v.condition || '>',
+      duration: v.duration || 5,
+      type: 'threshold',
+      enabled: v.enabled ?? true,
+    })
       .then(() => { message.success('已创建'); setOpen(false); load() })
       .catch((e) => message.error(e?.response?.data?.error || '创建失败'))
   }
@@ -59,7 +71,9 @@ const AlertRules: React.FC = () => {
       <Modal title="新建告警规则" open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose>
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item name="name" label="规则名称" rules={[{ required: true }]}><Input placeholder="如：order-svc 错误率过高" /></Form.Item>
-          <Form.Item name="service" label="服务名称"><Input placeholder="服务名" /></Form.Item>
+          <Form.Item name="service" label="服务名称" rules={[{ required: true, message: '服务名称必填' }]}><Input placeholder="如：order-svc" /></Form.Item>
+          <Form.Item name="condition" label="触发条件" initialValue=">"><Select options={[{ value: '>', label: '>' }, { value: '>=', label: '>=' }, { value: '<', label: '<' }, { value: '<=', label: '<=' }]} /></Form.Item>
+          <Form.Item name="duration" label="持续时间(分钟)" initialValue={5}><InputNumber style={{ width: '100%' }} min={1} /></Form.Item>
           <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}><Input placeholder="如：error_rate" /></Form.Item>
           <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}><InputNumber style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="severity" label="严重度" initialValue="warning"><Select options={[{ value: 'critical', label: '严重' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }]} /></Form.Item>

@@ -238,7 +238,7 @@ function AuditLog() {
           // Issue8: 后端审计日志返回 created_at（非 timestamp）；缺失时回退 target
           { title: '时间', dataIndex: 'created_at', width: 180, render: (v, r: any) => (r.created_at || r.timestamp || '').replace('T', ' ').slice(0, 19) },
           { title: '操作', dataIndex: 'action', width: 120, render: (v) => <Tag>{v}</Tag> },
-          { title: '操作人', dataIndex: 'operator', width: 110, render: (v, r: any) => r.operator_name || r.operator || '-' },
+          { title: '操作人', dataIndex: 'operator', width: 110, render: (v, r: any) => r.operator_name || (r.operator && /^\d+$/.test(String(r.operator)) ? `用户#${r.operator}` : r.operator || '-') },
           { title: '目标服务', dataIndex: 'target_service', width: 140, render: (v, r: any) => (r.target_service || r.target || '-') },
           { title: '命令', dataIndex: 'command', ellipsis: true },
           { title: '结果', dataIndex: 'result', width: 90 },

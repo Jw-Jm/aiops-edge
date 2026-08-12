@@ -103,7 +103,8 @@ const Overview: React.FC = () => {
                 style={{ flex: 1, minWidth: 240 }}
                 suffix={<span style={{ cursor: 'pointer', display: 'flex' }} onClick={() => { if (aiQ.trim()) navigate(`/ai/chat?q=${encodeURIComponent(aiQ)}`) }}><AppIcon name="send" /></span>}
               />
-              <Button onClick={() => navigate('/ai/chat?q=分析 prod 集群故障根因')}>分析根因</Button>
+              {/* P2-16: "分析根因"基于当前输入（若已输入），否则用默认预设 */}
+              <Button onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(aiQ.trim() || '分析 prod 集群故障根因')}`)}>分析根因</Button>
               <Button onClick={() => navigate('/ai/chat?q=巡检所有 K8s 集群')}>集群巡检</Button>
             </div>
           </PaneCard>

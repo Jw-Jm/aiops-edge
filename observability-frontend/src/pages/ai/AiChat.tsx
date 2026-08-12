@@ -160,7 +160,9 @@ const AiChat: React.FC = () => {
       // 自动发起下一轮深入分析（带执行结果作为上下文）
       await handleSend(undefined, `${script}\n---执行结果---\n${execResult}`)
     } catch (err: any) {
-      setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, content: `❌ 执行失败：${err?.message || ''}` } : x))
+      // P0-2: 失败也要把 kind 改为 execresult，否则 suggestion 卡片忽略 content，用户看不到错误
+      const detail = err?.response?.data?.error || err?.message || '未知错误'
+      setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, kind: 'execresult', content: `❌ 执行失败：${detail}\n命令未执行。` } : x))
     }
   }
 
@@ -217,10 +219,17 @@ const AiChat: React.FC = () => {
                 <div style={{ maxWidth: '86%', width: '100%', padding: '12px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.7,
                   background: 'var(--surface-2)', border: '1px solid var(--warning)', borderLeft: '3px solid var(--warning)' }}>
                   <div style={{ fontWeight: 700, marginBottom: 6 }}>🛠️ 处置建议 · 待确认</div>
-                  {m.plan && <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--text-muted)' }}>{m.plan}</div>}
-                  <div style={{ fontFamily: 'monospace', background: 'var(--surface-3)', padding: '6px 8px', borderRadius: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>{m.script || '(无命令)'}</div>
-                  <div style={{ fontSize: 12, color: m.riskScore && m.riskScore > 60 ? 'var(--danger)' : 'var(--text-muted)', marginBottom: 8 }}>
-                    {m.riskScore ? `风险: ${m.riskScore}/100 ${m.riskReason || ''}` : ''}
+                  {/* P2-14: plan 只展示方案要点（前 220 字），避免与上方完整分析报告重复 */}
+                  {m.plan && <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--text-muted)' }}>{(m.plan.length > 220 ? m.plan.slice(0, 220) + '…' : m.plan)}</div>}
+                  {/* P3-3: 无命令时不显示空命令块 */}
+                  {m.script ? (
+                    <div style={{ fontFamily: 'monospace', background: 'var(--surface-3)', padding: '6px 8px', borderRadius: 6, marginBottom: 6, whiteSpace: 'pre-wrap' }}>{m.script}</div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>未生成可执行命令，可在下方输入自定义命令，或让 AI 补充命令。</div>
+                  )}
+                  {/* P3-4: 始终展示风险评分（含 0 分），0 分显示"低" */}
+                  <div style={{ fontSize: 12, color: m.riskScore && m.riskScore > 60 ? 'var(--danger)' : m.riskScore && m.riskScore > 30 ? 'var(--warning)' : 'var(--success)', marginBottom: 8 }}>
+                    {`风险评分: ${m.riskScore ?? 0}/100${m.riskReason ? `（${m.riskReason}）` : ''}`}
                   </div>
                   <ConfirmCard m={m} onExecute={handleExecute} onReject={handleReject} />
                 </div>
@@ -251,11 +260,12 @@ const ConfirmCard: React.FC<{ m: ChatMessage; onExecute: (m: ChatMessage, script
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
-        <Button size="small" type="primary" onClick={() => onExecute(m)}>确认执行</Button>
+        {/* P3-3: 无命令时不显示"确认执行"，仅保留自定义命令与驳回 */}
+        {m.script && <Button size="small" type="primary" onClick={() => onExecute(m)}>确认执行</Button>}
         <Button size="small" onClick={() => onReject(m)}>驳回</Button>
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
-        <Input size="small" placeholder="或输入自定义命令后点击执行…" value={custom} onChange={(e) => setCustom(e.target.value)} />
+        <Input size="small" placeholder="输入自定义命令后点击执行…" value={custom} onChange={(e) => setCustom(e.target.value)} />
         <Button size="small" disabled={!custom.trim()} onClick={() => onExecute(m, custom)}>执行自定义命令</Button>
       </div>
     </div>

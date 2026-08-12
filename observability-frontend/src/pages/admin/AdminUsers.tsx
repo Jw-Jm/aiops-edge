@@ -20,9 +20,19 @@ const AdminUsers: React.FC = () => {
   const openEdit = (u: any) => { setEditing(u); form.setFieldsValue({ username: u.username, role: u.role, display_name: u.display_name, email: u.email }); setOpen(true) }
 
   const submit = async () => {
-    const v = await form.validateFields()
-    const req = editing ? updateUser(editing.id, v) : createUser(v)
-    req.then(() => { message.success(editing ? '已更新' : '已创建'); setOpen(false); load() }).catch((e) => message.error(e?.response?.data?.error || '操作失败'))
+    try {
+      const v = await form.validateFields()
+      const req = editing ? updateUser(editing.id, v) : createUser(v)
+      await req
+      message.success(editing ? '已更新' : '已创建')
+      setOpen(false)
+      load()
+    } catch (e: any) {
+      // validateFields 校验失败或请求失败都会到这里；校验失败时不弹错误提示
+      if (!(e && e.errorFields)) {
+        message.error(e?.response?.data?.error || '操作失败')
+      }
+    }
   }
 
   const cols = [
