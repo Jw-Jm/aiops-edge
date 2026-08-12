@@ -175,6 +175,10 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/sessions", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/session/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/shell/check", handler.ProxyAI)
+	// P0-2: aichat 内嵌审批——suggestion/execute 走 ProxyAI 注入 X-Internal-Token，
+	// 使 orchestrator 的 _require_approver 通过（否则 nginx 直连 orchestrator 缺 token → 403）。
+	mux.HandleFunc("/api/v1/ai/suggestion/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/suggestion", handler.ProxyAI)
 	// NL2SQL：代理到 ai-orchestrator（/ai/nl2sql/translate、/ai/nl2sql/{id}/execute、/ai/nl2sql/{id}）
 	mux.HandleFunc("/api/v1/ai/nl2sql/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/nl2sql", handler.ProxyAI)

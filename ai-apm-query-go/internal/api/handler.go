@@ -857,13 +857,20 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 告警统计（读内存 alertEvents）
+	// 告警统计（读内存 alertEvents，P1: 与事件页一致按 rule_id 聚合，避免原始事件数与
+	// 规则数口径不一致——首页 222 vs 事件页 3）
 	alertEventsMu.RLock()
 	alertAgg := make(map[string]map[string]int)
+	seenRule := map[string]bool{}
 	for _, ev := range alertEvents {
 		if ev.Status != "firing" {
 			continue
 		}
+		// 相同 rule_id 只统计一次（与 AlertEvents 聚合口径一致）
+		if seenRule[ev.RuleID] {
+			continue
+		}
+		seenRule[ev.RuleID] = true
 		if alertAgg[ev.Service] == nil {
 			alertAgg[ev.Service] = map[string]int{}
 		}

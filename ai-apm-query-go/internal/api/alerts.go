@@ -599,6 +599,8 @@ func (h *Handler) AlertEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceFilter := r.URL.Query().Get("service")
+	// P1: 支持 ?rule= 按规则过滤（规则页"历史告警"跳转携带）
+	ruleFilter := r.URL.Query().Get("rule")
 	limit := 50
 	offset := 0
 
@@ -620,6 +622,9 @@ func (h *Handler) AlertEvents(w http.ResponseWriter, r *http.Request) {
 	aggMap := map[string]*AggAlertEvent{}
 	for _, ev := range alertEvents {
 		if serviceFilter != "" && ev.Service != serviceFilter {
+			continue
+		}
+		if ruleFilter != "" && ev.RuleID != ruleFilter {
 			continue
 		}
 		key := ev.RuleID
