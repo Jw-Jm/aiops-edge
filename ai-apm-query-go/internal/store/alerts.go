@@ -27,6 +27,7 @@ type AlertRule struct {
 	AnomalyMethod   string // anomaly 检测方法：zscore|mad
 	SLOID           string // burn_rate 引用的 SLO 目标 id
 	Keyword         string // log_keyword 日志关键字（body LIKE '%keyword%'）
+	Cluster         string // A-6：规则生效集群（空=全部），空串与"all"等价
 }
 
 // AlertRuleDAO 告警规则数据访问（全量重建 + 加载）。
@@ -39,7 +40,7 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	rows, err := conn.Query(
-		"SELECT id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url, cooldown, dampening, baseline_seconds, anomaly_method, slo_id, keyword FROM alert_rules")
+		"SELECT id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url, cooldown, dampening, baseline_seconds, anomaly_method, slo_id, keyword, cluster FROM alert_rules")
 	if err != nil {
 		return nil, err
 	}
@@ -52,9 +53,10 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 		var am sql.NullString
 		var sloID sql.NullString
 		var kw sql.NullString
+		var cl sql.NullString
 		if err := rows.Scan(&r.ID, &r.Name, &r.Service, &r.Type, &r.Metric,
 			&r.Condition, &r.Threshold, &r.Duration, &r.Severity, &en, &wh, &r.Cooldown, &r.Dampening,
-			&r.BaselineSeconds, &am, &sloID, &kw); err != nil {
+			&r.BaselineSeconds, &am, &sloID, &kw, &cl); err != nil {
 			return nil, err
 		}
 		r.Enabled = en == 1
@@ -62,6 +64,7 @@ func (d *AlertRuleDAO) LoadAll() ([]AlertRule, error) {
 		r.AnomalyMethod = am.String
 		r.SLOID = sloID.String
 		r.Keyword = kw.String
+		r.Cluster = cl.String
 		out = append(out, r)
 	}
 	return out, nil
@@ -80,11 +83,11 @@ func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 	}
 	defer tx.Rollback()
 	stmt, err := tx.Prepare(
-		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url, cooldown, dampening, baseline_seconds, anomaly_method, slo_id, keyword) " +
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+		"INSERT INTO alert_rules (id, name, service, type, metric, cond, threshold, duration, severity, enabled, webhook_url, cooldown, dampening, baseline_seconds, anomaly_method, slo_id, keyword, cluster) " +
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
 			"ON DUPLICATE KEY UPDATE name=VALUES(name), service=VALUES(service), type=VALUES(type), metric=VALUES(metric), " +
 			"cond=VALUES(cond), threshold=VALUES(threshold), duration=VALUES(duration), severity=VALUES(severity), enabled=VALUES(enabled), webhook_url=VALUES(webhook_url), cooldown=VALUES(cooldown), dampening=VALUES(dampening), " +
-			"baseline_seconds=VALUES(baseline_seconds), anomaly_method=VALUES(anomaly_method), slo_id=VALUES(slo_id), keyword=VALUES(keyword)")
+			"baseline_seconds=VALUES(baseline_seconds), anomaly_method=VALUES(anomaly_method), slo_id=VALUES(slo_id), keyword=VALUES(keyword), cluster=VALUES(cluster)")
 	if err != nil {
 		return err
 	}
@@ -94,7 +97,7 @@ func (d *AlertRuleDAO) ReplaceAll(rules []AlertRule) error {
 		ids[r.ID] = true
 		if _, err := stmt.Exec(r.ID, r.Name, r.Service, r.Type, r.Metric,
 			r.Condition, r.Threshold, r.Duration, r.Severity, boolToInt(r.Enabled), r.WebhookURL, r.Cooldown, r.Dampening,
-			r.BaselineSeconds, r.AnomalyMethod, r.SLOID, r.Keyword); err != nil {
+			r.BaselineSeconds, r.AnomalyMethod, r.SLOID, r.Keyword, r.Cluster); err != nil {
 			return err
 		}
 	}

@@ -278,6 +278,10 @@ CREATE TABLE IF NOT EXISTS alert_rules (
 	if !hasColumn(conn, "alert_rules", "keyword") {
 		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN keyword VARCHAR(255) DEFAULT ''")
 	}
+	// A-6: 规则生效集群（空=全部，幂等）
+	if !hasColumn(conn, "alert_rules", "cluster") {
+		_, _ = conn.Exec("ALTER TABLE alert_rules ADD COLUMN cluster VARCHAR(64) DEFAULT ''")
+	}
 
 	// slo_targets SLO 目标（availability/latency，burn_rate 规则引用）
 	conn.Exec(`CREATE TABLE IF NOT EXISTS slo_targets (

@@ -40,6 +40,7 @@ type AlertRule struct {
 	AnomalyMethod   string `json:"anomaly_method,omitempty"`   // anomaly 检测方法：zscore|mad
 	SLOID           string `json:"slo_id,omitempty"`           // burn_rate 引用的 SLO 目标 id
 	Keyword         string `json:"keyword,omitempty"`          // log_keyword 日志关键字（body LIKE '%keyword%'）
+	Cluster         string `json:"cluster,omitempty"`          // A-6：规则生效集群（空=全部）
 }
 
 // inCooldown 判断规则是否处于冷却期（距上次触发 < Cooldown 分钟）。
@@ -81,6 +82,7 @@ type AlertEvent struct {
 	Timeline         string  `json:"timeline,omitempty"`       // 状态变更历史（JSON 数组）
 	Investigation    string  `json:"investigation,omitempty"` // 调查结果（RCA 分析 JSON）
 	Signature        string  `json:"signature,omitempty"`     // dedupe 指纹（rule+service+detail）
+	Cluster          string  `json:"cluster,omitempty"`       // A-6：事件所属集群（继承规则）
 }
 
 // eventSignature 生成事件指纹（rule+service+detail 维度），用于 dedupe。
@@ -231,7 +233,7 @@ func fromCHTime(s string) string {
 // version 用当前纳秒时间戳，确保同 id 新版本被 ReplacingMergeTree 保留。
 func (h *Handler) insertAlertEvents(events []AlertEvent) error {
 	var buf strings.Builder
-	buf.WriteString(`INSERT INTO observability.alert_events (id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, version, date) VALUES `)
+	buf.WriteString(`INSERT INTO observability.alert_events (id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, cluster_id, version, date) VALUES `)
 	version := uint64(time.Now().UnixNano())
 	for i, e := range events {
 		if i > 0 {
@@ -241,7 +243,7 @@ func (h *Handler) insertAlertEvents(events []AlertEvent) error {
 		if t, err := time.Parse(time.RFC3339, e.LastTimestamp); err == nil {
 			date = t.UTC().Format("2006-01-02")
 		}
-		buf.WriteString(fmt.Sprintf("('%s','%s','%s','%s','%s','%s',%v,%v,%s,%d,%s,%s,'%s',%s,'%s',%s,'%s','%s','%s','%s',%d,%s)",
+		buf.WriteString(fmt.Sprintf("('%s','%s','%s','%s','%s','%s',%v,%v,%s,%d,%s,%s,'%s',%s,'%s',%s,'%s','%s','%s','%s','%s',%d,%s)",
 			escCH(e.ID), escCH(e.RuleID), escCH(e.RuleName), escCH(e.Service), escCH(e.Severity), escCH(e.Message),
 			e.Value, e.Threshold,
 			chTimeVal(e.Timestamp), e.Count,
@@ -250,6 +252,7 @@ func (h *Handler) insertAlertEvents(events []AlertEvent) error {
 			chTimeVal(e.AcknowledgedAt), escCH(e.AcknowledgedBy),
 			chTimeVal(e.ResolvedAt), escCH(e.ResolvedBy),
 			escCH(e.Timeline), escCH(e.Investigation), escCH(e.Signature),
+			escCH(e.Cluster),
 			version,
 			dateVal(date),
 		))
@@ -291,7 +294,7 @@ func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEv
 	if offset <= 0 {
 		offset = 0
 	}
-	sql := "SELECT id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature FROM observability.alert_events" + where + " ORDER BY last_timestamp DESC LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
+	sql := "SELECT id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, cluster_id FROM observability.alert_events" + where + " ORDER BY last_timestamp DESC LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	body, err := h.queryClickHouse(ctx, sql)
@@ -334,6 +337,7 @@ func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEv
 			Timeline:       str(r["timeline"]),
 			Investigation:  str(r["investigation"]),
 			Signature:      str(r["signature"]),
+			Cluster:        str(r["cluster_id"]), // A-6：读取集群标记
 		})
 	}
 	return out, nil
@@ -388,7 +392,7 @@ func loadAlertRules() {
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 			Cooldown: r.Cooldown, Dampening: r.Dampening,
 			BaselineSeconds: r.BaselineSeconds, AnomalyMethod: r.AnomalyMethod, SLOID: r.SLOID,
-			Keyword: r.Keyword,
+			Keyword: r.Keyword, Cluster: r.Cluster,
 		})
 	}
 }
@@ -404,7 +408,7 @@ func saveAlertRules() {
 			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
 			Cooldown: r.Cooldown, Dampening: r.Dampening,
 			BaselineSeconds: r.BaselineSeconds, AnomalyMethod: r.AnomalyMethod, SLOID: r.SLOID,
-			Keyword: r.Keyword,
+			Keyword: r.Keyword, Cluster: r.Cluster,
 		})
 	}
 	alertRulesMu.RUnlock()
@@ -1133,14 +1137,21 @@ func promLabelVal(s string) string {
 // 安全：service 来自用户输入，拼入标签值前须转义，防 PromQL 注入。
 func metricPromQL(rule AlertRule) string {
 	svc := promLabelVal(rule.Service)
+	// A-7 修复：规则可限定集群，PromQL 追加 cluster 标签过滤，避免跨集群同名服务数据混合。
+	// 空 cluster（或 all）不追加过滤，保持全量语义。
+	clPart := ""
+	if rule.Cluster != "" && rule.Cluster != "all" {
+		esc := strings.ReplaceAll(strings.ReplaceAll(rule.Cluster, `\`, `\\`), `"`, `\"`)
+		clPart = fmt.Sprintf(`, cluster="%s"`, esc)
+	}
 	switch rule.Metric {
 	case "error_rate":
-		return fmt.Sprintf(`sum(rate(service_errors_total{service="%s"}[%dm])) / clamp_min(sum(rate(service_requests_total{service="%s"}[%dm])), 1) * 100`,
-			svc, rule.Duration, svc, rule.Duration)
+		return fmt.Sprintf(`sum(rate(service_errors_total{service="%s"%s}[%dm])) / clamp_min(sum(rate(service_requests_total{service="%s"%s}[%dm])), 1) * 100`,
+			svc, clPart, rule.Duration, svc, clPart, rule.Duration)
 	case "call_count":
-		return fmt.Sprintf(`sum(rate(service_requests_total{service="%s"}[%dm])) * %d`, svc, rule.Duration, rule.Duration)
+		return fmt.Sprintf(`sum(rate(service_requests_total{service="%s"%s}[%dm])) * %d`, svc, clPart, rule.Duration, rule.Duration)
 	case "latency_p99":
-		return fmt.Sprintf(`histogram_quantile(0.99, sum(rate(service_request_duration_seconds_bucket{service="%s"}[%dm])) by (le))`, svc, rule.Duration)
+		return fmt.Sprintf(`histogram_quantile(0.99, sum(rate(service_request_duration_seconds_bucket{service="%s"%s}[%dm])) by (le))`, svc, clPart, rule.Duration)
 	default:
 		// metric_raw：metric 字段即 PromQL 原始表达式（仅限 admin 创建，见 createAlertRule 鉴权）
 		return rule.Metric
