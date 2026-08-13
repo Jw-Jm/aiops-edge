@@ -1843,8 +1843,9 @@ _NL2SQL_SYSTEM = (
     "observability.service_topology(source_service,destination_service,calls,error_rate,p95_latency_ns,window), "
     "observability.log_records(service_name,timestamp,severity,body,trace_id). "
     "严格遵守以下规则："
-    "1. 用户提到时间（近24小时/近1小时/近7天等）时，必须在 WHERE 加时间过滤，例如 "
-    "trace_spans 用 `start_time >= now() - INTERVAL 24 HOUR`，log_records 用 `timestamp >= now() - INTERVAL 24 HOUR`。"
+    "1. 无论用户是否提到时间，trace_spans/log_records 查询都必须带时间过滤（默认最近 24 小时），例如 "
+    "trace_spans 用 `start_time >= now() - INTERVAL 24 HOUR`，log_records 用 `timestamp >= now() - INTERVAL 24 HOUR`；"
+    "用户提到具体时间（近1小时/近7天等）时按其指定窗口。"
     "2. 用户要求'调用量最高/最多'时用 `ORDER BY count() DESC` 或 `ORDER BY calls DESC`；"
     "'错误率最高'用 `ORDER BY error_rate DESC`；严格按用户指定的指标排序，不要随意改排序字段。"
     "3. 用户要求前 N 个（如5个）时用 `LIMIT N`，且 N 等于用户数字。"
@@ -1861,17 +1862,17 @@ def _fallback_nl2sql(question: str) -> str:
     q = question.lower()
     if "错误" in q or "error" in q:
         if "日志" in q or "log" in q:
-            return "SELECT service_name, count() AS errors FROM observability.log_records WHERE severity = 'error' GROUP BY service_name ORDER BY errors DESC LIMIT 100"
+            return "SELECT service_name, count() AS errors FROM observability.log_records WHERE severity = 'error' AND timestamp >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY errors DESC LIMIT 100"
         return ("SELECT service_name, countIf(is_error = 1) AS errors, count() AS calls "
-                "FROM observability.trace_spans GROUP BY service_name ORDER BY errors DESC LIMIT 100")
+                "FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY errors DESC LIMIT 100")
     if "日志" in q or "log" in q:
-        return "SELECT service_name, count() AS logs FROM observability.log_records GROUP BY service_name ORDER BY logs DESC LIMIT 100"
+        return "SELECT service_name, count() AS logs FROM observability.log_records WHERE timestamp >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY logs DESC LIMIT 100"
     if "拓扑" in q or "topology" in q or "调用关系" in q:
         return ("SELECT source_service, destination_service, calls, error_rate "
-                "FROM observability.service_topology ORDER BY calls DESC LIMIT 100")
+                "FROM observability.service_topology WHERE time_bucket >= now() - INTERVAL 24 HOUR ORDER BY calls DESC LIMIT 100")
     if "延迟" in q or "latency" in q or "响应" in q:
         return ("SELECT service_name, quantile(0.95)(duration_ns)/1000000 AS p95_ms, avg(duration_ns)/1000000 AS avg_ms "
-                "FROM observability.trace_spans GROUP BY service_name ORDER BY p95_ms DESC LIMIT 100")
+                "FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY p95_ms DESC LIMIT 100")
     # 默认：近 24h 各服务调用量/错误率
     return ("SELECT service_name, count() AS calls, countIf(is_error = 1) AS errors "
             "FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 24 HOUR "
