@@ -212,8 +212,20 @@ export interface DashboardStats {
     total: number; critical: number; warning: number; info: number
     by_service: Array<{ service: string; critical: number; warning: number; info: number; total: number }>
   }
+  data_gaps?: string[]  // P1-3：缺失的小时窗口（"MM-DD HH:00 ~ MM-DD HH:00"）
 }
 export const getDashboardStats = () => api.get<DashboardStats>('/dashboard/stats')
+
+// ===== 工作台集群资源（用户需求：工作台展示当前集群资源情况）=====
+export interface ClusterResource {
+  metric: string; current: number | null; threshold: number; ett_seconds: number
+}
+export interface DashboardResources {
+  cluster_id: string; node_count: number
+  resources: ClusterResource[]
+}
+export const getDashboardResources = (params?: Record<string, unknown>) =>
+  api.get<DashboardResources>('/dashboard/resources', { params })
 
 // ===== NL2SQL =====
 export const nl2sqlTranslate = (data: { question: string }) => api.post('/ai/nl2sql/translate', data)

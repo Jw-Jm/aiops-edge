@@ -23,6 +23,7 @@ const AiTools = lazy(() => import('./pages/ai/AiTools'))
 const Capacity = lazy(() => import('./pages/capacity/Capacity'))
 const Report = lazy(() => import('./pages/report/Report'))
 const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
+const SLO = lazy(() => import('./pages/slo/SLO'))
 const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'))
 
 // ===== 侧栏导航：7 大板块 =====
@@ -54,6 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: '/ai/chat', label: 'AI 对话', icon: 'chat' },
       { path: '/ai/tools', label: 'AI 工具', icon: 'nl2sql' },
+      { path: '/slo', label: 'SLO 目标', icon: 'settings' },
     ],
   },
   {
@@ -291,6 +293,7 @@ function AppLayout() {
               <Route path="/ai/chat" element={<AiChat />} />
 
               <Route path="/ai/tools" element={<AiTools />} />
+              <Route path="/slo" element={<SLO />} />
               <Route path="/capacity" element={<Capacity />} />
               <Route path="/report" element={<Report />} />
               <Route path="/admin/users" element={<AdminUsers />} />

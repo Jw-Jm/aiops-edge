@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Tabs, Input, Button, Space, Table, Tag, Empty, Spin, Typography, message } from 'antd'
-import { nl2sqlTranslate, nl2sqlExecute, getMcpTools, listSkills } from '../../api/client'
+import { nl2sqlTranslate, nl2sqlExecute, getMcpTools, listSkills, callMcpTool } from '../../api/client'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
 import AppIcon from '../../components/AppIcons'
 import { useUIStore } from '../../store/uiStore'
@@ -14,6 +14,10 @@ const AiTools: React.FC = () => {
   const [result, setResult] = useState<{ columns?: string[]; rows?: any[]; count?: number } | null>(null)
   const [skills, setSkills] = useState<any[]>([])
   const [mcp, setMcp] = useState<any[]>([])
+  const [activeTool, setActiveTool] = useState<any>(null)
+  const [mcpArgs, setMcpArgs] = useState<Record<string, any>>({})
+  const [mcpResult, setMcpResult] = useState('')
+  const [mcpLoading, setMcpLoading] = useState(false)
   const currentClusterId = useUIStore((s) => s.currentClusterId)
   const clusters = useUIStore((s) => s.clusters)
   const scopeLabel = currentClusterId === 'all'
@@ -104,7 +108,36 @@ const AiTools: React.FC = () => {
                 <Table rowKey="name" dataSource={mcp} size="small" pagination={false}
                   locale={{ emptyText: <Empty /> }}
                   columns={[{ title: '名称', dataIndex: 'name', key: 'name', render: (v: string, r: any) => <span>{v}{r.cls ? <Tag style={{ marginLeft: 6 }}>{r.cls}</Tag> : null}</span> },
-                    { title: '描述', dataIndex: 'description', key: 'description', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '-'}</span> }]} />
+                    { title: '描述', dataIndex: 'description', key: 'description', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '-'}</span> },
+                    { title: '操作', key: 'act', render: (_: unknown, r: any) => <Button size="small" onClick={() => { setActiveTool(r); setMcpArgs({}); setMcpResult('') }}>调用</Button> }]} />
+                {activeTool && (
+                  <div style={{ padding: 12, borderTop: '1px solid var(--border-soft)' }}>
+                    <div style={{ fontWeight: 600, marginBottom: 8 }}>调用 {activeTool.name}</div>
+                    {activeTool.parameters && Object.keys(activeTool.parameters).length > 0 ? (
+                      Object.entries(activeTool.parameters).map(([k, v]) => (
+                        <Input key={k} placeholder={`${k} (${(v as any)?.type || 'string'})`}
+                          value={mcpArgs[k] || ''}
+                          onChange={(e) => setMcpArgs((p) => ({ ...p, [k]: e.target.value }))}
+                          style={{ marginBottom: 8, maxWidth: 320 }} />
+                      ))
+                    ) : null}
+                    <Space>
+                      <Button type="primary" loading={mcpLoading} onClick={async () => {
+                        setMcpLoading(true)
+                        try {
+                          const r = await callMcpTool(activeTool.name, mcpArgs)
+                          setMcpResult(typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2))
+                        } catch (e: any) {
+                          setMcpResult(`调用失败: ${e?.response?.data?.error || e?.response?.data?.detail || e?.message || e}`)
+                        } finally { setMcpLoading(false) }
+                      }}>执行</Button>
+                      <Button onClick={() => { setActiveTool(null); setMcpResult(''); setMcpArgs({}) }}>关闭</Button>
+                    </Space>
+                    {mcpResult && (
+                      <pre style={{ marginTop: 10, maxHeight: 260, overflow: 'auto', fontSize: 12, background: 'var(--bg-soft)', padding: 10, borderRadius: 6 }}>{mcpResult}</pre>
+                    )}
+                  </div>
+                )}
               </div>
             ),
           },

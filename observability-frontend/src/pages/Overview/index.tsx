@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Row, Col, Button, Space, Input, Tag } from 'antd'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { getDashboardStats, DashboardStats, listApprovalTasks } from '../../api/client'
+import { getDashboardStats, getDashboardResources, DashboardStats, DashboardResources, listApprovalTasks } from '../../api/client'
 import { PageHeader, StatCard, StatusBadge, PaneCard, Empty, Breadcrumb } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
 
@@ -18,6 +18,7 @@ const Overview: React.FC = () => {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState<number>(0)
+  const [resources, setResources] = useState<DashboardResources | null>(null)
   const [aiQ, setAiQ] = useState(searchParams.get('q') || '')
   const currentClusterId = useUIStore((s) => s.currentClusterId)
   const clusters = useUIStore((s) => s.clusters)
@@ -40,7 +41,11 @@ const Overview: React.FC = () => {
         setPending(tasks.filter((x: any) => x.status === 'waiting').length)
       })
       .finally(() => setLoading(false))
-  }, [])
+    // 用户需求：工作台展示当前选定集群的资源情况（切换集群时刷新）
+    getDashboardResources({ cluster_id: currentClusterId || 'all' })
+      .then((r) => setResources(r.data))
+      .catch(() => setResources(null))
+  }, [currentClusterId])
 
   const a = stats?.alerts
   // 系统健康度 = 100 扣除错误率与活跃告警严重度（critical 每个 -30，warning 每个 -10，info -3），
@@ -90,6 +95,41 @@ const Overview: React.FC = () => {
         </div>
       </div>
 
+      {/* 用户需求：当前集群资源情况（CPU/内存/磁盘 + 节点数） */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col span={24}>
+          <PaneCard title={`集群资源 · ${curClusterName}`}
+            action={resources ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{resources.node_count} 节点</span> : null}>
+            {resources?.resources?.length ? (
+              <Row gutter={[16, 16]}>
+                {resources.resources.map((r) => {
+                  const pct = r.current == null ? 0 : Math.min(r.current, 100)
+                  const color = r.current == null ? '#a3aebe'
+                    : pct >= r.threshold ? '#dc2626'
+                    : pct >= r.threshold * 0.8 ? '#d97706' : '#16a34a'
+                  const ett = r.ett_seconds > 0
+                    ? `预计 ${Math.round(r.ett_seconds / 3600)}h 后触达阈值`
+                    : r.current == null ? '暂无数据' : '预测窗口内不触达'
+                  const name = r.metric === 'cpu' ? 'CPU 使用率' : r.metric === 'memory' ? '内存使用率' : '磁盘使用率'
+                  return (
+                    <Col xs={24} md={8} key={r.metric}>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 4 }}>{name}</div>
+                      <div style={{ height: 8, background: 'var(--bg-soft)', borderRadius: 4, overflow: 'hidden' }}>
+                        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4, transition: 'width .5s' }} />
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12 }}>
+                        <span>{r.current == null ? '--' : `${r.current.toFixed(1)}%`} / 阈值 {r.threshold}%</span>
+                        <span style={{ color }}>{ett}</span>
+                      </div>
+                    </Col>
+                  )
+                })}
+              </Row>
+            ) : <Empty text="暂无资源数据" />}
+          </PaneCard>
+        </Col>
+      </Row>
+
       {/* 集中 KPI */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} md={6}><StatCard label="服务数量" value={loading ? '…' : (stats?.services ?? 0)} unit="个" spark={sparkCalls} sparkColor="var(--primary)" /></Col>
@@ -97,6 +137,13 @@ const Overview: React.FC = () => {
         <Col xs={12} md={6}><StatCard label="请求错误率" value={loading ? '…' : `${(stats?.error_rate ?? 0).toFixed(2)}`} unit="%" trend={`${(stats?.error_rate ?? 0).toFixed(2)}%`} trendDir={(stats?.error_rate ?? 0) > 0 ? 'up' : 'flat'} spark={sparkErrors} sparkColor="var(--danger)" /></Col>
         <Col xs={12} md={6}><StatCard label="P95 延迟" value={loading ? '…' : `${(stats?.latency_p95 ?? 0).toFixed(1)}`} unit="ms" /></Col>
       </Row>
+
+      {/* P1-3：数据缺口提示 */}
+      {stats?.data_gaps && stats.data_gaps.length > 0 && (
+        <div style={{ marginBottom: 16, padding: '8px 12px', background: 'rgba(217,119,6,.08)', border: '1px solid rgba(217,119,6,.3)', borderRadius: 8, fontSize: 12, color: '#b45309' }}>
+          数据缺口：{stats.data_gaps.join('；')} 期间无采集数据，趋势与容量预测可能失真
+        </div>
+      )}
 
       {/* AI 快问 + 告警分布 */}
       <Row gutter={[16, 16]}>

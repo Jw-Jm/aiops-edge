@@ -35,7 +35,12 @@ const AlertRules: React.FC = () => {
       severity: v.severity,
       condition: v.condition || '>',
       duration: v.duration || 5,
-      type: 'threshold',
+      // P0-4 修复：规则类型可选（threshold/anomaly/burn_rate/log/trace_*）
+      type: v.type || 'threshold',
+      anomaly_method: v.anomaly_method,
+      baseline_seconds: v.baseline_seconds,
+      keyword: v.keyword,
+      slo_id: v.slo_id,
       enabled: v.enabled ?? true,
     })
       .then(() => { message.success('已创建'); setOpen(false); load() })
@@ -74,8 +79,45 @@ const AlertRules: React.FC = () => {
           <Form.Item name="service" label="服务名称" rules={[{ required: true, message: '服务名称必填' }]}><Input placeholder="如：order-svc" /></Form.Item>
           <Form.Item name="condition" label="触发条件" initialValue=">"><Select options={[{ value: '>', label: '>' }, { value: '>=', label: '>=' }, { value: '<', label: '<' }, { value: '<=', label: '<=' }]} /></Form.Item>
           <Form.Item name="duration" label="持续时间(分钟)" initialValue={5}><InputNumber style={{ width: '100%' }} min={1} /></Form.Item>
-          <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}><Input placeholder="如：error_rate" /></Form.Item>
-          <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}><InputNumber style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="type" label="规则类型" initialValue="threshold">
+            <Select options={[
+              { value: 'threshold', label: '阈值告警' },
+              { value: 'trace_error_rate', label: '链路错误率' },
+              { value: 'trace_latency', label: '链路延迟' },
+              { value: 'anomaly', label: '异常检测(zscore)' },
+              { value: 'burn_rate', label: 'SLO 烧毁率' },
+              { value: 'log', label: '日志关键字' },
+            ]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.type !== cur.type}>
+            {({ getFieldValue }) => {
+              const t = getFieldValue('type') || 'threshold'
+              return (
+                <>
+                  {t === 'anomaly' && (
+                    <>
+                      <Form.Item name="anomaly_method" label="检测方法" initialValue="zscore">
+                        <Select options={[{ value: 'zscore', label: 'Z-Score' }, { value: 'mad', label: 'MAD' }]} />
+                      </Form.Item>
+                      <Form.Item name="baseline_seconds" label="基线窗口(秒)" initialValue={900}><InputNumber style={{ width: '100%' }} min={60} /></Form.Item>
+                    </>
+                  )}
+                  {t === 'burn_rate' && (
+                    <Form.Item name="slo_id" label="关联 SLO ID"><Input placeholder="SLO 目标 id（可在 SLO 页面查看）" /></Form.Item>
+                  )}
+                  {t === 'log' && (
+                    <Form.Item name="keyword" label="日志关键字"><Input placeholder="如：connection refused" /></Form.Item>
+                  )}
+                  {t !== 'anomaly' && (
+                    <>
+                      <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}><Input placeholder="如：error_rate" /></Form.Item>
+                      <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}><InputNumber style={{ width: '100%' }} /></Form.Item>
+                    </>
+                  )}
+                </>
+              )
+            }}
+          </Form.Item>
           <Form.Item name="severity" label="严重度" initialValue="warning"><Select options={[{ value: 'critical', label: '严重' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }]} /></Form.Item>
           <Form.Item name="enabled" label="启用" valuePropName="checked" initialValue={true}><Switch /></Form.Item>
         </Form>
