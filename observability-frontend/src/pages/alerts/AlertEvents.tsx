@@ -116,9 +116,15 @@ const AlertEvents: React.FC = () => {
     const id = String(r.id || r.rule_id || '')
     if (!id) return
     setLoading(true)
-    deleteAlertEvent(id).then(() => {
-      setData((prev) => prev.filter((x: any) => String(x.id || x.rule_id) !== id))
-    }).catch(() => setLoading(false))
+    deleteAlertEvent(id)
+      .then(() => {
+        setData((prev) => prev.filter((x: any) => String(x.id || x.rule_id) !== id))
+      })
+      .catch(() => {
+        // 失败保留数据（可提示），结束 loading
+        console.warn('删除告警失败:', id)
+      })
+      .finally(() => setLoading(false)) // 修复：无论成功失败都结束 loading，避免一直转圈
   }
 
   const runRca = (r: any) => {
