@@ -91,29 +91,39 @@ func eventSignature(ruleID, service, detail string) string {
 // logMetricQuery 构造日志类规则的 CH 查询。
 // log_error_rate：错误日志占比；log_keyword：关键词命中数。
 // service/keyword 由用户输入拼入 SQL，须转义单引号防注入。
+// service 为空表示所有服务（P0-3：业务默认规则不限定单服务）。
 func logMetricQuery(service, metric, keyword string) string {
+	svcClause := ""
+	if service != "" {
+		svcClause = fmt.Sprintf(" AND service_name=%s", chQuote(service))
+	}
 	if metric == "log_error_rate" {
 		return fmt.Sprintf(
-			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE service_name=%s AND timestamp >= now() - INTERVAL 5 MINUTE",
-			chQuote(service))
+			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE timestamp >= now() - INTERVAL 5 MINUTE%s",
+			svcClause)
 	}
 	return fmt.Sprintf(
-		"SELECT count() FROM observability.log_records WHERE service_name=%s AND body LIKE %s AND timestamp >= now() - INTERVAL 5 MINUTE",
-		chQuote(service), chLike(keyword))
+		"SELECT count() FROM observability.log_records WHERE body LIKE %s AND timestamp >= now() - INTERVAL 5 MINUTE%s",
+		chLike(keyword), svcClause)
 }
 
 // traceMetricQuery 构造链路类规则的 CH 查询。
 // trace_latency：P99 延迟（ms）；trace_error_rate：错误率。
 // service 由用户输入拼入 SQL，须用 chQuote 转义防注入。
+// service 为空表示所有服务（P0-3：业务默认规则不限定单服务）。
 func traceMetricQuery(service, metric string) string {
+	svcClause := ""
+	if service != "" {
+		svcClause = fmt.Sprintf(" AND service_name=%s", chQuote(service))
+	}
 	if metric == "trace_latency" {
 		return fmt.Sprintf(
-			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL 5 MINUTE",
-			chQuote(service))
+			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 5 MINUTE%s",
+			svcClause)
 	}
 	return fmt.Sprintf(
-		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL 5 MINUTE",
-		chQuote(service))
+		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 5 MINUTE%s",
+		svcClause)
 }
 
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
@@ -1879,15 +1889,33 @@ func K8sDefaultRules() []AlertRule {
 	}
 }
 
+// BusinessDefaultRules 预置业务链路告警规则（trace/anomaly/log 类），
+// 补足 P0-3：默认仅 K8s 规则时，应用故障（错误率突增/延迟劣化/日志异常）无法被发现。
+// service 为空表示所有服务（traceMetricQuery/logMetricQuery 已支持空 service 不过滤）。
+func BusinessDefaultRules() []AlertRule {
+	return []AlertRule{
+		{ID: "svc-error-rate-high", Name: "服务错误率过高", Service: "", Type: "trace_error_rate",
+			Metric: "error_rate", Condition: ">", Threshold: 5, Duration: 5, Severity: "critical", Enabled: true},
+		{ID: "svc-latency-p95", Name: "服务延迟劣化", Service: "", Type: "trace_latency",
+			Metric: "latency_p99", Condition: ">", Threshold: 500, Duration: 5, Severity: "warning", Enabled: true},
+		{ID: "svc-call-anomaly", Name: "调用量异常波动", Service: "", Type: "anomaly",
+			Metric: "error_rate", Condition: ">", Threshold: 3, Duration: 5, Severity: "warning",
+			BaselineSeconds: 900, AnomalyMethod: "zscore", Enabled: true},
+		{ID: "svc-log-error", Name: "错误日志激增", Service: "", Type: "log",
+			Metric: "log_error_rate", Keyword: "", Condition: ">", Threshold: 20, Duration: 5, Severity: "warning", Enabled: true},
+	}
+}
+
 // InitK8sRules initializes Kubernetes alert rules if not already present
 func InitK8sRules() {
 	k8sRules := K8sDefaultRules()
+	bizRules := BusinessDefaultRules()
 	alertRulesMu.Lock()
 	existingIDs := make(map[string]bool)
 	for _, r := range alertRules {
 		existingIDs[r.ID] = true
 	}
-	for _, r := range k8sRules {
+	for _, r := range append(k8sRules, bizRules...) {
 		if !existingIDs[r.ID] {
 			alertRules = append(alertRules, r)
 		}
