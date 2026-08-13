@@ -157,6 +157,7 @@ func (h *Handler) clusterCreate(w http.ResponseWriter, r *http.Request) {
 	d := &store.ClusterDAO{}
 	id, err := d.Create(&store.Cluster{
 		Name: req.Name, Provider: req.Provider, APIServer: req.APIServer, Kubeconfig: req.Kubeconfig,
+		Status: "active", // A-1 修复：status 列是 ENUM，空串插入会 Data truncated
 	})
 	if err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})

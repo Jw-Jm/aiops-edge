@@ -52,10 +52,12 @@ func (d *ClusterDAO) List() ([]Cluster, error) {
 	items := []Cluster{}
 	for rows.Next() {
 		var c Cluster
+		var kc sql.NullString
 		if err := rows.Scan(&c.ID, &c.Name, &c.Provider, &c.Region, &c.Version,
-			&c.NodeCount, &c.Status, &c.APIServer, &c.Kubeconfig, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.NodeCount, &c.Status, &c.APIServer, &kc, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
+		c.Kubeconfig = kc.String // A-2 修复：kubeconfig 为 NULL 时容忍（转空串）
 		items = append(items, c)
 	}
 	return items, nil
@@ -71,8 +73,10 @@ func (d *ClusterDAO) GetByID(id int64) (*Cluster, error) {
 		"SELECT id, name, provider, region, version, node_count, status, api_server, kubeconfig, created_at, updated_at FROM clusters WHERE id = ?",
 		id)
 	var c Cluster
+	var kc sql.NullString
 	if err := row.Scan(&c.ID, &c.Name, &c.Provider, &c.Region, &c.Version,
-		&c.NodeCount, &c.Status, &c.APIServer, &c.Kubeconfig, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		&c.NodeCount, &c.Status, &c.APIServer, &kc, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		c.Kubeconfig = kc.String // A-2 修复：kubeconfig 为 NULL 时容忍（转空串）
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -91,8 +95,10 @@ func (d *ClusterDAO) GetByName(name string) (*Cluster, error) {
 		"SELECT id, name, provider, region, version, node_count, status, api_server, kubeconfig, created_at, updated_at FROM clusters WHERE name = ?",
 		name)
 	var c Cluster
+	var kc sql.NullString
 	if err := row.Scan(&c.ID, &c.Name, &c.Provider, &c.Region, &c.Version,
-		&c.NodeCount, &c.Status, &c.APIServer, &c.Kubeconfig, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		&c.NodeCount, &c.Status, &c.APIServer, &kc, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		c.Kubeconfig = kc.String // A-2 修复：kubeconfig 为 NULL 时容忍（转空串）
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
