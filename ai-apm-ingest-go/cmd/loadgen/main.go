@@ -23,6 +23,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,7 +63,7 @@ func main() {
 		ingest        = flag.String("ingest", os.Getenv("LOADGEN_INGEST"), "ingest /v1/traces 地址，如 http://ingest:8080")
 		apiKey        = flag.String("api-key", os.Getenv("LOADGEN_API_KEY"), "ingest 鉴权 API key")
 		services      = flag.String("services", os.Getenv("LOADGEN_SERVICES"), "逗号分隔的服务名，默认 payments")
-		errorRate     = flag.Float64("error-rate", 0.05, "错误 span 比例 0-1")
+		errorRate     = flag.Float64("error-rate", envFloat("LOADGEN_ERROR_RATE", 0.05), "错误 span 比例 0-1")
 		mode          = flag.String("mode", os.Getenv("LOADGEN_MODE"), "steady|spike|error")
 		interval      = flag.Duration("interval", 10*time.Second, "投喂间隔")
 		qps           = flag.Int("qps", 20, "每轮 span 数量（QPS 基数）")
@@ -324,4 +325,14 @@ func postLogs(client *http.Client, ingest, apiKey string, logs []otlpLogRecord) 
 		return fmt.Errorf("ingest returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// envFloat 读取浮点环境变量，缺失或非法时返回默认值（P1-6 修复）。
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
 }
