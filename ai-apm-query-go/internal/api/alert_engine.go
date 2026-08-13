@@ -183,6 +183,26 @@ func (h *Handler) evaluateAlerts() {
 		} else {
 			// 未 breach：重置连续计数（dampening）
 			ruleStreak[rule.ID] = 0
+			// 修复(误报)：指标已恢复正常，但之前触发过且仍为 firing 的事件应自动标记为 resolved，
+			// 否则误报/已恢复的事件会一直停留在 firing 状态，前端持续展示"异常"。
+			// 注意：saveAlertEvents 内部会再取 alertEventsMu.RLock，因此必须先在锁内
+			// 完成状态修改、把 resolvedAny 记到本地变量，再在 Unlock 后调用 saveAlertEvents，
+			// 避免写锁内再请求读锁导致死锁（与 breached 分支的处理顺序保持一致）。
+			alertEventsMu.Lock()
+			resolvedAny := false
+			for i := range alertEvents {
+				e := &alertEvents[i]
+				if e.RuleID == rule.ID && e.Service == rule.Service && e.Status == "firing" {
+					transitionStatus(e, "resolved", "system")
+					appendTimeline(e, "recovered", "system")
+					resolvedAny = true
+				}
+			}
+			alertEventsMu.Unlock()
+			if resolvedAny {
+				saveAlertEvents()
+				log.Printf("ALERT_RECOVERED: %s | %s 事件已标记为 resolved", rule.Service, rule.Name)
+			}
 		}
 	}
 }

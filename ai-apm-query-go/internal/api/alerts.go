@@ -1381,6 +1381,17 @@ func (h *Handler) evalK8sPodRestarts() float64 {
 			Status struct {
 				ContainerStatuses []struct {
 					RestartCount int `json:"restartCount"`
+					State        struct {
+						Waiting struct {
+							Reason string `json:"reason"`
+						} `json:"waiting"`
+					} `json:"state"`
+					LastTerminationState struct {
+						Terminated struct {
+							FinishedAt string `json:"finishedAt"`
+							Reason     string `json:"reason"`
+						} `json:"terminated"`
+					} `json:"lastState"`
 				} `json:"containerStatuses"`
 			} `json:"status"`
 		} `json:"items"`
@@ -1389,9 +1400,33 @@ func (h *Handler) evalK8sPodRestarts() float64 {
 		return 0
 	}
 	count := 0
+	now := time.Now()
 	for _, p := range r.Items {
 		for _, cs := range p.Status.ContainerStatuses {
-			if cs.RestartCount > 3 {
+			// 修复(误报)：只看"当前频繁重启"而非累计 restartCount。
+			// 原逻辑 cs.RestartCount > 3 只看历史累计重启次数，Pod 只要历史重启过 4 次
+			// 就永久满足条件，即使当前 Running 稳定也会持续误报"Pod 频繁重启"。
+			// 正确判断：
+			//   1. 容器当前处于 CrashLoopBackOff（正在持续崩溃重启）→ 异常
+			//   2. 容器最近一次重启结束时间在 10 分钟内（最近确实在频繁重启）→ 异常
+			// 否则即使 restartCount 累计很高（历史重启），也不算当前异常。
+			if cs.State.Waiting.Reason == "CrashLoopBackOff" {
+				count++
+				continue
+			}
+			ft := cs.LastTerminationState.Terminated.FinishedAt
+			if ft == "" {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339, ft)
+			if err != nil {
+				// 兼容非 RFC3339 格式（如 "2026-08-13T01:15:43Z" 前带日期前缀）
+				t, err = time.Parse(time.RFC3339Nano, ft)
+				if err != nil {
+					continue
+				}
+			}
+			if now.Sub(t) < 10*time.Minute {
 				count++
 			}
 		}
@@ -1463,18 +1498,21 @@ func (h *Handler) evalK8sUnavailableReplicas() float64 {
 	var r struct {
 		Items []struct {
 			Status struct {
-				Replicas          int `json:"replicas"`
-				AvailableReplicas int `json:"availableReplicas"`
+				Replicas             int  `json:"replicas"`
+				UnavailableReplicas  *int `json:"unavailableReplicas"`
 			} `json:"status"`
 		} `json:"items"`
 	}
 	if json.Unmarshal(data, &r) != nil {
 		return 0
 	}
+	// 修复(误报)：改用 K8s 明确提供的 unavailableReplicas 字段（指针类型，字段缺失时 nil）。
+	// 原逻辑用 Replicas > AvailableReplicas 推断，但 availableReplicas 字段在 Deployment
+	// 初始化/滚动时可能缺失解析为 0，导致明明 1/1 可用的 Deployment 被误判为"1 个不可用副本"。
 	total := 0
 	for _, d := range r.Items {
-		if d.Status.Replicas > d.Status.AvailableReplicas {
-			total += d.Status.Replicas - d.Status.AvailableReplicas
+		if d.Status.UnavailableReplicas != nil && *d.Status.UnavailableReplicas > 0 {
+			total += *d.Status.UnavailableReplicas
 		}
 	}
 	return float64(total)
@@ -1523,7 +1561,8 @@ func (h *Handler) evalK8sOOMCount() float64 {
 					} `json:"state"`
 					LastTerminationState struct {
 						Terminated struct {
-							Reason string `json:"reason"`
+							FinishedAt string `json:"finishedAt"`
+							Reason     string `json:"reason"`
 						} `json:"terminated"`
 					} `json:"lastState"`
 				} `json:"containerStatuses"`
@@ -1534,10 +1573,22 @@ func (h *Handler) evalK8sOOMCount() float64 {
 		return 0
 	}
 	count := 0
+	now := time.Now()
 	for _, p := range r.Items {
 		for _, cs := range p.Status.ContainerStatuses {
-			if cs.State.Waiting.Reason == "CrashLoopBackOff" || cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+			// 修复(误报)：OOM 判断增加"最近 10 分钟"时间窗口。
+			// 原逻辑只看 LastTerminationState.Terminated.Reason == "OOMKilled"，
+			// 但该字段是历史累计记录，Pod 只要曾经 OOM 过一次就永久满足条件，
+			// 导致 oom_count 永远 > 0，即使当前 Running 稳定也持续误报。
+			if cs.State.Waiting.Reason == "CrashLoopBackOff" {
 				count++
+				continue
+			}
+			lt := cs.LastTerminationState.Terminated
+			if lt.Reason == "OOMKilled" && lt.FinishedAt != "" {
+				if t, err := time.Parse(time.RFC3339, lt.FinishedAt); err == nil && now.Sub(t) < 10*time.Minute {
+					count++
+				}
 			}
 		}
 	}
@@ -1582,7 +1633,8 @@ func k8sCrashPods(ruleID string) string {
 					} `json:"state"`
 					LastTerminationState struct {
 						Terminated struct {
-							Reason string `json:"reason"`
+							FinishedAt string `json:"finishedAt"`
+							Reason     string `json:"reason"`
 						} `json:"terminated"`
 					} `json:"lastState"`
 				} `json:"containerStatuses"`
@@ -1607,8 +1659,18 @@ func k8sCrashPods(ruleID string) string {
 			hit = p.Status.Phase == "Pending"
 		default: // k8s-pod-crash
 			for _, cs := range p.Status.ContainerStatuses {
-				if cs.RestartCount > 3 {
+				// 修复(误报)：与 evalK8sPodRestarts 一致，只看"当前频繁重启"。
+				// CrashLoopBackOff（当前正在崩溃重启）或最近 10 分钟内有重启才算异常，
+				// 避免 Pod 历史累计重启多但当前稳定时被误报。
+				if cs.State.Waiting.Reason == "CrashLoopBackOff" {
 					hit = true
+					break
+				}
+				if ft := cs.LastTerminationState.Terminated.FinishedAt; ft != "" {
+					if t, err := time.Parse(time.RFC3339, ft); err == nil && time.Since(t) < 10*time.Minute {
+						hit = true
+						break
+					}
 				}
 			}
 		}
