@@ -149,6 +149,7 @@ export const ackAlertEvent = (id: string) => api.post(`/alerts/events/${id}/ack`
 export const resolveAlertEvent = (id: string) => api.post(`/alerts/events/${id}/resolve`)
 export const saveAlertInvestigation = (id: string, investigation: string) =>
   api.post(`/alerts/events/${id}/investigation`, { investigation })
+export const deleteAlertEvent = (id: string) => api.delete(`/alerts/events/${id}`)
 
 // Alert → RCA (告警根因分析联动)
 export const rcaAlertAnalysis = (data: Record<string, unknown>) =>

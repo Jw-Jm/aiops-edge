@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Segmented, Button, Space, Drawer, Spin } from 'antd'
 import { useSearchParams } from 'react-router-dom'
-import { getAlertEvents, rcaAlertAnalysis } from '../../api/client'
+import { getAlertEvents, rcaAlertAnalysis, deleteAlertEvent } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 
 interface AlertEvent { id: string | number; severity?: string; labels?: any; summary?: string; description?: string; service_name?: string; startsAt?: string; status?: string }
@@ -69,11 +69,16 @@ const AlertEvents: React.FC = () => {
     { title: '告警对象', key: 'object', render: (_: any, r: any) => r.object || r.labels?.pod || r.labels?.deployment || r.labels?.service || r.service || '-' },
     { title: '次数', key: 'count', width: 80, render: (_: any, r: any) => <span style={{ color: 'var(--text-muted)' }}>{r.count ?? 1}</span> },
     { title: '触发时间', key: 'time', render: (_: any, r: any) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{r.last_timestamp || r.first_timestamp || '-'}</span> },
-    { title: '操作', key: 'op', width: 110, render: (_: any, r: any) => (
-        <Space size={4}>
-          <Button size="small" type="link" onClick={() => { setDetail(r); setRca(''); runRca(r) }}>根因分析</Button>
-        </Space>
-      ) },
+    { title: '操作', key: 'op', width: 150, render: (_: any, r: any) => {
+        const isResolved = String(eventStatus(r)).toLowerCase() === 'resolved'
+        return (
+          <Space size={4}>
+            <Button size="small" type="link" onClick={() => { setDetail(r); setRca(''); runRca(r) }}>根因分析</Button>
+            {/* 修复(用户需求)：历史告警（已解决）提供"删除"按钮，删除该条事件 */}
+            {isResolved && <Button size="small" type="link" danger onClick={(ev) => removeAlert(r, ev)}>删除</Button>}
+          </Space>
+        )
+      } },
   ]
 
   // P3-1 美化：把 orchestrator 返回的 JSON RCA 结果解析为可读文本（根因 / 依据 / 处置方案）
@@ -103,6 +108,17 @@ const AlertEvents: React.FC = () => {
       return sections.join('\n')
     }
     return raw
+  }
+
+  // 修复(用户需求)：删除告警事件。从列表移除并调后端 DELETE；删除后刷新。
+  const removeAlert = (r: any, ev: React.MouseEvent) => {
+    ev.stopPropagation()
+    const id = String(r.id || r.rule_id || '')
+    if (!id) return
+    setLoading(true)
+    deleteAlertEvent(id).then(() => {
+      setData((prev) => prev.filter((x: any) => String(x.id || x.rule_id) !== id))
+    }).catch(() => setLoading(false))
   }
 
   const runRca = (r: any) => {

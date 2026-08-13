@@ -751,7 +751,7 @@ func (h *Handler) AlertEventInvestigation(w http.ResponseWriter, r *http.Request
 	respondJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "event_id": id})
 }
 
-// AlertEventByID handles GET /api/v1/alerts/events/{id}
+// AlertEventByID handles GET/DELETE /api/v1/alerts/events/{id}
 func (h *Handler) AlertEventByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
 	id = strings.TrimRight(id, "/")
@@ -759,15 +759,42 @@ func (h *Handler) AlertEventByID(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "event id required")
 		return
 	}
-	alertEventsMu.RLock()
-	defer alertEventsMu.RUnlock()
-	for _, ev := range alertEvents {
-		if ev.ID == id || ev.RuleID == id {
-			respondJSON(w, http.StatusOK, ev)
+	switch r.Method {
+	case http.MethodGet:
+		alertEventsMu.RLock()
+		defer alertEventsMu.RUnlock()
+		for _, ev := range alertEvents {
+			if ev.ID == id || ev.RuleID == id {
+				respondJSON(w, http.StatusOK, ev)
+				return
+			}
+		}
+		respondError(w, http.StatusNotFound, "event not found")
+	case http.MethodDelete:
+		// 修复(用户需求)：删除告警事件。从内存移除该条并持久化（CH ReplacingMergeTree
+		// 全量写回时不再包含该条，等效删除）。锁内改 + 锁外 save（避免死锁）。
+		alertEventsMu.Lock()
+		idx := -1
+		for i := range alertEvents {
+			if alertEvents[i].ID == id || alertEvents[i].RuleID == id {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			alertEvents = append(alertEvents[:idx], alertEvents[idx+1:]...)
+		}
+		alertEventsMu.Unlock()
+		if idx < 0 {
+			respondError(w, http.StatusNotFound, "event not found")
 			return
 		}
+		saveAlertEvents()
+		log.Printf("ALERT_DELETED: %s 告警事件已删除", id)
+		respondJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+	default:
+		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-	respondError(w, http.StatusNotFound, "event not found")
 }
 
 // AlertEventAck handles POST /api/v1/alerts/events/{id}/ack
@@ -1654,9 +1681,18 @@ func k8sCrashPods(ruleID string) string {
 		hit := false
 		switch ruleID {
 		case "k8s-oom-killed":
+			// 修复(需求1)：OOM 判断加"最近 10 分钟"时间窗口，避免历史累计 OOM 误判为新异常对象。
 			for _, cs := range p.Status.ContainerStatuses {
-				if cs.State.Waiting.Reason == "CrashLoopBackOff" || cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+				if cs.State.Waiting.Reason == "CrashLoopBackOff" {
 					hit = true
+					break
+				}
+				lt := cs.LastTerminationState.Terminated
+				if lt.Reason == "OOMKilled" && lt.FinishedAt != "" {
+					if t, err := time.Parse(time.RFC3339, lt.FinishedAt); err == nil && time.Since(t) < 10*time.Minute {
+						hit = true
+						break
+					}
 				}
 			}
 		case "k8s-pod-pending":
