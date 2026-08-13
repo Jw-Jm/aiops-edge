@@ -72,32 +72,37 @@ func EstimateTimeToThreshold(slope, intercept float64, n, horizon int, threshold
 
 // capacityPromQL 返回指定资源维度的 range 查询 PromQL。未知 metric 返回空串。
 // instance 非空时按精确 instance 标签过滤（如 node-exporter 的 192.168.139.2:9100）。
-func capacityPromQL(metric, instance string) string {
-	// instPart：用于需要多 label 的维度，作为 ", instance=\"x\"" 追加进 {mode="idle", instance="x"}
-	// 安全：instance 来自用户输入，须转义 PromQL 标签值（\ 与 "），防 PromQL 注入。
+// capacityPromQLForCluster 生成容量 PromQL，支持按 cluster 标签过滤（空 cluster 不过滤，A-4）。
+// instance 来自用户输入，须转义 PromQL 标签值（\ 与 "），防 PromQL 注入；cluster 同理。
+func capacityPromQLForCluster(metric, instance, cluster string) string {
 	instPart := ""
-	// instSel：用于只有 instance 一个 label 的维度，独立 {instance="x"}
 	instSel := ""
 	if instance != "" {
 		esc := strings.ReplaceAll(strings.ReplaceAll(instance, `\`, `\\`), `"`, `\"`)
 		instPart = fmt.Sprintf(`, instance="%s"`, esc)
 		instSel = fmt.Sprintf(`{instance="%s"}`, esc)
 	}
+	clPart := ""
+	if cluster != "" && cluster != "all" {
+		esc := strings.ReplaceAll(strings.ReplaceAll(cluster, `\`, `\\`), `"`, `\"`)
+		clPart = fmt.Sprintf(`, cluster="%s"`, esc)
+	}
 	switch metric {
 	case "cpu":
-		// node_cpu_seconds_total 每个 mode 各一条 series，必须加 mode="idle" 才能正确计算使用率；
-		// instance 与 mode 必须在同一对大括号内（逗号分隔），不能嵌套大括号
-		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{mode="idle"%s}[5m])) * 100`, instPart)
+		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{mode="idle"%s%s}[5m])) * 100`, instPart, clPart)
 	case "memory":
-		// avg 聚合所有节点/维度为单 series，避免 vmRangeQuery 拼接多条 series
-		return fmt.Sprintf(`avg(100 * (1 - node_memory_MemAvailable_bytes%s / node_memory_MemTotal_bytes%s))`, instSel, instSel)
+		return fmt.Sprintf(`avg(100 * (1 - node_memory_MemAvailable_bytes%s%s / node_memory_MemTotal_bytes%s%s))`, instSel, clPart, instSel, clPart)
 	case "disk":
-		return fmt.Sprintf(`avg(1 - node_filesystem_avail_bytes%s / node_filesystem_size_bytes%s) * 100`, instSel, instSel)
+		return fmt.Sprintf(`avg(1 - node_filesystem_avail_bytes%s%s / node_filesystem_size_bytes%s%s) * 100`, instSel, clPart, instSel, clPart)
 	case "network":
-		// sum 聚合所有网卡接口为单 series（总带宽），避免 vmRangeQuery 拼接多网卡 series
-		return fmt.Sprintf(`sum(rate(node_network_receive_bytes_total%s[5m]) + rate(node_network_transmit_bytes_total%s[5m]))`, instSel, instSel)
+		return fmt.Sprintf(`sum(rate(node_network_receive_bytes_total%s%s[5m]) + rate(node_network_transmit_bytes_total%s%s[5m]))`, instSel, clPart, instSel, clPart)
 	}
 	return ""
+}
+
+// capacityPromQL 兼容旧签名：不带集群过滤（空 cluster）。
+func capacityPromQL(metric, instance string) string {
+	return capacityPromQLForCluster(metric, instance, "")
 }
 
 // CapacityForecast 处理 GET /api/v1/capacity/forecast。
@@ -106,6 +111,7 @@ func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	metric := q.Get("metric")
 	instance := q.Get("instance")
+	cluster := q.Get("cluster_id") // A-4 修复：容量预测按集群过滤
 	hours := parseIntDefault(q.Get("hours"), 24)
 	step := parseIntDefault(q.Get("step"), 300)
 	horizon := parseIntDefault(q.Get("horizon"), 12)
@@ -145,7 +151,7 @@ func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
 
 	end := time.Now().Unix()
 	start := end - int64(hours*3600)
-	series, err := h.vmRangeQuery(capacityPromQL(metric, instance), start, end, step)
+	series, err := h.vmRangeQuery(capacityPromQLForCluster(metric, instance, cluster), start, end, step)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
