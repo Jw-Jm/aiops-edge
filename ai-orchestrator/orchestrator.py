@@ -592,11 +592,15 @@ def _top_anomaly_service(cluster_id: str = "") -> str:
             traces = float(s.get("traces", 0) or 0)
             if not name or traces <= 0:
                 continue
-            errs = float(s.get("errors", s.get("error_count", 0)) or 0)
-            if errs > 0:
-                rate = errs / traces
-                if rate > best_rate:
-                    best_rate, best_name = rate, name
+            # 优先用 error_rate 字段（get_service_list 摘要含 error_rate）；
+            # 兼容带 errors/error_count 的完整服务列表（traces>0 时折算比例）
+            rate = float(s.get("error_rate", 0) or 0)
+            if rate <= 0:
+                errs = float(s.get("errors", s.get("error_count", 0)) or 0)
+                if errs > 0:
+                    rate = errs / traces * 100
+            if rate > best_rate:
+                best_rate, best_name = rate, name
         return best_name or ""
     except Exception:
         return ""
