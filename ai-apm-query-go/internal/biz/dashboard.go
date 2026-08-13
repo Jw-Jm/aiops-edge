@@ -53,6 +53,7 @@ type DashboardStats struct {
 	Trend       []TrendPoint `json:"trend"`
 	TopErrors   []ErrorItem  `json:"top_errors"`
 	AlertStats  AlertStats   `json:"alerts"`
+	DataGaps    []string     `json:"data_gaps"` // P1-3：近 24h 缺失的小时窗口（"MM-DD HH:00 ~ MM-DD HH:00"）
 }
 
 // AggregateStats 从服务 RED 聚合行汇总出 Dashboard 统计。

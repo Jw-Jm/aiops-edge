@@ -919,6 +919,8 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 				errs, _ := toInt64(row["errors"])
 				stats.Trend = append(stats.Trend, biz.TrendPoint{T: tv, Calls: calls, Errors: errs})
 			}
+			// P1-3：检测缺失小时窗口（采集中断），供前端展示缺口提示
+			stats.DataGaps = detectTrendGaps(tr, 24)
 		}
 	}
 
@@ -1756,3 +1758,40 @@ var logCursors = struct {
 
 // StartLogShipper runs a production-grade K8s pod log collector using the API log subresource.
 // Features: incremental sinceTime fetching, per-pod cursor, structured metadata, VictoriaLogs output.
+
+// detectTrendGaps 基于"近 hours 小时应有点"检测 trend 缺失小时，返回缺口描述列表。
+// rows 的 t 字段格式 "2006-01-02 15:04:05"（toString(toStartOfHour(...))）。
+// 返回形如 "08-12 15:00 ~ 08-12 23:00" 的连续缺失区间（P1-3）。
+func detectTrendGaps(rows []map[string]interface{}, hours int) []string {
+	now := time.Now().Truncate(time.Hour)
+	got := map[int64]bool{}
+	for _, r := range rows {
+		if ts, ok := r["t"].(string); ok {
+			if t, err := time.ParseInLocation("2006-01-02 15:04:05", ts, time.Local); err == nil {
+				got[t.Unix()] = true
+			}
+		}
+	}
+	var gaps []string
+	var gapStart, gapEnd *time.Time
+	flush := func() {
+		if gapStart != nil {
+			gaps = append(gaps, fmt.Sprintf("%s ~ %s",
+				gapStart.Format("01-02 15:00"), gapEnd.Format("01-02 15:00")))
+			gapStart, gapEnd = nil, nil
+		}
+	}
+	for i := hours - 1; i >= 0; i-- {
+		h := now.Add(-time.Duration(i) * time.Hour)
+		if !got[h.Unix()] {
+			if gapStart == nil {
+				gapStart = &h
+			}
+			gapEnd = &h
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return gaps
+}
