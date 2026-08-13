@@ -31,7 +31,14 @@ function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number } {
   const ids = new Set(spans?.map((s) => s.span_id) || [])
   const rootIds = new Set(spans?.filter((s) => !s.parent_span_id || !ids.has(s.parent_span_id)).map((s) => s.span_id) || [])
   if (rootIds.size === 0 && spans?.length) rootIds.add(spans[0].span_id)
-  for (const rid of rootIds) walk(rid, 0)
+  // 修复(P1 链路追踪详情)：先 push root span 本身（带 depth 0），再递归走 children。
+  // 之前直接 walk(rid, 0) 不会把 root 加入 roots，导致客户端/根 span 丢失，
+  // 详情页只显示服务端 span，看起来像"少了一个 span"。
+  for (const rid of rootIds) {
+    const root = map.get(rid)
+    if (root) roots.push({ span: root, depth: 0 })
+    walk(rid, 0)
+  }
   return { roots, maxMs }
 }
 
@@ -91,7 +98,8 @@ const Trace: React.FC = () => {
 
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey="trace_id" loading={loading} columns={cols} dataSource={data} size="middle"
-          pagination={{ pageSize: 20 }} scroll={{ x: 800 }} />
+          pagination={{ pageSize: 20 }} scroll={{ x: 800 }}
+          locale={{ emptyText: <Empty text="暂无调用链数据" hint="请确认服务已上报 trace，或尝试调整时间范围" /> }} />
       </div>
 
       <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose title={`Trace ${detail?.trace_id || ''}`}

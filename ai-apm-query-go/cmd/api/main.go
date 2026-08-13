@@ -185,6 +185,18 @@ func main() {
 	// NL2SQL：代理到 ai-orchestrator（/ai/nl2sql/translate、/ai/nl2sql/{id}/execute、/ai/nl2sql/{id}）
 	mux.HandleFunc("/api/v1/ai/nl2sql/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/nl2sql", handler.ProxyAI)
+	// P1-4.3 修复：补齐 AI Skills / Agents / Knowledge / Rules / Flows 代理路由，
+	// 此前缺失导致前端 AI 工具"技能目录"永远 404 为空（orchestrator 实际有 8 个内置 skill）。
+	mux.HandleFunc("/api/v1/ai/skills/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/skills", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/agents/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/agents", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/knowledge/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/knowledge", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/rules/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/rules", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/flows/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/flows", handler.ProxyAI)
 	// WebShell WebSocket：AuthMiddleware 已放行该路径（WebSocket 无 header），
 	// handler 内部从 ?token= 验证 JWT 并代理到 orchestrator（注入 INTERNAL_TOKEN）。
 	mux.HandleFunc("/api/v1/shell/ws", handler.ProxyShellWS)

@@ -142,17 +142,21 @@ def deepflow_status() -> str:
 
 def get_infrastructure() -> str:
     """获取K8s基础设施信息"""
-    pods_data = _get_json(f"{QUERY_API}/infrastructure/pods?namespace=observability")
+    # 修复：查询所有 namespace 的 Pod（namespace=all），并完整展示 name/namespace/status/restarts。
+    # 之前写死 namespace=observability 且只取 name/status，导致 LLM 拿不到 deepflow、kube-system
+    # 等真实 namespace，处置命令只能用 <ns> 占位符或写死 observability。
+    pods_data = _get_json(f"{QUERY_API}/infrastructure/pods?namespace=all")
     nodes_data = _get_json(f"{QUERY_API}/infrastructure/nodes")
 
     pods = pods_data.get("pods", [])
     nodes = nodes_data.get("nodes", [])
 
     report = f"运行中 Pods: {len(pods)} 个\n"
-    # 展示全部 Pod，避免总数与列表数量不一致导致误判
-    infos = [(p.get('name','?')[:50], p.get('status','?')) for p in pods]
-    for name, st in infos:
-        report += f"  - {name}: {st}\n"
+    # 完整展示每个 Pod 的名字、命名空间、状态、重启次数，
+    # 让 LLM 能引用真实资源名（如 redis-76dd9b85cb-q7p2r / redis）生成确定性处置命令
+    infos = [(p.get('name','?')[:50], p.get('namespace','?'), p.get('status','?'), p.get('restarts',0)) for p in pods]
+    for name, ns, st, rc in infos:
+        report += f"  - {ns}/{name}: {st} restarts={rc}\n"
 
     report += f"\n- 节点: {len(nodes)} 个\n"
     for n in nodes:

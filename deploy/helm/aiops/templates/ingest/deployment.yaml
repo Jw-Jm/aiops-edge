@@ -36,6 +36,8 @@ spec:
               value: {{ .Values.ingest.deepflowChPort | quote }}
             - name: DEEPFLOW_SYNC_INTERVAL
               value: {{ .Values.ingest.syncInterval | quote }}
+            - name: DEEPFLOW_SPAN_SAMPLE_RATE
+              value: {{ .Values.ingest.spanSampleRate | default 1.0 | quote }}
             - name: INGEST_WAL_DIR
               value: "/wal"
             - name: INGEST_API_KEY

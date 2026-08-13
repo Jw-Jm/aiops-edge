@@ -14,6 +14,9 @@ const LogMetrics: React.FC = () => {
   const [source, setSource] = useState<'clickhouse' | 'victorialogs'>('clickhouse')
   const [level, setLevel] = useState<string>('all')
   const [hours, setHours] = useState<number>(24)
+  // 修复(P2-3)：默认过滤健康检查噪音日志（/health、/ready、/v1/query 等探针请求），
+  // 否则日志列表被海量 /health [200] 0ms 淹没，用户看不到真实业务日志。
+  const [hideHealth, setHideHealth] = useState<boolean>(true)
   const [q, setQ] = useState('')
   const [rows, setRows] = useState<LogRow[]>([])
   const [aggs, setAggs] = useState<AggRow[]>([])
@@ -30,6 +33,8 @@ const LogMetrics: React.FC = () => {
       hours,
       ...(q ? { query: q } : {}),
       ...(level !== 'all' ? { level } : {}),
+      // 修复(P2-3)：过滤健康检查探针日志（/health、/ready、/v1/query）
+      ...(hideHealth ? { exclude_health: true } : {}),
     }
     const req = m === 'logs' ? queryLogs(p) : aggregateLogs({ ...p, group_by: 'service_name' })
     req.then((r) => {
@@ -84,10 +89,11 @@ const LogMetrics: React.FC = () => {
               options={[{ value: 'clickhouse', label: '数据源 · ClickHouse' }, { value: 'victorialogs', label: '数据源 · VictoriaLogs' }]} />
           </Tooltip>
           <Select value={level} onChange={setLevel} style={{ width: 100 }}
-            options={[{ value: 'all', label: '全部级别' }, { value: 'error', label: 'error' }, { value: 'warning', label: 'warning' }, { value: 'info', label: 'info' }, { value: 'debug', label: 'debug' }]} />
+            options={[{ value: 'all', label: '全部级别' }, { value: 'error', label: '错误' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }, { value: 'debug', label: '调试' }]} />
           <Select value={hours} onChange={setHours} style={{ width: 100 }}
             options={[{ value: 1, label: '近 1 小时' }, { value: 6, label: '近 6 小时' }, { value: 24, label: '近 24 小时' }, { value: 168, label: '近 7 天' }]} />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} onPressEnter={() => search()} placeholder="搜索关键词，如 error / 服务名" style={{ width: 360 }} />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} onPressEnter={() => search()} placeholder="搜索关键词，如 error / 服务名" style={{ width: 320 }} />
+          <Button type={hideHealth ? 'default' : 'primary'} onClick={() => { setHideHealth(!hideHealth); }} title="过滤 /health、/v1/query 等探针噪音日志">{hideHealth ? '过滤探针' : '显示探针'}</Button>
           <Button type="primary" onClick={() => search()} loading={loading}>查询</Button>
         </Space>
         {err && <div style={{ marginTop: 10, color: 'var(--danger)', fontSize: 12 }}>⚠ {err}</div>}
@@ -96,7 +102,7 @@ const LogMetrics: React.FC = () => {
       <div className="card" style={{ padding: 0 }}>
         {mode === 'logs' ? (
           <Table rowKey={(r) => `${r.ts}-${r.message}`} loading={loading} columns={logCols} dataSource={rows}
-            size="small" pagination={{ pageSize: 20 }} scroll={{ x: 900, y: 'calc(100vh - 360px)' }} locale={{ emptyText: <Empty text="暂无日志" /> }} />
+            size="small" pagination={{ pageSize: 20 }} scroll={{ x: 900, y: 'calc(100vh - 360px)' }} locale={{ emptyText: <Empty text="暂无日志" hint="试试切换数据源或扩大时间范围" /> }} />
         ) : (
           <Table rowKey={(r) => r.service_name || r._group} loading={loading}
             columns={[{ title: '服务', dataIndex: 'service_name', key: 'service_name' },

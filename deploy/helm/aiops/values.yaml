@@ -166,13 +166,15 @@ queryApi:
 
 ingest:
   enabled: true
-  image: "ingest-pipeline:v1.0.1"
+  image: "ingest-pipeline:v1.0.6"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
   deepflowChHost: "deepflow-clickhouse.deepflow.svc.cluster.local"
   deepflowChPort: "8123"
   syncInterval: "10s"
+  # span 抽样率（0~1）：每 flow 现在产出 client+server 两个 span，0.5 抵消写入量翻倍
+  spanSampleRate: 0.5
   walStorageClass: ""
   walStorage: 5Gi
   resources:

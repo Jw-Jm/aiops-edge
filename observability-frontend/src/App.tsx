@@ -91,6 +91,8 @@ function AppLayout() {
   const [clock, setClock] = useState('')
   const [navCollapsed, setNavCollapsed] = useState<Record<string, boolean>>({})
   const [alertCount, setAlertCount] = useState<number | null>(null)
+  // 修复 5.7：通知抽屉需要最近告警明细，与 alertCount 一并拉取
+  const [recentAlerts, setRecentAlerts] = useState<any[]>([])
 
   // 初始化拉取集群列表（多集群纳管入口）
   useEffect(() => {
@@ -101,12 +103,22 @@ function AppLayout() {
   // P3-1: 侧栏告警 badge 动态拉取真实告警数（替代硬编码 12）
   useEffect(() => {
     const loadAlerts = () => {
-      getAlertEvents({ limit: 1 }).then((r) => {
+      getAlertEvents({ limit: 200 }).then((r) => {
         const d = r.data
-        // API 返回 {count: 本次条数, total: 总告警数}；优先用 total 反映真实告警总量
-        const n = Array.isArray(d) ? d.length : (d?.total ?? d?.count ?? 0)
-        setAlertCount(Number(n) || 0)
-      }).catch(() => setAlertCount(null))
+        // 通知抽屉：优先取 events 数组，兼容分页对象
+        const list = Array.isArray(d) ? d : (d?.events ?? d?.data ?? [])
+        const events = Array.isArray(list) ? list : []
+        // 修复(P1 告警角标)：与 AlertEvents.tsx flatMap 展开逻辑对齐。
+        // 每条告警的 object 字段含多个对象名（逗号分隔），前端按对象展开多行，
+        // 角标应等于实际展开行数（=告警总行数），而非 API 返回的不同规则数（total）。
+        // API 返回 {total, count} 都是"不同规则告警数"，与表格行数不一致。
+        const expandedCount = events.reduce((sum: number, e: any) => {
+          const objs = (e?.object || '').split(',').map((s: string) => s.trim()).filter(Boolean)
+          return sum + (objs.length || 1)
+        }, 0)
+        setAlertCount(expandedCount)
+        setRecentAlerts(events)
+      }).catch(() => { setAlertCount(null); setRecentAlerts([]) })
     }
     loadAlerts()
     const t = setInterval(loadAlerts, 30000) // 30s 刷新
@@ -214,12 +226,46 @@ function AppLayout() {
           <div className="topbar__spacer" />
           {currentLabel && <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>{currentLabel}</span>}
           <div className="env-switch"><span className="dot" />演示环境</div>
-          <div className="topbar__icon-btn" title="通知" onClick={() => navigate('/alerts/events')}><span className="ping" /><AppIcon name="bell" /></div>
+          {/* 修复 5.7：通知按钮从"直接跳转告警页"改为下拉抽屉，展示最近告警，点击进入告警事件页 */}
+          <Dropdown
+            trigger={['click']}
+            dropdownRender={() => (
+              <div style={{ width: 340, background: 'var(--surface-1)', borderRadius: 12, boxShadow: 'var(--shadow-lg)', border: '1px solid var(--border)', overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid var(--border-soft)' }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>告警通知</span>
+                  <span onClick={() => navigate('/alerts/events')} style={{ fontSize: 12, color: 'var(--primary)', cursor: 'pointer' }}>查看全部 →</span>
+                </div>
+                <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  {(recentAlerts || []).length === 0 ? (
+                    <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无告警</div>
+                  ) : (recentAlerts || []).slice(0, 6).map((a: any) => (
+                    <div key={a.id || a.alert_id || a.title} onClick={() => navigate(`/alerts/events`)}
+                      style={{ display: 'flex', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-soft)', cursor: 'pointer', alignItems: 'flex-start' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0, background: a.severity === 'critical' ? 'var(--danger)' : a.severity === 'warning' ? 'var(--warning)' : 'var(--primary)' }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.rule_name || a.title || a.summary || a.alert_name || '告警'}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{(a.object || a.service_name || a.service || a.cluster_id || '')}{a.created_at ? ` · ${String(a.created_at).slice(5, 16).replace('T', ' ')}` : ''}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          >
+            <div className="topbar__icon-btn" title="通知">
+              {Number(alertCount || 0) > 0 && <span className="ping" />}
+              <AppIcon name="bell" />
+            </div>
+          </Dropdown>
           <span style={{ fontSize: 12, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{clock}</span>
           <Dropdown
             menu={{
               items: [
+                { key: 'profile', label: '个人资料', disabled: true },
+                { key: 'password', label: '修改密码', disabled: true },
+                { type: 'divider' },
                 { key: 'settings', label: '系统设置', onClick: () => navigate('/admin/settings') },
+                { key: 'about', label: '关于平台', disabled: true },
                 { type: 'divider' },
                 { key: 'logout', label: '退出登录', danger: true, onClick: () => { logout(); navigate('/login'); window.location.reload() } },
               ],

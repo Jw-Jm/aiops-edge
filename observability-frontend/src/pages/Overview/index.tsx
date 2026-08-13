@@ -3,7 +3,6 @@ import { Row, Col, Button, Space, Input, Tag } from 'antd'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getDashboardStats, DashboardStats, listApprovalTasks } from '../../api/client'
 import { PageHeader, StatCard, StatusBadge, PaneCard, Empty, Breadcrumb } from '../../components/ui/PageKit'
-import AppIcon from '../../components/AppIcons'
 import { useUIStore } from '../../store/uiStore'
 
 function sparkPts(arr: number[], w = 120, h = 40): string {
@@ -32,7 +31,9 @@ const Overview: React.FC = () => {
         })()
 
   useEffect(() => {
-    Promise.all([getDashboardStats(), listApprovalTasks({ limit: 1 })])
+    // 修复(P2-1)：limit 从 1 改为 100，避免漏算"等待审批"任务。
+    // 之前 limit:1 只取第一条，若 waiting 任务不在第一条则待办数错误。
+    Promise.all([getDashboardStats(), listApprovalTasks({ limit: 100 })])
       .then(([s, t]) => {
         setStats(s.data)
         const tasks = (t.data as any)?.tasks || []
@@ -108,11 +109,12 @@ const Overview: React.FC = () => {
                 onPressEnter={() => { if (aiQ.trim()) navigate(`/ai/chat?q=${encodeURIComponent(aiQ)}`) }}
                 placeholder="用自然语言提问，例如：分析 prod 集群故障根因"
                 style={{ flex: 1, minWidth: 240 }}
-                suffix={<span style={{ cursor: 'pointer', display: 'flex' }} onClick={() => { if (aiQ.trim()) navigate(`/ai/chat?q=${encodeURIComponent(aiQ)}`) }}><AppIcon name="send" /></span>}
               />
-              {/* P2-16: "分析根因"基于当前输入（若已输入），否则用默认预设 */}
-              <Button onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(aiQ.trim() || '分析 prod 集群故障根因')}`)}>分析根因</Button>
+              {/* 修复 5.12：移除重复的 suffix 发送图标，回车即可发送；按钮保留为核心入口 */}
+              {/* 修复 5.8：分析根因按钮基于当前输入，另提供 2 个高频模板快速选择 */}
+              <Button type="primary" onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(aiQ.trim() || '分析 prod 集群故障根因')}`)}>分析根因</Button>
               <Button onClick={() => navigate('/ai/chat?q=巡检所有 K8s 集群')}>集群巡检</Button>
+              <Button onClick={() => navigate('/ai/chat?q=为什么 order-svc 延迟升高')}>延迟排查</Button>
             </div>
           </PaneCard>
         </Col>

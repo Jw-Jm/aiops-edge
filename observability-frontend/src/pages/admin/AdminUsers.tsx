@@ -37,8 +37,8 @@ const AdminUsers: React.FC = () => {
 
   const cols = [
     { title: '用户名', dataIndex: 'username', key: 'username' },
-    { title: '显示名', dataIndex: 'display_name', key: 'display_name', render: (v: string) => v || '-' },
-    { title: '角色', dataIndex: 'role', key: 'role', render: (v: string) => <StatusBadge text={v === 'admin' ? '管理员' : '普通用户'} tone={v === 'admin' ? 'crit' : 'info'} /> },
+    { title: '显示名', dataIndex: 'display_name', key: 'display_name', render: (v: string, r: any) => (v && v !== r.username ? v : '-') },
+    { title: '角色', dataIndex: 'role', key: 'role', render: (v: string) => <StatusBadge text={v === 'admin' ? '系统管理员' : '普通成员'} tone={v === 'admin' ? 'crit' : 'info'} /> },
     { title: '邮箱', dataIndex: 'email', key: 'email', render: (v: string) => v || '-' },
     { title: '状态', dataIndex: 'status', key: 'status', render: (v: number) => <StatusBadge text={v === 1 ? '启用' : '停用'} tone={v === 1 ? 'ok' : 'muted'} /> },
     { title: '操作', key: 'op', width: 120, render: (_: any, r: any) => (
@@ -67,7 +67,7 @@ const AdminUsers: React.FC = () => {
           {!editing && <Form.Item name="password" label="密码" rules={[{ required: true }]}><Input.Password /></Form.Item>}
           <Form.Item name="display_name" label="显示名"><Input /></Form.Item>
           <Form.Item name="role" label="角色" initialValue="user"><Select options={[{ value: 'user', label: '普通用户' }, { value: 'admin', label: '管理员' }]} /></Form.Item>
-          <Form.Item name="email" label="邮箱"><Input /></Form.Item>
+          <Form.Item name="email" label="邮箱" rules={[{ required: true, message: '请输入邮箱（用于密码找回）' }]}><Input /></Form.Item>
         </Form>
       </Modal>
     </div>

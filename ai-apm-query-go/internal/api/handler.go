@@ -815,7 +815,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	sql := fmt.Sprintf(
-		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 20",
+		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 50",
 		chQuote(tid), clusterClause,
 	)
 	body, err := h.queryClickHouse(ctx, sql)
@@ -845,6 +845,29 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	stats := biz.AggregateStats(items)
+
+	// 修复(P0-3.2)：让 services 数与 topology 节点数口径一致。
+	// DashboardStats 之前只统计 trace_spans 中产生过 trace 的服务（13 个），
+	// 而 topology 包含 service_topology 中所有服务（含 mysql/kube-dns 等无 trace），
+	// 导致首页 KPI"服务数量 13"与拓扑"16 节点"不一致。
+	// 修复：从 service_topology 收集所有出现过的服务名，与 trace 服务合并去重，
+	// 让 stats.Services 等于真正的"已纳管服务数"。
+	topologySQL := fmt.Sprintf(
+		"SELECT DISTINCT source_service AS s FROM observability.service_topology WHERE tenant_id=%s%s AND s != '' UNION DISTINCT SELECT DISTINCT target_service AS s FROM observability.service_topology WHERE tenant_id=%s%s AND s != ''",
+		chQuote(tid), clusterClause, chQuote(tid), clusterClause,
+	)
+	if tb, err := h.queryClickHouse(ctx, topologySQL); err == nil {
+		if tr, perr := parseRows(tb); perr == nil && len(tr) > 0 {
+			traceSvcSet := map[string]bool{}
+			for _, it := range items { traceSvcSet[it.Service] = true }
+			for _, row := range tr {
+				if s, _ := row["s"].(string); s != "" && !traceSvcSet[s] {
+					items = append(items, biz.StatsItem{Service: s, Calls: 0, Errors: 0})
+				}
+			}
+			stats = biz.AggregateStats(items)
+		}
+	}
 
 	// 拓扑边数（与 GlobalTopology 一致的降级链：service_topology → MySQL topology_relations）
 	edgeCount := int64(0)
@@ -1448,6 +1471,11 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 	if queryText != "" {
 		// Search in body field for log text
 		conditions = append(conditions, fmt.Sprintf("body LIKE %s", chLike(queryText)))
+	}
+	// 修复(P2-3)：exclude_health=1 时过滤健康检查/探针噪音日志（/health、/ready、/v1/query）
+	if r.URL.Query().Get("exclude_health") == "true" || r.URL.Query().Get("exclude_health") == "1" {
+		conditions = append(conditions,
+			"(body NOT LIKE '%/health%' AND body NOT LIKE '%/ready%' AND body NOT LIKE '%/v1/query%' AND body NOT LIKE '%metrics%')")
 	}
 
 	// Time filter: last N minutes（用 timestamp 精确过滤，而非天粒度 date）

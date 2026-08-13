@@ -20,12 +20,31 @@ export default function ClusterSwitcher() {
 
   // cluster_id 语义：查询层的集群标记。主集群（id===1，数据写入 cluster_id='default'）映射为 'default'；
   // 纳管集群用集群 name 作为 cluster_id 标记（与采集 chart 上报的 cluster_id 对齐）。
+  // 修复 5.9：option label 增加集群状态图标（● 健康 / ● 降级 / ● 失联 / ● 未知），便于运维一眼识别集群可用性
+  const statusDot = (s: string) => {
+    const st = String(s || '').toLowerCase()
+    if (['healthy', 'active', 'ready', 'running', 'ok'].includes(st)) return { color: '#16a34a', label: '健康' }
+    if (['degraded', 'warning'].includes(st)) return { color: '#d97706', label: '降级' }
+    if (['down', 'error', 'offline', 'disconnected'].includes(st)) return { color: '#dc2626', label: '失联' }
+    return { color: '#a3aebe', label: '未知' }
+  }
   const options = [
-    { value: 'all', label: '全部集群' },
-    ...clusters.map((c) => ({
-      value: c.id === 1 ? 'default' : c.name,
-      label: `${c.name}${c.node_count ? ` (${c.node_count}节点)` : ''}`,
-    })),
+    { value: 'all', label: '全部集群', labelNode: <span>全部集群</span> },
+    ...clusters.map((c) => {
+      const d = statusDot(c.status)
+      return {
+        value: c.id === 1 ? 'default' : c.name,
+        label: c.node_count
+          ? `${c.name} (${c.node_count}节点)`
+          : c.name,
+        // 用 ReactNode 渲染状态点，Select 支持
+        labelNode: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
+          {c.name}
+          {c.node_count ? ` (${c.node_count}节点)` : ''}
+        </span>,
+      }
+    }),
   ]
 
   return (
@@ -33,11 +52,12 @@ export default function ClusterSwitcher() {
       <Select
         value={currentClusterId}
         onChange={(v) => setCurrentCluster(v)}
-        options={options}
+        options={options.map((o) => ({ ...o, label: o.labelNode || o.label }))}
         style={{ minWidth: 130 }}
         size="small"
         popupMatchSelectWidth={false}
         title="切换监控集群范围"
+        optionLabelProp="label"
       />
     </div>
   )

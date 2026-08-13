@@ -44,7 +44,7 @@ const AlertRules: React.FC = () => {
 
   const cols = [
     { title: '规则名', dataIndex: 'name', key: 'name', render: (_: any, r: Rule) => r.name || r.rule_name },
-    { title: '服务', dataIndex: 'service_name', key: 'service_name' },
+    { title: '服务', dataIndex: 'service_name', key: 'service_name', render: (v: string) => v || '所有服务' },
     { title: '指标', dataIndex: 'metric', key: 'metric' },
     { title: '阈值', dataIndex: 'threshold', key: 'threshold', render: (v: number) => v ?? '-' },
     { title: '严重度', dataIndex: 'severity', key: 'severity', render: (v: string) => <StatusBadge text={v || 'warning'} tone={v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : 'info'} /> },
@@ -61,7 +61,7 @@ const AlertRules: React.FC = () => {
   return (
     <div>
       <Breadcrumb items={[{ t: '告警' }, { t: '告警规则' }]} />
-      <PageHeader title="告警规则" desc="管理阈值 / 异常检测 / 燃烧速率等告警策略"
+      <PageHeader title="告警规则" desc="管理阈值、异常检测、燃烧速率等告警策略"
         actions={<Button type="primary" onClick={() => setOpen(true)}>新建规则</Button>} />
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey="id" loading={loading} columns={cols} dataSource={data} size="middle"

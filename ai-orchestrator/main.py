@@ -1170,6 +1170,8 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
         "count": req.count,
         "first_timestamp": req.first_timestamp,
         "last_timestamp": req.last_timestamp,
+        "object": req.object,
+        "namespace": req.namespace,
     }
     result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event)
     result["alert"] = {
@@ -1273,6 +1275,8 @@ async def rca_alert_export(req: AlertRCARequest, request: Request, format: str =
         "count": req.count,
         "first_timestamp": req.first_timestamp,
         "last_timestamp": req.last_timestamp,
+        "object": req.object,
+        "namespace": req.namespace,
     }
     result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event)
     result["alert"] = {

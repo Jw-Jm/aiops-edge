@@ -38,6 +38,19 @@ const AiChat: React.FC = () => {
     try { await api.delete('/ai/sessions') } catch {}
     setSessions([]); setActiveSession(''); setMessages([])
   }
+  // 修复(P2-1)：会话标题清理。preview 是用户首条消息原文，可能含 markdown 标记
+  // （###、```等），且过长。这里去掉 markdown 符号并截短到 28 字符。
+  const fmtTitle = (s: any) => {
+    let t = s.preview || s.session_id?.slice(0, 20) || ''
+    t = String(t)
+      .replace(/^#{1,6}\s+/g, '')           // 去掉行首 # 标题标记
+      .replace(/`{1,3}/g, '')                // 去掉反引号
+      .replace(/\*\*/g, '')                // 去掉 ** 粗体标记
+      .replace(/\*+/g, '')                  // 去掉 * 斜体标记
+      .replace(/[\r\n]+/g, ' ')            // 换行转空格
+      .trim()
+    return t.length > 28 ? t.slice(0, 28) + '…' : t
+  }
   const fmtTime = (ts: any) => {
     if (!ts) return ''
     const n = typeof ts === 'number' ? ts * 1000 : (typeof ts === 'string' && !isNaN(Date.parse(ts)) ? Date.parse(ts) : 0)
@@ -90,9 +103,13 @@ const AiChat: React.FC = () => {
         const raw = localStorage.getItem('aiops-ui-v3')
         if (raw) { clusterId = JSON.parse(raw)?.state?.currentClusterId || 'all' }
       } catch { clusterId = 'all' }
+      // 修复：直接从 localStorage 取 token（client.ts 初始化时 localStorage 为空，
+      // axios defaults 未写入；登录后只 sync 到 localStorage，未回写 axios defaults，
+      // 导致 fetch 读到空 Authorization 头 → 401）。此处直接读 localStorage 兜底。
+      const tok = localStorage.getItem('token') || ''
       const resp = await fetch(`${api.defaults.baseURL}/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID, Authorization: (api.defaults.headers.common.Authorization as string) || '' },
+        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID, Authorization: tok ? `Bearer ${tok}` : '' },
         body: JSON.stringify({ intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, cluster_id: clusterId, exec_result: execResult || '' }),
         signal: controller.signal,
       })
@@ -206,7 +223,7 @@ const AiChat: React.FC = () => {
           {sessions.map((s) => (
             <div key={s.session_id} onClick={() => loadSession(s.session_id)}
               style={{ padding: '8px 10px', borderRadius: 8, cursor: 'pointer', marginBottom: 2, background: activeSession === s.session_id ? 'var(--primary-soft)' : 'transparent', position: 'relative' }}>
-              <div style={{ fontSize: 12, paddingRight: 16 }}>{s.preview || s.session_id?.slice(0, 20)}</div>
+              <div style={{ fontSize: 12, paddingRight: 16 }}>{fmtTitle(s)}</div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
                 <span>{s.intent || ''}</span><span>{fmtTime(s.created_at)}</span>
               </div>

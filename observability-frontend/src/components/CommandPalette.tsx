@@ -5,6 +5,8 @@ import AppIcon from './AppIcons'
 
 interface Cmd { icon: string; label: string; keywords?: string; path?: string; kbd?: string }
 
+// 修复 4.4：命令面板 GROUPS 与侧栏 NAV_GROUPS 完全对齐，补齐"容量与资源"独立分组、
+// "系统管理"含集群纳管，避免面板与侧栏不一致
 const GROUPS: { title: string; items: Cmd[] }[] = [
   {
     title: '总览',
@@ -18,7 +20,6 @@ const GROUPS: { title: string; items: Cmd[] }[] = [
       { icon: 'topology', label: '服务全景', path: '/observability/service', kbd: 'G S' },
       { icon: 'traces', label: '链路追踪', path: '/observability/trace', kbd: 'G T' },
       { icon: 'logs', label: '日志与指标', path: '/observability/log', kbd: 'G L' },
-      { icon: 'capacity', label: '容量预测', path: '/capacity' },
     ],
   },
   {
@@ -36,16 +37,22 @@ const GROUPS: { title: string; items: Cmd[] }[] = [
     ],
   },
   {
-    title: '管理与基础设施',
+    title: '容量与资源',
     items: [
-      { icon: 'users', label: '用户管理', path: '/admin/users' },
-      { icon: 'settings', label: '系统设置', path: '/admin/settings' },
+      { icon: 'capacity', label: '容量预测', path: '/capacity', kbd: 'G R' },
     ],
   },
   {
-    title: '报告与合规',
+    title: '报告',
     items: [
       { icon: 'reports', label: '报告中心', path: '/report' },
+    ],
+  },
+  {
+    title: '系统管理',
+    items: [
+      { icon: 'users', label: '用户管理', path: '/admin/users' },
+      { icon: 'settings', label: '系统设置', path: '/admin/settings' },
     ],
   },
 ]

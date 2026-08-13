@@ -71,6 +71,10 @@ export const StatCard: React.FC<{
   </div>
 )
 
-export const Empty: React.FC<{ text?: string }> = ({ text = '暂无数据' }) => (
-  <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)', fontSize: 13 }}>{text}</div>
+export const Empty: React.FC<{ text?: string; hint?: string }> = ({ text = '暂无数据', hint }) => (
+  <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
+    <div style={{ fontSize: 30, marginBottom: 8, opacity: .5 }}>▢</div>
+    <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{text}</div>
+    {hint && <div style={{ fontSize: 12, marginTop: 6 }}>{hint}</div>}
+  </div>
 )

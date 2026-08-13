@@ -42,6 +42,8 @@ class AlertRCARequest(BaseModel):
     count: int = 0
     first_timestamp: str = ""
     last_timestamp: str = ""
+    namespace: str = ""  # 告警对象所在的真实命名空间，kubectl 查询用真实值（不再硬编码 observability）
+    object: str = ""  # 告警对象（如 Pod 名列表），用于 RCA 针对性过滤集群状态
 
 
 class WebhookPayload(BaseModel):

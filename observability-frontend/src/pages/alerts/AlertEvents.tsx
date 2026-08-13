@@ -34,6 +34,17 @@ const AlertEvents: React.FC = () => {
 
   const severity = (e: AlertEvent) => e.severity || e.labels?.severity || e.labels?.level || 'warning'
   const eventStatus = (e: any) => e.status || e.state || (e.resolved_at ? 'resolved' : 'firing')
+  // 修复(P0-3.3)：从告警对象名推断 namespace，让 RCA kubectl 命令定位真实资源。
+  const _infer_namespace = (r: any) => {
+    const obj = (r?.object || r?.labels?.pod || r?.labels?.deployment || r?.labels?.service || '') as string
+    const base = String(obj).split('-')[0] || ''
+    const map: Record<string, string> = {
+      deepflow: 'deepflow', coredns: 'kube-system', 'kube-proxy': 'kube-system',
+      'metrics-server': 'kube-system', 'local-path-provisioner': 'local-path-storage',
+      'ingress-nginx': 'ingress-nginx', redis: 'redis',
+    }
+    return map[base] || ''
+  }
   // 2.10 当前告警=未解决（firing/acknowledged/空）；历史告警=全部
   const filtered = data
     .filter((e) => (sev === 'all' ? true : severity(e).toLowerCase().includes(sev)))
@@ -102,6 +113,11 @@ const AlertEvents: React.FC = () => {
     rcaAlertAnalysis({
       summary: r.rule_name || r.message || '', service: r.service || '', severity: severity(r),
       rule_id: r.rule_id || r.id || '', rule_name: r.rule_name || '', message: r.message || r.summary || '',
+      // 修复：传递告警对象（object）+ 命名空间（namespace）字段。
+      // 否则后端处置命令硬编码 -n observability，但告警对象（deepflow-agent）
+      // 实际在 deepflow 命名空间，导致 kubectl 命令无法定位资源。
+      object: r.object || r.labels?.pod || r.labels?.deployment || r.labels?.service || '',
+      namespace: r.namespace || r.labels?.namespace || _infer_namespace(r) || '',
       count: r.count, last_timestamp: r.last_timestamp || r.first_timestamp || '',
     })
       .then((res) => setRca(typeof res.data === 'string' ? res.data : JSON.stringify(res.data)))

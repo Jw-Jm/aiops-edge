@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,21 @@ func parseSyncInterval(v string) time.Duration {
 	return d
 }
 
+// parseSampleRate 从 env DEEPFLOW_SPAN_SAMPLE_RATE 解析抽样率（0~1，浮点或百分比）。
+// 非法/越界（<0 或 >1）回退默认 1.0（全量写入）。
+func parseSampleRate(v string) float64 {
+	if v == "" {
+		return 1.0
+	}
+	s := strings.TrimSpace(v)
+	s = strings.TrimSuffix(s, "%")
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f < 0 || f > 1 {
+		return 1.0
+	}
+	return f
+}
+
 // clampStartTime 处理时钟回拨/漂移，把增量起点限制在 [now-15m, now] 内。
 func clampStartTime(last, now time.Time) time.Time {
 	lo := now.Add(-15 * time.Minute)
@@ -67,6 +83,10 @@ type DeepFlowSyncer struct {
 	cluster    string // 所属 k8s 环境/集群，RED 指标用 cluster 标签区分
 	tenantID   string
 	interval   time.Duration
+	// 抽样率（0~1）：只写入 part 比例的 span，控制 ClickHouse 写入量与存储成本。
+	// 因每条 l7 flow 现在会产出 client+server 两个 span（写入量翻倍），
+	// 抽样率可把最终落库量降回原单 span 水平（如 0.5 = 每 flow 平均 1 span）。
+	sampleRate float64
 	// 增量拉取状态（线程安全）
 	lastSyncMu   sync.Mutex
 	lastSyncTime time.Time
@@ -85,6 +105,7 @@ func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter
 		cluster:    cluster,
 		tenantID:   "default",
 		interval:   parseSyncInterval(os.Getenv("DEEPFLOW_SYNC_INTERVAL")),
+		sampleRate: parseSampleRate(os.Getenv("DEEPFLOW_SPAN_SAMPLE_RATE")),
 	}
 }
 
@@ -270,6 +291,12 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 		if isInternalQuery(operation) {
 			continue
 		}
+		// 抽样控制：按 sampleRate 概率丢弃整条调用（client+server 成对丢弃），
+		// 避免每条 flow 双 span 导致 ClickHouse 写入量翻倍。抽样不拆散调用链。
+		if s.sampleRate < 1.0 && rand.Float64() > s.sampleRate {
+			count++
+			continue
+		}
 		// response_duration 单位：DeepFlow 为微秒（µs），转纳秒存储
 		durUs := toUint(r["response_duration"])
 		durNs := durUs * 1000
@@ -281,27 +308,55 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 		}
 		// 用 start_time 生成稳定的 trace_id / span_id（十六进制）
 		base := fmt.Sprintf("%d", ts.UnixNano())
-		span := &model.Span{
+		// 修复 P1-4.1：构造真实跨服务调用链（src 客户端 span -> dst 服务端 span），
+		// 使 trace 详情页能展示多服务瀑布图。
+		srcName := fmt.Sprintf("%v", r["src"])
+		traceID := hexHash(base, 32)
+		clientSpanID := hexHash(base+"c", 16)
+		serverSpanID := hexHash(base+"s", 16)
+		clientDur := durNs + 800000
+		clientSpan := &model.Span{
 			TenantID:      s.tenantID,
 			ClusterID:     s.cluster,
-			TraceID:       hexHash(base, 32),
-			SpanID:        hexHash(base+"s", 16),
+			TraceID:       traceID,
+			SpanID:        clientSpanID,
 			ParentSpanID:  "",
+			ServiceName:   srcName,
+			OperationName: "HTTP " + operation,
+			SpanKind:      "CLIENT",
+			StatusCode:    uint8(code),
+			StartTime:     ts.In(time.UTC),
+			DurationNs:    clientDur,
+			Attributes:    map[string]string{"http.url": operation, "peer": dst},
+			HTTPMethod:    "GET",
+			HTTPURL:       operation,
+			HTTPStatusCode: uint16(code),
+			IsSlow:        boolToU8(clientDur >= 500000000),
+			IsError:       isErr,
+			ServiceInstanceID: srcName,
+		}
+		s.spanWriter.Add(clientSpan)
+		serverSpan := &model.Span{
+			TenantID:      s.tenantID,
+			ClusterID:     s.cluster,
+			TraceID:       traceID,
+			SpanID:        serverSpanID,
+			ParentSpanID:  clientSpanID,
 			ServiceName:   dst,
 			OperationName: operation,
 			SpanKind:      "SERVER",
 			StatusCode:    uint8(code),
 			StartTime:     ts.In(time.UTC),
 			DurationNs:    durNs,
-			Attributes:    map[string]string{"http.url": operation, "source": fmt.Sprintf("%v", r["src"])},
+			Attributes:    map[string]string{"http.url": operation, "source": srcName},
 			HTTPMethod:    "GET",
 			HTTPURL:       operation,
 			HTTPStatusCode: uint16(code),
 			IsSlow:        boolToU8(durNs >= 500000000),
 			IsError:       isErr,
-			ServiceInstanceID: fmt.Sprintf("%v", r["src"]),
+			ServiceInstanceID: srcName,
 		}
-		s.spanWriter.Add(span)
+		s.spanWriter.Add(serverSpan)
 
 		// 把真实服务流量累加为 VM 服务 RED 指标（service_requests_total / service_errors_total / 时长）
 		// 供 anomaly 检测 / SLO 烧毁率等规则评估使用。cluster 标签区分多 k8s 环境。
@@ -315,7 +370,6 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 			if isErr == 1 {
 				severity = "ERROR"
 			}
-			srcName := fmt.Sprintf("%v", r["src"])
 			s.logWriter.Add(&model.LogRecord{
 				TenantID:    s.tenantID,
 				ClusterID:   s.cluster,
@@ -324,8 +378,8 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 				Severity:    severity,
 				Body:        fmt.Sprintf("%s -> %s %s [%d] %dms", srcName, dst, operation, code, durNs/1e6),
 				Attributes:  map[string]string{"http.url": operation, "source": srcName, "http.status_code": fmt.Sprintf("%d", code)},
-				TraceID:     span.TraceID,
-				SpanID:      span.SpanID,
+				TraceID:     traceID,
+				SpanID:      serverSpanID,
 				TimeBucket:  ts.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
 				Date:        ts.Format("2006-01-02"),
 			})

@@ -57,8 +57,8 @@ const AiDock: React.FC = () => {
           </div>
         </div>
       )}
-      <button className="ai-dock__btn" title="AI 运维助手" onClick={() => setOpen(!open)} aria-label="AI 运维助手">
-        <AppIcon name="chat" />
+      <button className="ai-dock__btn" title={open ? '收起 AI 浮窗' : 'AI 运维助手'} onClick={() => setOpen(!open)} aria-label="AI 运维助手">
+        <AppIcon name={open ? 'x' : 'chat'} />
       </button>
     </div>
   )

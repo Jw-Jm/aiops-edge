@@ -652,31 +652,81 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
     })
 
     # P1-2: 采集真实集群状态（只读 kubectl），让 RCA 针对具体告警对象而非模板。
-    # 从告警上下文提取命名空间，采集异常 Pod / 最近事件 / 节点状态，注入 cause 与 action。
-    namespace = (anomaly_event or {}).get("namespace", "") or "observability"
+    # 修复：从告警上下文提取"告警对象"（object 字段，如 Pod 名列表），
+    # 用对象名过滤异常 Pod / 最近事件，使 RCA 结论与告警对象对应；
+    # 而非此前抓取整个命名空间，导致展示 frontend 等无关资源的事件。
+    # 修复(P0-3.3)：namespace 优先用 anomaly_event.namespace（前端传入的真实值），
+    # 否则从告警对象名推断（deepflow-* -> deepflow, coredns -> kube-system, ...），
+    # 最后才 fallback 到 "observability"。这样 kubectl 命令才能定位到真实资源。
+    namespace = (anomaly_event or {}).get("namespace", "") or ""
+    # 告警对象：object 字段（逗号分隔）或从 message 中提取 "对象: xxx" 列表
+    objects_raw = (anomaly_event or {}).get("object", "") or ""
+    _obj_set = set()
+    if objects_raw:
+        _obj_set = {o.strip() for o in objects_raw.replace("，", ",").split(",") if o.strip()}
+    if not _obj_set:
+        import re as _re
+        _m = _re.search(r"对象[:：]\s*([^|]+)", (anomaly_event or {}).get("message", "") or "")
+        if _m:
+            _obj_set = {o.strip() for o in _m.group(1).replace("，", ",").split(",") if o.strip()}
+    # 修复(P0-3.3)：若 namespace 仍为空，从告警对象名推断常见 K8s namespace，
+    # 这样 kubectl 命令（describe/logs）的 -n 参数才能定位到真实资源。
+    if not namespace:
+        _NS_INFER = {
+            "deepflow": "deepflow", "coredns": "kube-system",
+            "kube-proxy": "kube-system", "metrics-server": "kube-system",
+            "local-path-provisioner": "local-path-storage",
+            "ingress-nginx": "ingress-nginx", "redis": "redis",
+        }
+        for obj in _obj_set:
+            base = obj.split("-")[0] if "-" in obj else obj
+            if base in _NS_INFER:
+                namespace = _NS_INFER[base]
+                break
+        if not namespace:
+            namespace = "observability"
     _real = {}
     try:
-        _real["abnormal_pods"] = _run_kubectl_safe(
-            f"kubectl get pods -n {namespace} -o wide | grep -E 'CrashLoopBackOff|Error|OOMKilled|Pending|ImagePullBackOff'",
-            15,
-        )
-        _real["recent_events"] = _run_kubectl_safe(
-            f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -15",
-            15,
-        )
+        # 只采集告警对象相关的 Pod 状态（而非全部命名空间）
+        if _obj_set:
+            obj_or = " ".join(f"-e {o}" for o in _obj_set)
+            _real["abnormal_pods"] = _run_kubectl_safe(
+                f"kubectl get pods -n {namespace} -o wide | grep {obj_or}",
+                15,
+            )
+            # 只采集告警对象相关的事件（而非全部事件）
+            ev = _run_kubectl_safe(
+                f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -60",
+                15,
+            )
+            # 过滤出含告警对象的行
+            if ev and "[不安全" not in ev:
+                lines2 = [l for l in ev.splitlines() if any(o in l for o in _obj_set)]
+                _real["recent_events"] = "\n".join(lines2[-12:]) if lines2 else "(无告警对象相关事件)"
+        else:
+            _real["abnormal_pods"] = _run_kubectl_safe(
+                f"kubectl get pods -n {namespace} -o wide | grep -E 'CrashLoopBackOff|Error|OOMKilled|Pending|ImagePullBackOff'",
+                15,
+            )
+            _real["recent_events"] = _run_kubectl_safe(
+                f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -15",
+                15,
+            )
         _real["nodes"] = _run_kubectl_safe("kubectl get nodes -o wide", 15)
     except Exception:
         _real = {}
+    # 记录告警对象，用于 cause 措辞更精确
+    obj_label = ", ".join(sorted(_obj_set)) if _obj_set else "相关对象"
     if _real.get("abnormal_pods") and "[不安全" not in _real["abnormal_pods"] and _real["abnormal_pods"].strip():
-        plan["cause"] += f"\n\n**真实集群状态（{namespace}）**：\n异常 Pod：\n{_real['abnormal_pods'][:800]}"
+        plan["cause"] += f"\n\n**真实集群状态（{namespace}，告警对象: {obj_label}）**：\n异常 Pod：\n{_real['abnormal_pods'][:800]}"
         plan["action"] = (
-            f"1. 针对异常 Pod：`kubectl describe pod <异常Pod> -n {namespace}` 查看状态/资源/探针；\n"
+            f"1. 针对异常对象 {obj_label}：`kubectl describe pod <异常Pod> -n {namespace}` 查看状态/资源/探针；\n"
             f"2. 查看崩溃前日志：`kubectl logs <异常Pod> -n {namespace} --previous`；\n"
             f"3. 确认是否为 OOM/探针失败后执行相应修复；\n"
             f"{plan['action']}"
         )
     if _real.get("recent_events") and "[不安全" not in _real["recent_events"] and _real["recent_events"].strip():
-        plan["cause"] += f"\n最近事件：\n{_real['recent_events'][:800]}"
+        plan["cause"] += f"\n最近事件（告警对象 {obj_label}）：\n{_real['recent_events'][:800]}"
 
     # 尝试 LLM 假设引擎（已配置时），让"重新分析"产生新结果
     if brain.llm_config and brain.llm_config.get("api_key"):

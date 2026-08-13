@@ -49,6 +49,11 @@ const ServiceObservability: React.FC = () => {
   const chartInst = useRef<echarts.ECharts | null>(null)
   const trendChartRef = useRef<HTMLDivElement>(null)
   const trendInst = useRef<echarts.ECharts | null>(null)
+  // 保存 force 布局收敛后的稳定节点坐标（name -> {x,y}）。
+  // 用 useRef 而非 state：30s 轮询数据未变时复用稳定位置，force 不从环形种子重新散开，
+  // 实现"打开一次收敛后保持静止"。finished 事件只写 ref，不触发 setState/effect 重跑，
+  // 避免之前"每次 finished 都 setNodes 新引用 → effect 重跑 → force 重启"的死循环。
+  const stablePosRef = useRef<Record<string, { x: number; y: number }>>({})
   const [view, setView] = useState<'topo' | 'list'>('topo')
   const [searchParams] = useSearchParams()
   const [loading, setLoading] = useState(true)
@@ -84,20 +89,40 @@ const ServiceObservability: React.FC = () => {
           target: String(e.target_service ?? e.target ?? e.dst),
           value: e.calls ?? e.value ?? 1,
         })).filter((l: TopoLink) => l.source && l.target)
-        setNodes(nodesData)
-        setLinks(linksData)
+        // 修复：30s 静默轮询只在数据真正变化时才 setState，避免每次都触发 force 重新 simulation
+        // 导致节点持续飘移（用户反馈"节点乱飘"）。比较 nodes id+name 与 links source+target 字符串指纹。
+        const fp = (a: any[]) => a.map((x) => `${x.id || x.name}|${x.source || ''}|${x.target || ''}|${x.value || ''}`).sort().join(';')
+        // 修复 2：如果只是拓扑结构（节点/边列表）未变，但调用量 value 变化，节点大小不变，无需重渲染
+        // 只在节点/边的身份（id / source / target）变化时才更新 state
+        const idFp = (a: any[]) => a.map((x) => `${x.id || x.name}|${x.source || ''}|${x.target || ''}`).sort().join(';')
+        setNodes((prev) => {
+          if (idFp(prev) !== idFp(nodesData)) return nodesData
+          // 节点身份没变：直接返回 prev 原引用，绝不重建数组。
+          // 之前这里 return prev.map(...) 每次都会产生新引用 → effect[nodes] 重跑 →
+          // force 重启 → 拓扑闪动。symbolSize 的微小波动不值得重启布局。
+          return prev
+        })
+        setLinks((prev) => {
+          if (idFp(prev) !== idFp(linksData)) return linksData
+          // 边身份没变：返回 prev 原引用，避免 effect[links] 重跑致 force 重启。
+          return prev
+        })
         const sd = s.data
-        // Issue6: 后端 /services 返回字段为 service_name/traces/spans/avg_ms/max_ms，
-        // 前端需映射为 service/calls/avg_latency_ms 等表格列字段，否则服务名为空、调用量为0。
+        // Issue6: 后端 /services 返回字段为 service_name / traces / spans / avg_ms / max_ms，
+        // 前端需映射为 service / calls / avg_latency_ms 等表格列字段，否则服务名为空、调用量为 0。
         const rawSvc = (Array.isArray(sd) ? sd : sd?.data || sd?.services || []) as any[]
-        setServices(rawSvc.map((x: any) => ({
-          ...x,
-          service: x.service_name ?? x.service,
-          calls: Number(x.traces ?? x.calls ?? 0),
-          errors: Number(x.errors ?? 0),
-          error_rate: Number(x.error_rate ?? 0),
-          avg_latency_ms: Number(x.avg_ms ?? x.avg_latency_ms ?? 0),
-        })))
+        setServices((prev) => {
+          const fp2 = (a: any[]) => a.map((x) => `${x.service}|${x.calls}|${x.errors}|${x.avg_latency_ms}`).sort().join(';')
+          const next = rawSvc.map((x: any) => ({
+            ...x,
+            service: x.service_name ?? x.service,
+            calls: Number(x.traces ?? x.calls ?? 0),
+            errors: Number(x.errors ?? 0),
+            error_rate: Number(x.error_rate ?? 0),
+            avg_latency_ms: Number(x.avg_ms ?? x.avg_latency_ms ?? 0),
+          }))
+          return fp2(prev) === fp2(next) ? prev : next
+        })
       })
       .catch(() => { if (!silent) { setNodes([]); setLinks([]); setServices([]) } })
       .finally(() => { if (!silent) setLoading(false) })
@@ -138,23 +163,72 @@ const ServiceObservability: React.FC = () => {
       chartInst.current = echarts.init(chartRef.current)
     }
     const inst = chartInst.current
-    const nodeScale = Math.max(1, nodes.length / 8) // 节点多则加大斥力
     // Issue3: 边宽按调用量缩放，但整体调细（0.7 + 1.3 缩放，最大约 2），避免太粗
     const maxCalls = Math.max(1, ...links.map((l: any) => Number(l.value) || 1))
     const linksWithWidth = links.map((l: any) => ({
       ...l,
       lineStyle: { width: 0.7 + 1.3 * (Number(l.value) || 0) / maxCalls },
     }))
-    // 环形初始坐标（像素，基于容器尺寸），让节点在画布范围内开始受力，避免飞出页面
+    // 自研力导向布局 + 硬性边界约束：ECharts 原生 force 布局没有"节点不飘出画布"的参数，
+    // repulsion 调大后节点会被推离中心、飘出画布。这里手写力导向迭代，每轮把节点坐标
+    // clamp 到画布范围内（padding 24px），从算法层面保证节点永不超出画布。
+    // 已收敛过的节点（stablePosRef）用稳定坐标（仍 clamp），新节点用环形种子位置参与收敛。
     const cw = chartRef.current.clientWidth || 800
     const ch = chartRef.current.clientHeight || 500
-    const cx = cw / 2, cy = ch / 2, R = Math.min(cw, ch) * 0.34
+    const cx = cw / 2, cy = ch / 2, R = Math.min(cw, ch) * 0.32
     const N = Math.max(1, nodes.length)
-    const dataWithPos = nodes.map((n, i) => ({
-      ...n,
-      x: cx + R * Math.cos((2 * Math.PI * i) / N),
-      y: cy + R * Math.sin((2 * Math.PI * i) / N),
-    }))
+    const seedPos = nodes.map((n, i) => {
+      const prev = stablePosRef.current[n.name]
+      if (prev && typeof prev.x === 'number' && typeof prev.y === 'number') return { x: prev.x, y: prev.y }
+      return { x: cx + R * Math.cos((2 * Math.PI * i) / N), y: cy + R * Math.sin((2 * Math.PI * i) / N) }
+    })
+    // 手写力导向：斥力(320) + 引力(0.12) + 弹簧(edgeLength 120~240)，迭代 300 轮，
+    // 每轮把坐标 clamp 到 [pad, W-pad]x[pad, H-pad]。返回 Map:name->{x,y}。
+    const PAD = 24
+    const positions: Record<string, { x: number; y: number }> = {}
+    nodes.forEach((n, i) => { positions[n.name] = { ...seedPos[i] } })
+    const nodeIds = nodes.map((n) => n.name)
+    const edgeArr = links.map((l: any) => ({ s: String(l.source), t: String(l.target) }))
+    for (let iter = 0; iter < 300; iter++) {
+      // 斥力：所有节点两两排斥
+      for (let i = 0; i < nodeIds.length; i++) {
+        for (let j = i + 1; j < nodeIds.length; j++) {
+          const a = positions[nodeIds[i]], b = positions[nodeIds[j]]
+          let dx = a.x - b.x, dy = a.y - b.y
+          let d2 = dx * dx + dy * dy
+          if (d2 < 1) { dx = (Math.random() - 0.5) * 2; dy = (Math.random() - 0.5) * 2; d2 = 1 }
+          const d = Math.sqrt(d2)
+          const force = 320 / d2  // 斥力与距离平方成反比
+          const fx = (dx / d) * force, fy = (dy / d) * force
+          a.x += fx; a.y += fy
+          b.x -= fx; b.y -= fy
+        }
+      }
+      // 弹簧力：有边的节点拉到理想距离
+      for (const e of edgeArr) {
+        const a = positions[e.s], b = positions[e.t]
+        if (!a || !b) continue
+        let dx = b.x - a.x, dy = b.y - a.y
+        const d = Math.max(0.01, Math.sqrt(dx * dx + dy * dy))
+        const ideal = 180
+        const f = (d - ideal) * 0.02
+        a.x += (dx / d) * f; a.y += (dy / d) * f
+        b.x -= (dx / d) * f; b.y -= (dy / d) * f
+      }
+      // 引力：拉到画布中心
+      for (const id of nodeIds) {
+        const p = positions[id]
+        p.x += (cx - p.x) * 0.08
+        p.y += (cy - p.y) * 0.08
+      }
+      // 硬性边界约束：clamp 到画布内
+      for (const id of nodeIds) {
+        const p = positions[id]
+        p.x = Math.max(PAD, Math.min(cw - PAD, p.x))
+        p.y = Math.max(PAD, Math.min(ch - PAD, p.y))
+      }
+    }
+    const dataWithPos = nodes.map((n) => ({ ...n, x: positions[n.name].x, y: positions[n.name].y }))
     try {
     inst.setOption({
       tooltip: {
@@ -165,21 +239,23 @@ const ServiceObservability: React.FC = () => {
         },
       },
       series: [{
-        type: 'graph', layout: 'force', roam: true, draggable: true,
-        // 2.1 力导向边界约束：重力拉向中心 + 适中斥力，配合环形种子让节点保持在画布内
-        force: {
-          repulsion: 260 * nodeScale,
-          edgeLength: [90, 180],
-          gravity: 0.24,
-          friction: 0.5,
-        },
+        type: 'graph', layout: 'none', roam: true, draggable: true,
+        // 布局：改用 layout:'none' + 自研力导向（上方 dataWithPos 已 clamp 到画布内）。
+        // 保留"调用关系亲密度"语义（斥力+弹簧力），同时硬性约束节点不飘出画布。
+        // 用 animationDurationUpdate 让节点从环形种子平滑过渡到稳定布局（有动画、非闪动）。
+        animationDurationUpdate: 1200,
+        animationDuration: 1200,
+        animationEasingUpdate: 'cubicOut',
         data: dataWithPos,
         links: linksWithWidth,
-        // 标签完整显示（不截断），位置在节点下方，字号稍小
+        // 修复：标签避让。节点间距加大后，底部标签仍可能上下重叠，
+        // 改用 position:'top' + 更大 distance，并开启 showAbove 让标签始终在节点之上、
+        // 用 padding 撑开与节点的空隙，减少标签互相叠压的概率。
         label: {
-          show: true, position: 'bottom', fontSize: 10, color: '#1f2d3d',
-          distance: 6,
-          overflow: 'truncate', width: 90,
+          show: true, position: 'top', fontSize: 10, color: '#1f2d3d',
+          distance: 10,
+          overflow: 'truncate', width: 110,
+          showAbove: true,
         },
         // Issue4: 边按调用量缩放宽度 + 末端箭头表达调用方向 + 增大曲率让双向调用分离
         lineStyle: {
@@ -206,6 +282,21 @@ const ServiceObservability: React.FC = () => {
     // 点击一次触发多次 openDetail（抽屉闪开关）进而白屏。
     inst.off('click')
     inst.on('click', (p: any) => { if (p.dataType === 'node' && p.data?.name) openDetail(p.data.name) })
+    // 保存收敛后的稳定坐标到 stablePosRef（注意：只写 ref，不 setState）。
+    // 这样 30s 轮询数据未变时，dataWithPos 复用稳定位置，force 不从环形种子重新散开，
+    // 首次收敛后拓扑保持静止；且不触发 effect 重跑，避免死循环。
+    inst.off('finished')
+    inst.on('finished', () => {
+      try {
+        const series = (inst.getOption().series as any[])?.[0]
+        const data: any[] = series?.data || []
+        for (const d of data) {
+          if (d && d.name && typeof d.x === 'number' && typeof d.y === 'number') {
+            stablePosRef.current[d.name] = { x: d.x, y: d.y }
+          }
+        }
+      } catch { /* ignore */ }
+    })
     const onResize = () => { try { inst.resize() } catch { /* ignore */ } }
     window.addEventListener('resize', onResize)
     return () => {
@@ -246,7 +337,10 @@ const ServiceObservability: React.FC = () => {
       trendInst.current = echarts.init(trendChartRef.current)
     }
     const mt = METRIC_TYPES.find((m) => m.value === metricType) || METRIC_TYPES[0]
-    const trend = nodeDetail?.trend || nodeDetail?.metrics?.trend || []
+    // 修复(P1 服务详情)：兼容两种返回结构：
+    // - 拓扑节点详情：{metrics: {trend: [...]}}
+    // - 服务详情（/services/{name}）：{data: [{t, calls, errors, avg_ms}]}
+    const trend = nodeDetail?.trend || nodeDetail?.metrics?.trend || nodeDetail?.data || []
     const x = trend.map((t: any) => t?.t || t?.time || '')
     const data = trend.map((t: any) => Number(mt.key(t) || 0))
     const inst = trendInst.current

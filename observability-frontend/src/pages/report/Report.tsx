@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Button, message, Tag, Drawer, Space } from 'antd'
+import ReactMarkdown from 'react-markdown'
 import { listReports } from '../../api/client'
 import api from '../../api/client'
-import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
+import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 
 interface Report { id?: string; task_id?: string; service_name?: string; report_type?: string; verdict?: string; risk_score?: number; summary?: string; created_at?: string; title?: string; status?: string; cluster_id?: string }
 
@@ -45,7 +46,8 @@ const Report: React.FC = () => {
         const url = URL.createObjectURL(res.data as any)
         const a = document.createElement('a')
         a.href = url
-        a.download = `${reportTitle(r)}-${taskId}.md`
+        // 修复 5.10：文件名只取"类型+服务+短时间"，不拼接随机 task_id
+        a.download = `${reportTitle(r).replace(/[/\\:*?"<>|]/g, '_')}.md`
         a.click()
         URL.revokeObjectURL(url)
       })
@@ -66,7 +68,7 @@ const Report: React.FC = () => {
 
   return (
     <div>
-      <Breadcrumb items={[{ t: '报告与合规' }, { t: '报告中心' }]} />
+      <Breadcrumb items={[{ t: '报告' }, { t: '报告中心' }]} />
       <PageHeader title="报告中心" desc="诊断报告 / 巡检报告的生成与下载" />
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey="task_id" loading={loading} columns={cols} dataSource={data} size="middle"
@@ -86,7 +88,10 @@ const Report: React.FC = () => {
               {preview.verdict && <Tag color={preview.verdict === 'safe' || preview.verdict === 'pass' ? 'green' : 'orange'}>{String(preview.verdict)}</Tag>}
               {preview.created_at && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{preview.created_at.slice(0, 19).replace('T', ' ')}</span>}
             </Space>
-            <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8, color: 'var(--text)' }}>{preview.summary || '暂无摘要'}</div>
+            {/* 修复 5.1：markdown 渲染摘要，保留标题/列表/粗体等结构 */}
+            <div className="markdown-body" style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--text)' }}>
+              <ReactMarkdown>{preview.summary || '暂无摘要'}</ReactMarkdown>
+            </div>
           </div>
         )}
       </Drawer>

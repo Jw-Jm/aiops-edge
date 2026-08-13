@@ -317,6 +317,36 @@ def _action_summary(script: str, analysis: str, service: str = "") -> str:
 #  Helpers
 # ═══════════════════════════════════════════════════════════════
 
+def _entity_validation_warning(user_msg: str, services_data: str) -> str:
+    """实体存在性校验：从用户消息中提取可能的服务名/资源名，
+    若不在 services_data 中则返回警告，让 LLM 看到真实可用的服务清单。
+    这是防止 LLM 幻觉（编造不存在的 Pod 名/namespace/状态）的关键护栏。
+    """
+    import re
+    # services_data 实际格式: "- 服务名: 数据"（每行一个服务），提取所有出现过的服务名
+    real_services = set()
+    for m in re.finditer(r"-\s+([a-zA-Z][a-zA-Z0-9_\-\.]+)\s*[:：]", services_data):
+        real_services.add(m.group(1))
+    # 也兼容 service_name: xxx 格式
+    for m in re.finditer(r"service_name[:：]\s*([a-zA-Z0-9_\-\.]+)", services_data):
+        real_services.add(m.group(1))
+    # 从用户消息提取可能的服务名（小写英文+中划线+点，至少 3 个字符）
+    mentioned = set()
+    for m in re.finditer(r"\b([a-z][a-z0-9\-\.]{2,}[a-z0-9])\b", user_msg):
+        word = m.group(1)
+        if word not in ("kubernetes", "kubectl", "k8s", "redis-cli", "deepflow", "shell", "bash", "mysql", "pod", "pods", "service", "services", "config", "map"):
+            mentioned.add(word)
+    if not mentioned or not real_services:
+        return ""
+    real_list = ", ".join(sorted(real_services))
+    msg = "【⚠️ 实体存在性校验】用户消息中提到的服务/资源不在当前系统中：\n"
+    msg += "用户提到：" + ", ".join(sorted(mentioned)) + "\n"
+    msg += "当前真实可用的服务（来自 services_data）：" + real_list + "\n"
+    msg += "**请明确回复用户该服务未在系统中发现**，列出当前可用的服务让用户选择，并"
+    msg += "**禁止编造不存在的 Pod 名/namespace/状态/数据**。"
+    return msg
+
+
 def _parse(raw):
     try: return json.loads(raw)
     except: return None
@@ -376,6 +406,23 @@ def _collect_alerts() -> str:
 def _now():
     import datetime
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _infer_target_from_script(script: str, fallback: str = "") -> str:
+    """修复(P2-2)：从执行脚本中推断目标资源（namespace/服务名），
+    填充审计日志的 target_service 字段（此前 service 为空时显示 "-"）。
+    优先级：kubectl -n <ns> 的 namespace > kubectl <resource>/<name> 的资源名。
+    """
+    if not script:
+        return fallback or ""
+    import re
+    m = re.search(r"kubectl[^\n]*?-n\s+([a-zA-Z0-9\-]+)", script)
+    if m:
+        return m.group(1)
+    m = re.search(r"kubectl[^\n]*?\b(logs|describe|exec|delete|get)\s+([a-zA-Z0-9\-]+(?:/[a-zA-Z0-9\-]+)?)", script)
+    if m:
+        return m.group(2).split("/")[0]
+    return fallback or ""
 
 
 def _audit_log(task_id: str, action: str, operator: str,
@@ -465,7 +512,7 @@ async def node_collect(state: AgentState) -> dict:
                 )
             r = await asyncio.to_thread(
                 subprocess.run,
-                ["k8sgpt", "analyze", "--explain", "-n", "observability", "-o", "text"],
+                ["k8sgpt", "analyze", "--explain", "--all-namespaces", "-o", "text"],
                 capture_output=True, text=True, timeout=10, env=env,
             )
             if r.returncode == 0 and r.stdout.strip() and len(r.stdout.strip()) > 50:
@@ -704,6 +751,15 @@ async def node_crewai(state: AgentState) -> dict:
     if not context:
         context = "(未采集到实时数据)"
 
+    # 修复(P0-3.4 AI 推理)：实体存在性校验 — 防止 LLM 幻觉。
+    # 用户消息中提到的服务/资源若不在 services_data 列表中，注入警告到 context。
+    user_msg = state.get("user_message", "")
+    services_data = state.get("services_data", "")
+    if user_msg and services_data:
+        _warn = _entity_validation_warning(user_msg, services_data)
+        if _warn:
+            context = context + "\n\n" + _warn
+
     if expert:
         system_prompt = (
             f"你是{expert.role}。{expert.goal}。\n\n"
@@ -712,6 +768,11 @@ async def node_crewai(state: AgentState) -> dict:
             f"先逐项分析，给出具体的健康状态、发现的问题、风险和建议；不要罗列采集过程或工具调用步骤。\n"
             f"然后在末尾用『## 处置命令』小节，给出 1~3 条**可直接执行的 kubectl/curl 命令**"
             f"（每行一条，不要反引号包裹），用于定位/处置发现的问题。\n"
+            f"【硬性要求-确定性资源名】处置命令中的 kubectl 必须使用**真实存在的资源名**：\n"
+            f"1. 具体 Pod 名（如 redis-76dd9b85cb-q7p2r）或 Deployment 名（如 redis），禁止使用 `<pod>`、`<PodName>`、`<deployment>` 等占位符；\n"
+            f"2. 命名空间必须用**真实的 namespace**（从上下文数据中读取，如 redis/deepflow/observability），禁止写死为 observability 或使用 `<ns>` 占位符；\n"
+            f"3. 若上下文已提供某个 Pod 的具体名字和命名空间，请直接引用它（如 `kubectl describe pod <真实Pod名> -n <真实ns>`），不要用 `-l app=xxx` label 选择器代替；\n"
+            f"4. 若上下文确实缺少具体资源名，请先用一条 `kubectl get pods -A | grep <关键词>` 定位真实资源，再给出针对性命令；\n"
             f"若数据不足，明确说明缺少哪些数据即可。"
         )
     else:
@@ -720,7 +781,12 @@ async def node_crewai(state: AgentState) -> dict:
             f"【重要】以下已采集到的系统数据可直接用于分析，请【直接给出巡检结论】。\n"
             f"先逐项分析，给出具体的健康状态、发现的问题、风险和建议；不要罗列采集过程。\n"
             f"然后在末尾用『## 处置命令』小节，给出 1~3 条**可直接执行的 kubectl/curl 命令**"
-            f"（每行一条，不要反引号包裹），用于定位/处置发现的问题。"
+            f"（每行一条，不要反引号包裹），用于定位/处置发现的问题。\n"
+            f"【硬性要求-确定性资源名】处置命令中的 kubectl 必须使用**真实存在的资源名**：\n"
+            f"1. 具体 Pod 名或 Deployment 名，禁止使用 `<pod>`、`<PodName>`、`<deployment>` 等占位符；\n"
+            f"2. 命名空间用**真实的 namespace**（从上下文读取），禁止写死 observability 或使用 `<ns>` 占位符；\n"
+            f"3. 若上下文已提供具体资源名和命名空间，直接引用，不要用 `-l app=xxx` label 选择器代替；\n"
+            f"4. 若缺少具体资源名，先用 `kubectl get pods -A | grep <关键词>` 定位，再给出针对性命令。"
         )
 
     result = await _llm_async(cfg, system_prompt, f"用户问题:「{user_msg}」\n已采集数据:\n{context}", expert.role if expert else "巡检专家")
@@ -744,14 +810,17 @@ def _deterministic_plan(state: dict) -> dict:
     red = state.get("red_metrics", "") or ""
     alerts = state.get("alert_data", "") or ""
     analysis = state.get("crewai_result", "") or ""
-    lines = [f"## 处置方案（确定性建议）\n- **目标服务**: {svc}"]
+    # 修复(P2-5)：命名空间不再硬编码 observability，优先取用户消息/上下文推断，
+    # 复用 _infer_target_from_script 的推断逻辑，避免命令定位不到真实资源。
+    _ns = _infer_target_from_script(svc, "observability")
+    lines = [f"## 处置方案（确定性建议）\n- **目标服务**: {svc}（namespace: {_ns}）"]
     # 按告警类型给出动作
     if "restart" in alerts.lower() or "restart" in red.lower():
-        lines.append("- **动作**: 滚动重启异常服务以恢复\n  - `kubectl rollout restart deployment/%s -n observability`" % svc)
+        lines.append("- **动作**: 滚动重启异常服务以恢复\n  - `kubectl rollout restart deployment/%s -n %s`" % (svc, _ns))
     elif "high" in alerts.lower() or "cpu" in red.lower() or "load" in red.lower():
-        lines.append("- **动作**: 排查高负载来源并扩容/限流\n  - `kubectl top pods -n observability`\n  - `kubectl describe pod -l app=%s -n observability`" % svc)
+        lines.append("- **动作**: 排查高负载来源并扩容/限流\n  - `kubectl top pods -n %s`\n  - `kubectl describe pod -l app=%s -n %s`" % (_ns, svc, _ns))
     else:
-        lines.append("- **动作**: 常规巡检与诊断\n  - `kubectl get pods -n observability -l app=%s`\n  - `kubectl describe pod -l app=%s -n observability`" % (svc, svc))
+        lines.append("- **动作**: 常规巡检与诊断\n  - `kubectl get pods -n %s -l app=%s`\n  - `kubectl describe pod -l app=%s -n %s`" % (_ns, svc, svc, _ns))
     lines.append("- **风险**: 低（只读诊断 / 受控重启）")
     if analysis:
         lines.append(f"- **依据**: {analysis[:300]}")
@@ -847,7 +916,7 @@ async def node_execute(state: AgentState) -> dict:
     result = await asyncio.to_thread(execute_shell, script, 30)
     # 审计日志
     _audit_log(state.get("user_message", "")[:8], "execute", "auto",
-               state.get("service", ""), script,
+               _infer_target_from_script(script, state.get("service", "")), script,
                "success" if "error" not in result.lower()[:100] else "error",
                {"output_preview": result[:200]})
     return {"execute_output": result[:2000], "messages": [f"[{_now()}] 命令执行完成"]}
@@ -1482,7 +1551,7 @@ class BrainOrchestrator:
                     outputs.append(f"$ {line}\n(执行失败: {e})")
             # 审计日志
             _audit_log(user_message[:8] or "chat", "execute", "approved",
-                       service, script[:500],
+                       _infer_target_from_script(script, service), script[:500],
                        "success" if not any("失败" in o or "超时" in o for o in outputs) else "error",
                        {"output_preview": "\n".join(outputs)[:200]})
             return "\n".join(outputs) or "(命令无输出)"

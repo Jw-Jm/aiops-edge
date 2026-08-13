@@ -1,13 +1,17 @@
 import React, { useEffect, useState } from 'react'
-import { Tabs, Input, Button, Space, Table, Tag, Empty } from 'antd'
-import { nl2sqlTranslate, getMcpTools, listSkills } from '../../api/client'
+import { Tabs, Input, Button, Space, Table, Tag, Empty, Spin, Typography, message } from 'antd'
+import { nl2sqlTranslate, nl2sqlExecute, getMcpTools, listSkills } from '../../api/client'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
+import AppIcon from '../../components/AppIcons'
 import { useUIStore } from '../../store/uiStore'
 
 const AiTools: React.FC = () => {
   const [q, setQ] = useState('')
   const [sql, setSql] = useState('')
+  const [sqlId, setSqlId] = useState('')
   const [sqlErr, setSqlErr] = useState('')
+  const [execLoading, setExecLoading] = useState(false)
+  const [result, setResult] = useState<{ columns?: string[]; rows?: any[]; count?: number } | null>(null)
   const [skills, setSkills] = useState<any[]>([])
   const [mcp, setMcp] = useState<any[]>([])
   const currentClusterId = useUIStore((s) => s.currentClusterId)
@@ -22,12 +26,26 @@ const AiTools: React.FC = () => {
   }, [])
 
   const translate = () => {
-    setSqlErr(''); setSql('')
+    setSqlErr(''); setSql(''); setSqlId(''); setResult(null)
     nl2sqlTranslate({ question: q }).then((r) => {
       const d = r.data
       if (d?.error) setSqlErr(d.error)
-      else setSql(d?.sql || JSON.stringify(d))
+      else { setSql(d?.sql || JSON.stringify(d)); setSqlId(d?.id || '') }
     }).catch((e) => setSqlErr(e?.response?.data?.error || '翻译失败'))
+  }
+
+  // 修复 4.2：翻译出 SQL 后可一键执行并展示结果表格（安全护栏已由后端保证：仅 SELECT + 表白名单 + LIMIT）
+  const run = async () => {
+    if (!sqlId) { message.warning('请先翻译生成 SQL'); return }
+    setExecLoading(true); setResult(null)
+    try {
+      const r = await nl2sqlExecute(sqlId)
+      setResult(r.data)
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || e?.response?.data?.error || '执行失败')
+    } finally {
+      setExecLoading(false)
+    }
   }
 
   return (
@@ -47,7 +65,35 @@ const AiTools: React.FC = () => {
                   <Button type="primary" onClick={translate}>翻译 SQL</Button>
                 </Space>
                 {sqlErr && <div style={{ marginTop: 10, color: 'var(--danger)', fontSize: 12 }}>⚠ {sqlErr}</div>}
-                {sql && <pre style={{ marginTop: 12, background: 'var(--surface-2)', borderRadius: 8, padding: 12, fontSize: 12, whiteSpace: 'pre-wrap' }}>{sql}</pre>}
+                {sql && (
+                  <>
+                    <pre style={{ marginTop: 12, background: 'var(--surface-2)', borderRadius: 8, padding: 12, fontSize: 12, whiteSpace: 'pre-wrap', position: 'relative' }}>
+                      {sql}
+                    </pre>
+                    <Space style={{ marginTop: 8 }}>
+                      <Button type="primary" size="small" loading={execLoading} onClick={run} icon={<AppIcon name="send" />}>
+                        执行查询
+                      </Button>
+                      <Button size="small" onClick={() => { navigator.clipboard?.writeText(sql); message.success('已复制 SQL') }}>
+                        复制 SQL
+                      </Button>
+                    </Space>
+                    {result && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ marginBottom: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
+                          查询结果 · 共 <b>{result.count ?? result.rows?.length ?? 0}</b> 行
+                        </div>
+                        <Table
+                          size="small"
+                          rowKey={(_, i) => String(i)}
+                          dataSource={(result.rows || []).map((r, i) => ({ __i: i, ...r }))}
+                          columns={(result.columns || []).map((c) => ({ title: c, dataIndex: c, key: c, render: (v: any) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{String(v ?? '')}</span> }))}
+                          pagination={{ pageSize: 10, showSizeChanger: false }}
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             ),
           },
@@ -67,7 +113,7 @@ const AiTools: React.FC = () => {
             children: (
               <div className="card" style={{ padding: 0 }}>
                 <Table rowKey="key" dataSource={skills} size="small" pagination={false}
-                  locale={{ emptyText: <Empty /> }}
+                  locale={{ emptyText: <Empty description={<span style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无技能<br />可复用诊断/巡检能力将通过 AI 对话自动调度</span>} /> }}
                   columns={[{ title: '技能', dataIndex: 'name', key: 'name', render: (_: any, r: any) => r.name || r.key },
                     { title: '描述', dataIndex: 'description', key: 'description', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '-'}</span> }]} />
               </div>
