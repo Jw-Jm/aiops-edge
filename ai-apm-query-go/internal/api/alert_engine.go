@@ -156,7 +156,8 @@ func (h *Handler) evaluateAlerts() {
 					RuleID:         rule.ID,
 					RuleName:       rule.Name,
 					Service:        rule.Service,
-					Severity:       rule.Severity,
+					Object:         k8sAlertObjects(rule.ID), // 修复：新建事件时把告警对象名直接存到 Object 字段
+
 					Message:        msg,
 					Value:          value,
 					Threshold:      rule.Threshold,

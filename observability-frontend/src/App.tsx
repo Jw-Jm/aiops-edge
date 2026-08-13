@@ -108,16 +108,16 @@ function AppLayout() {
         // 通知抽屉：优先取 events 数组，兼容分页对象
         const list = Array.isArray(d) ? d : (d?.events ?? d?.data ?? [])
         const events = Array.isArray(list) ? list : []
-        // 修复(P1 告警角标)：与 AlertEvents.tsx flatMap 展开逻辑对齐。
-        // 每条告警的 object 字段含多个对象名（逗号分隔），前端按对象展开多行，
-        // 角标应等于实际展开行数（=告警总行数），而非 API 返回的不同规则数（total）。
-        // API 返回 {total, count} 都是"不同规则告警数"，与表格行数不一致。
-        const expandedCount = events.reduce((sum: number, e: any) => {
+        // 修复(P2)：侧栏角标只统计未解决的告警展开行数（status != resolved），
+        // 否则所有历史已 resolve 的事件仍会显示在角标中，让用户误以为"还在告警"。
+        // 同步按展开行数（每条告警的 object 字段按","拆分多行）统计，与表格对齐。
+        const activeEvents = events.filter((e: any) => e.status !== 'resolved')
+        const expandedCount = activeEvents.reduce((sum: number, e: any) => {
           const objs = (e?.object || '').split(',').map((s: string) => s.trim()).filter(Boolean)
           return sum + (objs.length || 1)
         }, 0)
         setAlertCount(expandedCount)
-        setRecentAlerts(events)
+        setRecentAlerts(activeEvents)
       }).catch(() => { setAlertCount(null); setRecentAlerts([]) })
     }
     loadAlerts()

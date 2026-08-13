@@ -63,6 +63,7 @@ type AlertEvent struct {
 	ID               string  `json:"id"`
 	RuleID           string  `json:"rule_id"`
 	RuleName         string  `json:"rule_name"`
+			  Object           string  `json:"object"`              // 具体告警对象（Pod 名/Deployment 名等），避免前端 fallback 到 service
 	Service          string  `json:"service"`
 	Severity         string  `json:"severity"`
 	Message          string  `json:"message"`
@@ -121,12 +122,13 @@ type AggAlertEvent struct {
 	RuleID         string `json:"rule_id"`
 	RuleName       string `json:"rule_name"`
 	Service        string `json:"service"`
-	Object         string `json:"object"` // 具体告警对象（Pod 名/Deployment 名等），替代"服务"归纳
+	Object         string `json:"object"`     // 具体告警对象（Pod 名/Deployment 名等），替代"服务"归纳
 	Severity       string `json:"severity"`
 	Message        string `json:"message"`
 	Count          int    `json:"count"`
 	FirstTimestamp string `json:"first_timestamp"`
 	LastTimestamp  string `json:"last_timestamp"`
+	Status         string `json:"status"`     // firing/acknowledged/resolved（修复：让前端能区分已恢复事件）
 }
 
 var (
@@ -662,11 +664,13 @@ func (h *Handler) AlertEvents(w http.ResponseWriter, r *http.Request) {
 				RuleID:         ev.RuleID,
 				RuleName:       ev.RuleName,
 				Service:        ev.Service,
+				Object:         ev.Object,
 				Severity:       ev.Severity,
 				Message:        ev.Message,
 				Count:          cnt,
 				FirstTimestamp: ft,
 				LastTimestamp:  lt,
+				Status:         ev.Status,
 			}
 		}
 	}

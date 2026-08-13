@@ -11,7 +11,7 @@ const sevTone = (s: string): 'crit' | 'warn' | 'info' => (s === 'critical' || s 
 const AlertEvents: React.FC = () => {
   const [searchParams] = useSearchParams()
   const [sev, setSev] = useState<string>('all')
-  const [status, setStatus] = useState<string>('all') // 2.10 当前/历史告警
+  const [status, setStatus] = useState<string>('current') // 默认当前告警（firing/acknowledged），已解决事件不展示，避免历史累积干扰
   const [data, setData] = useState<AlertEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<AlertEvent | null>(null)
