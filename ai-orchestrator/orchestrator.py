@@ -444,9 +444,10 @@ async def node_collect(state: AgentState) -> dict:
     cfg = state.get("llm_config")
     api_key = _LLM_KEY_HOLDER.get("api_key", "")
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
+    cid = state.get("cluster_id", "")  # A-5：集群透传，空/all 表示全部
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
-        data = _parse(await asyncio.to_thread(get_service_list))
+        data = _parse(await asyncio.to_thread(get_service_list, cluster_id=cid))
         if isinstance(data, list):
             lines = []
             for s in data:
@@ -475,7 +476,7 @@ async def node_collect(state: AgentState) -> dict:
     svc = state.get("service", "")
     if svc:
         try:
-            raw = await asyncio.to_thread(query_metrics, svc)
+            raw = await asyncio.to_thread(query_metrics, svc, cluster_id=cid)
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -489,11 +490,11 @@ async def node_collect(state: AgentState) -> dict:
                 result["red_metrics"] = "\n".join(lines)
                 result["before_metrics"] = f"总调用={total_calls} 错误率={err_rate:.2f}% P50延迟={avg_lat:.1f}ms"
         except: pass
-        try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc))[:30000]
+        try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc, cluster_id=cid))[:30000]
         except: pass
     # 日志 — 每次对话无条件采集（结合日志分析）
     try:
-        result["logs_data"] = await asyncio.to_thread(query_logs, svc, 30)
+        result["logs_data"] = await asyncio.to_thread(query_logs, svc, 30, cluster_id=cid)
     except:
         result["logs_data"] = ""
     # K8sGPT — 每次对话无条件调用，失败快速跳过不阻塞（timeout 10s）
@@ -934,7 +935,7 @@ async def node_verify(state: AgentState) -> dict:
         # 二次取样 (间隔 30s 确认非瞬时波动)
         samples = []
         for _ in range(2):
-            raw = await asyncio.to_thread(query_metrics, svc)
+            raw = await asyncio.to_thread(query_metrics, svc, cluster_id=cid)
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -1337,11 +1338,12 @@ class BrainOrchestrator:
         """Run full DAG and return complete final state. (async — 调用方需 await)"""
         return await self._run_dag(intent, service, message, thread_id)
 
-    async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
+    async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default", cluster_id: str = "all") -> dict:
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
         if not service: service = await asyncio.to_thread(self._detect_service, message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
+            "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
             "llm_config": self.llm_config,
             "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
@@ -1362,7 +1364,7 @@ class BrainOrchestrator:
             return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
 
     async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
-                          mode: str = "chat", exec_context: str = "", iteration: int = 1):
+                          mode: str = "chat", exec_context: str = "", iteration: int = 1, cluster_id: str = "all"):
         """异步生成器: async for event in brain.stream_sync(...)。
         节点为 async def，必须用 graph.astream (不能用 sync graph.stream, 会在
         已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
@@ -1372,6 +1374,7 @@ class BrainOrchestrator:
         if not service: service = await asyncio.to_thread(self._detect_service, message)
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
+            "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
             "llm_config": self.llm_config,
             "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,

@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     script: str = ""           # 待确认/已确认执行的处置脚本
     approved: Optional[bool] = None  # None=未知, True=确认执行, False=驳回
     exec_result: str = ""      # 上一轮处置脚本的执行结果（作为下一轮分析上下文）
+    cluster_id: str = "all"    # A-5: 集群范围（all/default/集群 name），透传至查询工具
 
 
 class ShellCheckRequest(BaseModel):

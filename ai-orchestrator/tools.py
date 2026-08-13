@@ -25,30 +25,45 @@ def _get_json(url: str) -> dict:
         return {"error": str(e)}
 
 
-def query_metrics(service: str, tenant_id: str = "default") -> str:
+def _cluster_param(cluster_id: str = "") -> str:
+    """生成 cluster_id 查询参数（空/all 不过滤），供工具 URL 拼接（A-5）。"""
+    cid = cluster_id or os.environ.get("CLUSTER_ID", "")
+    if cid and cid != "all":
+        return f"cluster_id={cid}"
+    return ""
+
+
+def query_metrics(service: str, tenant_id: str = "default", cluster_id: str = "") -> str:
     if not service:
         return "未指定服务名称"
-    data = _get_json(f"{QUERY_API}/services/{service}")
+    cp = _cluster_param(cluster_id)
+    data = _get_json(f"{QUERY_API}/services/{service}" + (("?" + cp) if cp else ""))
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
     return json.dumps(data, indent=2, ensure_ascii=False)[:5000]
 
 
-def query_traces(service: str = "", tenant_id: str = "default") -> str:
+def query_traces(service: str = "", tenant_id: str = "default", cluster_id: str = "") -> str:
+    cp = _cluster_param(cluster_id)
     url = f"{QUERY_API}/traces?limit=5"
+    if cp:
+        url += "&" + cp
     data = _get_json(url)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
     return json.dumps(data, indent=2, ensure_ascii=False)[:4000]
 
 
-def query_logs(service: str = "", minutes: int = 30) -> str:
+def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "") -> str:
     """查询最近 N 分钟日志（ClickHouse log_records，经 query-api）。
     空 service 走全量最近日志。"""
     params = []
     if service:
         params.append(f"service={service}")
     params.append(f"minutes={minutes}")
+    cp = _cluster_param(cluster_id)
+    if cp:
+        params.append(cp)
     url = f"{QUERY_API}/logs/query?" + "&".join(params)
     data = _get_json(url)
     if isinstance(data, dict) and "error" in data:
@@ -64,19 +79,28 @@ def query_logs(service: str = "", minutes: int = 30) -> str:
     return "\n".join(lines)
 
 
-def query_topology(tenant_id: str = "default") -> str:
-    data = _get_json(f"{QUERY_API}/topology/global")
+def query_topology(tenant_id: str = "default", cluster_id: str = "") -> str:
+    cp = _cluster_param(cluster_id)
+    data = _get_json(f"{QUERY_API}/topology/global" + (("?" + cp) if cp else ""))
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
     return json.dumps(data, indent=2, ensure_ascii=False)[:3000]
 
 
-def get_service_list(tenant_id: str = "default") -> str:
-    data = _get_json(f"{QUERY_API}/services")
+def get_service_list(tenant_id: str = "default", cluster_id: str = "") -> str:
+    url = f"{QUERY_API}/services"
+    cp = _cluster_param(cluster_id)
+    if cp:
+        url += "?" + cp
+    data = _get_json(url)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
-    if isinstance(data, dict) and "data" in data:
-        data = data["data"]
+    # P0-1 修复：/api/v1/services 顶层键为 "services"（非 "data"），兼容两种契约
+    if isinstance(data, dict):
+        if "services" in data:
+            data = data["services"]
+        elif "data" in data:
+            data = data["data"]
     if isinstance(data, list):
         summary = []
         for s in data[:10]:
@@ -86,7 +110,7 @@ def get_service_list(tenant_id: str = "default") -> str:
             summary.append({
                 "service_name": s.get("service_name"),
                 "traces": int(calls),
-                "avg_ms": round(float(s.get("avg_ms", 0)), 1),
+                "avg_ms": round(float(s.get("avg_latency_ms", s.get("avg_ms", 0)) or 0), 1),
                 "max_ms": round(float(s.get("max_ms", 0)), 1),
                 "error_rate": error_rate,
             })

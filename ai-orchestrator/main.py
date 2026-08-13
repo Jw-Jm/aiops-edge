@@ -249,7 +249,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                 async for event in _get_brain().stream_sync(
                         req.intent, req.service or "", req.message, thread_id,
                         mode="dual" if req.dual_agent else "chat",
-                        exec_context=req.exec_result, iteration=(req.exec_result and 2 or 1)):
+                        exec_context=req.exec_result, iteration=(req.exec_result and 2 or 1),
+                        cluster_id=req.cluster_id or "all"):
                     # 操作建议不再落任务工作台，直接以 thread_id 作为确认标识发往前端内联审批
                     if event.get("type") == "suggestion":
                         event["thread_id"] = thread_id
@@ -339,7 +340,8 @@ async def ai_chat(req: ChatRequest, request: Request):
         return StreamingResponse(generate(), media_type="text/event-stream",
                                  headers={"X-Session-Id": thread_id, "Cache-Control": "no-cache"})
     else:
-        result = await _get_brain().execute_sync(req.intent, req.service or "", req.message, thread_id)
+        result = await _get_brain().execute_sync(req.intent, req.service or "", req.message, thread_id,
+                                                cluster_id=req.cluster_id or "all")
         # 巡检/诊断报告落盘：持久化到 ClickHouse（历史趋势）并在 MinIO 留档
         try:
             if result and len(result.strip()) > 100:
