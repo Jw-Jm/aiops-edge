@@ -931,6 +931,7 @@ async def node_verify(state: AgentState) -> dict:
         return {"verify_pass": True, "messages": [f"[{_now()}] 验证: 无服务, 跳过"]}
 
     before_str = state.get("before_metrics", "")
+    cid = state.get("cluster_id", "")  # A-5：验证阶段查询也按集群范围
     try:
         # 二次取样 (间隔 30s 确认非瞬时波动)
         samples = []
@@ -1566,10 +1567,17 @@ class BrainOrchestrator:
         仅在能明确匹配时才返回，否则返回空让 RCA 跳过。
         """
         try:
-            data = json.loads(get_service_list())
-            if not isinstance(data, list) or not data:
-                return ""
-            services = [d.get("service_name", "") for d in data if d.get("service_name")]
+            # P0-1 补充修复：get_service_list 摘要截断前 10 个服务会漏掉目标服务，
+            # 此处直接拉全量服务名列表做匹配。
+            from tools import _get_json, QUERY_API, _cluster_param
+            cp = _cluster_param("")
+            url = f"{QUERY_API}/services" + (("?" + cp) if cp else "")
+            raw = _get_json(url)
+            if isinstance(raw, dict):
+                items = raw.get("services") or raw.get("data") or []
+            else:
+                items = raw or []
+            services = [d.get("service_name", "") for d in items if isinstance(d, dict) and d.get("service_name")]
             if not services:
                 return ""
             if message:
