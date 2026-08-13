@@ -330,6 +330,7 @@ func parseRows(body []byte) ([]map[string]interface{}, error) {
 func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	_ = tid // CH 查询暂不用 tenant 过滤（trace_spans 无 tenant_id 列）
+	clusterClause := extractClusterClause(r) // A-3 修复：服务列表按集群过滤
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -337,7 +338,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	// 1. 从 ClickHouse 拿动态服务列表（近 7 天有 trace 的服务）
 	chSQL := `SELECT DISTINCT service_name
               FROM observability.trace_spans
-              WHERE date >= today()-7
+              WHERE date >= today()-7` + clusterClause + `
                 AND service_name != ''
               ORDER BY service_name`
 	body, err := h.queryClickHouse(ctx, chSQL)
@@ -366,7 +367,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	metricsSQL := `SELECT service_name AS service, count() AS calls,
 	                     countIf(is_error=1) AS errs, avg(duration_ns)/1000000 AS avg_ms
 	              FROM observability.trace_spans
-	              WHERE date >= today()-7
+	              WHERE date >= today()-7` + clusterClause + `
 	              GROUP BY service_name`
 	metricsBody, err := h.queryClickHouse(ctx, metricsSQL)
 	if err != nil {
