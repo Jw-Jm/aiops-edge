@@ -590,6 +590,17 @@ func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// P1-6 修复：count()/count(DISTINCT) 经 CH JSON 输出可能是字符串或数字，
+	// 统一转换为 int，避免前端收到字符串类型（"2"）。
+	for _, row := range rows {
+		if v, ok := toInt64(row["spans"]); ok {
+			row["spans"] = int(v)
+		}
+		if v, ok := toInt64(row["services"]); ok {
+			row["services"] = int(v)
+		}
+	}
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"data":   rows,
 		"count":  len(rows),
@@ -815,7 +826,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	sql := fmt.Sprintf(
-		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 50",
+		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name != '' AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 50",
 		chQuote(tid), clusterClause,
 	)
 	body, err := h.queryClickHouse(ctx, sql)
