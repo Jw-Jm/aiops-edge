@@ -579,10 +579,11 @@ def _friendly_tool_result(node_name: str, node_data: dict) -> str:
     return "已完成"
 
 
-def _top_anomaly_service() -> str:
-    """从全局服务概览中选出最异常的服务（错误率最高），供「未指定服务时默认为所有服务」的 RCA 兜底。"""
+def _top_anomaly_service(cluster_id: str = "") -> str:
+    """从全局服务概览中选出最异常的服务（错误率最高），供「未指定服务时默认为所有服务」的 RCA 兜底。
+    cluster_id 为空时覆盖全部集群（A-5 补充透传）。"""
     try:
-        data = _parse(get_service_list())
+        data = _parse(get_service_list(cluster_id=cluster_id))
         if not isinstance(data, list) or not data:
             return ""
         best_name, best_rate = "", -1.0
@@ -606,13 +607,14 @@ async def node_rca(state: AgentState) -> dict:
     未指定服务时默认为所有服务 —— 自动选全服务中最异常者做 RCA，而非直接跳过。
     """
     svc = state.get("service", "")
+    cid = state.get("cluster_id", "")  # A-5：RCA 按集群范围
     if not svc:
-        svc = await asyncio.to_thread(_top_anomaly_service)
+        svc = await asyncio.to_thread(_top_anomaly_service, cid)
         if not svc:
             return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
     try:
         # full_rca_analysis 内部多次 query_metrics/trace 是同步阻塞 HTTP，丢线程池避免阻塞 event loop
-        result = await asyncio.to_thread(full_rca_analysis, svc)
+        result = await asyncio.to_thread(full_rca_analysis, svc, None, cid)
         mode = result.get("mode", "deterministic")
         if mode == "deterministic":
             det = result.get("result", {})
@@ -962,12 +964,12 @@ async def node_verify(state: AgentState) -> dict:
         # 副作用检测: 关联服务
         side_effect = False
         try:
-            topo_raw = await asyncio.to_thread(query_topology)
+            topo_raw = await asyncio.to_thread(query_topology, cluster_id=cid)
             topo_data = _parse(topo_raw)
             edges = topo_data.get("edges", []) if topo_data else []
             downstreams = [e.get("target_service", e.get("target", "")) for e in edges if e.get("source_service", e.get("source", "")) == svc]
             for ds in downstreams[:3]:
-                ds_data = _parse(await asyncio.to_thread(query_metrics, ds))
+                ds_data = _parse(await asyncio.to_thread(query_metrics, ds, cluster_id=cid))
                 if ds_data and isinstance(ds_data.get("data"), list):
                     ds_lat = sum(float(i.get("avg_ms", 0)) for i in ds_data["data"]) / max(len(ds_data["data"]), 1)
                     if ds_lat > before_lat * 1.5 and before_lat > 0:

@@ -169,7 +169,7 @@ def find_root_by_granger(
     # 简化版: 用服务详情的 avg_ms 作为"时序"代理
     service_delays = {}
     for svc in candidates:
-        raw = _qm(svc)
+        raw = _qm(svc, cluster_id=cluster_id)
         try:
             data = json.loads(raw)
             if data and isinstance(data.get("data"), list):
@@ -546,10 +546,11 @@ def hypothesis_falsification_loop(hypotheses: list[dict], service: str, max_iter
 #  统一 RCA 入口
 # ═══════════════════════════════════════════════════════
 
-def full_rca_analysis(affected_service: str, anomaly_event: dict = None) -> dict:
+def full_rca_analysis(affected_service: str, anomaly_event: dict = None, cluster_id: str = "") -> dict:
     """统一 RCA: 确定性失败后切换到假设引擎。
 
     anomaly_event 可选：来自告警事件的上下文（rule_name / message / count / severity）。
+    cluster_id：按集群范围采集（A-5 透传，空=全部）。
     对于 K8s 集群告警（service=kubernetes 或 rule_id 以 k8s- 开头），
     直接以 cluster_check 假设引擎为主，跳过微服务拓扑的确定性分析。
     """

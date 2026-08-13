@@ -1146,7 +1146,7 @@ async def rca_deep_analysis(req: TaskCreateRequest, request: Request):
     from rca import full_rca_analysis
     if not req.service:
         raise HTTPException(400, "service is required")
-    return full_rca_analysis(req.service)
+    return full_rca_analysis(req.service, cluster_id=getattr(req, "cluster_id", "all") or "all")
 
 
 @app.post("/api/v1/ops/rca/alert")
@@ -1175,7 +1175,8 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
         "object": req.object,
         "namespace": req.namespace,
     }
-    result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event)
+    result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event,
+                              cluster_id=getattr(req, "cluster_id", "all") or "all")
     result["alert"] = {
         "rule_id": req.rule_id,
         "rule_name": req.rule_name,
@@ -1280,7 +1281,8 @@ async def rca_alert_export(req: AlertRCARequest, request: Request, format: str =
         "object": req.object,
         "namespace": req.namespace,
     }
-    result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event)
+    result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event,
+                              cluster_id=getattr(req, "cluster_id", "all") or "all")
     result["alert"] = {
         "rule_id": req.rule_id,
         "rule_name": req.rule_name,

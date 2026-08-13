@@ -31,11 +31,13 @@ class TaskCreateRequest(BaseModel):
     source: str = "manual"  # alert | log_anomaly | manual | inspection
     service: str = ""
     context: str = ""
+    cluster_id: str = "all"  # A-5：RCA 按集群范围
 
 
 class AlertRCARequest(BaseModel):
     """告警事件 → RCA 假设引擎联动请求"""
     service: str = "kubernetes"
+    cluster_id: str = "all"  # A-5：RCA 按集群范围
     rule_id: str = ""
     rule_name: str = ""
     severity: str = "warning"
