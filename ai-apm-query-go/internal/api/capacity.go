@@ -83,7 +83,9 @@ func capacityPromQLForCluster(metric, instance, cluster string) string {
 		instSel = fmt.Sprintf(`{instance="%s"}`, esc)
 	}
 	clPart := ""
-	if cluster != "" && cluster != "all" {
+	// 主集群（default）数据不带 cluster 标签（node-exporter/RED 指标无 cluster 标签），
+	// 若追加 cluster="default" 过滤反而查不到；仅对纳管集群（有 cluster 标签）追加过滤。
+	if cluster != "" && cluster != "all" && cluster != "default" {
 		esc := strings.ReplaceAll(strings.ReplaceAll(cluster, `\`, `\\`), `"`, `\"`)
 		clPart = fmt.Sprintf(`, cluster="%s"`, esc)
 	}
