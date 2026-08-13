@@ -107,6 +107,7 @@ func main() {
 	mux.HandleFunc("/api/v1/capacity/forecast", handler.CapacityForecast)
 	mux.HandleFunc("/api/v1/capacity/instances", handler.CapacityInstances)
 	mux.HandleFunc("/api/v1/dashboard/stats", handler.DashboardStats)
+	mux.HandleFunc("/api/v1/dashboard/resources", handler.DashboardResources)
 	mux.HandleFunc("/api/v1/topology/global", handler.GlobalTopology)
 	mux.HandleFunc("/api/v1/topology/node/", handler.TopologyNodeDetail)
 	mux.HandleFunc("/api/v1/topology/sync", handler.SyncTopologyFromK8s)
