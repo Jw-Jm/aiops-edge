@@ -145,7 +145,7 @@ func (h *Handler) evaluateAlerts() {
 				// 窗口外新事件
 				// Issue3: K8s 指标告警（Deployment 不可用 / OOM / Pod 重启等）在触发时把
 				// 具体告警对象名写入 Message，避免事件只显示"count>threshold"而无对象。
-				msg := fmt.Sprintf("%s: %s %.2f > threshold %.2f", rule.Name, rule.Metric, value, rule.Threshold)
+				msg := buildAlertMessage(rule, value)
 				if rule.Service == "kubernetes" || strings.HasPrefix(rule.ID, "k8s-") {
 					if objs := k8sAlertObjects(rule.ID); objs != "" {
 						msg += fmt.Sprintf(" | 对象: %s", objs)
@@ -218,5 +218,25 @@ func escalateSeverity(s string) string {
 		return "critical"
 	}
 	return "critical"
+}
+
+// buildAlertMessage 按规则类型生成语义正确的告警消息：
+// threshold 保留"值 > 阈值"格式；anomaly 说明 zscore/MAD 检测结果；
+// burn_rate 展示烧毁倍数；其余类型回退阈值格式（P1-1 修复）。
+func buildAlertMessage(rule AlertRule, value float64) string {
+	switch rule.Type {
+	case "anomaly":
+		method := rule.AnomalyMethod
+		if method == "" {
+			method = "zscore"
+		}
+		return fmt.Sprintf("%s: %s 异常（%s=%.2f > 阈值 %.2f，偏离历史基线）",
+			rule.Name, rule.Metric, method, value, rule.Threshold)
+	case "burn_rate":
+		return fmt.Sprintf("SLO 烧毁率告警: %s 烧毁率 %.1fx > 阈值 %.1fx",
+			rule.Metric, value, rule.Threshold)
+	default:
+		return fmt.Sprintf("%s: %s %.2f > threshold %.2f", rule.Name, rule.Metric, value, rule.Threshold)
+	}
 }
 
