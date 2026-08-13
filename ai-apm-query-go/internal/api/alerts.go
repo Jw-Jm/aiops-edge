@@ -771,26 +771,37 @@ func (h *Handler) AlertEventByID(w http.ResponseWriter, r *http.Request) {
 		}
 		respondError(w, http.StatusNotFound, "event not found")
 	case http.MethodDelete:
-		// 修复(用户需求)：删除告警事件。从内存移除该条并持久化（CH ReplacingMergeTree
-		// 全量写回时不再包含该条，等效删除）。锁内改 + 锁外 save（避免死锁）。
+		// 修复(用户需求)：删除告警事件。必须执行 ClickHouse ALTER DELETE 物理删除，
+		// 因为 ReplacingMergeTree 不会因"不再出现在全量 INSERT 中"就删除旧行，
+		// 只从内存移除 + saveAlertEvents 的话，下次 loadAlertEvents 时事件会"复活"。
+		// 因此除从内存移除外，还要对 ClickHouse 执行 ALTER TABLE ... DELETE。
+		// 注意：一个 rule_id 可能对应多条事件（每次 breach 新增），必须移除内存中全部匹配，
+		// 否则 saveAlertEvents 会把剩余同 rule 事件写回，导致部分"复活"。
 		alertEventsMu.Lock()
-		idx := -1
-		for i := range alertEvents {
-			if alertEvents[i].ID == id || alertEvents[i].RuleID == id {
-				idx = i
-				break
+		kept := alertEvents[:0]
+		found := false
+		for _, ev := range alertEvents {
+			if ev.ID == id || ev.RuleID == id {
+				found = true
+				continue // 丢弃该条
 			}
+			kept = append(kept, ev)
 		}
-		if idx >= 0 {
-			alertEvents = append(alertEvents[:idx], alertEvents[idx+1:]...)
-		}
+		alertEvents = kept
 		alertEventsMu.Unlock()
-		if idx < 0 {
+		if !found {
 			respondError(w, http.StatusNotFound, "event not found")
 			return
 		}
+		// 真正删除 ClickHouse 中的行（物理删除，mutation）
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		delSQL := fmt.Sprintf("ALTER TABLE observability.alert_events DELETE WHERE rule_id = '%s'", escCH(id))
+		if err := h.writeClickHouse(ctx, delSQL); err != nil {
+			log.Printf("ALERT_DELETE(ch): %v", err)
+		}
 		saveAlertEvents()
-		log.Printf("ALERT_DELETED: %s 告警事件已删除", id)
+		log.Printf("ALERT_DELETED: %s 告警事件已从内存与 ClickHouse 删除", id)
 		respondJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 	default:
 		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
