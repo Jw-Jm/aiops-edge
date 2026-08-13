@@ -61,12 +61,18 @@ func AggregateStats(rows []StatsItem) *DashboardStats {
 	for _, r := range rows {
 		s.TotalCalls += r.Calls
 		s.TotalErrors += r.Errors
+		// P1-2 修复：逐项计算平均延迟(ms)与错误率(%)，避免 top_services 恒为 0
+		item := r
+		if item.Calls > 0 {
+			item.AvgLatency = float64(item.LatSumNs) / float64(item.Calls) / 1e6 // ns → ms
+			item.ErrorRate = float64(item.Errors) / float64(item.Calls) * 100
+		}
+		s.TopServices = append(s.TopServices, item)
 	}
 	s.Services = len(rows)
 	if s.TotalCalls > 0 {
 		s.ErrorRate = float64(s.TotalErrors) / float64(s.TotalCalls) * 100
 	}
-	s.TopServices = rows
 	return &s
 }
 
