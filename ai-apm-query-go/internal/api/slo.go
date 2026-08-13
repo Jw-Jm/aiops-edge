@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -78,8 +79,14 @@ func (h *Handler) getSLO(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (h *Handler) createSLO(w http.ResponseWriter, r *http.Request) {
+	// 先读原始 body 判断客户端是否显式传了 enabled（P1-4：默认启用，显式 false 尊重）
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
 	var s store.SLOTarget
-	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+	if err := json.Unmarshal(raw, &s); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -97,6 +104,13 @@ func (h *Handler) createSLO(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.WindowSeconds <= 0 {
 		s.WindowSeconds = 2592000 // 30d
+	}
+	// P1-4 修复：默认启用，避免 burn_rate 规则因 SLO disabled 永远不触发；
+	// 客户端显式传 enabled=false 时尊重用户选择。
+	explicitEnabled := map[string]interface{}{}
+	_ = json.Unmarshal(raw, &explicitEnabled)
+	if _, ok := explicitEnabled["enabled"]; !ok {
+		s.Enabled = true
 	}
 	dao := &store.SLOTargetDAO{}
 	if err := dao.Upsert(s); err != nil {
