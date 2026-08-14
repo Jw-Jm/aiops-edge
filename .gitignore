@@ -68,3 +68,7 @@ observability-frontend/src_legacy_v2/
 
 # playwright-cli 测试快照（.yaml，不入库）
 observability-frontend/*.yaml
+
+# 编译产物（Mach-O arm64 本地构建）
+ai-apm-ingest-go/loadgen
+ai-apm-query-go/query-api
