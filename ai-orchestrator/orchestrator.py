@@ -84,6 +84,9 @@ class AgentState(TypedDict):
     # iteration = 当前第几轮（防死循环，上限由调用方控制）
     exec_context: str
     iteration: int
+    # A-5: 集群范围（all/default/集群 name）。必须在 TypedDict 中声明，
+    # 否则 LangGraph 节点间 state 传递会丢弃未声明键，导致集群过滤失效。
+    cluster_id: str
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1336,14 +1339,14 @@ class BrainOrchestrator:
         # LLM 调用时（_llm 内）按每次请求传入的 cfg + 内存单例 key 临时设置所需环境变量，
         # 用完即走，避免跨请求/跨会话共享明文 key。
 
-    async def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default") -> str:
+    async def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default", cluster_id: str = "all") -> str:
         """Run full DAG and return final_response text. (async — 调用方需 await)"""
-        final = await self._run_dag(intent, service, message, thread_id)
+        final = await self._run_dag(intent, service, message, thread_id, cluster_id)
         return final.get("final_response", "")
 
-    async def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default") -> dict:
+    async def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default", cluster_id: str = "all") -> dict:
         """Run full DAG and return complete final state. (async — 调用方需 await)"""
-        return await self._run_dag(intent, service, message, thread_id)
+        return await self._run_dag(intent, service, message, thread_id, cluster_id)
 
     async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default", cluster_id: str = "all") -> dict:
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
