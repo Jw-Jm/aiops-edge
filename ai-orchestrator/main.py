@@ -51,6 +51,12 @@ async def lifespan(app: FastAPI):
         scheduler.start()
     except Exception as e:  # noqa: BLE001
         print(f"[startup] scheduler error: {e}", flush=True)
+    # 1b. APScheduler 定时：告警事件自动入库为 case 草稿（每 15 分钟，失败仅打日志不抛错）
+    try:
+        scheduler.add_job(_scheduled_alert_to_case, 'interval', minutes=15,
+                          id='alert_to_case', replace_existing=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] scheduler add_job(alert_to_case) error: {e}", flush=True)
     # 2. SNMP 采集 + MySQL 迁移 + 知识库自动加载（均可降级，失败不阻塞）
     try:
         from db import migrate
@@ -799,7 +805,9 @@ async def create_task(req: TaskCreateRequest, request: Request):
     # Async: run DAG in background
     import threading
     _parse_llm_config(request)
-    if not _get_brain().llm_config or not _get_brain().llm_config.get("api_key"):
+    # P0-2 修复: llm_config 已安全剔除 api_key, 需用 _llm_key_ready() 判断真实可用性
+    from orchestrator import _llm_key_ready
+    if not _llm_key_ready():
         task["status"] = "failed"
         task["diagnosis"] = "LLM API Key 未配置, 请在设置页面配置"
         return {"task": task}
@@ -924,7 +932,9 @@ async def run_task(tid: str):
     task = _task_store[tid]
     if task.get("status") in ("diagnosing", "running", "done", "approved"):
         return {"task_id": tid, "status": task.get("status"), "message": "task already processed"}
-    if not _get_brain().llm_config or not _get_brain().llm_config.get("api_key"):
+    # P0-2 修复: llm_config 已安全剔除 api_key, 用 _llm_key_ready() 判断
+    from orchestrator import _llm_key_ready
+    if not _llm_key_ready():
         task["status"] = "failed"
         task["diagnosis"] = "LLM API Key 未配置"
         return {"task_id": tid, "status": "failed"}
@@ -973,51 +983,52 @@ def approve_task(tid: str, request: Request):
         raise HTTPException(404, "task not found")
     task = _task_store[tid]
     task["status"] = "approved"
+    # P0-1 修复: 审计与审批后执行必须分离 —— 此前执行分支被错误缩进在
+    # `except Exception: pass` 块内部(_audit_log 从不抛异常, 该块永不进入),
+    # 导致审批后任务永远停在 approved 不执行。现将执行逻辑移到 try 主块。
     try:
         _audit_log(tid, "approve", _audit_operator(request),
                    _task_service(task), task.get("script", "")[:300], "approved",
                    {"source": task.get("source", "")})
     except Exception:
         pass
-        # 恢复任务: 执行前再次校验恢复命令在白名单内（安全边界）
-        if task.get("source") == "recovery":
-            script = task.get("script", "")
-            from recovery_policy import check_allowed
-            ok, reason = check_allowed(script)
-            if not ok:
-                raise Exception(f"恢复动作不在白名单内: {reason}")
-            exec_result = _get_brain().execute_suggestion(
-                task.get("service", ""), script, task.get("diagnosis", ""), task_id=tid)
-            task["status"] = "done"
-            task["report"] = f"恢复方案已审批并执行。\n操作: {script}\n结果:\n{exec_result}"
-            task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            return {"task": task}
-        # AI Chat 建议任务: 通过后执行 script (若有)
-        if task.get("source") == "ai_chat":
-            exec_result = _get_brain().execute_suggestion(
-                task.get("service", ""), task.get("script", ""), task.get("context", ""), task_id=tid)
-            task["status"] = "done"
-            task["report"] = f"已人工确认并执行建议。\n操作结果:\n{exec_result}"
-            task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # 恢复任务: 执行前再次校验恢复命令在白名单内（安全边界）
+    if task.get("source") == "recovery":
+        script = task.get("script", "")
+        from recovery_policy import check_allowed
+        ok, reason = check_allowed(script)
+        if not ok:
+            raise Exception(f"恢复动作不在白名单内: {reason}")
+        exec_result = _get_brain().execute_suggestion(
+            task.get("service", ""), script, task.get("diagnosis", ""), task_id=tid)
+        task["status"] = "done"
+        task["report"] = f"恢复方案已审批并执行。\n操作: {script}\n结果:\n{exec_result}"
+        task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        _task_store.persist(tid)
+        return {"task": task}
+    # AI Chat 建议任务: 通过后执行 script (若有)
+    if task.get("source") == "ai_chat":
+        exec_result = _get_brain().execute_suggestion(
+            task.get("service", ""), task.get("script", ""), task.get("context", ""), task_id=tid)
+        task["status"] = "done"
+        task["report"] = f"已人工确认并执行建议。\n操作结果:\n{exec_result}"
+        task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            _upload_report(tid, task["report"], service=task.get("service", ""),
+                           question=task.get("context", "") or task.get("diagnosis", ""))
+        except Exception: pass
+    else:
+        # LangGraph 任务: Resume with approval
+        # approve_and_resume 已改为 async；sync handler 在线程池中运行，无 event loop，用 asyncio.run
+        final = asyncio.run(_get_brain().approve_and_resume(tid, approved=True))
+        task["status"] = "done"
+        task["report"] = final.get("final_response", "")[:500]
+        task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if final.get("final_response"):
             try:
-                _upload_report(tid, task["report"], service=task.get("service", ""),
+                _upload_report(tid, final["final_response"], service=task.get("service", ""),
                                question=task.get("context", "") or task.get("diagnosis", ""))
             except Exception: pass
-        else:
-            # LangGraph 任务: Resume with approval
-            # approve_and_resume 已改为 async；sync handler 在线程池中运行，无 event loop，用 asyncio.run
-            final = asyncio.run(_get_brain().approve_and_resume(tid, approved=True))
-            task["status"] = "done"
-            task["report"] = final.get("final_response", "")[:500]
-            task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if final.get("final_response"):
-                try:
-                    _upload_report(tid, final["final_response"], service=task.get("service", ""),
-                                   question=task.get("context", "") or task.get("diagnosis", ""))
-                except Exception: pass
-    except Exception as e:
-        task["status"] = "failed"
-        task["diagnosis"] = str(e)
     _task_store.persist(tid)  # 审批结果落 MySQL
     return {"task": task}
 
@@ -1923,14 +1934,19 @@ async def add_knowledge_case(body: dict = None):
         raise HTTPException(400, f"质量审查未通过: {reason}")
     import hashlib
     cid = hashlib.md5(symptom.encode()).hexdigest()[:12]  # 与 knowledge_seed.load_case 一致
-    from rag import rag
+    from rag import rag, infer_case_tags
+    # 自动补标签：未显式传 tags 时按 service/symptom/plan 关键词推断领域标签；
+    # type 透传（缺省 case）。质量审查逻辑保持不变（上方已执行）。
+    tags = (b.get("tags") or "").strip() or infer_case_tags(service, symptom, plan)
     case = {
         "case_id": cid,
+        "type": (b.get("type") or "case").strip() or "case",
         "service": service,
         "symptom": symptom,
         "root_cause": root_cause,
         "plan": plan,
         "outcome": "success",
+        "tags": tags,
         "report": f"[{service}] 故障案例: {symptom}",
     }
     r = rag.add_case(case)
@@ -1938,6 +1954,111 @@ async def add_knowledge_case(body: dict = None):
     if r != cid:
         resp["message"] = "已存在相似案例"
     return resp
+
+
+# ═══════════════════════════════════════════════════════════════
+#  告警事件自动入库（草稿）— 端点 + 定时任务
+# ═══════════════════════════════════════════════════════════════
+
+def _fetch_alert_events(limit: int = 50) -> list:
+    """从 query-api 拉取告警事件（status=firing/resolved），容错失败返回空列表。
+
+    复用 orchestrator._collect_alerts 的调用模式：GET /api/v1/alerts/events?limit=N，
+    携带 X-Internal-Token。过滤仅保留 firing / resolved 状态（缺省视为 firing）。
+    """
+    import urllib.request
+    qa = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
+    token = os.environ.get("INTERNAL_TOKEN", "")
+    try:
+        req = urllib.request.Request(f"{qa}/alerts/events?limit={limit}", method="GET")
+        if token:
+            req.add_header("X-Internal-Token", token)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        events = data.get("data", []) or []
+        # 仅保留 firing / resolved 状态告警（缺省视为 firing）
+        kept = [e for e in events if (e.get("status") or "firing") in ("firing", "resolved")]
+        return kept
+    except Exception as e:  # noqa: BLE001
+        print(f"[from-alerts] 拉取告警事件失败: {e}")
+        return []
+
+
+def _ingest_alerts_to_cases(limit: int = 50) -> dict:
+    """将告警事件自动入库为 case 草稿。
+
+    注意：plan 为空过不了 _case_quality_check，因此本函数**不走质量审查**，
+    直接 rag.add_case（内置 0.92 相似度去重），outcome=pending、tags=auto-alert。
+    每条告警（rule_name/service/message）构造：
+      symptom   = rule_name + message 前 120 字
+      root_cause= 由告警自动生成，待人工确认（告警/服务）
+      plan      = 空
+    返回 {added, dup, total}。
+    """
+    import hashlib
+    from rag import rag, infer_case_tags
+    events = _fetch_alert_events(limit)
+    added, dup = 0, 0
+    for e in events:
+        rule_name = (e.get("rule_name") or "").strip() or "unknown-alert"
+        service = (e.get("service") or "").strip() or "unknown"
+        message = (e.get("message") or "").strip()
+        symptom = (f"{rule_name} {message}".strip())[:120]
+        root_cause = f"由告警自动生成，待人工确认（告警: {rule_name}, 服务: {service}）"
+        cid = hashlib.md5(symptom.encode()).hexdigest()[:12]  # 与 knowledge_seed.load_case 一致
+        tags = "auto-alert"
+        inferred = infer_case_tags(service, symptom, "")
+        if inferred:
+            tags = f"{tags},{inferred}"
+        case = {
+            "case_id": cid,
+            "type": "case",
+            "service": service,
+            "symptom": symptom,
+            "root_cause": root_cause,
+            "plan": "",
+            "outcome": "pending",
+            "tags": tags,
+            "source": "alert",
+            "title": symptom[:80],
+            "report": f"[{service}] 告警自动生成: {rule_name}",
+        }
+        try:
+            r = rag.add_case(case)
+            if r == cid:
+                added += 1
+            else:
+                dup += 1
+        except Exception as ex:  # noqa: BLE001 单条失败不影响整体
+            print(f"[from-alerts] 单条告警入库失败: {ex}")
+    return {"added": added, "dup": dup, "total": len(events)}
+
+
+@app.post("/api/v1/ops/cases/from-alerts")
+async def from_alerts(body: dict = None):
+    """告警自动入库草稿：拉取 query-api 告警事件（status=firing/resolved）转为 case 草稿。
+
+    不经过 _case_quality_check（plan 为空无法通过），直接 rag.add_case，
+    outcome=pending、tags=auto-alert；去重由 rag.add_case 内置 0.92 相似度保证。
+    本服务每 15 分钟定时调用；也可由外部 cron 调用本端点。
+    请求体可选: {"limit": 50}（上限 500）。
+    """
+    b = body or {}
+    try:
+        limit = int(b.get("limit") or 50)
+    except Exception:  # noqa: BLE001
+        limit = 50
+    limit = max(1, min(limit, 500))
+    return _ingest_alerts_to_cases(limit)
+
+
+async def _scheduled_alert_to_case():
+    """定时任务：每 15 分钟将告警事件自动入库为 case 草稿（失败仅打日志，不抛错）。"""
+    try:
+        res = await asyncio.to_thread(_ingest_alerts_to_cases, 50)
+        print(f"[scheduler] alert-to-case 入库完成: {res}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[scheduler] alert-to-case error: {e}")
 
 
 @app.get("/api/v1/ai/rules")

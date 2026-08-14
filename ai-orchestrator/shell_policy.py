@@ -51,11 +51,18 @@ class ShellPolicy:
     def check_shell_metachars(self, command: str) -> Optional[str]:
         """检查是否含可导致 shell 拼接/重定向的元字符。命中则返回拒绝原因，否则 None。
 
-        已按产品要求放宽：处置/工作流命令需支持管道、重定向、换行等（如
-        `kubectl get pods | grep CrashLoopBackOff`）。命令在执行前仍经过
-        人工审批（确认执行），因此不再拦截 shell 元字符，由用户确认后执行。
-        保持函数签名不变（调用方不受影响）。
+        安全修复(P0): 此前按"产品要求放宽"恒返回 None, 导致 `kubectl get pods; cat /etc/shadow`
+        这类"白名单子串 + 任意命令"拼接绕过, 任意已登录用户可达集群 RCE。
+        现在恢复拦截: 仅允许 `|`(管道, 处置命令常用 `kubectl ... | grep`), 其余
+        拼接/重定向/换行/子 shell 元字符一律拒绝。人工审批不再是安全边界的替代品。
         """
+        if not command:
+            return None
+        # 去除管道(单字符 | 两侧的空白)后检查其余元字符, 管道本身放行
+        stripped = re.sub(r"\s*\|\s*", " ", command)
+        m = self.SHELL_METACHARS.search(stripped)
+        if m:
+            return f"命令含禁止的 shell 元字符 [{m.group(0)}], 拒绝执行(防拼接/重定向注入)"
         return None
 
     # ═════════════════════════════════════════════════════════
@@ -73,6 +80,8 @@ class ShellPolicy:
         r"kubectl describe vm", r"kubectl describe vmi",
         r"kubectl get vmrestore", r"kubectl get vmsnapshot",
         r"virtctl version", r"virtctl vnc \S+", r"virtctl console \S+",
+        # 管道只读过滤器(kubectl ... | grep/head/tail/awk/wc/sort)
+        r"^\s*(grep|egrep|head|tail|awk|wc|sort|uniq|sed)\s+",
     ]
     EXEC_WRITE = [
         r"kubectl rollout restart deployment/\S+",
@@ -91,23 +100,51 @@ class ShellPolicy:
     def is_whitelisted_for_execute(self, command: str) -> tuple:
         """Returns (allowed: bool, category: str).
 
-        已按产品要求放宽：命令在执行前经过人工审批（确认执行），因此不再严格限定
-        readonly/write 白名单，只要命令以常见的 AIOps 运维可执行族（kubectl/curl/
-        virtctl/docker/systemctl/journalctl/df/free/top）开头即放行，由用户在确认
-        环节把关。保留函数签名不变（调用方不受影响）。
+        安全修复(P0): 此前放宽为"仅首行前缀匹配"且元字符检查失效, 攻击者可
+        `kubectl get pods; cat /etc/shadow` / 多行拼接绕过 → 任意命令执行。
+        现在: ① 元字符拦截(见 check_shell_metachars); ② 整段命令必须命中
+        EXEC_READONLY/EXEC_WRITE 之一(前缀匹配仅作兼容提示); ③ 危险参数黑名单
+        (kubectl delete/exec/apply/rollout undo、curl 外联下载、systemctl stop、
+        docker 写操作等)一律拒绝。保持函数签名不变。
         """
-        cmd = command.strip().splitlines()[0].strip() if command.strip() else ""
-        for prefix in ("kubectl ", "curl ", "virtctl ", "docker ", "systemctl ",
-                       "journalctl ", "df ", "free ", "top ", "ps "):
-            if cmd.startswith(prefix):
-                # 仍区分读写类别（仅用于展示/审计，不影响放行）
-                for pattern in self.EXEC_READONLY:
-                    if re.search(pattern, command):
-                        return (True, "readonly")
-                for pattern in self.EXEC_WRITE:
-                    if re.search(pattern, command):
-                        return (True, "write")
-                return (True, "operational")
+        if not command or not command.strip():
+            return (False, "empty")
+        # 1) 元字符硬拦截(管道放行, 其余拼接/重定向拒绝)
+        meta = self.check_shell_metachars(command)
+        if meta:
+            return (False, "metachars")
+        # 2) 危险参数黑名单(整段命令, 不限首行)
+        for pattern, cat, desc in self.EXTRA_BLACKLIST:
+            if re.search(pattern, command, re.IGNORECASE):
+                return (False, cat)
+        for pat in (
+            r"\bkubectl\b[^\n]*\b(delete|exec|edit|apply|create|replace|patch|drain|taint|rollout\s+undo)\b",
+            r"\bcurl\b[^\n]*\s(-o|--output|--data|--data-binary|-d|--upload-file)\s",
+            r"\bsystemctl\s+(stop|disable|mask|restart)\b",
+            r"\bdocker\s+(rm|rmi|run|exec|build|push|pull)\b",
+            r"\brm\s+(-[rf]+\s+)*(/|/etc|/var|/usr|/root)",
+            r"\bchmod\s+777\b|\bchown\b",
+            r"\bbase64\s+-d\b",
+        ):
+            if re.search(pat, command, re.IGNORECASE):
+                return (False, "dangerous_params")
+        # 3) 白名单: 整段命令(去管道后逐段)必须整体命中只读或写规则
+        segments = [s.strip() for s in re.split(r"\s*\|\s*", command) if s.strip()]
+        readonly_hit = write_hit = False
+        for seg in segments:
+            seg_ro = any(re.search(p, seg) for p in self.EXEC_READONLY)
+            seg_wr = any(re.search(p, seg) for p in self.EXEC_WRITE)
+            if seg_ro:
+                readonly_hit = True
+            if seg_wr:
+                write_hit = True
+            # 任一段既非只读也非写白名单 → 拒绝(管道内也不允许任意命令)
+            if not seg_ro and not seg_wr:
+                return (False, "not_whitelisted")
+        if write_hit:
+            return (True, "write")
+        if readonly_hit:
+            return (True, "readonly")
         return (False, "not_whitelisted")
 
     # ═════════════════════════════════════════════════════════

@@ -158,6 +158,7 @@ def find_root_by_granger(
     candidates: list[str],
     topology: dict[str, list[str]],
     p_threshold: float = 0.05,
+    cluster_id: str = "",
 ) -> dict:
     """Granger 因果检验: 构建因果 DAG, 入度=0 的节点为根因"""
     # 简化: 比较异常发生时间的先后顺序
@@ -228,7 +229,7 @@ def correlate_changes(root_service: str, lookback_sec: int = 300) -> list[dict]:
 #  确定性 RCA 主入口
 # ═══════════════════════════════════════════════════════
 
-def diagnose_root_cause(affected_service: str) -> dict:
+def diagnose_root_cause(affected_service: str, cluster_id: str = "") -> dict:
     """确定性 RCA: 宿主机拓扑 + 服务拓扑 + Granger + 变更"""
     # Layer 0: 宿主机→VM 拓扑 (KubeVirt)
     host_vms = _fetch_host_vm_topology()
@@ -274,7 +275,7 @@ def diagnose_root_cause(affected_service: str) -> dict:
         candidates = list(topology.keys())
 
     # Layer 2: Granger
-    g_result = find_root_by_granger(candidates, topology)
+    g_result = find_root_by_granger(candidates, topology, cluster_id=cluster_id)
     root = g_result.get("root_cause_service") or (candidates[0] if candidates else None)
 
     # Layer 3: 变更
@@ -564,13 +565,13 @@ def full_rca_analysis(affected_service: str, anomaly_event: dict = None, cluster
         return _k8s_rca(affected_service, anomaly_event)
 
     # Phase 1: 确定性（仅对微服务生效）
-    det_result = diagnose_root_cause(affected_service)
+    det_result = diagnose_root_cause(affected_service, cluster_id=cluster_id)
     if det_result.get("confidence", 0) > 0.6:
         return {"mode": "deterministic", "result": det_result}
 
     # Phase 2: 假设引擎 (需要 LLM)
-    from orchestrator import brain
-    if not brain.llm_config or not brain.llm_config.get("api_key"):
+    from orchestrator import brain, _llm_key_ready
+    if not _llm_key_ready():
         return {"mode": "deterministic", "result": det_result,
                 "message": "LLM API Key 未配置，假设引擎不可用，仅返回确定性结果"}
 
@@ -730,7 +731,8 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
         plan["cause"] += f"\n最近事件（告警对象 {obj_label}）：\n{_real['recent_events'][:800]}"
 
     # 尝试 LLM 假设引擎（已配置时），让"重新分析"产生新结果
-    if brain.llm_config and brain.llm_config.get("api_key"):
+    from orchestrator import _llm_key_ready
+    if _llm_key_ready():
         try:
             hypotheses = generate_hypotheses({
                 "service": affected_service,
