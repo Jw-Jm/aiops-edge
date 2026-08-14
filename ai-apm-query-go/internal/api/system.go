@@ -2,18 +2,22 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
 func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 	status := map[string]interface{}{
-		"cache":  GetCacheStats(),
-		// Redis 已移除：缓存为纯内存实现（orchestrator 的 ARQ 任务队列才用 Redis）
-		"redis":  "in-memory",
-		"hpa":    getHPAStatus(),
-		"pods":   getPodCount(),
+		"cache": GetCacheStats(),
+		// P3-4 修复：Redis 为真实部署探测连通性，不再固定返回 "in-memory" 误导。
+		"redis": redisStatus(),
+		"hpa":   getHPAStatus(),
+		"pods":  getPodCount(),
 	}
 
 	respondJSON(w, 200, map[string]interface{}{"status": status})
@@ -22,11 +26,8 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CacheStats(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 200, map[string]interface{}{
 		"cache": GetCacheStats(),
-		// Redis 已移除：缓存为纯内存实现（orchestrator 的 ARQ 任务队列才用 Redis）
-		"redis": map[string]interface{}{
-			"connected": true,
-			"url":       "in-memory",
-		},
+		// P3-4 修复：与 system/status 一致，探测真实 Redis 连通性。
+		"redis": redisStatus(),
 	})
 }
 
@@ -40,6 +41,94 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 		"invalidated": true,
 		"pattern":     pattern,
 	})
+}
+
+// redisAddr 返回 Redis 地址（REDIS_ADDR/REDIS_HOST 环境变量，默认集群内域名）。
+func redisAddr() string {
+	return firstNonEmpty(os.Getenv("REDIS_ADDR"), os.Getenv("REDIS_HOST"), "redis.observability.svc.cluster.local:6379")
+}
+
+// redisStatus 探测 Redis 连通性（TCP 握手，3s 超时），返回 {connected, url}。
+// P3-4 修复：部署有真实 Redis 时显示真实状态，探活失败返回 connected:false 而非 "in-memory"。
+func redisStatus() map[string]interface{} {
+	addr := redisAddr()
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return map[string]interface{}{"connected": false, "url": addr, "error": err.Error()}
+	}
+	defer conn.Close()
+	return map[string]interface{}{"connected": true, "url": addr}
+}
+
+// SystemComponents 处理 GET /api/v1/system/components — 各组件探活结果列表。
+// 组件列表：query-api/ingest/ai-orchestrator/clickhouse/mysql/redis/
+// victoria-metrics/victoria-logs/minio/frontend。3s 超时并发探测，
+// 探活失败 status=down，超时接近 3s 的降级 degraded。
+func (h *Handler) SystemComponents(w http.ResponseWriter, r *http.Request) {
+	type compItem struct{ name, typ, kind, addr string }
+	components := []compItem{
+		{"query-api", "service", "http", "http://query-api.observability.svc.cluster.local:8080/health"},
+		{"ingest", "service", "http", "http://ingest.observability.svc.cluster.local:8080/health"},
+		{"ai-orchestrator", "service", "http", "http://ai-orchestrator.observability.svc.cluster.local:8080/health"},
+		{"clickhouse", "middleware", "tcp", "clickhouse.observability.svc.cluster.local:8123"},
+		{"mysql", "middleware", "tcp", "mysql.observability.svc.cluster.local:3306"},
+		{"redis", "middleware", "tcp", redisAddr()},
+		{"victoria-metrics", "middleware", "http", "http://victoria-metrics.observability.svc.cluster.local:8428/health"},
+		{"victoria-logs", "middleware", "http", "http://victoria-logs.observability.svc.cluster.local:9428/health"},
+		{"minio", "middleware", "http", "http://minio.observability.svc.cluster.local:9000/minio/health/live"},
+		{"frontend", "service", "http", "http://frontend.observability.svc.cluster.local/health"},
+	}
+
+	results := make([]map[string]interface{}, len(components))
+	var wg sync.WaitGroup
+	for i, c := range components {
+		wg.Add(1)
+		go func(i int, c compItem) {
+			defer wg.Done()
+			start := time.Now()
+			ok := probeComponent(c.kind, c.addr)
+			latency := time.Since(start).Milliseconds()
+			status := "ok"
+			if !ok {
+				status = "down"
+			} else if latency >= 2000 {
+				status = "degraded"
+			}
+			detail := ""
+			if !ok {
+				detail = c.addr
+			}
+			results[i] = map[string]interface{}{
+				"name":       c.name,
+				"type":       c.typ,
+				"status":     status,
+				"latency_ms": latency,
+				"detail":     detail,
+			}
+		}(i, c)
+	}
+	wg.Wait()
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{"components": results})
+}
+
+// probeComponent 按 kind 探测组件：http 用 GET（3s 超时），tcp 用 DialTimeout。
+func probeComponent(kind, addr string) bool {
+	if kind == "tcp" {
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err != nil {
+			return false
+		}
+		conn.Close()
+		return true
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(addr)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return true // 能建立 HTTP 连接即视为可达（不苛求状态码）
 }
 
 func getHPAStatus() map[string]interface{} {

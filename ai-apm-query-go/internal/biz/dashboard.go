@@ -43,17 +43,19 @@ type ErrorItem struct {
 
 // DashboardStats 是 /dashboard/stats 的聚合响应。
 type DashboardStats struct {
-	Services    int          `json:"services"`
-	Edges       int64        `json:"edges"`
-	TotalCalls  int64        `json:"total_calls"`
-	TotalErrors int64        `json:"total_errors"`
-	ErrorRate   float64      `json:"error_rate"`
-	LatencyP95  float64      `json:"latency_p95"`
-	TopServices []StatsItem  `json:"top_services"`
-	Trend       []TrendPoint `json:"trend"`
-	TopErrors   []ErrorItem  `json:"top_errors"`
-	AlertStats  AlertStats   `json:"alerts"`
-	DataGaps    []string     `json:"data_gaps"` // P1-3：近 24h 缺失的小时窗口（"MM-DD HH:00 ~ MM-DD HH:00"）
+	Services int `json:"services"`
+	// TopologyServices 含拓扑目录中无 trace 的服务总数（前端展示用，P1-4 口径统一）。
+	TopologyServices int          `json:"topology_services"`
+	Edges            int64        `json:"edges"`
+	TotalCalls       int64        `json:"total_calls"`
+	TotalErrors      int64        `json:"total_errors"`
+	ErrorRate        float64      `json:"error_rate"`
+	LatencyP95       float64      `json:"latency_p95"`
+	TopServices      []StatsItem  `json:"top_services"`
+	Trend            []TrendPoint `json:"trend"`
+	TopErrors        []ErrorItem  `json:"top_errors"`
+	AlertStats       AlertStats   `json:"alerts"`
+	DataGaps         []string     `json:"data_gaps"` // P1-3：近 24h 缺失的小时窗口（"MM-DD HH:00 ~ MM-DD HH:00"）
 }
 
 // AggregateStats 从服务 RED 聚合行汇总出 Dashboard 统计。

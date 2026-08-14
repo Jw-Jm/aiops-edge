@@ -128,9 +128,14 @@ func main() {
 	// Infrastructure (K8s)
 	mux.HandleFunc("/api/v1/infrastructure/nodes", handler.Nodes)
 	mux.HandleFunc("/api/v1/infrastructure/pods", handler.Pods)
+	mux.HandleFunc("/api/v1/infrastructure/pods/", handler.PodDetail)
 	mux.HandleFunc("/api/v1/infrastructure/deployments", handler.Deployments)
 	mux.HandleFunc("/api/v1/infrastructure/namespaces", handler.Namespaces)
 	mux.HandleFunc("/api/v1/nodes/metrics", handler.NodesMetrics)
+	// Infrastructure (K8s + KubeVirt, 5.2/5.3)
+	mux.HandleFunc("/api/v1/infrastructure/hpa", handler.HPA)
+	mux.HandleFunc("/api/v1/infrastructure/vms", handler.VMs)
+	mux.HandleFunc("/api/v1/infrastructure/vms/", handler.VMDetail)
 	// Settings (LLM + K8s)
 	mux.HandleFunc("/api/v1/settings/llm", handler.SettingsLLM)
 	mux.HandleFunc("/api/v1/settings/llm/internal", handler.GetInternalLLMSettings)
@@ -251,10 +256,11 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/api/v1/tenants/", handler.DeleteTenant)
-	// System (HPA + Cache + Redis)
+	// System (HPA + Cache + Redis + Components)
 	mux.HandleFunc("/api/v1/system/status", handler.SystemStatus)
 	mux.HandleFunc("/api/v1/system/cache", handler.CacheStats)
 	mux.HandleFunc("/api/v1/system/cache/invalidate", handler.InvalidateCache)
+	mux.HandleFunc("/api/v1/system/components", handler.SystemComponents)
 
 	// Wrap: CORS → Auth
 	corsHandler := api.CORSMiddleware(mux)

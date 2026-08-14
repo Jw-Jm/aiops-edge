@@ -563,10 +563,15 @@ func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 		serviceClause = fmt.Sprintf("AND service_name=%s", chQuote(serviceFilter))
 	}
 
-	// 2.7 搜索框：支持按 trace_id / operation / http_url 文本搜索
+	// 2.7 搜索框：支持按 trace_id / operation / http_url 文本搜索。
+	// P3-6 修复：keyword 与 search 等价，keyword 优先（向后兼容 search 参数）。
 	searchClause := ""
-	if s := r.URL.Query().Get("search"); s != "" {
-		searchClause = fmt.Sprintf(" AND (trace_id LIKE %s OR operation_name LIKE %s OR http_url LIKE %s)", chLike(s), chLike(s), chLike(s))
+	searchKeyword := r.URL.Query().Get("keyword")
+	if searchKeyword == "" {
+		searchKeyword = r.URL.Query().Get("search")
+	}
+	if searchKeyword != "" {
+		searchClause = fmt.Sprintf(" AND (trace_id LIKE %s OR operation_name LIKE %s OR http_url LIKE %s)", chLike(searchKeyword), chLike(searchKeyword), chLike(searchKeyword))
 	}
 
 	sql := fmt.Sprintf(
@@ -858,35 +863,42 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := biz.AggregateStats(items)
 
-	// 修复(P0-3.2)：让 services 数与 topology 节点数口径一致。
-	// DashboardStats 之前只统计 trace_spans 中产生过 trace 的服务（13 个），
-	// 而 topology 包含 service_topology 中所有服务（含 mysql/kube-dns 等无 trace），
-	// 导致首页 KPI"服务数量 13"与拓扑"16 节点"不一致。
-	// 修复：从 service_topology 收集所有出现过的服务名，与 trace 服务合并去重，
-	// 让 stats.Services 等于真正的"已纳管服务数"。
+	// 修复(P1-4)：统计口径统一。
+	// services 数 = 仅 trace_spans 中出现的服务（与 ListServices 同口径，真实服务数）；
+	// topology_services = 含 service_topology 目录中无 trace 服务的总数（前端展示用）。
 	topologySQL := fmt.Sprintf(
 		"SELECT DISTINCT source_service AS s FROM observability.service_topology WHERE tenant_id=%s%s AND s != '' UNION DISTINCT SELECT DISTINCT target_service AS s FROM observability.service_topology WHERE tenant_id=%s%s AND s != ''",
 		chQuote(tid), clusterClause, chQuote(tid), clusterClause,
 	)
+	topologyServices := 0
 	if tb, err := h.queryClickHouse(ctx, topologySQL); err == nil {
 		if tr, perr := parseRows(tb); perr == nil && len(tr) > 0 {
-			traceSvcSet := map[string]bool{}
-			for _, it := range items { traceSvcSet[it.Service] = true }
+			svcSet := map[string]bool{}
+			for _, it := range items {
+				svcSet[it.Service] = true
+			}
 			for _, row := range tr {
-				if s, _ := row["s"].(string); s != "" && !traceSvcSet[s] {
-					items = append(items, biz.StatsItem{Service: s, Calls: 0, Errors: 0})
+				if s, _ := row["s"].(string); s != "" {
+					svcSet[s] = true
 				}
 			}
-			stats = biz.AggregateStats(items)
+			topologyServices = len(svcSet)
 		}
 	}
+	if topologyServices > 0 {
+		stats.TopologyServices = topologyServices
+	}
 
-	// 拓扑边数（与 GlobalTopology 一致的降级链：service_topology → MySQL topology_relations）
+	// 拓扑边数（与 GlobalTopology 同口径：service_topology 近 1440 分钟、
+	// source!=target 去重后的边数，自环不计入）。
 	edgeCount := int64(0)
-	edgeSQL := fmt.Sprintf("SELECT count() FROM observability.service_topology WHERE tenant_id=%s%s AND date >= today()-1", chQuote(tid), clusterClause)
+	edgeSQL := fmt.Sprintf(
+		"SELECT count() AS cnt FROM (SELECT source_service, target_service FROM observability.service_topology WHERE tenant_id=%s%s AND time_bucket >= now() - INTERVAL 1440 MINUTE AND source_service != '' AND target_service != '' AND source_service != target_service GROUP BY source_service, target_service)",
+		chQuote(tid), clusterClause,
+	)
 	if eb, err := h.queryClickHouse(ctx, edgeSQL); err == nil {
 		if er, perr := parseRows(eb); perr == nil && len(er) > 0 {
-			if n, ok := toInt64(er[0]["count()"]); ok {
+			if n, ok := toInt64(er[0]["cnt"]); ok {
 				edgeCount = n
 			}
 		}
@@ -1148,11 +1160,19 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 边：校验两端节点都存在
+	// 边：校验两端节点都存在；自环边（source_service==target_service）必须过滤，
+	// 但保留计数供前端参考（P1-4 修复：此前自环被算作真实边，导致 42 vs 487 口径混乱）。
+	// 探针噪声边（如 ingest→kube-dns 这类 target 为 kube-dns/system 服务的高错误边）
+	// 保留不删——数据真实反映系统服务调用关系，仅在此注释说明。
 	edges := []map[string]interface{}{}
+	selfLoops := 0
 	for _, er := range edgeRows {
 		src := fmt.Sprintf("%v", er["source_service"])
 		tgt := fmt.Sprintf("%v", er["target_service"])
+		if src == "" || tgt == "" || src == tgt {
+			selfLoops++
+			continue
+		}
 		calls := toFloat(er["calls"])
 		errs := toFloat(er["errs"])
 		avgNs := toFloat(er["avg_ns"])
@@ -1194,10 +1214,11 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes":      nodes,
-		"edges":      edges,
-		"node_count": len(nodes),
-		"edge_count": len(edges),
+		"nodes":          nodes,
+		"edges":          edges,
+		"node_count":     len(nodes),
+		"edge_count":     len(edges),
+		"self_loop_count": selfLoops,
 	})
 }
 

@@ -186,19 +186,32 @@ func (h *Handler) clusterSync(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 200, map[string]interface{}{"ok": true, "synced": true, "id": id, "cluster": info})
 }
 
-// clusterNodes 返回集群节点列表（优先用该集群 kubeconfig，否则当前 kubectl context）。
+// clusterNodes 返回集群节点列表（优先用该集群 kubeconfig，否则仅默认集群回退当前 kubectl context）。
 func (h *Handler) clusterNodes(w http.ResponseWriter, r *http.Request, id int64) {
-	kc, err := clusterKubeconfig(id)
+	c, err := (&store.ClusterDAO{}).GetByID(id)
 	if err != nil {
 		respondJSON(w, 500, map[string]interface{}{"nodes": []store.ClusterNode{}, "error": err.Error()})
 		return
 	}
-	if kc == "" {
+	if c == nil {
+		respondJSON(w, 404, map[string]interface{}{"nodes": []store.ClusterNode{}, "error": "cluster not found"})
+		return
+	}
+	// 修复(P2-3)：非默认集群无 kubeconfig 时不静默回退当前 context，
+	// 避免 prod-cluster 误显示 orbstack 节点。默认集群（id=1 或 kubernetes-cluster）保持原回退逻辑。
+	if c.Kubeconfig == "" && c.ID != 1 && c.Name != "kubernetes-cluster" {
+		respondJSON(w, 200, map[string]interface{}{
+			"nodes": []store.ClusterNode{}, "count": 0,
+			"error": "cluster has no kubeconfig, cannot query nodes",
+		})
+		return
+	}
+	if c.Kubeconfig == "" {
 		nodes := k8sNodes()
 		respondJSON(w, 200, map[string]interface{}{"nodes": nodes, "count": len(nodes)})
 		return
 	}
-	nodes := k8sNodesWithKubeconfig(kc)
+	nodes := k8sNodesWithKubeconfig(c.Kubeconfig)
 	respondJSON(w, 200, map[string]interface{}{"nodes": nodes, "count": len(nodes)})
 }
 
@@ -320,17 +333,27 @@ func kubeList(kubeconfig string, args ...string) (string, error) {
 }
 
 // parseK8sEvents 解析 kubectl get events -o json 为精简列表。
+// 兼容 events.k8s.io 格式（P2-4 修复）：时间字段按 lastTimestamp→eventTime→firstTimestamp
+// 依次取（events.k8s.io 只有 eventTime）；involvedObject 缺失时用 regarding 字段；
+// 增加 count 字段。Warning/Error 事件不被丢弃。
 func parseK8sEvents(raw string) []map[string]interface{} {
 	var res struct {
 		Items []struct {
-			LastTimestamp string `json:"lastTimestamp"`
-			Type          string `json:"type"`
-			Reason        string `json:"reason"`
-			Message       string `json:"message"`
-			Involved      struct {
+			LastTimestamp  string `json:"lastTimestamp"`
+			EventTime      string `json:"eventTime"`
+			FirstTimestamp string `json:"firstTimestamp"`
+			Type           string `json:"type"`
+			Reason         string `json:"reason"`
+			Message        string `json:"message"`
+			Count          int32  `json:"count"`
+			Involved       struct {
 				Kind string `json:"kind"`
 				Name string `json:"name"`
 			} `json:"involvedObject"`
+			Regarding struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"regarding"`
 		} `json:"items"`
 	}
 	out := []map[string]interface{}{}
@@ -341,12 +364,25 @@ func parseK8sEvents(raw string) []map[string]interface{} {
 		if it.Type == "Normal" {
 			continue // 只返回异常事件
 		}
+		// events.k8s.io 无 lastTimestamp/firstTimestamp，用 eventTime；依次回退
+		ts := it.LastTimestamp
+		if ts == "" {
+			ts = it.EventTime
+		}
+		if ts == "" {
+			ts = it.FirstTimestamp
+		}
+		objKind, objName := it.Involved.Kind, it.Involved.Name
+		if objKind == "" && objName == "" {
+			objKind, objName = it.Regarding.Kind, it.Regarding.Name
+		}
 		out = append(out, map[string]interface{}{
-			"last_timestamp": it.LastTimestamp,
+			"last_timestamp": ts,
 			"type":           it.Type,
 			"reason":         it.Reason,
 			"message":        it.Message,
-			"involved_object": it.Involved.Kind + "/" + it.Involved.Name,
+			"count":          it.Count,
+			"involved_object": objKind + "/" + objName,
 		})
 	}
 	return out

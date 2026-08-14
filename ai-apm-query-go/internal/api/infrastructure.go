@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -218,6 +219,7 @@ func parseNamespaces(data []byte) []map[string]interface{} {
 // parseQuantity 解析 K8s Quantity 为浮点值（CPU 核心数 / 内存 MiB 基数的 KB 数）。
 // 支持 CPU: "250m"(0.25核), "2"(2核)；内存: "1Gi"=1024, "500Mi"=500, "12345Ki"=12345。
 // 返回的数值统一到"原单位"的数值：CPU 返回核心数，内存返回以 Ki 为基数（1Gi=1024Ki）。
+// 返回的数值统一到"原单位"的数值：CPU 返回核心数，内存返回以 Ki 为基数（1Gi=1024Ki）。
 func parseQuantity(s string) float64 {
 	s = strings.TrimSpace(s)
 	if s == "" { return 0 }
@@ -302,4 +304,182 @@ func (h *Handler) NodesMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	respondJSON(w, 200, map[string]interface{}{"nodes": parseNodeMetrics(data, capMap)})
+}
+
+// PodDetail 处理 GET /api/v1/infrastructure/pods/{namespace}/{name}
+// 返回容器列表（名称/镜像/状态/restartCount/ready）、Pod 状态、节点、IP、
+// 创建时间、资源请求/限制（CPU/mem）及该 Pod 最近事件（复用 parseK8sEvents 逻辑）。
+func (h *Handler) PodDetail(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/infrastructure/pods/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		respondJSON(w, 400, map[string]interface{}{"error": "expected /api/v1/infrastructure/pods/{namespace}/{name}"})
+		return
+	}
+	ns, name := parts[0], parts[1]
+
+	data, err := k8sAPI("/api/v1/namespaces/" + ns + "/pods/" + name)
+	if err != nil {
+		respondJSON(w, 200, map[string]interface{}{"pod": nil, "error": err.Error()})
+		return
+	}
+	var pod struct {
+		Metadata struct {
+			Name              string `json:"name"`
+			Namespace         string `json:"namespace"`
+			CreationTimestamp string `json:"creationTimestamp"`
+		} `json:"metadata"`
+		Spec struct {
+			NodeName string `json:"nodeName"`
+			Containers []struct {
+				Name  string `json:"name"`
+				Image string `json:"image"`
+				Resources struct {
+					Requests map[string]string `json:"requests"`
+					Limits   map[string]string `json:"limits"`
+				} `json:"resources"`
+			} `json:"containers"`
+		} `json:"spec"`
+		Status struct {
+			Phase             string `json:"phase"`
+			HostIP            string `json:"hostIP"`
+			PodIP             string `json:"podIP"`
+			ContainerStatuses []struct {
+				Name         string                 `json:"name"`
+				Image        string                 `json:"image"`
+				Ready        bool                   `json:"ready"`
+				RestartCount int                    `json:"restartCount"`
+				State        map[string]interface{} `json:"state"`
+			} `json:"containerStatuses"`
+		} `json:"status"`
+	}
+	if json.Unmarshal(data, &pod) != nil {
+		respondJSON(w, 200, map[string]interface{}{"pod": nil, "error": "parse pod failed"})
+		return
+	}
+
+	containers := []map[string]interface{}{}
+	for _, c := range pod.Status.ContainerStatuses {
+		state := "unknown"
+		for k := range c.State {
+			state = k // running / terminated / waiting
+		}
+		containers = append(containers, map[string]interface{}{
+			"name": c.Name, "image": c.Image, "state": state,
+			"ready": c.Ready, "restart_count": c.RestartCount,
+		})
+	}
+	resources := []map[string]interface{}{}
+	for _, c := range pod.Spec.Containers {
+		resources = append(resources, map[string]interface{}{
+			"name":     c.Name,
+			"requests": map[string]string{"cpu": c.Resources.Requests["cpu"], "memory": c.Resources.Requests["memory"]},
+			"limits":   map[string]string{"cpu": c.Resources.Limits["cpu"], "memory": c.Resources.Limits["memory"]},
+		})
+	}
+
+	respondJSON(w, 200, map[string]interface{}{
+		"name":       pod.Metadata.Name,
+		"namespace":  pod.Metadata.Namespace,
+		"status":     pod.Status.Phase,
+		"node":       pod.Spec.NodeName,
+		"ip":         pod.Status.PodIP,
+		"host_ip":    pod.Status.HostIP,
+		"created_at": pod.Metadata.CreationTimestamp,
+		"containers": containers,
+		"resources":  resources,
+		"events":     objectEvents(ns, name),
+	})
+}
+
+// HPA 处理 GET /api/v1/infrastructure/hpa — 集群 HPA 列表（跨命名空间）。
+// 复用 system.go getHPAStatus 的解析思路，返回结构化列表。
+func (h *Handler) HPA(w http.ResponseWriter, r *http.Request) {
+	done := make(chan map[string]interface{}, 1)
+	go func() {
+		out, err := kubeList("", "get", "hpa", "-A", "-o", "json")
+		if err != nil {
+			done <- map[string]interface{}{"hpa": []map[string]interface{}{}, "error": err.Error()}
+			return
+		}
+		var hpaList struct {
+			Items []struct {
+				Metadata struct {
+					Name      string `json:"name"`
+					Namespace string `json:"namespace"`
+				} `json:"metadata"`
+				Spec struct {
+					MinReplicas *int32 `json:"minReplicas"`
+					MaxReplicas int32  `json:"maxReplicas"`
+				} `json:"spec"`
+				Status struct {
+					CurrentReplicas int32 `json:"currentReplicas"`
+					DesiredReplicas int32 `json:"desiredReplicas"`
+					CurrentMetrics  []struct {
+						Type     string `json:"type"`
+						Resource struct {
+							Name    string `json:"name"`
+							Current struct {
+								AverageUtilization int32 `json:"averageUtilization"`
+							} `json:"current"`
+						} `json:"resource"`
+					} `json:"currentMetrics"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if json.Unmarshal([]byte(out), &hpaList) != nil {
+			done <- map[string]interface{}{"hpa": []map[string]interface{}{}, "error": "parse hpa failed"}
+			return
+		}
+		items := []map[string]interface{}{}
+		for _, it := range hpaList.Items {
+			cpuUtil := int32(0)
+			for _, m := range it.Status.CurrentMetrics {
+				if m.Type == "Resource" && m.Resource.Name == "cpu" {
+					cpuUtil = m.Resource.Current.AverageUtilization
+				}
+			}
+			min := int32(1)
+			if it.Spec.MinReplicas != nil {
+				min = *it.Spec.MinReplicas
+			}
+			items = append(items, map[string]interface{}{
+				"name":             it.Metadata.Name,
+				"namespace":        it.Metadata.Namespace,
+				"current_replicas": it.Status.CurrentReplicas,
+				"desired_replicas": it.Status.DesiredReplicas,
+				"min":              min,
+				"max":              it.Spec.MaxReplicas,
+				"cpu_utilization":  cpuUtil,
+			})
+		}
+		done <- map[string]interface{}{"hpa": items, "count": len(items)}
+	}()
+	select {
+	case res := <-done:
+		respondJSON(w, 200, res)
+	case <-time.After(5 * time.Second):
+		respondJSON(w, 200, map[string]interface{}{"hpa": []map[string]interface{}{}, "error": "kubectl timeout"})
+	}
+}
+
+// objectEvents 查询指定命名空间中某个对象的异常事件（复用 parseK8sEvents 逻辑）。
+// 用 kubectl --field-selector 过滤，3s 超时，失败返回空列表。
+func objectEvents(ns, name string) []map[string]interface{} {
+	done := make(chan []map[string]interface{}, 1)
+	go func() {
+		out, err := kubeList("", "get", "events", "-n", ns,
+			"--field-selector", fmt.Sprintf("involvedObject.name=%s", name), "-o", "json")
+		if err != nil {
+			done <- []map[string]interface{}{}
+			return
+		}
+		done <- parseK8sEvents(out)
+	}()
+	select {
+	case ev := <-done:
+		return ev
+	case <-time.After(3 * time.Second):
+		return []map[string]interface{}{}
+	}
 }

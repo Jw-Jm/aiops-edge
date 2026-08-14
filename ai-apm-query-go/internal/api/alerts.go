@@ -1376,6 +1376,16 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 		return v, nil
 	}
 
+	// 修复(P2-2)：服务级 threshold 规则（type=threshold 且 service 非空非 kubernetes）。
+	// 此前服务级 error_rate/calls/latency_p95 等规则走 VM PromQL 或 unknown metric，
+	// 而 trace 数据在 ClickHouse trace_spans，导致规则不触发（内置 trace_error_rate 才生效）。
+	// 这里从 trace_spans 查询该服务最近 duration 分钟的 RED 指标；K8s 规则保持原路径。
+	if rule.Service != "" && rule.Service != "kubernetes" &&
+		(rule.Metric == "error_rate" || rule.Metric == "calls" || rule.Metric == "call_count" ||
+			rule.Metric == "latency_p95" || rule.Metric == "latency_p99") {
+		return h.evalServiceTraceRED(ctx, rule.Service, rule.Metric, duration)
+	}
+
 	var sql string
 	switch rule.Metric {
 	case "error_rate":
@@ -1429,6 +1439,69 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 	default:
 		return 0, fmt.Errorf("unknown metric: %s", rule.Metric)
 	}
+}
+
+// evalServiceTraceRED 从 trace_spans 查询指定服务最近 duration 分钟的 RED 指标，
+// 供服务级 threshold 规则评估（P2-2 修复：calls/latency_p95 等此前走 unknown metric）。
+// service 由用户输入拼入 SQL，须用 chQuote 转义防注入。
+func (h *Handler) evalServiceTraceRED(ctx context.Context, service, metric string, duration int) (float64, error) {
+	var sql string
+	switch metric {
+	case "error_rate":
+		sql = fmt.Sprintf(
+			"SELECT countIf(is_error=1) as errors, count() as total FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+			chQuote(service), duration,
+		)
+	case "calls", "call_count":
+		sql = fmt.Sprintf(
+			"SELECT count() as cnt FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+			chQuote(service), duration,
+		)
+	case "latency_p95":
+		sql = fmt.Sprintf(
+			"SELECT quantile(0.95)(duration_ns)/1000000 as p95_ms FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+			chQuote(service), duration,
+		)
+	case "latency_p99":
+		sql = fmt.Sprintf(
+			"SELECT quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
+			chQuote(service), duration,
+		)
+	default:
+		return 0, fmt.Errorf("unknown metric: %s", metric)
+	}
+
+	body, err := h.queryClickHouse(ctx, sql)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := parseRows(body)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	row := rows[0]
+	switch metric {
+	case "error_rate":
+		errors, _ := toFloat64(row["errors"])
+		total, _ := toFloat64(row["total"])
+		if total > 0 {
+			return (errors / total) * 100, nil // percentage
+		}
+		return 0, nil
+	case "calls", "call_count":
+		v, _ := toFloat64(row["cnt"])
+		return v, nil
+	case "latency_p95":
+		v, _ := toFloat64(row["p95_ms"])
+		return v, nil
+	case "latency_p99":
+		v, _ := toFloat64(row["p99_ms"])
+		return v, nil
+	}
+	return 0, fmt.Errorf("unknown metric: %s", metric)
 }
 
 // ---- K8s 指标评估 (基于 K8s API) ----

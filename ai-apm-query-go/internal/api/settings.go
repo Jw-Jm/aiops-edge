@@ -253,7 +253,7 @@ func (h *Handler) RollbackLLMConfig(w http.ResponseWriter, r *http.Request) {
 
 	saveSettings(settings)
 	respondJSON(w, 200, map[string]interface{}{
-		"message": "rolled back",
+		"message":  "rolled back",
 		"provider": row.Provider,
 		"model":    row.Model,
 		"base_url": row.BaseURL,
@@ -283,9 +283,12 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	settingsMu.RLock()
 	defer settingsMu.RUnlock()
 	llm := settings.LLM
-	// 判断是否已配置生效：provider/model/base_url/api_key 任一存在即视为已配置
-	configured := llm.Provider != "" || llm.Model != "" || llm.BaseURL != "" || llm.APIKey != ""
-	apiKeySet := llm.APIKey != ""
+	// P0-1 修复: "已配置"必须是真实可用的 —— 仅 provider/model/base_url 字段非空不足以
+	// 说明 LLM 可用, API key 必须能解密成功才算 api_key_set/configured。
+	// 否则密钥漂移/解密失败时界面会误报"已配置", 而实际 AI 全部降级为确定性模式。
+	decrypted := decryptAPIKey(llm.APIKey)
+	apiKeySet := decrypted != ""
+	configured := llm.Provider != "" && llm.Model != "" && llm.BaseURL != "" && apiKeySet
 	// 脱敏展示（仅 mask，不清空），避免前端二次脱敏导致显示混乱
 	masked := llm.APIKey
 	if len(masked) > 8 {
@@ -295,11 +298,11 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"data": map[string]interface{}{
-			"provider":      llm.Provider,
-			"model":         llm.Model,
-			"base_url":      llm.BaseURL,
-			"configured":    configured,
-			"api_key_set":   apiKeySet,
+			"provider":       llm.Provider,
+			"model":          llm.Model,
+			"base_url":       llm.BaseURL,
+			"configured":     configured,
+			"api_key_set":    apiKeySet,
 			"api_key_masked": masked,
 		},
 	})
@@ -364,6 +367,19 @@ func (h *Handler) SaveLLMSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := saveSettings(settings); err != nil {
 		log.Printf("SaveLLMSettings save error: %v", err)
+	}
+	// P0-1 修复: 保存后立即回读解密自检, 防止因加密密钥缺失/漂移导致
+	// "已保存但实际不可用"的静默失败(此前界面显示 configured=true, 实际 LLM 全部降级)。
+	if llm.APIKey != "" {
+		if verify := decryptAPIKey(settings.LLM.APIKey); verify == "" {
+			settings.LLM.APIKey = ""
+			_ = saveSettings(settings)
+			settingsMu.Unlock()
+			respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"error": "API key 保存后自检解密失败(LLM_ENCRYPTION_KEY 缺失或不匹配), 已回滚配置, 请检查部署密钥",
+			})
+			return
+		}
 	}
 	settingsMu.Unlock()
 
@@ -481,8 +497,12 @@ func (h *Handler) ModelsLLM(w http.ResponseWriter, r *http.Request) {
 	baseURL := req["base_url"]
 	if apiKey == "" || baseURL == "" {
 		settingsMu.RLock()
-		if apiKey == "" { apiKey = decryptAPIKey(settings.LLM.APIKey) }
-		if baseURL == "" { baseURL = settings.LLM.BaseURL }
+		if apiKey == "" {
+			apiKey = decryptAPIKey(settings.LLM.APIKey)
+		}
+		if baseURL == "" {
+			baseURL = settings.LLM.BaseURL
+		}
 		settingsMu.RUnlock()
 	}
 
@@ -506,7 +526,9 @@ func (h *Handler) ModelsLLM(w http.ResponseWriter, r *http.Request) {
 	}
 	if json.Unmarshal(data, &result) == nil && len(result.Data) > 0 {
 		models := make([]string, len(result.Data))
-		for i, m := range result.Data { models[i] = m.ID }
+		for i, m := range result.Data {
+			models[i] = m.ID
+		}
 		respondJSON(w, 200, map[string]interface{}{"models": models, "provider": baseURL})
 		return
 	}

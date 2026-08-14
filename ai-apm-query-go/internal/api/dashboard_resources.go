@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -39,12 +40,31 @@ func (h *Handler) DashboardResources(w http.ResponseWriter, r *http.Request) {
 
 	items := []map[string]interface{}{}
 	for _, m := range metrics {
+		thr, _ := strconv.ParseFloat(m.threshold, 64)
+
+		// 修复(P2-5)：内存口径与 nodes/metrics 统一（K8s metrics-server usage/capacity）。
+		// 此前工作台走 PromQL MemAvailable 口径（不含 cache）与节点页（含 cache）数字不一致，
+		// 现直接复用节点页数据源，保证两页内存数字一致。CPU/磁盘保持 PromQL。
+		if m.metric == "memory" {
+			cur, err := clusterMemoryUsagePct()
+			if err != nil {
+				items = append(items, map[string]interface{}{
+					"metric": m.metric, "current": nil, "threshold": thr, "ett_seconds": 0,
+				})
+				continue
+			}
+			// 单点采样无趋势：ETT 为 0（与节点页口径一致，不再用 PromQL 趋势外推）
+			items = append(items, map[string]interface{}{
+				"metric": m.metric, "current": round2(cur), "threshold": thr, "ett_seconds": 0, "source": "k8s-api",
+			})
+			continue
+		}
+
 		promQL := capacityPromQLForCluster(m.metric, "", cid)
 		if promQL == "" {
 			continue
 		}
 		series, err := h.vmRangeQuery(promQL, start, end, step)
-		thr, _ := strconv.ParseFloat(m.threshold, 64)
 		if err != nil || len(series) == 0 {
 			items = append(items, map[string]interface{}{
 				"metric": m.metric, "current": nil, "threshold": thr, "ett_seconds": 0,
@@ -70,4 +90,33 @@ func (h *Handler) DashboardResources(w http.ResponseWriter, r *http.Request) {
 		"node_count": nodeCount,
 		"resources":  items,
 	})
+}
+
+// clusterMemoryUsagePct 用与 nodes/metrics 相同的口径（K8s metrics-server usage / capacity）
+// 计算集群平均内存使用率（%），确保工作台与节点页内存数字一致（P2-5 修复）。
+func clusterMemoryUsagePct() (float64, error) {
+	data, err := k8sAPIFn("/apis/metrics.k8s.io/v1beta1/nodes")
+	if err != nil {
+		return 0, err
+	}
+	capMap := map[string]map[string]string{}
+	if nd, nerr := k8sAPIFn("/api/v1/nodes"); nerr == nil {
+		for _, n := range parseNodes(nd) {
+			name, _ := n["name"].(string)
+			cpu, _ := n["cpu"].(string)
+			mem, _ := n["memory"].(string)
+			if name != "" {
+				capMap[name] = map[string]string{"cpu": cpu, "memory": mem}
+			}
+		}
+	}
+	nodes := parseNodeMetrics(data, capMap)
+	if len(nodes) == 0 {
+		return 0, fmt.Errorf("no node memory metrics")
+	}
+	sum := 0.0
+	for _, n := range nodes {
+		sum += toFloat(n["mem_usage_pct"])
+	}
+	return sum / float64(len(nodes)), nil
 }
