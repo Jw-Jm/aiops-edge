@@ -59,17 +59,6 @@ CREATE TABLE IF NOT EXISTS reports (
   KEY idx_reports_svc_created (service_name, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS knowledge_base (
-  id         BIGINT PRIMARY KEY AUTO_INCREMENT,
-  title      VARCHAR(255),
-  content    LONGTEXT,
-  source     VARCHAR(64),
-  tags       VARCHAR(255),
-  code_ref   JSON NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS rules (
   id              BIGINT PRIMARY KEY AUTO_INCREMENT,
   rule_key        VARCHAR(64) NOT NULL UNIQUE,

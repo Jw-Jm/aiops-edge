@@ -124,7 +124,7 @@ class ReportStore:
 class KnowledgeStore:
     """知识库条目持久化 —— 统一存 ChromaDB（与 RAG 故障案例同一 collection，type=knowledge）。
     页面管理（list/search/add/delete）与 AI 语义检索共用单一真源，消除双写不一致。
-    MySQL knowledge_base 表停用（保留表结构避免破坏历史迁移）。"""
+    MySQL knowledge_base 表已删除（migrations/0001_business_tables.sql 同步移除建表）。"""
 
     def add(self, title: str, content: str, source: str = "manual", tags: str = "", code_ref: dict = None) -> str:
         try:
