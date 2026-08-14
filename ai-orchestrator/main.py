@@ -1727,12 +1727,17 @@ def list_audit_logs(action: str = "", operator: str = "", service: str = "",
 
 
 @app.get("/api/v1/ai/knowledge")
-async def list_knowledge(q: str = "", page: int = 1, size: int = 50):
-    from db_agents import KnowledgeStore
-    ks = KnowledgeStore()
-    if q:
-        return ks.search(q)
-    return ks.list(page=page, size=size)
+async def list_knowledge(q: str = "", page: int = 1, size: int = 50, type: str = "knowledge"):
+    """知识库列表。type: all=全部 | case=故障案例 | knowledge=知识文档（默认）。
+    统一从 ChromaDB 读取（单一真源），支持关键词过滤与分页。"""
+    from rag import rag
+    if type == "all":
+        items = rag.list_all(type_filter="", q=q, limit=size, offset=(page - 1) * size)
+        total = len(rag.list_all(type_filter="", q=q, limit=100000))
+    else:
+        items = rag.list_all(type_filter=type, q=q, limit=size, offset=(page - 1) * size)
+        total = len(rag.list_all(type_filter=type, q=q, limit=100000))
+    return {"items": items, "total": total}
 
 
 @app.post("/api/v1/ai/knowledge")

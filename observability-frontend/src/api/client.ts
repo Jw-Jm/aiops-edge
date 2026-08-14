@@ -225,11 +225,18 @@ export const getDashboardResources = (params?: Record<string, unknown>) =>
 // ===== 知识库 =====
 export interface KnowledgeItem {
   id: string
+  type?: string        // case | knowledge
   title: string
   content: string
   source: string
   tags: string
   code_ref: any
+  service?: string
+  root_cause?: string
+  plan?: string
+  outcome?: string
+  validated?: string
+  weight?: number
   created_at?: string
   updated_at?: string
 }

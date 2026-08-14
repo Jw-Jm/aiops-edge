@@ -230,35 +230,48 @@ class RAGStore:
             pass
 
     def search(self, query: str, limit: int = 3) -> list:
-        """带反馈权重的向量检索。按 weight * decay * (1-distance) 排序"""
+        """带反馈权重的向量检索（分层检索）。
+        对齐业内实践（Sentry ask-runbooks）：故障案例与知识文档**分别检索**再合并，
+        避免案例数量占优时挤掉知识文档（如处置步骤类问题应命中 runbook 类知识）。
+        按 weight * decay * (1-distance) 排序。"""
         if not self._ensure_init():
             return []
         try:
-            results = self.collection.query(query_texts=[query], n_results=max(limit * 2, 5))
-            cases = []
-            if not results["ids"] or not results["ids"][0]:
-                return cases
-            for i, case_id in enumerate(results["ids"][0]):
-                meta = results["metadatas"][0][i] if results["metadatas"] else {}
-                distance = results["distances"][0][i] if results["distances"] else 1.0
-                similarity = 1 - distance
-                weight = float(meta.get("weight", 1.0))
-                decay = float(meta.get("decay_factor", 1.0))
-                adjusted_score = similarity * weight * decay
-                cases.append({
-                    "case_id": case_id,
-                    "service": meta.get("service", ""),
-                    "symptom": results["documents"][0][i] if results["documents"] else "",
-                    "root_cause": meta.get("root_cause", ""),
-                    "plan": meta.get("plan", ""),
-                    "outcome": meta.get("outcome", "success"),
-                    "validated": meta.get("validated", "pending"),
-                    "report": meta.get("report", "")[:300],
-                    "score": round(adjusted_score, 4),
-                    "raw_similarity": round(similarity, 4),
-                })
-            cases.sort(key=lambda c: c["score"], reverse=True)
-            return cases[:limit]
+            per_type = max(limit, 3)  # 每类型各取 limit 条（不足由另一类补足）
+            combined = []
+            for typ in ("case", "knowledge"):
+                try:
+                    results = self.collection.query(
+                        query_texts=[query], n_results=per_type,
+                        where={"type": typ})
+                except Exception:
+                    results = self.collection.query(query_texts=[query], n_results=per_type)
+                if not results["ids"] or not results["ids"][0]:
+                    continue
+                for i, case_id in enumerate(results["ids"][0]):
+                    meta = results["metadatas"][0][i] if results["metadatas"] else {}
+                    distance = results["distances"][0][i] if results["distances"] else 1.0
+                    similarity = 1 - distance
+                    weight = float(meta.get("weight", 1.0))
+                    decay = float(meta.get("decay_factor", 1.0))
+                    adjusted_score = similarity * weight * decay
+                    combined.append({
+                        "case_id": case_id,
+                        "type": meta.get("type", "case"),
+                        "service": meta.get("service", ""),
+                        "symptom": results["documents"][0][i] if results["documents"] else "",
+                        "root_cause": meta.get("root_cause", ""),
+                        "plan": meta.get("plan", ""),
+                        "outcome": meta.get("outcome", "success"),
+                        "validated": meta.get("validated", "pending"),
+                        "report": meta.get("report", "")[:300],
+                        "score": round(adjusted_score, 4),
+                        "raw_similarity": round(similarity, 4),
+                        "tags": meta.get("tags", ""),
+                        "source": meta.get("source", ""),
+                    })
+            combined.sort(key=lambda c: c["score"], reverse=True)
+            return combined[:limit]
         except Exception:
             return []
 
