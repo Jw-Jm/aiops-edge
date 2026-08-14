@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Input, Button, Select, Space, Segmented, Tag, Table, Tooltip } from 'antd'
 import { queryLogs, aggregateLogs } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
+import { useUIStore } from '../../store/uiStore'
 
 interface LogRow { ts: string; level: string; service_name: string; message: string; [k: string]: any }
 interface AggRow { [k: string]: any; count?: number }
@@ -10,6 +11,7 @@ const LEVEL_TONE: Record<string, string> = { error: 'var(--danger)', warning: 'v
 
 // 2.8 日志页重设计：数据源选择 + 级别过滤 + 时间范围（集群过滤由全局 ClusterSwitcher 注入）
 const LogMetrics: React.FC = () => {
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
   const [mode, setMode] = useState<'logs' | 'aggregate'>('logs')
   const [source, setSource] = useState<'clickhouse' | 'victorialogs'>('clickhouse')
   const [level, setLevel] = useState<string>('all')
@@ -65,7 +67,7 @@ const LogMetrics: React.FC = () => {
   }
 
   // P3-2 首次加载自动查询
-  useEffect(() => { search() }, [])
+  useEffect(() => { search() }, [currentClusterId])
 
   const logCols = [
     { title: '时间', dataIndex: 'ts', key: 'ts', render: (v: string) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>{v}</span>, width: 165 },

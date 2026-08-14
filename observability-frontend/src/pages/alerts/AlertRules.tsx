@@ -3,10 +3,12 @@ import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Drawer,
 import { useNavigate } from 'react-router-dom'
 import { getAlertRules, createAlertRule, deleteAlertRule } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
+import { useUIStore } from '../../store/uiStore'
 
 interface Rule { id: string; name?: string; rule_name?: string; service_name?: string; metric?: string; threshold?: number; severity?: string; enabled?: boolean; condition?: string; duration?: number; cooldown?: number }
 
 const AlertRules: React.FC = () => {
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
   const navigate = useNavigate()
   const [data, setData] = useState<Rule[]>([])
   const [loading, setLoading] = useState(true)
@@ -21,7 +23,7 @@ const AlertRules: React.FC = () => {
       setData(d)
     }).catch(() => setData([])).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [currentClusterId])
 
   const submit = async () => {
     const v = await form.validateFields()

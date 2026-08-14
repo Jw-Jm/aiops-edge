@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { useUIStore } from '../../store/uiStore'
 import { useSearchParams } from 'react-router-dom'
 import { Drawer, Spin, Button, Space, Tag, Statistic, Row, Col, Table, Segmented, Card, Tabs, Select, Badge, Typography, Empty as AntdEmpty } from 'antd'
 import * as echarts from 'echarts'
@@ -45,6 +46,8 @@ const METRIC_TYPES = [
 ]
 
 const ServiceObservability: React.FC = () => {
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
+
   const chartRef = useRef<HTMLDivElement>(null)
   const chartInst = useRef<echarts.ECharts | null>(null)
   const trendChartRef = useRef<HTMLDivElement>(null)
@@ -133,7 +136,7 @@ const ServiceObservability: React.FC = () => {
     // Issue5: 30s 静默轮询，保持拓扑/服务列表近实时；切换集群时也会因 uiStore 变化重新加载
     const timer = setInterval(() => loadData(true), 30000)
     return () => clearInterval(timer)
-  }, [])
+  }, [currentClusterId])
 
   // 支持 ?node=xxx 自动打开节点详情（深链分享 / 测试验证）
   useEffect(() => {

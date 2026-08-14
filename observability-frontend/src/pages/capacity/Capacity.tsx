@@ -3,6 +3,7 @@ import { Select, Button, Space, Spin, Statistic, Row, Col } from 'antd'
 import * as echarts from 'echarts'
 import { getCapacityForecast, getCapacityInstances, CapacityForecast } from '../../api/client'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
+import { useUIStore } from '../../store/uiStore'
 
 // 2.15 容量预测：CPU / 内存 / 磁盘 三指标同页展示（无下拉切换），当前值保留 2 位小数
 const METRICS: { key: 'cpu' | 'memory' | 'disk'; label: string; threshold: number }[] = [
@@ -32,6 +33,7 @@ const ettTone = (d: CapacityForecast | null): string => {
 }
 
 const Capacity: React.FC = () => {
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
   const chartRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [instances, setInstances] = useState<string[]>([])
   const [instance, setInstance] = useState('')
@@ -57,7 +59,7 @@ const Capacity: React.FC = () => {
       setData(map)
     }).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [instance, horizon])
+  useEffect(() => { load() }, [instance, horizon, currentClusterId])
 
   useEffect(() => {
     if (!Object.keys(data).length) return

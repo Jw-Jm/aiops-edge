@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Drawer, Spin, Table, Tag, Select, Space, Button, Input } from 'antd'
 import { getTraces, getTraceDetail, getTraceContext } from '../../api/client'
+import { useUIStore } from '../../store/uiStore'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 
 interface TraceRow { trace_id: string; services?: any; max_ms?: number; spans?: number; start?: string; end?: string }
@@ -43,6 +44,7 @@ function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number } {
 }
 
 const Trace: React.FC = () => {
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
   const [data, setData] = useState<TraceRow[]>([])
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<any>(null)
@@ -61,7 +63,7 @@ const Trace: React.FC = () => {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [currentClusterId])
 
   const openDetail = (id: string) => {
     setDrawerOpen(true)

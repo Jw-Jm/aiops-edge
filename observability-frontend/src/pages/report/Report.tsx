@@ -4,10 +4,12 @@ import ReactMarkdown from 'react-markdown'
 import { listReports } from '../../api/client'
 import api from '../../api/client'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
+import { useUIStore } from '../../store/uiStore'
 
 interface Report { id?: string; task_id?: string; service_name?: string; report_type?: string; verdict?: string; risk_score?: number; summary?: string; created_at?: string; title?: string; status?: string; cluster_id?: string }
 
 const Report: React.FC = () => {
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
   const [data, setData] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)
   const [preview, setPreview] = useState<Report | null>(null) // 2.18 预览
@@ -22,9 +24,10 @@ const Report: React.FC = () => {
     }
     load()
     // Issue7: 30s 轮询刷新，使 AI 对话新生成的巡检/诊断报告自动出现在报告中心，无需手动刷新
+    // 需求：切换集群后同步刷新（currentClusterId 变化时重建 effect）
     const timer = setInterval(load, 30000)
     return () => clearInterval(timer)
-  }, [])
+  }, [currentClusterId])
 
   const taskIdOf = (r: any) => r.task_id || r.id || ''
   const reportTypeName = (rt?: string) =>
