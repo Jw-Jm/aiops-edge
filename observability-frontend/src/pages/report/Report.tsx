@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Button, message, Tag, Drawer, Space } from 'antd'
+import { BookOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
-import { listReports } from '../../api/client'
+import { listReports, addKnowledgeCase } from '../../api/client'
 import api from '../../api/client'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
@@ -57,16 +58,48 @@ const Report: React.FC = () => {
       .catch(() => message.warning('该报告无下载文件（仅元数据）'))
   }
 
+  // 需求：报告一键加入知识库（POST /ai/knowledge/case，质量审查失败返回 400）
+  const [caseLoading, setCaseLoading] = useState<Record<string, boolean>>({})
+  const [caseAdded, setCaseAdded] = useState<Record<string, boolean>>({})
+  const addToKnowledge = (r: Report) => {
+    const taskId = taskIdOf(r)
+    if (!taskId || caseLoading[taskId]) return
+    if (caseAdded[taskId]) { message.info('该报告已加入知识库'); return }
+    setCaseLoading((p) => ({ ...p, [taskId]: true }))
+    addKnowledgeCase({ report_id: taskId })
+      .then((res: any) => {
+        const d = res.data || {}
+        if (d.inserted === false) {
+          message.warning('已存在相似案例')
+        } else {
+          message.success(`已加入知识库 (案例 ${d.case_id || taskId})`)
+        }
+        setCaseAdded((p) => ({ ...p, [taskId]: true }))
+      })
+      .catch((e: any) => {
+        const err = e?.response?.data?.error || e?.response?.data?.detail || e?.message || '加入失败'
+        message.error(`质量审查未通过：${err}`)
+      })
+      .finally(() => setCaseLoading((p) => ({ ...p, [taskId]: false })))
+  }
+
   const cols = [
     { title: '报告', dataIndex: 'task_id', key: 'task_id', render: (_: any, r: any) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{reportTitle(r)}</span> },
     { title: '集群', dataIndex: 'cluster_id', key: 'cluster_id', width: 130, render: (v: string) => v && v !== 'default' ? <Tag color="blue">{v}</Tag> : <span style={{ color: 'var(--text-muted)' }}>主集群</span> },
     { title: '时间', dataIndex: 'created_at', key: 'created_at', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v ? v.slice(0, 19).replace('T', ' ') : '-'}</span> },
-    { title: '操作', key: 'op', width: 140, render: (_: any, r: Report) => (
-        <Space size={0}>
-          <Button size="small" type="link" onClick={() => setPreview(r)}>预览</Button>
-          <Button size="small" type="link" onClick={() => download(r)}>下载</Button>
-        </Space>
-      ) },
+    { title: '操作', key: 'op', width: 220, render: (_: any, r: Report) => {
+        const taskId = taskIdOf(r)
+        return (
+          <Space size={0}>
+            <Button size="small" type="link" onClick={() => setPreview(r)}>预览</Button>
+            <Button size="small" type="link" onClick={() => download(r)}>下载</Button>
+            <Button size="small" type="link" icon={<BookOutlined />}
+              loading={!!caseLoading[taskId]}
+              disabled={!!caseAdded[taskId]}
+              onClick={() => addToKnowledge(r)}>{caseAdded[taskId] ? '已加入' : '加入知识库'}</Button>
+          </Space>
+        )
+      } },
   ]
 
   return (

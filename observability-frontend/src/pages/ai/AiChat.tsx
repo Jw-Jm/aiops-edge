@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Button, Input, Empty, Alert } from 'antd'
-import api, { TENANT_ID, getSession, executeSuggestion, finalReport } from '../../api/client'
+import { Button, Input, Empty, Alert, message } from 'antd'
+import { BookOutlined } from '@ant-design/icons'
+import api, { TENANT_ID, getSession, executeSuggestion, finalReport, addKnowledgeCase } from '../../api/client'
 import { useSearchParams } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
 
@@ -44,6 +45,9 @@ const AiChat: React.FC = () => {
   const [notice, setNotice] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  // 需求：对话沉淀故障案例——caseAdding: 防重 loading；caseAdded: 记录已入库的消息，避免重复提交
+  const [caseAdding, setCaseAdding] = useState<Record<string, boolean>>({})
+  const caseAddedRef = useRef<Set<string>>(new Set())
 
   const loadSessions = async () => {
     try { const r = await api.get('/ai/sessions'); setSessions(r.data?.sessions || []) } catch {}
@@ -237,6 +241,43 @@ const AiChat: React.FC = () => {
     } finally { setLoading(false); setProgress('') }
   }
 
+  // 需求：处置建议确认执行成功后，一键沉淀为故障案例（POST /ai/knowledge/case）
+  // payload: service=当前会话服务; symptom=用户问题; root_cause=分析摘要; plan=处置命令/建议
+  const handleAddCase = async (m: ChatMessage, symptom: string) => {
+    if (caseAdding[m.id] || caseAddedRef.current.has(m.id)) return
+    setCaseAdding((p) => ({ ...p, [m.id]: true }))
+    const lastUser = [...messages].reverse().find((x) => x.role === 'user')
+    const userText = symptom || lastUser?.content || ''
+    // root_cause：普通助手回复本身即分析内容；处置建议卡则取其之前最近一条 AI 分析（均截 500 字）
+    let analysis = m.content
+    if (m.kind !== 'text' && m.kind !== 'report') {
+      const idx = messages.findIndex((x) => x.id === m.id)
+      const analysisMsg = [...messages.slice(0, idx === -1 ? messages.length : idx)].reverse().find(
+        (x) => x.role === 'assistant' && x.kind !== 'suggestion' && x.kind !== 'execresult' && x.kind !== 'report'
+      )
+      analysis = analysisMsg?.content || m.content
+    }
+    const plan = (m.script || m.plan || '').slice(0, 500)
+    addKnowledgeCase({
+      service: m.service || '',
+      symptom: userText.slice(0, 500),
+      root_cause: analysis.slice(0, 500),
+      plan,
+    })
+      .then((res: any) => {
+        const d = res.data || {}
+        caseAddedRef.current.add(m.id)
+        setCaseAdding((p) => ({ ...p, [m.id]: false }))
+        if (d.inserted === false) message.warning('已存在相似案例')
+        else message.success(d.case_id ? `已加入知识库 (案例 ${d.case_id})` : '已加入知识库')
+      })
+      .catch((e: any) => {
+        setCaseAdding((p) => ({ ...p, [m.id]: false }))
+        const err = e?.response?.data?.error || e?.response?.data?.detail || e?.message || '加入失败'
+        message.error(`质量审查未通过：${err}`)
+      })
+  }
+
   return (
     <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 116px)' }}>
       {/* 会话列表 */}
@@ -283,7 +324,10 @@ const AiChat: React.FC = () => {
             <Alert type="warning" showIcon closable message={notice}
               onClose={() => setNotice('')} style={{ marginBottom: 12 }} />
           )}
-          {messages.map((m) => (
+          {messages.map((m, i) => {
+            // 需求：沉淀故障案例时取当前建议之前最近一条用户问题作为 symptom
+            const symptomMsg = [...messages.slice(0, i)].reverse().find((x) => x.role === 'user')
+            return (
             <div key={m.id} style={{ display: 'flex', gap: 10, marginBottom: 14, justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
               {m.role === 'assistant' && <div className="ai-msg__av">AI</div>}
               {m.kind === 'suggestion' ? (
@@ -307,16 +351,31 @@ const AiChat: React.FC = () => {
                   {(() => { const rv = riskView(m); return rv ? (
                     <div style={{ fontSize: 12, color: rv.color, marginBottom: 8 }}>{rv.text}</div>
                   ) : null })()}
-                  <ConfirmCard m={m} onExecute={handleExecute} onReject={handleReject} onFinalReport={handleFinalReport} />
+                  <ConfirmCard m={m} symptom={symptomMsg?.content || ''}
+                    caseLoading={!!caseAdding[m.id]} caseAdded={caseAddedRef.current.has(m.id)}
+                    onExecute={handleExecute} onReject={handleReject} onFinalReport={handleFinalReport} onAddCase={handleAddCase} />
                 </div>
               ) : (
                 <div style={{ maxWidth: '82%', padding: '10px 14px', borderRadius: 10, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.7,
                   background: m.role === 'user' ? 'var(--primary-soft)' : 'var(--surface-2)', border: m.role === 'user' ? 'none' : '1px solid var(--border)' }}>
                   {m.content}
+                  {/* 需求：回复完成（done）且为最新一条助手消息时，可将本次分析加入知识库 */}
+                  {m.role === 'assistant' && !loading && i === messages.length - 1
+                    && !m.content.startsWith('❌') && !m.content.startsWith('⚠️') && !m.content.startsWith('⏱️')
+                    && (m.kind === 'text' || m.kind === 'report') && (
+                    <div style={{ marginTop: 8 }}>
+                      <Button size="small" type="dashed" icon={<BookOutlined />} loading={!!caseAdding[m.id]}
+                        disabled={caseAddedRef.current.has(m.id)}
+                        onClick={() => handleAddCase(m, symptomMsg?.content || '')}>
+                        {caseAddedRef.current.has(m.id) ? '已加入知识库' : '加入知识库'}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          ))}
+            )
+          })}
           {progress && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0' }}>{progress}</div>}
           <div ref={bottomRef} />
         </div>
@@ -330,9 +389,21 @@ const AiChat: React.FC = () => {
   )
 }
 
-// 需求2/3: 处置建议确认卡——确认执行 / 驳回 / 用户自定义命令执行
-const ConfirmCard: React.FC<{ m: ChatMessage; onExecute: (m: ChatMessage, script?: string) => void; onReject: (m: ChatMessage) => void; onFinalReport: (m: ChatMessage) => void }> = ({ m, onExecute, onReject, onFinalReport }) => {
+// 需求2/3: 处置建议确认卡——确认执行 / 驳回 / 用户自定义命令执行 / 执行成功后加入知识库
+const ConfirmCard: React.FC<{
+  m: ChatMessage
+  symptom: string
+  caseLoading: boolean
+  caseAdded: boolean
+  onExecute: (m: ChatMessage, script?: string) => void
+  onReject: (m: ChatMessage) => void
+  onFinalReport: (m: ChatMessage) => void
+  onAddCase: (m: ChatMessage, symptom: string) => void
+}> = ({ m, symptom, caseLoading, caseAdded, onExecute, onReject, onFinalReport, onAddCase }) => {
   const [custom, setCustom] = useState('')
+  // 需求：确认执行成功（content 以 ✅ 开头且无失败标记）或回复完成时展示「加入知识库」
+  const executedOk = m.kind === 'execresult' || m.kind === 'report'
+  const succeeded = executedOk && !m.content.includes('❌') && !m.content.includes('失败') && !m.content.includes('⛔')
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -340,6 +411,11 @@ const ConfirmCard: React.FC<{ m: ChatMessage; onExecute: (m: ChatMessage, script
         {m.script && <Button size="small" type="primary" onClick={() => onExecute(m)}>确认执行</Button>}
         <Button size="small" onClick={() => onReject(m)}>驳回</Button>
         <Button size="small" onClick={() => onFinalReport(m)}>输出最终版本报告</Button>
+        {succeeded && (
+          <Button size="small" type="dashed" icon={<BookOutlined />} loading={caseLoading}
+            disabled={caseAdded}
+            onClick={() => onAddCase(m, symptom)}>{caseAdded ? '已加入知识库' : '加入知识库'}</Button>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 6 }}>
         <Input size="small" placeholder="输入自定义命令后点击执行…" value={custom} onChange={(e) => setCustom(e.target.value)} />

@@ -250,6 +250,8 @@ export interface RagStats { collection: string; total: number; cases?: number; k
 export const listKnowledge = (params?: Record<string, unknown>) => api.get('/ai/knowledge', { params })
 export const addKnowledge = (data: Record<string, unknown>) => api.post('/ai/knowledge', data)
 export const deleteKnowledge = (id: string) => api.delete(`/ai/knowledge/${id}`)
+// 需求：报告/AI 对话一键沉淀为故障案例。body 支持 { report_id } 或 { service, symptom, root_cause, plan }
+export const addKnowledgeCase = (data: Record<string, unknown>) => api.post('/ai/knowledge/case', data)
 export const getRagStats = () => api.get('/ai/knowledge/rag/stats')
 export const reloadRagKnowledge = () => api.post('/ai/knowledge/rag/reload')
 

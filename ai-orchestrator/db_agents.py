@@ -142,6 +142,26 @@ class ReportStore:
         mem = [r for r in self._mem if not service or r.get("service_name") == service]
         return {"items": mem[offset:offset + size], "total": len(mem)}
 
+    def get_by_task_id(self, task_id: str) -> dict | None:
+        """按 task_id 查询最新一条报告（含完整 content），供手动入库/报告详情使用。"""
+        if db.db_available():
+            conn = db.get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM reports WHERE task_id=%s "
+                                "ORDER BY created_at DESC LIMIT 1", (task_id,))
+                    row = cur.fetchone()
+                if row:
+                    return dict(row)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+        for r in reversed(self._mem):
+            if r.get("task_id") == task_id:
+                return dict(r)
+        return None
+
 
 class KnowledgeStore:
     """知识库条目持久化 —— 统一存 ChromaDB（与 RAG 故障案例同一 collection，type=knowledge）。

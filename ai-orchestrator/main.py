@@ -21,7 +21,7 @@ from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
-from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence
+from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check
 from flow_api import router as flow_router
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
@@ -1757,9 +1757,12 @@ def list_audit_logs(action: str = "", operator: str = "", service: str = "",
 
 @app.get("/api/v1/ai/knowledge")
 async def list_knowledge(q: str = "", page: int = 1, size: int = 50, type: str = "knowledge"):
-    """知识库列表。type: all=全部 | case=故障案例 | knowledge=知识文档（默认）。
+    """知识库列表。type: all=全部 | case=故障案例 | knowledge=知识文档（已废弃, 返回空列表）。
     统一从 ChromaDB 读取（单一真源），支持关键词过滤与分页。"""
     from rag import rag
+    if type == "knowledge":
+        # 知识文档类型已废弃：不再创建/展示该类型，保持字段兼容返回空列表
+        return {"items": [], "total": 0}
     if type == "all":
         items = rag.list_all(type_filter="", q=q, limit=size, offset=(page - 1) * size)
         total = len(rag.list_all(type_filter="", q=q, limit=100000))
@@ -1790,17 +1793,15 @@ async def delete_knowledge(kid: str):
 # ── RAG 故障案例库管理（ChromaDB, 供 AI 诊断检索） ──────────────
 @app.get("/api/v1/ai/knowledge/rag/stats")
 async def rag_knowledge_stats():
-    """统一知识库统计：故障案例 + 知识条目 + 总条数（全部存 ChromaDB ops_cases）。
-    P3-5: 分项按 type 字段精确统计（type 缺失的文档归为 case），total 严格 = 两项之和。"""
+    """统一知识库统计：故障案例总数（知识文档已废弃, knowledge 恒为 0）。
+    total/cases 均为全部案例数, 保持字段兼容前端展示。"""
     from rag import rag
     try:
         items = rag.list_all(limit=100000)
         cases = sum(1 for i in items if (i.get("type") or "case") == "case")
-        knowledge = sum(1 for i in items if i.get("type") == "knowledge")
     except Exception:
-        cases = knowledge = 0
-    return {"collection": "ops_cases", "total": cases + knowledge,
-            "cases": cases, "knowledge": knowledge}
+        cases = 0
+    return {"collection": "ops_cases", "total": cases, "cases": cases, "knowledge": 0}
 
 
 @app.post("/api/v1/ai/knowledge/rag/reload")
@@ -1839,6 +1840,104 @@ async def rag_knowledge_import(body: dict = None):
     }
     r = rag.add_case(case)
     return {"ok": True, "case_id": cid, "inserted": r == cid}
+
+
+def _report_section(content: str, headers: tuple) -> str:
+    """从 markdown 报告中抽取第一个命中 headers 的小节正文，取前 500 字符。
+    锚点须为标题行：`#` 开头，或 `**标题**` 纯粗体标题行（不含冒号内容，
+    避免 "**目标**: ..." 这类含关键词的内容行被误判为标题）。
+    遇到下一个 # 标题即停止收集；重复的同类标题行视为同一节跳过。"""
+    if not content:
+        return ""
+    capture = False
+    buf = []
+    for ln in content.splitlines():
+        s = ln.strip()
+        if not capture:
+            # 标题行判定: # 开头; 或 ** 开头且为纯粗体标题(去除 ** 后不含 ':')
+            is_heading = False
+            if s.startswith("#"):
+                is_heading = True
+            elif s.startswith("**") and s.endswith("**") and ":" not in s:
+                is_heading = True
+            if is_heading:
+                title = s.lstrip("#").lstrip("*").strip()
+                if any(h in title for h in headers):
+                    capture = True
+            continue
+        if s.startswith("#"):
+            # 下一个标题: 若与当前小节同类(重复标题)则跳过继续, 否则结束
+            t = s.lstrip("#").strip()
+            if any(h in t for h in headers):
+                continue
+            break
+        buf.append(s)
+    return "\n".join(buf).strip()[:500]
+
+
+@app.post("/api/v1/ai/knowledge/case")
+async def add_knowledge_case(body: dict = None):
+    """手动将 AI 处理完成的故障加入知识库（故障案例）。
+    模式A（推荐）: {report_id} 或 {task_id} → 从 reports 表取报告解析入库；
+    模式B: {service, symptom, root_cause, plan} 直接入库。
+    复用 orchestrator._case_quality_check 质量审查；rag.add_case 内置 0.92 相似度去重。"""
+    b = body or {}
+    task_id = (b.get("report_id") or "").strip() or (b.get("task_id") or "").strip()
+    if task_id:
+        # ── 模式A: 按报告入库（从 MySQL reports 表按 task_id 取报告）──
+        from db_agents import ReportStore
+        report = ReportStore().get_by_task_id(task_id)
+        if not report:
+            raise HTTPException(404, f"报告不存在: {task_id}")
+        content = report.get("content") or ""
+        service = (report.get("service_name") or "").strip() or "unknown"
+        if service == "-":
+            service = "unknown"
+        # 原始用户问题未持久化，best-effort 从会话 checkpoint 取（task_id 即 thread_id）
+        question = ""
+        try:
+            vals = _get_brain().get_session_state(task_id) or {}
+            question = (vals.get("user_message") or "").strip()
+        except Exception:
+            question = ""
+        fields = _extract_report_fields(content, service, "report.md", question=question)
+        summary = fields.get("summary") or ""
+        symptom = (question or summary or content)[:200]
+        root_cause = _report_section(content, ("诊断结论", "根因"))
+        plan = _report_section(content, ("处置方案", "执行计画", "建议"))
+    else:
+        # ── 模式B: 直接传字段 ──
+        service = (b.get("service") or "").strip() or "unknown"
+        symptom = (b.get("symptom") or "").strip()[:200]
+        root_cause = (b.get("root_cause") or "").strip()
+        plan = (b.get("plan") or "").strip()
+    # 公共：质量审查（_case_quality_check 接收 state dict 结构）
+    # 手动入库为结构化字段(根因+方案完整)，分析字段拼入 root_cause+plan，
+    # 满足"有实质内容"检查，同时保留查询意图/过短/占位符过滤。
+    analysis_text = (root_cause or symptom) + "\n" + plan
+    ok, reason = _case_quality_check({
+        "user_message": symptom, "plan": plan,
+        "crewai_result": analysis_text, "report": analysis_text,
+    })
+    if not ok:
+        raise HTTPException(400, f"质量审查未通过: {reason}")
+    import hashlib
+    cid = hashlib.md5(symptom.encode()).hexdigest()[:12]  # 与 knowledge_seed.load_case 一致
+    from rag import rag
+    case = {
+        "case_id": cid,
+        "service": service,
+        "symptom": symptom,
+        "root_cause": root_cause,
+        "plan": plan,
+        "outcome": "success",
+        "report": f"[{service}] 故障案例: {symptom}",
+    }
+    r = rag.add_case(case)
+    resp = {"ok": True, "case_id": r, "inserted": r == cid, "validated": "pending"}
+    if r != cid:
+        resp["message"] = "已存在相似案例"
+    return resp
 
 
 @app.get("/api/v1/ai/rules")
