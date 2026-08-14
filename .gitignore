@@ -72,3 +72,5 @@ observability-frontend/*.yaml
 # 编译产物（Mach-O arm64 本地构建）
 ai-apm-ingest-go/loadgen
 ai-apm-query-go/query-api
+# 测试截图产物（不入库）
+gui-test-screenshots/
