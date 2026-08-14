@@ -87,6 +87,8 @@ class AgentState(TypedDict):
     # A-5: 集群范围（all/default/集群 name）。必须在 TypedDict 中声明，
     # 否则 LangGraph 节点间 state 传递会丢弃未声明键，导致集群过滤失效。
     cluster_id: str
+    # P1-5: 轻量意图分流标记 —— 信息查询类问题（有哪些服务/列表/总结等）跳过深度诊断链路
+    light_query: bool
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -404,11 +406,116 @@ def _collect_alerts() -> str:
     except Exception:
         pass
 
-    return "\n\n".join(out)[:2000]
+    # B2: 工具结果汇总放宽到 8000 字符（服务/告警明细多时不再被截断）。
+    # 现有拼接顺序即"头部优先"，头部为告警事件明细，保留顺序即可。
+    return "\n\n".join(out)[:8000]
 
 def _now():
     import datetime
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# P1-3/P1-5: 信息查询类问题判定与 0~1 风险分（与 main.py 报告中心共用）。
+_INFO_QUERY_MARKERS = (
+    "有哪些", "都有哪些", "列表", "列出", "总结", "概括", "汇总", "说说",
+    "有什么", "是什么", "一览", "清单", "列举", "怎么用", "如何使用", "介绍",
+)
+_FAULT_MARKERS = (
+    "异常", "错误", "失败", "故障", "根因", "排查", "告警", "宕机",
+    "报错", "崩溃", "不可用", "重启", "慢", "延迟", "性能", "报警",
+)
+
+
+def _is_info_query(question: str) -> bool:
+    """信息查询类问题判定：含查询词（有哪些/列表/总结等）且不含故障语义 → True。
+
+    这类问题（如"当前有哪些服务在运行?"）不做异常判定/深度诊断，
+    直接基于采集数据作答（chat 图走 collect→summarize 轻量链路）。
+    """
+    q = (question or "").strip()
+    if not q:
+        return False
+    if any(k in q for k in _FAULT_MARKERS):
+        return False
+    return any(k in q for k in _INFO_QUERY_MARKERS)
+
+
+def _risk_from_evidence(content: str) -> float:
+    """基于诊断结论/报告中的异常证据计算 0~1 风险分（不再硬编码 0.85）。
+
+    证据：活跃告警 critical/严重 数、错误率>5% 服务数、错误率峰值、显式高危关键词。
+    无异常证据返回 0。
+    """
+    import re as _re
+    low = (content or "").lower()
+    score = 0.0
+    # 1) 活跃告警 critical/严重 数（每起 0.15，上限 0.4）
+    criticals = 0
+    for line in (content or "").splitlines():
+        ll = line.lower()
+        if "告警" in ll and ("critical" in ll or "严重" in ll):
+            criticals += 1
+    if criticals:
+        score += min(0.4, 0.15 * criticals)
+    # 2) 错误率 >5% 的服务数（每个 0.15，上限 0.3）+ 错误率峰值（0~30% 线性 0~0.3）
+    rates = []
+    for m in _re.finditer(r"错误率[=：\s]*([\d.]+)\s*%", content or ""):
+        try:
+            v = float(m.group(1))
+            if 0 <= v <= 100:
+                rates.append(v)
+        except ValueError:
+            pass
+    high_err = sum(1 for r in rates if r > 5)
+    if high_err:
+        score += min(0.3, 0.15 * high_err)
+    # 错误率峰值（仅当确实异常 >5% 时计入，峰值 0~30% 线性映射 0~0.3；
+    # 正常低错误率不产生风险，保证"无异常证据=0"）
+    peak = max(rates) if rates else 0.0
+    if peak > 5:
+        score += min(0.3, peak / 100.0)
+    # 3) 显式高危关键词兜底（0.4，而非旧硬编码 0.85）
+    if any(k in low for k in ("中高风险", "高风险", "严重告警", "critical", "宕机", "频繁重启", "crashloop")):
+        score = max(score, 0.4)
+    return round(min(1.0, score), 2)
+
+
+def _has_anomaly_evidence(text: str) -> bool:
+    """是否存在真实异常证据：服务错误率>5% 或活跃告警。
+    用于门控处置建议（suggestion）只在真实异常时生成。"""
+    import re as _re
+    low = (text or "").lower()
+    # 活跃告警（排除"无/采集失败"）
+    if ("活跃告警" in low
+            and "活跃告警事件: 无" not in low
+            and "活跃告警事件: 采集失败" not in low):
+        return True
+    # 服务错误率 > 5%
+    for m in _re.finditer(r"错误率[=：\s]*([\d.]+)\s*%", text or ""):
+        try:
+            if float(m.group(1)) > 5:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def _build_info_answer(state: dict) -> str:
+    """信息查询（如"有哪些服务在运行"）直接基于已采集数据作答。"""
+    msg = state.get("user_message", "")
+    parts = [f"**问题**: {msg}"]
+    svc_data = state.get("services_data", "")
+    infra = state.get("infra_data", "")
+    alerts = state.get("alert_data", "")
+    if svc_data:
+        parts.append(f"### 当前服务\n{svc_data[:1500]}")
+    elif infra:
+        parts.append(f"### 基础设施\n{infra[:1500]}")
+    if alerts:
+        parts.append(f"### 告警态势\n{alerts[:600]}")
+    if len(parts) == 1:
+        parts.append("（未采集到实时数据，请稍后重试）")
+    return "\n\n".join(parts)
 
 
 # 疑似查询意图的句式前缀（这类对话不入库，避免"用户提问"被误存为故障案例）
@@ -418,10 +525,24 @@ _QUERY_INTENT_PREFIXES = (
 )
 
 
+def _cap_symptom(symptom: str) -> str:
+    """标题长度控制：symptom 超长（>500）时截断到 200 并提示，避免超长标题/文档入库。"""
+    s = (symptom or "").strip()
+    if len(s) > 500:
+        print(f"[case_quality] symptom 过长 ({len(s)} 字符), 标题截断到 200")
+        return s[:200]
+    return s
+
+
+def _strip_heading(text: str) -> str:
+    """去掉 markdown 标题行（#/##/### 等），返回剩余正文（用于判断分析是否有实质内容）。"""
+    return "\n".join(l for l in (text or "").splitlines() if not l.lstrip().startswith("#"))
+
+
 def _case_quality_check(state: dict) -> tuple:
-    """入库前质量校验：过滤测试/无效对话/LLM 占位符，防止污染 RAG 案例库。
+    """入库前质量校验：过滤测试/无效对话/LLM 占位符/纯信息查询，防止污染 RAG 案例库。
     返回 (是否通过, 拒绝原因)。"""
-    symptom = (state.get("user_message") or "").strip()
+    symptom = _cap_symptom(state.get("user_message") or "")
     plan = state.get("plan") or ""
     crewai = state.get("crewai_result") or ""
     report = state.get("report") or ""
@@ -433,12 +554,23 @@ def _case_quality_check(state: dict) -> tuple:
     low = symptom.lower()
     if low in ("test", "你好", "hi", "hello", "测试", "help") or low.startswith(_QUERY_INTENT_PREFIXES):
         return False, "疑似查询意图，非故障案例"
+    # 2b. 信息查询/对话类意图：纯查询词（总结/概括/有哪些/列表等）且不含故障语义 → 拒绝入库。
+    #     复用 _is_info_query 判定，拦截"总结一下集群状况"这类测试对话被误存为故障案例
+    if _is_info_query(state.get("user_message") or ""):
+        return False, "信息查询非故障案例"
     # 3. LLM 占位符/失败结果：plan/crewai 含超时占位符时丢弃
     if "LLM 调用超时" in plan or "LLM 调用超时" in crewai or plan.startswith("[LLM"):
         return False, "LLM 结果为超时占位符"
-    # 4. 关键字段缺失：无方案或无根因结论视为不完整
+    # 3b. 占位检测：crewai_result 只有模板标题无实质内容（去掉标题后 <50 字符）则拒绝。
+    #     注意: "确定性分析"/"[mock]" 字样在当前环境是常态, 不作为拒绝依据
+    if len(_strip_heading(crewai).strip()) < 50:
+        return False, "分析结果无实质内容"
+    # 4. 无故障证据 + 无方案：crewai/report 明确"无异常/一切正常/健康"结论且无 plan → 拒绝
     if not plan.strip():
+        if any(k in crewai for k in ("无异常", "一切正常", "健康")) or any(k in report for k in ("无异常", "一切正常", "健康")):
+            return False, "结论为无异常, 非故障案例"
         return False, "plan 为空"
+    # 5. 关键字段缺失：无根因结论视为不完整
     if not crewai.strip():
         return False, "crewai_result 为空"
     if not report.strip():
@@ -562,8 +694,14 @@ async def node_collect(state: AgentState) -> dict:
 
 
 async def node_clean(state: AgentState) -> dict:
-    """Deduplicate and standardize collected data."""
-    return {"messages": [f"[{_now()}] 数据清洗完成"]}
+    """Deduplicate and standardize collected data.
+    P1-5: 顺带做轻量意图分流判定——信息查询类问题置 light_query=True,
+    让 chat 图在 clean 节点直接路由到 summarize, 跳过 RCA/RAG/CrewAI 深度节点。"""
+    light = _is_info_query(state.get("user_message", ""))
+    msgs = [f"[{_now()}] 数据清洗完成"]
+    if light:
+        msgs.append(f"[{_now()}] 信息查询: 跳过深度诊断链路, 直接基于采集数据汇总")
+    return {"light_query": light, "messages": msgs}
 
 
 def _friendly_tool_result(node_name: str, node_data: dict) -> str:
@@ -722,7 +860,7 @@ def _deterministic_diagnosis(state: dict) -> str:
     # 基础设施
     infra = state.get("infra_data", "")
     if infra:
-        lines.append(f"- **基础设施**: {infra[:500]}")
+        lines.append(f"- **基础设施**: {infra[:3000]}")
     # 告警
     alerts = state.get("alert_data", "")
     if alerts:
@@ -868,7 +1006,7 @@ def _deterministic_plan(state: dict) -> dict:
         lines.append("- **动作**: 常规巡检与诊断\n  - `kubectl get pods -n %s -l app=%s`\n  - `kubectl describe pod -l app=%s -n %s`" % (_ns, svc, svc, _ns))
     lines.append("- **风险**: 低（只读诊断 / 受控重启）")
     if analysis:
-        lines.append(f"- **依据**: {analysis[:300]}")
+        lines.append(f"- **依据**: {analysis[:2000]}")
     plan = "\n".join(lines)
     # 提取脚本（把 k8s 相关行收集为可执行命令）
     script = "\n".join(l.strip() for l in plan.splitlines() if l.strip().startswith("kubectl"))
@@ -881,10 +1019,10 @@ async def node_plan(state: AgentState) -> dict:
     if not _llm_key_ready() or not cfg:
         # Issue1: 无 LLM 时用确定性处置方案兜底，任务工作台/AI chat 也能给出可审批的处置建议
         return _deterministic_plan(state)
-    analysis = state.get("crewai_result", "")[:2000]
+    analysis = state.get("crewai_result", "")[:6000]
     prompt = f"基于诊断结果，生成执行计划 + Shell/K8s 命令。只输出可执行的脚本。诊断:\n{analysis}"
     result = await _llm_async(cfg, "你是 K8s 运维工程师。生成可直接执行的 Shell 脚本。", prompt, "运维工程师")
-    plan = result[:2000]
+    plan = result[:6000]
     # Extract script block
     script = ""
     if "```" in plan:
@@ -901,7 +1039,7 @@ async def node_risk(state: AgentState) -> dict:
     cfg = state.get("llm_config")
     if not cfg:
         return {"risk_score": 1, "risk_reason": "无 LLM 配置"}
-    plan = state.get("plan", "")[:1000]
+    plan = state.get("plan", "")[:4000]
     result = await _llm_async(cfg,
         "评估执行计划风险，输出 JSON: {\"score\": 1-5, \"reason\": \"理由\"}",
         f"执行计画:\n{plan}", "风险评估师")
@@ -919,7 +1057,7 @@ async def node_wait_approval(state: AgentState) -> dict:
     if state.get("approved"):
         return {"approved": True, "messages": [f"[{_now()}] 自动审批通过 (非交互模式)"]}
 
-    plan = state.get("plan", "无执行计画")[:500]
+    plan = state.get("plan", "无执行计画")[:2000]
     score = state.get("risk_score", 3)
     reason = state.get("risk_reason", "")
 
@@ -959,8 +1097,8 @@ async def node_execute(state: AgentState) -> dict:
         return {"execute_output": "", "messages": [f"[{_now()}] 检测到写操作，需人工审批后才执行（可在审批面板确认）"]}
     # execute_shell 内部 subprocess 同步阻塞 (timeout=30s)，丢线程池避免阻塞 event loop
     result = await asyncio.to_thread(execute_shell, script, 30)
-    # 审计日志
-    _audit_log(state.get("user_message", "")[:8], "execute", "auto",
+    # 审计日志 (P1-2): task_id 用真实任务ID, 无则 "manual"; operator 用 "system"(非状态值)
+    _audit_log("manual", "execute", "system",
                _infer_target_from_script(script, state.get("service", "")), script,
                "success" if "error" not in result.lower()[:100] else "error",
                {"output_preview": result[:200]})
@@ -1047,7 +1185,7 @@ async def node_report(state: AgentState) -> dict:
     """
     if cfg:
         rep = await _llm_async(cfg, "生成运维执行总结报告，含 before/after 对比和后续建议。", context, "报告生成器")
-        return {"report": rep[:2000]}
+        return {"report": rep[:8000]}
     return {"report": f"执行结果: {verify}"}
 
 
@@ -1062,11 +1200,11 @@ async def node_memorize(state: AgentState) -> dict:
             case = {
                 "case_id": uuid.uuid4().hex[:12],
                 "service": state.get("service", ""),
-                "symptom": state.get("user_message", "")[:500],
-                "root_cause": state.get("crewai_result", "")[:500],
-                "plan": state.get("plan", "")[:500],
+                "symptom": _cap_symptom(state.get("user_message", "")),
+                "root_cause": state.get("crewai_result", "")[:2000],
+                "plan": state.get("plan", "")[:2000],
                 "outcome": "success",
-                "report": state.get("report", "")[:500],
+                "report": state.get("report", "")[:2000],
             }
             # rag.add_case (ChromaDB) 同步阻塞 IO，丢线程池
             await asyncio.to_thread(rag.add_case, case)
@@ -1149,22 +1287,34 @@ async def node_summarize(state: AgentState) -> dict:
     risk = state.get("risk_score", 0)
 
     parts = [f"## 分析报告\n**时间**: {_now()}"]
-    if intent == "inspection":
+    if state.get("light_query"):
+        # P1-5: 信息查询类问题 → 直接基于采集数据作答，不做异常判定
+        parts.append(_build_info_answer(state))
+    elif intent == "inspection":
         parts.append(crewai or "LLM 未配置")
     elif intent == "diagnosis":
-        parts.append(f"**目标**: {svc} | **问题**: {msg}")
-        if holmes: parts.append(f"### Trace 分析\n{holmes[:2000]}")
-        if k8sgpt: parts.append(f"### K8s 诊断\n{k8sgpt[:1000]}")
-        if crewai: parts.append(f"### 诊断结论\n{crewai[:2500]}")
+        # P3-1: 目标为空时输出 '-'，避免 "**目标**:  | **问题**" 的 markdown 残留
+        parts.append(f"**目标**: {svc or '-'} | **问题**: {msg}")
+        if holmes: parts.append(f"### Trace 分析\n{holmes[:3000]}")
+        if k8sgpt: parts.append(f"### K8s 诊断\n{k8sgpt[:2000]}")
+        if crewai: parts.append(f"### 诊断结论\n{crewai[:3000]}")
     else:
         parts.append(crewai or "LLM 未配置")
 
-    if risk > 0: parts.append(f"\n**风险等级**: {'⭐'*risk} ({risk}/5)")
-    if plan: parts.append(f"\n### 执行计画\n{plan[:1000]}")
+    # P1-3/P1-5: 统一 0~1 风险分（由诊断结论中的异常证据计算），不再输出 ⭐(1/5) 文本
+    risk_score01 = _risk_from_evidence(crewai or "") if (crewai or risk) else 0.0
+    if risk_score01 > 0:
+        parts.append(f"\n**风险等级**: {risk_score01:.2f} (0~1)")
+    if plan: parts.append(f"\n### 执行计画\n{plan[:6000]}")
     if verify: parts.append(f"\n### 执行结果\n{verify}")
-    if report: parts.append(f"\n### 执行报告\n{report[:1500]}")
+    if report: parts.append(f"\n### 执行报告\n{report[:8000]}")
 
-    return {"final_response": "\n\n".join(parts), "messages": [f"[{_now()}] 报告生成完成"]}
+    # P3-1: 全文清理——多余空行折叠为 2、去行尾空白、去结尾空行
+    import re as _re
+    text = "\n\n".join(parts)
+    text = _re.sub(r"\n{3,}", "\n\n", text)
+    text = "\n".join(l.rstrip() for l in text.splitlines()).rstrip("\n")
+    return {"final_response": text, "messages": [f"[{_now()}] 报告生成完成"]}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1196,7 +1346,19 @@ def build_graph(checkpointer=None, mode: str = "full"):
 
     builder.set_entry_point("collect")
     builder.add_edge("collect", "clean")
-    builder.add_edge("clean", "rca")
+
+    if mode == "chat":
+        # P1-5: chat 图入口轻量意图分流——信息查询（有哪些/列表/总结等）跳过
+        # RCA/RAG/CrewAI 深度节点，走 collect→clean→summarize 直接基于采集数据作答；
+        # 故障词（异常/错误/失败/根因/告警等）才走完整链路。
+        def route_light(state: AgentState) -> str:
+            return "summarize" if state.get("light_query") else "rca"
+
+        builder.add_conditional_edges("clean", route_light,
+                                      {"summarize": "summarize", "rca": "rca"})
+    else:
+        builder.add_edge("clean", "rca")
+
     builder.add_edge("rca", "rag")
 
     if mode == "chat":
@@ -1401,6 +1563,7 @@ class BrainOrchestrator:
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
+            "light_query": False,
         }
         config = {"configurable": {"thread_id": thread_id}}
         try:
@@ -1433,6 +1596,7 @@ class BrainOrchestrator:
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
             "exec_context": exec_context, "iteration": iteration,
+            "light_query": False,
         }
         config = {"configurable": {"thread_id": thread_id}}
         step_names = {"collect": "数据采集", "clean": "数据清洗", "rca": "根因分析", "rag": "案例匹配",
@@ -1443,6 +1607,8 @@ class BrainOrchestrator:
             yield {"type": "progress", "node": "start", "text": "分析开始", "step": 0, "total": 8}
             step_num = 0
             suggestion = {}
+            evidence = {}  # P1-5b: 采集节点的异常证据（services_data/alert_data/red_metrics）
+            is_light = False  # P1-5b: 信息查询(light_query)时强制不弹处置建议卡
             # 交互式 Chat 使用精简 chat_graph；dual 模式用双层 Agent 图；full 用完整运维图
             if mode == "dual":
                 graph = getattr(self, "dual_graph", self.graph)
@@ -1496,6 +1662,16 @@ class BrainOrchestrator:
                 if node_name == "risk":
                     # P1-3: 捕获风险节点结果，让处置建议卡的 risk_score 反映 LLM 真实评估（1-5），而非恒为 0
                     suggestion.update(node_data)
+                if node_name == "collect":
+                    # P1-5: 采集节点输出即异常证据源（服务错误率/活跃告警），供处置建议门控
+                    for _k in ("services_data", "alert_data", "red_metrics", "infra_data"):
+                        _v = node_data.get(_k)
+                        if _v:
+                            evidence[_k] = _v
+                # P1-5b: 捕获 clean 节点的 light_query 意图判定（信息查询不弹处置建议卡）
+                if node_name == "clean":
+                    if node_data.get("light_query"):
+                        is_light = True
                 if node_name == "summarize":
                     suggestion.update(node_data)
                     resp = node_data.get("final_response", "")
@@ -1503,6 +1679,11 @@ class BrainOrchestrator:
                         for i in range(0, len(resp), 80):
                             yield {"type": "chunk", "text": resp[i:i+80]}
                             await asyncio.sleep(0.01)
+            # P0-1: LLM 未连接时，在汇总/处置建议之前显式发送 notice 事件，
+            # 前端据此展示"确定性分析模式"提示，避免全站静默降级用户无感知。
+            if not _llm_key_ready():
+                yield {"type": "notice", "level": "warning",
+                       "text": "当前 LLM 未连接, 输出为确定性分析模式, 如需真实 AI 推理请在系统设置中配置 API Key"}
             # 从分析结果中提取可执行的 kubectl/curl 命令作为操作建议
             analysis = suggestion.get("crewai_result", "")
             full_resp = suggestion.get("final_response", "")
@@ -1522,16 +1703,14 @@ class BrainOrchestrator:
             # 替换为真实服务名/命名空间，避免"不可执行命令"建议。
             if script:
                 script = _sanitize_script_placeholders(script, service)
-            if script or plan:
-                # P1-3: chat_graph 无 risk 节点，risk_score 恒为 0。此处启发式兜底：
-                # 基于分析文本中的严重告警信号给合理风险分（1-5），避免"告警严重但风险分 0"。
-                risk_score = suggestion.get("risk_score", 0) or 0
-                if not risk_score:
-                    _sig = (full_resp or analysis or "").lower()
-                    if any(k in _sig for k in ("oom", "crashloopbackoff", "imagepullbackoff", "critical", "严重告警", "不可用", "频繁重启")):
-                        risk_score = 4
-                    else:
-                        risk_score = 2
+            # P1-5b: 处置建议只在存在真实异常证据（服务错误率>5% 或活跃告警）时生成，
+            # 信息查询/无异常对话不再弹处置建议卡。
+            ev_text = " ".join(str(v) for v in evidence.values())
+            has_anomaly = _has_anomaly_evidence(ev_text)
+            if (script or plan) and has_anomaly and not is_light:
+                # P1-5c: 统一 0~1 风险分（与报告中心 _risk_from_evidence 一致），
+                # 前端 1-5 星换算由前端做，后端不再输出 ⭐(1/5) 文本。
+                risk_score = _risk_from_evidence(full_resp or analysis or "")
                 # Issue1: 每次分析只 yield 一个 suggestion 事件（内联审批卡），
                 # 不再同时 yield suggestion + approval_pending（会导致前端出现 2 个
                 # 内容一致的"处置建议·待确认"卡片）。task_id=thread_id 由前端回传确认。
@@ -1539,7 +1718,7 @@ class BrainOrchestrator:
                        "text": "已生成处置建议，请确认执行或自定义命令",
                        "task_id": thread_id,
                        "plan": plan,
-                       "script": script[:1000],
+                       "script": script[:4000],
                        "risk_score": risk_score,
                        "risk_reason": suggestion.get("risk_reason", "需要人工确认后执行"),
                        "requires_approval": True,
@@ -1562,8 +1741,9 @@ class BrainOrchestrator:
         # 节点为 async def，必须用 ainvoke 恢复中断的图
         return await self.graph.ainvoke(Command(resume=resume_value), config)
 
-    def execute_suggestion(self, service: str, script: str, user_message: str = "") -> str:
-        """审批通过后执行建议脚本（受 ShellPolicy 安全策略管控）。返回执行结果。"""
+    def execute_suggestion(self, service: str, script: str, user_message: str = "", task_id: str = "") -> str:
+        """审批通过后执行建议脚本（受 ShellPolicy 安全策略管控）。返回执行结果。
+        task_id: 真实任务/会话 ID（用于审计日志，无则用 "manual"）。"""
         if not script:
             return "(无待执行脚本)"
         from shell_policy import ShellPolicy
@@ -1600,8 +1780,8 @@ class BrainOrchestrator:
                     outputs.append(f"$ {line}\n(命令超时)")
                 except Exception as e:
                     outputs.append(f"$ {line}\n(执行失败: {e})")
-            # 审计日志
-            _audit_log(user_message[:8] or "chat", "execute", "approved",
+            # 审计日志 (P1-2): task_id=真实会话/任务ID(无则 "manual"), operator="system"(非状态值)
+            _audit_log(task_id or "manual", "execute", "system",
                        _infer_target_from_script(script, service), script[:500],
                        "success" if not any("失败" in o or "超时" in o for o in outputs) else "error",
                        {"output_preview": "\n".join(outputs)[:200]})

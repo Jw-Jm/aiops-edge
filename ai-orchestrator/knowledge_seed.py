@@ -34,6 +34,9 @@ def seed_from_json(json_path: str, persist_dir: str | None = None) -> dict:
             "case_id": cid,
             "service": c.get("service", ""),
             "symptom": symptom,
+            # 列表接口展示用：title=symptom 前 80 字符，content=现象/根因/方案 结构化文本
+            "title": symptom[:80],
+            "content": f"现象: {symptom}\n根因: {c.get('root_cause', '')}\n方案: {c.get('plan', '')}",
             "root_cause": c.get("root_cause", ""),
             "plan": c.get("plan", ""),
             "outcome": c.get("outcome", "success"),

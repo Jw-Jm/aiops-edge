@@ -79,23 +79,45 @@ class ReportStore:
         self._mem: list[dict] = []
 
     def save(self, data: dict):
-        if db.db_available():
-            conn = db.get_conn()
+        # P0-1c: 写入 llm_mode（报告生成时的 LLM 模式）。旧表无该列时自动降级为不含该列写入。
+        conn = db.get_conn()
+        if conn is not None:
             try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO reports (task_id, service_name, report_type, verdict, "
-                        "risk_score, summary, content, file_key) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                        (data.get("task_id", ""), data.get("service_name", ""),
-                         data.get("report_type", ""), data.get("verdict", ""),
-                         float(data.get("risk_score", 0) or 0), data.get("summary", ""),
-                         data.get("content", ""), data.get("file_key")),
-                    )
+                    cur.execute("SHOW COLUMNS FROM reports LIKE 'llm_mode'")
+                    has_mode = cur.fetchone() is not None
+                if has_mode:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO reports (task_id, service_name, report_type, verdict, "
+                            "risk_score, summary, content, file_key, llm_mode) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (data.get("task_id", ""), data.get("service_name", ""),
+                             data.get("report_type", ""), data.get("verdict", ""),
+                             float(data.get("risk_score", 0) or 0), data.get("summary", ""),
+                             data.get("content", ""), data.get("file_key"),
+                             data.get("llm_mode", "llm")),
+                        )
+                else:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO reports (task_id, service_name, report_type, verdict, "
+                            "risk_score, summary, content, file_key) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (data.get("task_id", ""), data.get("service_name", ""),
+                             data.get("report_type", ""), data.get("verdict", ""),
+                             float(data.get("risk_score", 0) or 0), data.get("summary", ""),
+                             data.get("content", ""), data.get("file_key")),
+                        )
                 conn.commit()
             except Exception:
-                pass
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         self._mem.append(dict(data))
 
     def list(self, service=None, page=1, size=50):

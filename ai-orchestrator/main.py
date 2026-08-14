@@ -21,7 +21,7 @@ from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
-from orchestrator import describe_graph, _audit_log
+from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence
 from flow_api import router as flow_router
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
@@ -312,7 +312,7 @@ async def ai_chat(req: ChatRequest, request: Request):
                             if not svc:
                                 # 优先从消息里的"分析/诊断/巡检 XXX"提取；再退化从报告首行"**目标**"提取
                                 svc = _extract_service_from_text(req.message or "") or _extract_service_from_text(done_text)
-                            _upload_report(thread_id, done_text, service=svc)
+                            _upload_report(thread_id, done_text, service=svc, question=req.message or "")
                     except Exception as _e:
                         print(f"[chat] 流式报告持久化失败: {_e}")
                     yield _format_sse({
@@ -345,10 +345,16 @@ async def ai_chat(req: ChatRequest, request: Request):
         # 巡检/诊断报告落盘：持久化到 ClickHouse（历史趋势）并在 MinIO 留档
         try:
             if result and len(result.strip()) > 100:
-                _upload_report(thread_id, result, service=req.service or "")
+                _upload_report(thread_id, result, service=req.service or "", question=req.message or "")
         except Exception as _e:
             print(f"[chat] 报告持久化失败: {_e}")
-        return PlainTextResponse(result[:10000], media_type="text/markdown; charset=utf-8")
+        # P0-1: 非流式响应显式返回 llm_mode（deterministic/llm），不加在报告内容开头
+        from orchestrator import _llm_key_ready
+        # B1: 非流式响应放宽到 60000 字符，完整保留长巡检/诊断报告（原 10000 会截断超长报告）
+        return JSONResponse({
+            "report": result[:60000],
+            "llm_mode": "llm" if _llm_key_ready() else "deterministic",
+        })
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -525,14 +531,14 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
         return {"thread_id": req.thread_id, "approved": False, "exec_result": "已驳回，未执行"}
     try:
         exec_result = _get_brain().execute_suggestion(
-            req.service or "", script, req.context or "")
+            req.service or "", script, req.context or "", task_id=req.thread_id or "manual")
     except Exception as e:
         return {"thread_id": req.thread_id, "approved": True,
                 "exec_result": f"执行失败: {e}", "error": True}
-    # 审计
+    # 审计 (P1-2): task_id=真实会话ID(无则 "manual"), operator=当前用户/角色, target=服务名
     try:
-        _audit_log(req.thread_id or "suggestion", "approve",
-                   request.headers.get("X-Internal-Approver", "admin"),
+        _audit_log(req.thread_id or "manual", "approve",
+                   _audit_operator(request),
                    req.service or "", script[:300], "approved",
                    {"source": "ai_chat"})
     except Exception:
@@ -804,15 +810,15 @@ async def create_task(req: TaskCreateRequest, request: Request):
             # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动
             final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", req.service, req.context, tid))
             _task_store[tid]["diagnosis"] = final_state.get("final_response", "")[:5000]
-            _task_store[tid]["plan"] = final_state.get("plan", "")[:2000]
-            _task_store[tid]["script"] = final_state.get("script", "")[:1000]
+            _task_store[tid]["plan"] = final_state.get("plan", "")[:6000]
+            _task_store[tid]["script"] = final_state.get("script", "")[:4000]
             _task_store[tid]["risk_score"] = final_state.get("risk_score", 0)
-            _task_store[tid]["risk_reason"] = final_state.get("risk_reason", "")[:500]
-            _task_store[tid]["report"] = final_state.get("report", "")[:2000]
+            _task_store[tid]["risk_reason"] = final_state.get("risk_reason", "")[:1000]
+            _task_store[tid]["report"] = final_state.get("report", "")[:8000]
             _task_store[tid]["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
             _task_store[tid]["status"] = "done"
             if final_state.get("final_response"):
-                try: _upload_report(tid, final_state["final_response"], service=req.service or "")
+                try: _upload_report(tid, final_state["final_response"], service=req.service or "", question=req.context or "")
                 except Exception: pass
         except Exception as e:
             _task_store[tid]["status"] = "failed"
@@ -894,14 +900,14 @@ def _run_diagnosis(tid: str, svc: str, ctx: str):
             final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", svc, ctx, tid))
             _task_store[tid]["status"] = "done"
             _task_store[tid]["diagnosis"] = final_state.get("final_response", "")[:5000]
-            _task_store[tid]["plan"] = final_state.get("plan", "")[:2000]
-            _task_store[tid]["script"] = final_state.get("script", "")[:1000]
+            _task_store[tid]["plan"] = final_state.get("plan", "")[:6000]
+            _task_store[tid]["script"] = final_state.get("script", "")[:4000]
             _task_store[tid]["risk_score"] = final_state.get("risk_score", 0)
-            _task_store[tid]["risk_reason"] = final_state.get("risk_reason", "")[:500]
-            _task_store[tid]["report"] = final_state.get("report", "")[:2000]
+            _task_store[tid]["risk_reason"] = final_state.get("risk_reason", "")[:1000]
+            _task_store[tid]["report"] = final_state.get("report", "")[:8000]
             _task_store[tid]["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
             if final_state.get("final_response"):
-                try: _upload_report(tid, final_state["final_response"], service=svc)
+                try: _upload_report(tid, final_state["final_response"], service=svc, question=ctx)
                 except Exception: pass
         except Exception as e:
             _task_store[tid]["status"] = "failed"
@@ -925,6 +931,20 @@ async def run_task(tid: str):
     task["status"] = "diagnosing"
     _run_diagnosis(tid, task.get("service", "") or "", task.get("context", "") or "")
     return {"task_id": tid, "status": "diagnosing"}
+
+
+def _audit_operator(request: Request) -> str:
+    """审计日志 operator：优先 X-Internal-Role，其次 X-Internal-User / X-Internal-Approver
+    用户名，最后默认 "system"。
+    X-Internal-Approver 常为 "1"/"0" 标志位（见 _require_approver），不作为用户名写入。"""
+    role = (request.headers.get("X-Internal-Role") or "").strip()
+    if role:
+        return role
+    for h in ("X-Internal-User", "X-Internal-Approver"):
+        v = (request.headers.get(h) or "").strip()
+        if v and v not in ("0", "1"):
+            return v
+    return "system"
 
 
 def _require_approver(request: Request):
@@ -954,7 +974,7 @@ def approve_task(tid: str, request: Request):
     task = _task_store[tid]
     task["status"] = "approved"
     try:
-        _audit_log(tid, "approve", request.headers.get("X-Internal-Approver", "admin"),
+        _audit_log(tid, "approve", _audit_operator(request),
                    _task_service(task), task.get("script", "")[:300], "approved",
                    {"source": task.get("source", "")})
     except Exception:
@@ -967,7 +987,7 @@ def approve_task(tid: str, request: Request):
             if not ok:
                 raise Exception(f"恢复动作不在白名单内: {reason}")
             exec_result = _get_brain().execute_suggestion(
-                task.get("service", ""), script, task.get("diagnosis", ""))
+                task.get("service", ""), script, task.get("diagnosis", ""), task_id=tid)
             task["status"] = "done"
             task["report"] = f"恢复方案已审批并执行。\n操作: {script}\n结果:\n{exec_result}"
             task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -975,12 +995,13 @@ def approve_task(tid: str, request: Request):
         # AI Chat 建议任务: 通过后执行 script (若有)
         if task.get("source") == "ai_chat":
             exec_result = _get_brain().execute_suggestion(
-                task.get("service", ""), task.get("script", ""), task.get("context", ""))
+                task.get("service", ""), task.get("script", ""), task.get("context", ""), task_id=tid)
             task["status"] = "done"
             task["report"] = f"已人工确认并执行建议。\n操作结果:\n{exec_result}"
             task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
             try:
-                _upload_report(tid, task["report"], service=task.get("service", ""))
+                _upload_report(tid, task["report"], service=task.get("service", ""),
+                               question=task.get("context", "") or task.get("diagnosis", ""))
             except Exception: pass
         else:
             # LangGraph 任务: Resume with approval
@@ -991,7 +1012,8 @@ def approve_task(tid: str, request: Request):
             task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
             if final.get("final_response"):
                 try:
-                    _upload_report(tid, final["final_response"], service=task.get("service", ""))
+                    _upload_report(tid, final["final_response"], service=task.get("service", ""),
+                                   question=task.get("context", "") or task.get("diagnosis", ""))
                 except Exception: pass
     except Exception as e:
         task["status"] = "failed"
@@ -1010,7 +1032,7 @@ def reject_task(tid: str, request: Request):
     task["status"] = "rejected"
     task["done_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        _audit_log(tid, "reject", request.headers.get("X-Internal-Approver", "admin"),
+        _audit_log(tid, "reject", _audit_operator(request),
                    _task_service(task), task.get("script", "")[:300], "rejected",
                    {"source": task.get("source", "")})
     except Exception:
@@ -1491,8 +1513,9 @@ def _task_service(task: dict) -> str:
     return _extract_service_from_text(msg)
 
 
-def _upload_report(task_id: str, content: str, filename: str = "report.md", service: str = ""):
-    """Upload task report to MinIO, return object name. Also persist metadata to MySQL."""
+def _upload_report(task_id: str, content: str, filename: str = "report.md", service: str = "", question: str = ""):
+    """Upload task report to MinIO, return object name. Also persist metadata to MySQL.
+    question: 原始用户问题（用于报告中心的意图判定 verdict/risk_score）。"""
     import io
     data = content.encode("utf-8")
     obj_name = f"{task_id}/{filename}"
@@ -1505,7 +1528,7 @@ def _upload_report(task_id: str, content: str, filename: str = "report.md", serv
         print(f"[reports] MinIO 未配置，跳过对象存储上传（仅持久化 MySQL 元数据）: {obj_name}")
     # 同步持久化元数据到 MySQL reports（文件本体在 MinIO）
     try:
-        _persist_inspection_report(task_id, service or "", content, filename)
+        _persist_inspection_report(task_id, service or "", content, filename, question)
     except Exception as e:
         print(f"[reports] MySQL 持久化失败: {e}")
     return obj_name
@@ -1546,40 +1569,43 @@ def _ch_query_json(sql: str) -> list:
     return rows
 
 
-def _extract_report_fields(content: str, service: str, filename: str) -> dict:
-    """从自由文本报告中启发式抽取结构化字段（verdict / risk_score / summary / report_type）。"""
-    low = content.lower()
-    # 健康判定：兼容中英文关键词，未命中时保持 unknown（前端统一兜底展示为 '-'）
-    verdict = "unknown"
-    if any(k in low for k in [
-        "异常", "高危", "严重", "中高风险", "高风险", "异常告警",
-        "critical", "error", "failed", "unhealthy", "degraded",
-    ]):
-        verdict = "异常"
-    elif any(k in low for k in [
-        "关注", "中风险", "注意", "潜在风险",
-        "warning", "warn", "attention", "concerning", "caution",
-    ]):
-        verdict = "关注"
-    elif any(k in low for k in [
-        "健康", "正常", "良好", "无异常", "稳定",
-        "ok", "healthy", "normal", "green", "all good", "no issue",
-    ]):
-        verdict = "健康"
+def _extract_report_fields(content: str, service: str, filename: str, question: str = "") -> dict:
+    """从自由文本报告中启发式抽取结构化字段（verdict / risk_score / summary / report_type）。
 
-    # 风险分 0~1
-    risk = 0.3
-    if verdict == "异常":
-        risk = 0.8
-    elif verdict == "关注":
-        risk = 0.5
-    elif verdict == "健康":
-        risk = 0.1
-    # 提取显式风险词增强
-    if any(k in low for k in ["中高风险", "高风险", "严重", "critical"]):
-        risk = max(risk, 0.85)
-    elif any(k in low for k in ["中风险"]):
-        risk = max(risk, 0.6)
+    P1-3: 信息查询类问题（如"当前有哪些服务在运行?"）不做异常判定 → verdict="信息", risk=0；
+    故障诊断类才按异常证据计算 0~1 风险分（不再硬编码 0.85）。
+    """
+    low = content.lower()
+
+    # 信息查询意图判断：优先于内容关键词（"有哪些服务/列表/总结" 且无故障语义）
+    if _is_info_query(question):
+        verdict = "信息"
+        risk = 0.0
+    else:
+        # 健康判定：兼容中英文关键词，未命中时保持 unknown（前端统一兜底展示为 '-'）
+        # 先剥离否定语境（"无异常/未发现异常" 含 "异常" 子串，不能误判为 异常）
+        low_neg_free = (low.replace("无异常", "").replace("未发现异常", "")
+                        .replace("没有异常", "").replace("未发现异常", ""))
+        verdict = "unknown"
+        if any(k in low_neg_free for k in [
+            "异常", "高危", "严重", "中高风险", "高风险", "异常告警",
+            "critical", "error", "failed", "unhealthy", "degraded",
+        ]):
+            verdict = "异常"
+        elif any(k in low for k in [
+            "关注", "中风险", "注意", "潜在风险",
+            "warning", "warn", "attention", "concerning", "caution",
+        ]):
+            verdict = "关注"
+        elif any(k in low for k in [
+            "健康", "正常", "良好", "无异常", "稳定",
+            "ok", "healthy", "normal", "green", "all good", "no issue",
+        ]):
+            verdict = "健康"
+
+        # P1-3b: 风险分 0~1 —— 基于诊断结论中的异常证据（活跃告警 critical 数、
+        # 错误率>5% 服务数、错误率峰值）计算；无异常证据 = 0，不再硬编码 0.85。
+        risk = _risk_from_evidence(content)
 
     # 报告类型
     rtype = "inspection" if ("巡检" in content or "inspection" in low or "检查" in content) else "report"
@@ -1605,15 +1631,17 @@ def _extract_report_fields(content: str, service: str, filename: str) -> dict:
     return {"verdict": verdict, "risk_score": risk, "report_type": rtype, "summary": summary}
 
 
-def _persist_inspection_report(task_id: str, service: str, content: str, filename: str = "report.md"):
-    """将报告写入 MySQL reports 表（ReportStore）。"""
+def _persist_inspection_report(task_id: str, service: str, content: str, filename: str = "report.md", question: str = ""):
+    """将报告写入 MySQL reports 表（ReportStore）。question 用于报告中心意图判定。"""
     from db_agents import ReportStore
-    fields = _extract_report_fields(content, service, filename)
+    fields = _extract_report_fields(content, service, filename, question)
+    from orchestrator import _llm_key_ready
     ReportStore().save({
         "task_id": task_id, "service_name": service or "-",
         "report_type": fields["report_type"], "verdict": fields["verdict"],
         "risk_score": fields["risk_score"], "summary": fields["summary"],
         "content": content,
+        "llm_mode": "llm" if _llm_key_ready() else "deterministic",
     })
     return task_id
 
@@ -1646,6 +1674,7 @@ async def list_inspection_reports(service: str = "", limit: int = 50, offset: in
             "report_type": r.get("report_type", ""), "verdict": r.get("verdict", ""),
             "risk_score": float(r.get("risk_score") or 0), "summary": r.get("summary", ""),
             "created_at": r.get("created_at", ""),
+            "llm_mode": r.get("llm_mode") or "llm",  # P0-1c: 报告生成时记录的 LLM 模式
         })
     return {"reports": reports, "count": len(reports)}
 
@@ -1751,7 +1780,8 @@ async def add_knowledge(body: dict = None):
 
 @app.delete("/api/v1/ai/knowledge/{kid}")
 async def delete_knowledge(kid: str):
-    """删除知识条目（ChromaDB 统一存储，id 为 kn- 前缀字符串）。"""
+    """删除知识库条目（ChromaDB 统一存储，case 与 knowledge 类型均可按 id 删除，
+    id 形如 kn-xxxx / case_id 的 md5/hex 字符串）。"""
     from db_agents import KnowledgeStore
     ok = KnowledgeStore().delete(kid)
     return {"ok": ok}
@@ -1760,11 +1790,12 @@ async def delete_knowledge(kid: str):
 # ── RAG 故障案例库管理（ChromaDB, 供 AI 诊断检索） ──────────────
 @app.get("/api/v1/ai/knowledge/rag/stats")
 async def rag_knowledge_stats():
-    """统一知识库统计：故障案例 + 知识条目 + 总条数（全部存 ChromaDB ops_cases）。"""
+    """统一知识库统计：故障案例 + 知识条目 + 总条数（全部存 ChromaDB ops_cases）。
+    P3-5: 分项按 type 字段精确统计（type 缺失的文档归为 case），total 严格 = 两项之和。"""
     from rag import rag
     try:
         items = rag.list_all(limit=100000)
-        cases = sum(1 for i in items if i.get("type", "case") == "case")
+        cases = sum(1 for i in items if (i.get("type") or "case") == "case")
         knowledge = sum(1 for i in items if i.get("type") == "knowledge")
     except Exception:
         cases = knowledge = 0
@@ -1783,11 +1814,17 @@ async def rag_knowledge_reload():
 
 @app.post("/api/v1/ai/knowledge/rag/import")
 async def rag_knowledge_import(body: dict = None):
-    """单条导入 RAG 案例 (供运行时动态新增，写入 ChromaDB 并落盘到持久目录)。"""
+    """单条导入 RAG 案例 (供运行时动态新增，写入 ChromaDB 并落盘到持久目录)。
+    入库前校验：symptom 长度≥8 且非纯信息查询意图（复用 orchestrator 质量判定），
+    防止"总结一下集群状况"这类对话文本被误存为故障案例。"""
     b = body or {}
-    symptom, service = b.get("symptom", ""), b.get("service", "kubernetes")
-    if not symptom:
-        raise HTTPException(400, "symptom is required")
+    symptom = (b.get("symptom", "") or "").strip()
+    if len(symptom) < 8:
+        raise HTTPException(400, "symptom 过短 (至少 8 字符)")
+    from orchestrator import _is_info_query
+    if _is_info_query(symptom):
+        raise HTTPException(400, "疑似信息查询/对话意图, 非故障案例, 拒绝入库")
+    service = b.get("service", "kubernetes")
     import hashlib
     cid = hashlib.md5(symptom.encode()).hexdigest()[:12]
     from rag import rag
@@ -1866,28 +1903,47 @@ _NL2SQL_SYSTEM = (
 )
 
 
+def _extract_time_window(question: str) -> tuple:
+    """从问题中提取时间窗口："近 N 分钟/小时/天"（支持中文数字与阿拉伯数字）。
+    如 "近1小时"→(1, "HOUR")、"近30分钟"→(30, "MINUTE")、"24小时"→(24, "HOUR")、"近1天"→(1, "DAY")。
+    未识别默认 (24, "HOUR")。unit ∈ {"MINUTE","HOUR","DAY"}。"""
+    _cn = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    _units = {"分钟": "MINUTE", "分": "MINUTE", "小时": "HOUR", "钟头": "HOUR", "天": "DAY", "日": "DAY"}
+    q = (question or "").strip()
+    m = re.search(r"(?:近|最近|过去|前)?\s*([0-9]+|[一二两三四五六七八九])\s*(分钟|分|小时|钟头|天|日)", q)
+    if m:
+        v = m.group(1)
+        value = int(v) if v.isdigit() else _cn.get(v, 24)
+        if value <= 0:
+            value = 1
+        return value, _units[m.group(2)]
+    return 24, "HOUR"
+
+
 def _fallback_nl2sql(question: str) -> str:
     """在 LLM 不可用 / mock 输出非 SQL 时，根据问题关键词生成一条白名单内、确定性的合法 SQL。
     仅支持白名单表，始终 SELECT + 加 LIMIT 护栏，确保通过 validate_sql。
-    """
+    P1-1: 时间窗口从问题中解析（近 N 分钟/小时/天），不再恒为 INTERVAL 24 HOUR。"""
     q = question.lower()
+    value, unit = _extract_time_window(question)
+    iv = f"INTERVAL {value} {unit}"
     if "错误" in q or "error" in q:
         if "日志" in q or "log" in q:
-            return "SELECT service_name, count() AS errors FROM observability.log_records WHERE severity = 'error' AND timestamp >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY errors DESC LIMIT 100"
-        return ("SELECT service_name, countIf(is_error = 1) AS errors, count() AS calls "
-                "FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY errors DESC LIMIT 100")
+            return f"SELECT service_name, count() AS errors FROM observability.log_records WHERE severity = 'error' AND timestamp >= now() - {iv} GROUP BY service_name ORDER BY errors DESC LIMIT 100"
+        return (f"SELECT service_name, countIf(is_error = 1) AS errors, count() AS calls "
+                f"FROM observability.trace_spans WHERE start_time >= now() - {iv} GROUP BY service_name ORDER BY errors DESC LIMIT 100")
     if "日志" in q or "log" in q:
-        return "SELECT service_name, count() AS logs FROM observability.log_records WHERE timestamp >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY logs DESC LIMIT 100"
+        return f"SELECT service_name, count() AS logs FROM observability.log_records WHERE timestamp >= now() - {iv} GROUP BY service_name ORDER BY logs DESC LIMIT 100"
     if "拓扑" in q or "topology" in q or "调用关系" in q:
-        return ("SELECT source_service, destination_service, calls, error_rate "
-                "FROM observability.service_topology WHERE time_bucket >= now() - INTERVAL 24 HOUR ORDER BY calls DESC LIMIT 100")
+        return (f"SELECT source_service, destination_service, calls, error_rate "
+                f"FROM observability.service_topology WHERE time_bucket >= now() - {iv} ORDER BY calls DESC LIMIT 100")
     if "延迟" in q or "latency" in q or "响应" in q:
-        return ("SELECT service_name, quantile(0.95)(duration_ns)/1000000 AS p95_ms, avg(duration_ns)/1000000 AS avg_ms "
-                "FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 24 HOUR GROUP BY service_name ORDER BY p95_ms DESC LIMIT 100")
+        return (f"SELECT service_name, quantile(0.95)(duration_ns)/1000000 AS p95_ms, avg(duration_ns)/1000000 AS avg_ms "
+                f"FROM observability.trace_spans WHERE start_time >= now() - {iv} GROUP BY service_name ORDER BY p95_ms DESC LIMIT 100")
     # 默认：近 24h 各服务调用量/错误率
-    return ("SELECT service_name, count() AS calls, countIf(is_error = 1) AS errors "
-            "FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 24 HOUR "
-            "GROUP BY service_name ORDER BY calls DESC LIMIT 100")
+    return (f"SELECT service_name, count() AS calls, countIf(is_error = 1) AS errors "
+            f"FROM observability.trace_spans WHERE start_time >= now() - {iv} "
+            f"GROUP BY service_name ORDER BY calls DESC LIMIT 100")
 
 
 @app.post("/api/v1/ai/nl2sql/translate")
@@ -1904,16 +1960,25 @@ async def nl2sql_translate(body: dict = None):
     except Exception:
         sql_raw = ""
     sql_raw = extract_sql_from_markdown(sql_raw or "")
+    used_fallback = False
     if not validate_sql(sql_raw):
         # LLM 不可用 / mock 输出非 SQL / 校验不过：回退到确定性 SQL，保证功能可用
         sql_raw = _fallback_nl2sql(question)
+        used_fallback = True
         if not validate_sql(sql_raw):
             return {"error": "生成的 SQL 未通过安全校验，请重试或简化查询",
                     "sql": sql_raw, "id": None, "pending": False}
     sql = normalize_sql(sql_raw)
-    item = new_item(sql, question)
+    # P1-1: fallback 时把解析出的时间窗口写入 explanation（如 "近1小时错误率最高的服务 (时间窗口: 1小时)"）
+    if used_fallback:
+        value, unit = _extract_time_window(question)
+        label = {"MINUTE": "分钟", "HOUR": "小时", "DAY": "天"}.get(unit, unit)
+        explanation = f"{question} (时间窗口: {value}{label})"
+    else:
+        explanation = question
+    item = new_item(sql, explanation)
     sid = _nl2sql_store.save(item)
-    return {"id": sid, "sql": sql, "explanation": question, "pending": True}
+    return {"id": sid, "sql": sql, "explanation": explanation, "pending": True}
 
 
 @app.post("/api/v1/ai/nl2sql/{sid}/execute")
@@ -1931,7 +1996,7 @@ def nl2sql_execute(sid: str):
         return {"error": str(e), "columns": [], "rows": [], "count": 0}
     columns = list(rows[0].keys()) if rows else []
     try:
-        _audit_log(item.get("id", ""), "nl2sql", "user", "", item["sql"],
+        _audit_log(item.get("id", "") or "manual", "nl2sql", "system", "", item["sql"],
                    "ok" if rows is not None else "fail", {"rows": len(rows)})
     except Exception:
         pass

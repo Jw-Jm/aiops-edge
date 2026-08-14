@@ -59,6 +59,28 @@ def vm_status(vm_name: str):
         return f"查询失败: {e}"
 
 
+def get_vms():
+    """只读列出全部 KubeVirt 虚拟机（kubectl get vmi -A），含所在节点/状态。
+    query_infrastructure(get_infrastructure) 只覆盖 Pod/Node 概览、不含 VMI，
+    故提供本工具作为 VM 视图的确定性兜底。"""
+    try:
+        r = subprocess.run(
+            ["kubectl", "get", "vmi", "-A", "-o", "wide"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout[:2000]
+        if r.stderr:
+            return f"查询 VMI 失败: {r.stderr[:300]}"
+        return "未发现 KubeVirt 虚拟机 (VMI)"
+    except FileNotFoundError:
+        return "kubectl 未安装"
+    except subprocess.TimeoutExpired:
+        return "查询 VMI 超时"
+    except Exception as e:
+        return f"查询 VMI 失败: {e}"
+
+
 def vm_operate(action: str, vm_name: str):
     """执行虚拟机操作（需人工审批），action: restart/start/stop/migrate"""
     import shlex
@@ -97,6 +119,11 @@ def register_vm_skill():
                               description="查询单个 KubeVirt 虚拟机详细状态",
                               category="vm",
                               params={"vm_name": {"type": "string", "required": True, "default": "", "desc": "虚拟机名"}})(vm_status)
+    if not ToolRegistry.get("get_vms"):
+        ToolRegistry.register(name="get_vms",
+                              description="只读列出全部 KubeVirt 虚拟机（VMI）及其状态/所在节点（kubectl get vmi -A）",
+                              category="vm",
+                              params={})(get_vms)
     if not ToolRegistry.get("vm_operate"):
         ToolRegistry.register(name="vm_operate",
                               description="对虚拟机执行运维操作 (restart/start/stop/migrate)，需人工审批",
@@ -107,11 +134,11 @@ def register_vm_skill():
     SkillRegistry.register(SkillDef(
         name="skill.vm_ops",
         title="虚拟机运维",
-        description="KubeVirt 虚拟机管理：查询 VM 列表与状态，执行受限的运维操作（重启/启动/停止/迁移，需人工审批）",
-        intent_keywords=["虚拟机", "vm", "kubevirt", "虚机", "virtctl", "重启虚拟机", "迁移虚拟机"],
-        tools=["vm_list", "vm_status", "vm_operate"],
+        description="KubeVirt 虚拟机管理：查询 VM/VMI 列表与状态（含所在节点），执行受限的运维操作（重启/启动/停止/迁移，需人工审批）",
+        intent_keywords=["虚拟机", "vm", "vmi", "kubevirt", "虚机", "virtctl", "迁移", "migrate", "重启虚拟机", "迁移虚拟机"],
+        tools=["vm_list", "vm_status", "get_vms", "vm_operate"],
         system_prompt=(
-            "你擅长 KubeVirt 虚拟机运维。查询 VM 状态并给出管理建议；执行 restart/start/stop/migrate 等"
+            "你擅长 KubeVirt 虚拟机运维。查询 VM/VMI 状态并给出管理建议；执行 restart/start/stop/migrate 等"
             "操作会生成待审批任务，需人工确认后才真正执行。"
         ),
         trigger_actions=["restart", "start", "stop", "migrate"],

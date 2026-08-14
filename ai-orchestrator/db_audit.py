@@ -6,10 +6,23 @@
 """
 import json
 import os
+import re
 import time
 import pymysql
 
 _CFG = None
+
+# P1-2: operator 字段兜底清洗 —— 只允许 [a-zA-Z0-9_@.-]，
+# 防止把状态值（approved/user/1）或 markdown 标题误写入审计日志。
+_OPERATOR_CLEAN_RE = re.compile(r"[^a-zA-Z0-9_@.\-]")
+
+
+def _clean_operator(operator: str) -> str:
+    """清洗 operator：剔除非法字符并截断到 64 字符（对齐 DB 列宽）。"""
+    if operator is None:
+        return "system"
+    s = _OPERATOR_CLEAN_RE.sub("", str(operator)).strip()
+    return (s or "system")[:64]
 
 
 def _mysql_cfg():
@@ -32,6 +45,8 @@ class AuditStore:
 
     def log(self, action: str, operator: str, target: str, command: str,
             result: str, detail: dict = None, task_id: str = ""):
+        # P1-2: 写入前兜底清洗 operator（剔除状态值/标记/非法字符），并截断防列宽溢出
+        operator = _clean_operator(operator)
         entry = {
             "task_id": task_id, "action": action, "operator": operator,
             "target_service": target, "command": command, "result": result,

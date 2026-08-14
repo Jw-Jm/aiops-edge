@@ -145,14 +145,26 @@ class RAGStore:
             return False
 
     def add_case(self, case: dict) -> str:
-        """Add a case. case must have: case_id, symptom, root_cause, plan, outcome."""
+        """Add a case. case must have: case_id, symptom, root_cause, plan, outcome.
+        case 类型: 文档存 "现象/根因/方案" 拼接文本提升检索质量, 元数据含 title 供列表展示;
+        knowledge 类型: 文档=标题+内容(现状保持)。dedup 均用 symptom 语义判定。"""
         if not self._ensure_init():
             return case.get("case_id", "")
         try:
-            # 去重检查：相似度 > 0.92 的不再添加
-            existing = self.dedup_check(case.get("symptom", ""), threshold=0.92)
+            symptom = case.get("symptom", "")
+            # 去重检查：相似度 > 0.92 的不再添加（仍按 symptom 语义判定）
+            existing = self.dedup_check(symptom, threshold=0.92)
             if existing:
                 return existing  # 返回已有 case_id
+            typ = case.get("type", "case")
+            if typ == "knowledge":
+                # 知识条目：文档=标题+内容（现状），title 用显式字段/标题行
+                document = symptom
+                title = case.get("title") or symptom.split("\n", 1)[0][:80]
+            else:
+                # 故障案例：文档拼接完整 现象/根因/方案，提升向量检索质量
+                document = f"现象: {symptom}\n根因: {case.get('root_cause', '')}\n方案: {case.get('plan', '')}"
+                title = case.get("title") or symptom[:80]
             meta = {
                 "service": case.get("service", ""),
                 "root_cause": case.get("root_cause", ""),
@@ -163,15 +175,16 @@ class RAGStore:
                 "weight": "1.0",
                 "created_at": str(time.time()),
                 "decay_factor": "1.0",
-                "type": case.get("type", "case"),  # case=故障案例 | knowledge=知识条目
+                "type": typ,  # case=故障案例 | knowledge=知识条目
+                "title": title,  # 列表接口展示标题（symptom 前 80 字符）
             }
-            if meta["type"] == "knowledge":
+            if typ == "knowledge":
                 # 知识条目：tags/source 存入 metadata，搜索命中后供展示
                 meta["tags"] = case.get("tags", "")
                 meta["source"] = case.get("source", "manual")
             self.collection.add(
                 ids=[case["case_id"]],
-                documents=[case.get("symptom", "")],
+                documents=[document],
                 metadatas=[meta],
             )
             return case["case_id"]
