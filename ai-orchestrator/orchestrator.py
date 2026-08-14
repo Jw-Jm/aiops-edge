@@ -411,6 +411,41 @@ def _now():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+# 疑似查询意图的句式前缀（这类对话不入库，避免"用户提问"被误存为故障案例）
+_QUERY_INTENT_PREFIXES = (
+    "请分析", "请帮我", "帮我", "分析一下", "请问", "看看", "查一下", "检查一下",
+    "如何", "怎么", "为什么", "是什么", "有哪些", "能否", "能不能", "解释",
+)
+
+
+def _case_quality_check(state: dict) -> tuple:
+    """入库前质量校验：过滤测试/无效对话/LLM 占位符，防止污染 RAG 案例库。
+    返回 (是否通过, 拒绝原因)。"""
+    symptom = (state.get("user_message") or "").strip()
+    plan = state.get("plan") or ""
+    crewai = state.get("crewai_result") or ""
+    report = state.get("report") or ""
+
+    # 1. 症状长度：过短（<8 字符）视为无效内容（"你好"/"test"/"hi"）
+    if len(symptom) < 8:
+        return False, f"symptom 过短 ({len(symptom)} 字符)"
+    # 2. 查询意图句式：以提问前缀开头视为"用户问询"而非"故障描述"
+    low = symptom.lower()
+    if low in ("test", "你好", "hi", "hello", "测试", "help") or low.startswith(_QUERY_INTENT_PREFIXES):
+        return False, "疑似查询意图，非故障案例"
+    # 3. LLM 占位符/失败结果：plan/crewai 含超时占位符时丢弃
+    if "LLM 调用超时" in plan or "LLM 调用超时" in crewai or plan.startswith("[LLM"):
+        return False, "LLM 结果为超时占位符"
+    # 4. 关键字段缺失：无方案或无根因结论视为不完整
+    if not plan.strip():
+        return False, "plan 为空"
+    if not crewai.strip():
+        return False, "crewai_result 为空"
+    if not report.strip():
+        return False, "report 为空"
+    return True, ""
+
+
 def _infer_target_from_script(script: str, fallback: str = "") -> str:
     """修复(P2-2)：从执行脚本中推断目标资源（namespace/服务名），
     填充审计日志的 target_service 字段（此前 service 为空时显示 "-"）。
@@ -1017,8 +1052,11 @@ async def node_report(state: AgentState) -> dict:
 
 
 async def node_memorize(state: AgentState) -> dict:
-    """Write successful case to ChromaDB."""
+    """Write successful case to ChromaDB（含入库质量校验，过滤测试/无效对话污染）。"""
     if state.get("verify_pass") and state.get("crewai_result"):
+        ok, reason = _case_quality_check(state)
+        if not ok:
+            return {"messages": [f"[{_now()}] 案例未入库（质量校验未通过: {reason}）"]}
         try:
             import uuid
             case = {
