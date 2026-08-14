@@ -103,21 +103,17 @@ const Knowledge: React.FC = () => {
           </Space>
         } />
 
-      {/* 统计卡：知识条目 + RAG 案例库 */}
+      {/* 统计卡：知识文档 + 故障案例 + 统一总数 */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div className="card" style={{ flex: 1, minWidth: 220, marginBottom: 0, padding: 16 }}>
+        <div className="card" style={{ flex: 1, minWidth: 200, marginBottom: 0, padding: 16 }}>
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>知识文档</div>
-          <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{total}</div>
+          <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{rag?.knowledge ?? 0}</div>
         </div>
-        <div className="card" style={{ flex: 1, minWidth: 220, marginBottom: 0, padding: 16 }}>
+        <div className="card" style={{ flex: 1, minWidth: 200, marginBottom: 0, padding: 16 }}>
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>故障案例（AI 检索）</div>
           <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{rag?.cases ?? 0}</div>
         </div>
-        <div className="card" style={{ flex: 1, minWidth: 220, marginBottom: 0, padding: 16 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>知识条目</div>
-          <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{total}</div>
-        </div>
-        <div className="card" style={{ flex: 1, minWidth: 220, marginBottom: 0, padding: 16 }}>
+        <div className="card" style={{ flex: 1, minWidth: 200, marginBottom: 0, padding: 16 }}>
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>统一知识库总数（ChromaDB）</div>
           <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{rag?.total ?? 0}</div>
         </div>
