@@ -106,7 +106,7 @@ const Knowledge: React.FC = () => {
       {/* 统计卡：知识条目 + RAG 案例库 */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
         <div className="card" style={{ flex: 1, minWidth: 220, marginBottom: 0, padding: 16 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>知识条目（MySQL）</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>知识文档</div>
           <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{total}</div>
         </div>
         <div className="card" style={{ flex: 1, minWidth: 220, marginBottom: 0, padding: 16 }}>
