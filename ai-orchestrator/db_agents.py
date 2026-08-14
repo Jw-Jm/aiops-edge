@@ -122,84 +122,41 @@ class ReportStore:
 
 
 class KnowledgeStore:
-    """知识库条目持久化（含代码索引 code_ref）。"""
+    """知识库条目持久化 —— 统一存 ChromaDB（与 RAG 故障案例同一 collection，type=knowledge）。
+    页面管理（list/search/add/delete）与 AI 语义检索共用单一真源，消除双写不一致。
+    MySQL knowledge_base 表停用（保留表结构避免破坏历史迁移）。"""
 
-    def __init__(self):
-        self._mem: dict[int, dict] = {}
-        self._seq = 0
-
-    def add(self, title: str, content: str, source: str = "manual", tags: str = "", code_ref: dict = None):
-        if db.db_available():
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO knowledge_base (title, content, source, tags, code_ref) "
-                        "VALUES (%s,%s,%s,%s,%s)",
-                        (title, content, source, tags,
-                         json.dumps(code_ref, ensure_ascii=False) if code_ref else None),
-                    )
-                conn.commit()
-            except Exception:
-                pass
-            finally:
-                conn.close()
-        self._seq += 1
-        self._mem[self._seq] = {"id": self._seq, "title": title, "content": content,
-                                "source": source, "tags": tags, "code_ref": code_ref}
-        return self._seq
+    def add(self, title: str, content: str, source: str = "manual", tags: str = "", code_ref: dict = None) -> str:
+        try:
+            from rag import rag
+            return rag.add_knowledge(title, content, source=source, tags=tags,
+                                     service=(code_ref or {}).get("service", "") if isinstance(code_ref, dict) else "")
+        except Exception:
+            return ""
 
     def search(self, q: str):
-        ql = q.lower()
-        if db.db_available():
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT * FROM knowledge_base WHERE title LIKE %s OR content LIKE %s OR tags LIKE %s "
-                        "ORDER BY id DESC LIMIT 50", (f"%{q}%", f"%{q}%", f"%{q}%"))
-                    rows = cur.fetchall()
-                if rows:
-                    return {"items": [dict(r) for r in rows], "total": len(rows)}
-            except Exception:
-                pass
-            finally:
-                conn.close()
-        mem = [k for k in self._mem.values()
-               if ql in k["title"].lower() or ql in k["content"].lower() or ql in k["tags"].lower()]
-        return {"items": mem, "total": len(mem)}
+        try:
+            from rag import rag
+            items = rag.list_all(type_filter="knowledge", q=q, limit=50)
+            return {"items": items, "total": len(items)}
+        except Exception:
+            return {"items": [], "total": 0}
 
     def list(self, page=1, size=50):
-        offset = (page - 1) * size
-        if db.db_available():
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) AS total FROM knowledge_base")
-                    total = cur.fetchone()["total"]
-                    cur.execute("SELECT * FROM knowledge_base ORDER BY id DESC LIMIT %s OFFSET %s", (size, offset))
-                    rows = cur.fetchall()
-                if rows is not None:
-                    return {"items": [dict(r) for r in rows], "total": total}
-            except Exception:
-                pass
-            finally:
-                conn.close()
-        items = list(self._mem.values())
-        return {"items": items[offset:offset + size], "total": len(items)}
+        try:
+            from rag import rag
+            items = rag.list_all(type_filter="knowledge", limit=size, offset=(page - 1) * size)
+            total = len(rag.list_all(type_filter="knowledge", limit=100000))
+            return {"items": items, "total": total}
+        except Exception:
+            return {"items": [], "total": 0}
 
-    def delete(self, kid: int):
-        if db.db_available():
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("DELETE FROM knowledge_base WHERE id=%s", (kid,))
-                conn.commit()
-            except Exception:
-                pass
-            finally:
-                conn.close()
-        self._mem.pop(kid, None)
+    def delete(self, kid):
+        try:
+            from rag import rag
+            return rag.delete(str(kid))
+        except Exception:
+            return False
 
 
 class RuleStore:

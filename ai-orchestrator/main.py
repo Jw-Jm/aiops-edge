@@ -1754,13 +1754,16 @@ async def delete_knowledge(kid: int):
 # ── RAG 故障案例库管理（ChromaDB, 供 AI 诊断检索） ──────────────
 @app.get("/api/v1/ai/knowledge/rag/stats")
 async def rag_knowledge_stats():
-    """RAG 案例库统计：案例总数 + 最近导入时间。"""
+    """统一知识库统计：故障案例 + 知识条目 + 总条数（全部存 ChromaDB ops_cases）。"""
     from rag import rag
     try:
-        total = rag.collection.count()
+        items = rag.list_all(limit=100000)
+        cases = sum(1 for i in items if i.get("type", "case") == "case")
+        knowledge = sum(1 for i in items if i.get("type") == "knowledge")
     except Exception:
-        total = 0
-    return {"collection": "ops_cases", "total": total}
+        cases = knowledge = 0
+    return {"collection": "ops_cases", "total": cases + knowledge,
+            "cases": cases, "knowledge": knowledge}
 
 
 @app.post("/api/v1/ai/knowledge/rag/reload")

@@ -153,20 +153,26 @@ class RAGStore:
             existing = self.dedup_check(case.get("symptom", ""), threshold=0.92)
             if existing:
                 return existing  # 返回已有 case_id
+            meta = {
+                "service": case.get("service", ""),
+                "root_cause": case.get("root_cause", ""),
+                "plan": case.get("plan", ""),
+                "outcome": case.get("outcome", "success"),
+                "report": case.get("report", "")[:500],
+                "validated": "pending",
+                "weight": "1.0",
+                "created_at": str(time.time()),
+                "decay_factor": "1.0",
+                "type": case.get("type", "case"),  # case=故障案例 | knowledge=知识条目
+            }
+            if meta["type"] == "knowledge":
+                # 知识条目：tags/source 存入 metadata，搜索命中后供展示
+                meta["tags"] = case.get("tags", "")
+                meta["source"] = case.get("source", "manual")
             self.collection.add(
                 ids=[case["case_id"]],
                 documents=[case.get("symptom", "")],
-                metadatas=[{
-                    "service": case.get("service", ""),
-                    "root_cause": case.get("root_cause", ""),
-                    "plan": case.get("plan", ""),
-                    "outcome": case.get("outcome", "success"),
-                    "report": case.get("report", "")[:500],
-                    "validated": "pending",
-                    "weight": "1.0",
-                    "created_at": str(time.time()),
-                    "decay_factor": "1.0",
-                }],
+                metadatas=[meta],
             )
             return case["case_id"]
         except Exception:
@@ -264,8 +270,9 @@ class RAGStore:
         except Exception:
             return 0
 
-    def list_all(self) -> list:
-        """列出所有案例（用于管理页面）"""
+    def list_all(self, type_filter: str = "", q: str = "", limit: int = 200, offset: int = 0) -> list:
+        """列出所有条目（统一：case + knowledge），支持 type 过滤、关键词过滤、分页。
+        返回条目字典列表，调用方负责分页切片。"""
         if not self._ensure_init():
             return []
         try:
@@ -273,21 +280,67 @@ class RAGStore:
             result = []
             if not all_cases["ids"]:
                 return result
+            ql = q.lower() if q else ""
             for i, cid in enumerate(all_cases["ids"]):
                 meta = dict(all_cases["metadatas"][i]) if all_cases["metadatas"] else {}
+                typ = meta.get("type", "case")
+                if type_filter and typ != type_filter:
+                    continue
+                doc = (all_cases["documents"][i] or "") if all_cases["documents"] else ""
+                if ql:
+                    hay = (doc + " " + meta.get("root_cause", "") + " " + meta.get("tags", "")).lower()
+                    if ql not in hay:
+                        continue
                 result.append({
-                    "case_id": cid,
+                    "id": cid,
+                    "type": typ,
+                    "title": meta.get("title") or doc[:60],
+                    "content": doc,
                     "service": meta.get("service", ""),
+                    "root_cause": meta.get("root_cause", ""),
+                    "plan": meta.get("plan", ""),
                     "outcome": meta.get("outcome", "success"),
                     "validated": meta.get("validated", "pending"),
                     "weight": float(meta.get("weight", 1.0)),
                     "decay": float(meta.get("decay_factor", 1.0)),
                     "created_at": meta.get("created_at", ""),
-                    "root_cause": meta.get("root_cause", "")[:100],
+                    "tags": meta.get("tags", ""),
+                    "source": meta.get("source", ""),
                 })
-            return result
+            # 按创建时间倒序（created_at 为 epoch 秒字符串）
+            result.sort(key=lambda x: float(x.get("created_at") or 0), reverse=True)
+            return result[offset:offset + limit]
         except:
             return []
+
+    def delete(self, item_id: str) -> bool:
+        """按 id 删除条目（统一删除入口）。"""
+        if not self._ensure_init():
+            return False
+        try:
+            self.collection.delete(ids=[item_id])
+            return True
+        except Exception:
+            return False
+
+    def add_knowledge(self, title: str, content: str, source: str = "manual",
+                      tags: str = "", service: str = "") -> str:
+        """新增知识条目（type=knowledge，文档=标题+内容，便于语义检索）。"""
+        import uuid
+        kid = "kn-" + uuid.uuid4().hex[:12]
+        return self.add_case({
+            "case_id": kid,
+            "type": "knowledge",
+            "symptom": f"{title}\n{content}",  # 检索用全文
+            "service": service,
+            "root_cause": content,
+            "plan": "",
+            "outcome": "success",
+            "report": "",
+            "tags": tags,
+            "source": source,
+            "title": title,
+        })
 
 
 rag = RAGStore()
