@@ -1745,10 +1745,11 @@ async def add_knowledge(body: dict = None):
 
 
 @app.delete("/api/v1/ai/knowledge/{kid}")
-async def delete_knowledge(kid: int):
+async def delete_knowledge(kid: str):
+    """删除知识条目（ChromaDB 统一存储，id 为 kn- 前缀字符串）。"""
     from db_agents import KnowledgeStore
-    KnowledgeStore().delete(kid)
-    return {"ok": True}
+    ok = KnowledgeStore().delete(kid)
+    return {"ok": ok}
 
 
 # ── RAG 故障案例库管理（ChromaDB, 供 AI 诊断检索） ──────────────

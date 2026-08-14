@@ -224,7 +224,7 @@ export const getDashboardResources = (params?: Record<string, unknown>) =>
 
 // ===== 知识库 =====
 export interface KnowledgeItem {
-  id: number
+  id: string
   title: string
   content: string
   source: string
@@ -233,10 +233,10 @@ export interface KnowledgeItem {
   created_at?: string
   updated_at?: string
 }
-export interface RagStats { collection: string; total: number }
+export interface RagStats { collection: string; total: number; cases?: number; knowledge?: number }
 export const listKnowledge = (params?: Record<string, unknown>) => api.get('/ai/knowledge', { params })
 export const addKnowledge = (data: Record<string, unknown>) => api.post('/ai/knowledge', data)
-export const deleteKnowledge = (id: number) => api.delete(`/ai/knowledge/${id}`)
+export const deleteKnowledge = (id: string) => api.delete(`/ai/knowledge/${id}`)
 export const getRagStats = () => api.get('/ai/knowledge/rag/stats')
 export const reloadRagKnowledge = () => api.post('/ai/knowledge/rag/reload')
 
