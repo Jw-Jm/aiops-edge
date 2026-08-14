@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Button, Input, Empty } from 'antd'
+import { Button, Input, Empty, Alert } from 'antd'
 import api, { TENANT_ID, getSession, executeSuggestion, finalReport } from '../../api/client'
 import { useSearchParams } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
@@ -10,6 +10,28 @@ interface ChatMessage {
   plan?: string; script?: string; threadId?: string; riskScore?: number; riskReason?: string; service?: string
 }
 
+// P1-5: 兼容新旧两种风险格式：
+// - 新格式 risk_score 0~1 → 显示 1-5 星（"风险等级: ★×N/5"）
+// - 旧格式 risk_score 0~100 / risk_reason 文本 → 原样展示
+function riskView(m: ChatMessage): { text: string; color: string } | null {
+  const s = m.riskScore
+  if (typeof s === 'number' && !isNaN(s) && s >= 0 && s <= 1) {
+    const stars = Math.max(1, Math.min(5, Math.round(s * 5)))
+    return {
+      text: `风险等级: ★×${stars}/5`,
+      color: stars >= 4 ? 'var(--danger)' : stars >= 2 ? 'var(--warning)' : 'var(--success)',
+    }
+  }
+  if (typeof s === 'number' && !isNaN(s) && s > 1) {
+    return {
+      text: `风险评分: ${s}/100${m.riskReason ? `（${m.riskReason}）` : ''}`,
+      color: s > 60 ? 'var(--danger)' : s > 30 ? 'var(--warning)' : 'var(--success)',
+    }
+  }
+  if (m.riskReason) return { text: `风险等级: ${m.riskReason}`, color: 'var(--warning)' }
+  return null
+}
+
 const AiChat: React.FC = () => {
   const [searchParams] = useSearchParams()
   const [sessions, setSessions] = useState<any[]>([])
@@ -18,6 +40,8 @@ const AiChat: React.FC = () => {
   const [input, setInput] = useState(searchParams.get('q') || '')
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState('')
+  // P0-1: 后端 SSE notice 事件（type=notice, level=warning, text=...）→ 消息区顶部黄色提示条
+  const [notice, setNotice] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -136,6 +160,11 @@ const AiChat: React.FC = () => {
             else if (evName === 'assistant') fullText = ev.content ?? ev.text ?? fullText
             else if (evName === 'done' && !fullText) fullText = ev.text ?? ev.assistant_message?.content ?? ''
             else if (evName === 'error') fullText = `⚠️ ${ev.error ?? ev.text ?? ''}`
+            else if (evName === 'notice') {
+              // P0-1: notice 事件 → 消息区顶部黄色提示条（用户可关闭）
+              const text = ev.text ?? ev.message ?? ev.content ?? ''
+              if (text) setNotice(String(text))
+            }
             else if (evName === 'suggestion') {
               // Issue1: 每次分析只渲染一张处置建议确认卡。后端每次分析只发一个 suggestion
               // 事件（已去重），此处仅收集 suggestion 类型，避免把 approval_pending 也当一张卡
@@ -144,7 +173,7 @@ const AiChat: React.FC = () => {
               if (!pendingSuggestions.some((s: any) => s.threadId === tid)) {
                 pendingSuggestions.push({
                   plan: ev.plan ?? ev.text ?? '', script: ev.script ?? '', threadId: tid,
-                  riskScore: ev.risk_score ?? 0, riskReason: ev.risk_reason ?? '',
+                  riskScore: ev.risk_score ?? 0, riskReason: ev.risk_reason ?? ev.risk ?? '',
                 })
               }
             }
@@ -249,6 +278,11 @@ const AiChat: React.FC = () => {
               </div>
             </div>
           )}
+          {/* P0-1: SSE notice 事件提示条（黄色警告，可关闭） */}
+          {notice && (
+            <Alert type="warning" showIcon closable message={notice}
+              onClose={() => setNotice('')} style={{ marginBottom: 12 }} />
+          )}
           {messages.map((m) => (
             <div key={m.id} style={{ display: 'flex', gap: 10, marginBottom: 14, justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
               {m.role === 'assistant' && <div className="ai-msg__av">AI</div>}
@@ -269,10 +303,10 @@ const AiChat: React.FC = () => {
                   ) : (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>未生成可执行命令，可在下方输入自定义命令，或让 AI 补充命令。</div>
                   )}
-                  {/* P3-4: 始终展示风险评分（含 0 分），0 分显示"低" */}
-                  <div style={{ fontSize: 12, color: m.riskScore && m.riskScore > 60 ? 'var(--danger)' : m.riskScore && m.riskScore > 30 ? 'var(--warning)' : 'var(--success)', marginBottom: 8 }}>
-                    {`风险评分: ${m.riskScore ?? 0}/100${m.riskReason ? `（${m.riskReason}）` : ''}`}
-                  </div>
+                  {/* P3-4/P1-5: 风险展示 —— 兼容 risk_score 0~1 星级 与 旧版 0~100/文本 */}
+                  {(() => { const rv = riskView(m); return rv ? (
+                    <div style={{ fontSize: 12, color: rv.color, marginBottom: 8 }}>{rv.text}</div>
+                  ) : null })()}
                   <ConfirmCard m={m} onExecute={handleExecute} onReject={handleReject} onFinalReport={handleFinalReport} />
                 </div>
               ) : (

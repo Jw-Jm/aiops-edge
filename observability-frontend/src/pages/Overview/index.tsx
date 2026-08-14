@@ -1,170 +1,130 @@
-import React, { useEffect, useState } from 'react'
-import { Row, Col, Button, Space, Input, Tag } from 'antd'
-import { useNavigate, useSearchParams } from 'react-router-dom'
-import { getDashboardStats, getDashboardResources, DashboardStats, DashboardResources } from '../../api/client'
-import { PageHeader, StatCard, StatusBadge, PaneCard, Empty, Breadcrumb } from '../../components/ui/PageKit'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, Badge, Button, Col, Progress, Row, Segmented, Space, Tag, Tooltip } from 'antd'
+import * as echarts from 'echarts'
+import { useNavigate } from 'react-router-dom'
+import {
+  DashboardAlertEvent, DashboardResources, DashboardStats, NodeMetric,
+  getAlertEvents, getDashboardResources, getDashboardStats, getNodeMetrics,
+} from '../../api/client'
+import { Breadcrumb, Empty, PageHeader, PaneCard, StatCard, StatusBadge } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
+
+const severityRank: Record<string, number> = { critical: 3, 严重: 3, warning: 2, 警告: 2, info: 1, 信息: 1 }
+const severityLabel = (value?: string) => {
+  const key = String(value || 'warning').toLowerCase()
+  return severityRank[key] === 3 ? '严重' : severityRank[key] === 1 ? '信息' : '警告'
+}
+const severityTone = (value?: string): 'crit' | 'warn' | 'info' => severityRank[String(value || 'warning').toLowerCase()] === 3 ? 'crit' : severityRank[String(value || 'warning').toLowerCase()] === 1 ? 'info' : 'warn'
+const isActive = (status?: string) => ['firing', 'acknowledged', ''].includes(String(status || '').toLowerCase())
 
 function sparkPts(arr: number[], w = 120, h = 40): string {
   if (!arr || arr.length < 2) return ''
-  const max = Math.max(...arr), min = Math.min(...arr)
-  const range = max - min || 1
+  const max = Math.max(...arr), min = Math.min(...arr), range = max - min || 1
   return arr.map((v, i) => `${((i / (arr.length - 1)) * w).toFixed(1)},${(h - ((v - min) / range) * (h - 4) - 2).toFixed(1)}`).join(' ')
 }
 
+const pct = (value?: number) => Number.isFinite(value) ? Math.max(0, Math.min(100, Number(value))) : null
+const usageColor = (value?: number) => (value ?? 0) > 80 ? '#dc2626' : (value ?? 0) > 60 ? '#d97706' : '#16a34a'
+const formatCapacity = (value?: number) => value == null || !Number.isFinite(value) ? '—' : `${value}`
+
 const Overview: React.FC = () => {
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
-  const [stats, setStats] = useState<DashboardStats | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [resources, setResources] = useState<DashboardResources | null>(null)
-  const [aiQ, setAiQ] = useState(searchParams.get('q') || '')
+  const trendRef = useRef<HTMLDivElement | null>(null)
   const currentClusterId = useUIStore((s) => s.currentClusterId)
   const clusters = useUIStore((s) => s.clusters)
-  // 当前集群显示名：all → 全部集群；否则按集群 name（主集群 default 映射回其 name）
-  const curClusterName =
-    currentClusterId === 'all'
-      ? '全部集群'
-      : (() => {
-          const c = clusters.find((x) => (x.id === 1 ? 'default' : x.name) === currentClusterId)
-          return c ? c.name : currentClusterId
-        })()
+  const [stats, setStats] = useState<DashboardStats | null>(null)
+  const [resources, setResources] = useState<DashboardResources | null>(null)
+  const [nodes, setNodes] = useState<NodeMetric[]>([])
+  const [alerts, setAlerts] = useState<DashboardAlertEvent[]>([])
+  const [loading, setLoading] = useState(true)
+  const [nodeSort, setNodeSort] = useState<'cpu' | 'memory'>('cpu')
+  const [showAllNodes, setShowAllNodes] = useState(false)
+
+  const clusterName = currentClusterId === 'all' ? '全部集群' : (clusters.find((c) => (c.id === 1 ? 'default' : c.name) === currentClusterId)?.name || currentClusterId)
+
+  const load = () => {
+    setLoading(true)
+    Promise.all([
+      getDashboardStats().then((r) => setStats(r.data)).catch(() => setStats(null)),
+      getDashboardResources({ cluster_id: currentClusterId || 'all' }).then((r) => setResources(r.data)).catch(() => setResources(null)),
+      getNodeMetrics().then((r) => setNodes(Array.isArray(r.data?.nodes) ? r.data.nodes : [])).catch(() => setNodes([])),
+      getAlertEvents({ limit: 200 }).then((r) => {
+        const data = r.data
+        setAlerts(Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []))
+      }).catch(() => setAlerts([])),
+    ]).finally(() => setLoading(false))
+  }
 
   useEffect(() => {
-    // 产品需求：工作台聚焦当前集群资源态势；切换集群时全部数据同步刷新
-    Promise.all([getDashboardStats(), getDashboardResources({ cluster_id: currentClusterId || 'all' })])
-      .then(([s, r]) => { setStats(s.data); setResources(r.data) })
-      .catch(() => { /* 单个接口失败不影响另一侧 */ })
-      .finally(() => setLoading(false))
+    load()
+    const timer = window.setInterval(load, 60000)
+    return () => window.clearInterval(timer)
   }, [currentClusterId])
 
+  const sortedNodes = useMemo(() => {
+    const key = nodeSort === 'cpu' ? 'cpu_usage_pct' : 'mem_usage_pct'
+    return [...nodes].sort((a, b) => (Number(b[key]) || 0) - (Number(a[key]) || 0))
+  }, [nodes, nodeSort])
+  const displayedNodes = showAllNodes ? sortedNodes : sortedNodes.slice(0, 5)
+  const activeAlerts = useMemo(() => alerts.filter((a) => isActive(a.status)).sort((a, b) => (severityRank[String(b.severity || 'warning').toLowerCase()] || 2) - (severityRank[String(a.severity || 'warning').toLowerCase()] || 2)), [alerts])
+  const trend = stats?.trend || []
+
+  useEffect(() => {
+    const el = trendRef.current
+    if (!el || !trend.length) return
+    const chart = echarts.getInstanceByDom(el) || echarts.init(el)
+    chart.setOption({
+      animationDuration: 650, tooltip: { trigger: 'axis', confine: true },
+      legend: { top: 0, right: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: '#52606d', fontSize: 12 } },
+      grid: { left: 42, right: 48, top: 34, bottom: 28 },
+      xAxis: { type: 'category', boundaryGap: false, data: trend.map((p) => p.t), axisLabel: { color: '#7a8794', fontSize: 11 } },
+      yAxis: [
+        { type: 'value', name: '调用量', nameTextStyle: { color: '#7a8794' }, axisLabel: { color: '#7a8794' }, splitLine: { lineStyle: { color: '#eef2f7' } } },
+        { type: 'value', name: '错误率', nameTextStyle: { color: '#7a8794' }, axisLabel: { color: '#7a8794', formatter: '{value}%' }, splitLine: { show: false } },
+      ],
+      series: [
+        { name: '调用量', type: 'line', smooth: true, symbol: 'none', data: trend.map((p) => p.calls), lineStyle: { width: 2, color: '#2f54eb' }, areaStyle: { color: 'rgba(47,84,235,.08)' } },
+        { name: '错误率', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none', data: trend.map((p) => p.calls ? Number(((p.errors / p.calls) * 100).toFixed(2)) : 0), lineStyle: { width: 2, color: '#dc2626' } },
+      ],
+    })
+    const resize = () => chart.resize()
+    window.addEventListener('resize', resize)
+    return () => { window.removeEventListener('resize', resize); chart.dispose() }
+  }, [trend])
+
   const a = stats?.alerts
-  // 系统健康度 = 100 扣除错误率与活跃告警严重度（critical 每个 -30，warning 每个 -10，info -3），
-  // 避免"严重告警 3 个但健康度 100/100"的矛盾感知。
-  const healthScore = stats
-    ? Math.max(
-        0,
-        Math.min(100, Math.round(100 - (stats.error_rate ?? 0) - (a?.critical ?? 0) * 30 - (a?.warning ?? 0) * 10 - (a?.info ?? 0) * 3)),
-      )
-    : null
-  const sparkCalls = sparkPts((stats?.trend || []).map((t) => t.calls))
-  const sparkErrors = sparkPts((stats?.trend || []).map((t) => t.errors))
+  return <div>
+    <Breadcrumb items={[{ t: '总览' }, { t: '工作台首页' }]} />
+    <PageHeader title="工作台首页" desc="当前集群资源态势一览 · 风险与健康一屏掌握" />
+    {stats?.data_gaps?.length ? <Alert showIcon type="warning" message={`检测到数据采集中断：${stats.data_gaps.length} 个时段无数据`} style={{ marginBottom: 16 }} /> : null}
 
-  return (
-    <div>
-      <Breadcrumb items={[{ t: '总览' }, { t: '工作台首页' }]} />
-      <PageHeader title="工作台首页" desc="当前集群资源态势一览 · 风险与健康一屏掌握" />
+    <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+      <Col xs={12} md={6}><StatCard label="服务数量" value={loading ? '…' : (stats?.services ?? 0)} unit="个" spark={sparkPts(trend.map((t) => t.calls))} sparkColor="var(--primary)" /></Col>
+      <Col xs={12} md={6}><StatCard label="调用总量" value={loading ? '…' : (stats?.total_calls ?? 0).toLocaleString()} unit="次" spark={sparkPts(trend.map((t) => t.calls))} sparkColor="var(--primary)" /></Col>
+      <Col xs={12} md={6}><StatCard label="请求错误率" value={loading ? '…' : `${(stats?.error_rate ?? 0).toFixed(2)}`} unit="%" trend={`${(stats?.error_rate ?? 0).toFixed(2)}%`} trendDir={(stats?.error_rate ?? 0) > 0 ? 'up' : 'flat'} spark={sparkPts(trend.map((t) => t.errors))} sparkColor="var(--danger)" /></Col>
+      <Col xs={12} md={6}><StatCard label="P95 延迟" value={loading ? '…' : `${(stats?.latency_p95 ?? 0).toFixed(1)}`} unit="ms" /></Col>
+    </Row>
 
-      {/* ═══ 核心区：当前集群资源态势 ═══ */}
-      <div className="card" style={{ marginBottom: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {/* 头部：集群名 + 节点数 + 健康度 + 告警态势 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)' }}>集群资源态势</span>
-            <Tag color="blue" style={{ borderRadius: 999 }}>{curClusterName}</Tag>
-            {resources && (
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{resources.node_count} 节点</span>
-            )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>系统健康度</span>
-              <span style={{ fontSize: 30, fontWeight: 700, color: healthScore !== null && healthScore >= 90 ? 'var(--success)' : healthScore !== null && healthScore >= 75 ? 'var(--warning)' : 'var(--danger)' }}>
-                {healthScore ?? '—'}
-              </span>
-              <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>/ 100</span>
-            </div>
-            <Space size={14}>
-              <StatusBadge text={`严重 ${a?.critical ?? 0}`} tone={(a?.critical ?? 0) > 0 ? 'crit' : 'muted'} />
-              <StatusBadge text={`警告 ${a?.warning ?? 0}`} tone={(a?.warning ?? 0) > 0 ? 'warn' : 'muted'} />
-              <StatusBadge text={`信息 ${a?.info ?? 0}`} tone="info" />
-            </Space>
-          </div>
-        </div>
+    <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+      <Col xs={24} lg={14}>
+        <PaneCard title="资源态势" action={<Tag color="blue" style={{ borderRadius: 999 }}>{clusterName} · {resources?.node_count ?? 0} 节点</Tag>}>
+          {resources?.resources?.length ? <Row gutter={[24, 20]}>{resources.resources.map((r) => {
+            const current = pct(r.current ?? undefined), color = usageColor(current ?? undefined)
+            const label = r.metric === 'cpu' ? 'CPU 使用率' : r.metric === 'memory' ? '内存使用率' : '磁盘使用率'
+            return <Col xs={24} md={8} key={r.metric}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{label}</span><b style={{ color }}>{current == null ? '—' : `${current.toFixed(1)}%`}</b></div><Progress percent={current ?? 0} showInfo={false} strokeColor={color} trailColor="var(--bg-soft)" size="small" /><div style={{ marginTop: 5, color: 'var(--text-muted)', fontSize: 11 }}>阈值 {r.threshold ?? '—'}% · {r.ett_seconds > 0 ? `预计 ${Math.round(r.ett_seconds / 3600)}h 后触达` : '预测窗口内不触达'}</div></Col>
+          })}</Row> : <Empty text={loading ? '资源数据加载中…' : '暂无资源数据'} />}
+        </PaneCard>
+        <PaneCard title="节点资源 TOP5" action={<Space><Segmented size="small" value={nodeSort} onChange={(v) => setNodeSort(v as 'cpu' | 'memory')} options={[{ label: 'CPU', value: 'cpu' }, { label: '内存', value: 'memory' }]} />{nodes.length > 5 && <Button type="link" size="small" onClick={() => setShowAllNodes((v) => !v)}>{showAllNodes ? '收起' : `查看全部 (${nodes.length})`}</Button>}</Space>} style={{ marginTop: 16 }}>
+          {displayedNodes.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 600 }}><div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.25fr 1.25fr .7fr .9fr', gap: 12, padding: '0 4px 8px', color: 'var(--text-muted)', fontSize: 11, borderBottom: '1px solid var(--border-soft)' }}><span>节点</span><span>CPU 使用率</span><span>内存使用率</span><span>CPU 核数</span><span>内存容量</span></div>{displayedNodes.map((n, i) => <div key={`${n.node || 'node'}-${i}`} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.25fr 1.25fr .7fr .9fr', gap: 12, alignItems: 'center', padding: '11px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{n.node || '未命名节点'}</span><Progress percent={pct(n.cpu_usage_pct) ?? 0} strokeColor={usageColor(n.cpu_usage_pct)} format={(v) => `${v ?? 0}%`} size="small" /><Progress percent={pct(n.mem_usage_pct) ?? 0} strokeColor={usageColor(n.mem_usage_pct)} format={(v) => `${v ?? 0}%`} size="small" /><span>{formatCapacity(n.cpu_capacity)}</span><span>{formatCapacity(n.mem_capacity)}</span></div>)}</div></div> : <Empty text={loading ? '节点数据加载中…' : '暂无节点资源数据'} />}
+        </PaneCard>
+      </Col>
+      <Col xs={24} lg={10}><PaneCard title="调用与错误趋势" action={<Tag color="blue" style={{ borderRadius: 999 }}>过去 24 小时</Tag>}>{trend.length ? <div ref={trendRef} style={{ height: 380, width: '100%' }} /> : <Empty text={loading ? '趋势数据加载中…' : '暂无趋势数据'} />}</PaneCard></Col>
+    </Row>
 
-        {/* 资源条：CPU / 内存 / 磁盘 */}
-        {resources?.resources?.length ? (
-          <Row gutter={[24, 16]}>
-            {resources.resources.map((r) => {
-              const pct = r.current == null ? 0 : Math.min(r.current, 100)
-              const color = r.current == null ? '#a3aebe'
-                : pct >= r.threshold ? '#dc2626'
-                : pct >= r.threshold * 0.8 ? '#d97706' : '#16a34a'
-              const ett = r.ett_seconds > 0
-                ? `预计 ${Math.round(r.ett_seconds / 3600)}h 后触达阈值`
-                : r.current == null ? '暂无数据' : '预测窗口内不触达'
-              const name = r.metric === 'cpu' ? 'CPU 使用率' : r.metric === 'memory' ? '内存使用率' : '磁盘使用率'
-              return (
-                <Col xs={24} md={8} key={r.metric}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{name}</span>
-                    <span style={{ fontSize: 20, fontWeight: 700, color }}>{r.current == null ? '--' : `${r.current.toFixed(1)}%`}</span>
-                  </div>
-                  <div style={{ height: 10, background: 'var(--bg-soft)', borderRadius: 6, overflow: 'hidden' }}>
-                    <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 6, transition: 'width .5s' }} />
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-                    <span>阈值 {r.threshold}%</span>
-                    <span style={{ color }}>{ett}</span>
-                  </div>
-                </Col>
-              )
-            })}
-          </Row>
-        ) : <Empty text="暂无资源数据（当前集群未采集 node-exporter 指标）" />}
-      </div>
-
-      {/* ═══ KPI 行：平台/集群核心指标 ═══ */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12} md={6}><StatCard label="服务数量" value={loading ? '…' : (stats?.services ?? 0)} unit="个" spark={sparkCalls} sparkColor="var(--primary)" /></Col>
-        <Col xs={12} md={6}><StatCard label="调用总量" value={loading ? '…' : (stats?.total_calls ?? 0).toLocaleString()} unit="次" /></Col>
-        <Col xs={12} md={6}><StatCard label="请求错误率" value={loading ? '…' : `${(stats?.error_rate ?? 0).toFixed(2)}`} unit="%" trend={`${(stats?.error_rate ?? 0).toFixed(2)}%`} trendDir={(stats?.error_rate ?? 0) > 0 ? 'up' : 'flat'} spark={sparkErrors} sparkColor="var(--danger)" /></Col>
-        <Col xs={12} md={6}><StatCard label="P95 延迟" value={loading ? '…' : `${(stats?.latency_p95 ?? 0).toFixed(1)}`} unit="ms" /></Col>
-      </Row>
-
-      {/* P1-3：数据缺口提示 */}
-      {stats?.data_gaps && stats.data_gaps.length > 0 && (
-        <div style={{ marginBottom: 16, padding: '8px 12px', background: 'rgba(217,119,6,.08)', border: '1px solid rgba(217,119,6,.3)', borderRadius: 8, fontSize: 12, color: '#b45309' }}>
-          数据缺口：{stats.data_gaps.join('；')} 期间无采集数据，趋势与容量预测可能失真
-        </div>
-      )}
-
-      {/* ═══ AI 快问 + 告警分布 ═══ */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={14}>
-          <PaneCard title="AI 快问快答" action={<Button type="link" onClick={() => navigate('/ai/chat')}>进入 AI 对话 →</Button>}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <Input
-                value={aiQ}
-                onChange={(e) => setAiQ(e.target.value)}
-                onPressEnter={() => { if (aiQ.trim()) navigate(`/ai/chat?q=${encodeURIComponent(aiQ)}`) }}
-                placeholder="用自然语言提问，例如：分析 prod 集群故障根因"
-                style={{ flex: 1, minWidth: 240 }}
-              />
-              <Button type="primary" onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(aiQ.trim() || '分析 prod 集群故障根因')}`)}>分析根因</Button>
-              <Button onClick={() => navigate('/ai/chat?q=巡检所有 K8s 集群')}>集群巡检</Button>
-              <Button onClick={() => navigate('/ai/chat?q=为什么 order-svc 延迟升高')}>延迟排查</Button>
-            </div>
-          </PaneCard>
-        </Col>
-        <Col xs={24} lg={10}>
-          <PaneCard title="告警按服务分布">
-            {(a?.by_service || []).length === 0
-              ? <Empty text="暂无告警分布数据" />
-              : (a?.by_service || []).slice(0, 6).map((s) => (
-                  <div key={s.service} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border-soft)' }}>
-                    <span style={{ flex: 1, fontSize: 13 }}>{s.service}</span>
-                    <Space size={6}>
-                      {s.critical > 0 && <StatusBadge text={`严重 ${s.critical}`} tone="crit" />}
-                      {s.warning > 0 && <StatusBadge text={`警告 ${s.warning}`} tone="warn" />}
-                    </Space>
-                  </div>
-                ))}
-          </PaneCard>
-        </Col>
-      </Row>
-    </div>
-  )
+    <PaneCard title={<span>活跃告警 <Badge count={activeAlerts.length} showZero style={{ backgroundColor: activeAlerts.length ? 'var(--danger)' : 'var(--success)', marginLeft: 8 }} /></span>} action={<Button type="link" onClick={() => navigate('/alerts/events')}>查看全部 →</Button>}>
+      {activeAlerts.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 900 }}>{activeAlerts.map((item, index) => { const question = `告警: ${item.rule_name || '未命名规则'} (${severityLabel(item.severity)}), 服务: ${item.service || '未知服务'}, 触发 ${item.count ?? 1} 次, 最近 ${item.last_timestamp || '未知时间'}, 消息: ${item.message || '无消息'}, 请分析根因并给出处置建议`; return <div key={`${item.rule_name}-${item.last_timestamp}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1.15fr .8fr .65fr .45fr 1fr minmax(180px, 2fr) auto', gap: 14, alignItems: 'center', padding: '12px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600 }}>{item.rule_name || '未命名规则'}</span><span>{item.service || '—'}</span><StatusBadge text={severityLabel(item.severity)} tone={severityTone(item.severity)} /><span>{item.count ?? 1} 次</span><span style={{ color: 'var(--text-muted)' }}>{item.last_timestamp || '—'}</span><Tooltip title={item.message || '—'}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.message || '—'}</span></Tooltip><Button type="link" size="small" onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(question)}`)}>根因定位</Button></div> })}</div></div> : <div style={{ textAlign: 'center', padding: '28px 8px', color: 'var(--success)', fontSize: 13 }}>✓ 当前无活跃告警，系统健康</div>}
+    </PaneCard>
+  </div>
 }
 
 export default Overview

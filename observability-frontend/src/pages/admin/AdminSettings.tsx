@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Form, Input, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert } from 'antd'
-import { PageHeader, Breadcrumb, StatusBadge, type StatusTone } from '../../components/ui/PageKit'
+import { PageHeader, Breadcrumb, StatusBadge, Empty, type StatusTone } from '../../components/ui/PageKit'
 
 // 集群状态 → StatusBadge tone 映射
 function clusterTone(s?: string): StatusTone {
@@ -51,7 +51,10 @@ import {
   getClusterNamespaces,
   getClusterEvents,
   listAuditLogs,
+  listUsers,
   getNodeMetrics,
+  getSystemComponents,
+  type SystemComponent,
   type ClusterItem,
   type ClusterNodeItem,
 } from '../../api/client'
@@ -255,9 +258,45 @@ function ClusterManager() {
 }
 
 // ---- 审计日志 ----
+// P2-6: 状态词（operator 为审批/执行状态时原值展示并加 Tag，不做用户映射）
+const OPERATOR_STATUS_WORDS = new Set([
+  'approved', 'rejected', 'success', 'failed', 'pending', 'skipped',
+  'executed', 'denied', 'cancelled', 'auto', 'system', 'cron',
+])
+
+function operatorView(op: unknown, userMap: Record<string, string>): React.ReactNode {
+  if (op === null || op === undefined || op === '') return '-'
+  const s = String(op).trim()
+  if (!s) return '-'
+  // 纯数字 → 用户 ID，映射为 display_name / username
+  if (/^\d+$/.test(s)) {
+    const name = userMap[s]
+    return name ? <span>{name}</span> : <span>用户#{s}</span>
+  }
+  // 状态词 → 原值 + Tag 标注
+  if (OPERATOR_STATUS_WORDS.has(s.toLowerCase())) {
+    return <Tag color="blue">{s}</Tag>
+  }
+  return <span>{s}</span>
+}
+
 function AuditLog() {
   const [rows, setRows] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
+  // P2-6: 加载用户列表建立 id → 显示名 映射，审计日志 operator 为纯数字用户 ID 时显示用户名
+  const [userMap, setUserMap] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    listUsers().then((r) => {
+      const d = r.data
+      const list = Array.isArray(d) ? d : (d?.users ?? d?.data ?? [])
+      const m: Record<string, string> = {}
+      list.forEach((u: any) => {
+        if (u?.id != null) m[String(u.id)] = u.display_name || u.username || String(u.id)
+      })
+      setUserMap(m)
+    }).catch(() => { /* 用户列表不可用时保持 ID 兜底展示 */ })
+  }, [])
 
   useEffect(() => {
     setLoading(true)
@@ -283,7 +322,8 @@ function AuditLog() {
           // Issue8: 后端审计日志返回 created_at（非 timestamp）；缺失时回退 target
           { title: '时间', dataIndex: 'created_at', width: 180, render: (v, r: any) => (r.created_at || r.timestamp || '').replace('T', ' ').slice(0, 19) },
           { title: '操作', dataIndex: 'action', width: 120, render: (v) => <Tag>{v}</Tag> },
-          { title: '操作人', dataIndex: 'operator', width: 110, render: (v, r: any) => r.operator_name || (r.operator && /^\d+$/.test(String(r.operator)) ? `用户#${r.operator}` : r.operator || '-') },
+          // P2-6: operator 为纯数字用户 ID → 映射用户名；状态词 → Tag；其他原样；全程容错
+          { title: '操作人', dataIndex: 'operator', width: 130, render: (v, r: any) => r?.operator_name ? <span>{r.operator_name}</span> : operatorView(r?.operator, userMap) },
           { title: '目标服务', dataIndex: 'target_service', width: 140, render: (v, r: any) => (r.target_service || r.target || '-') },
           { title: '命令', dataIndex: 'command', ellipsis: true },
           { title: '结果', dataIndex: 'result', width: 90 },
@@ -304,6 +344,8 @@ function LLMConfig() {
   const [hasSaved, setHasSaved] = useState(false)
   const [cfg, setCfg] = useState<{ configured: boolean; api_key_set: boolean } | null>(null)
   const [testing, setTesting] = useState(false)
+  // P0-1 感知: 页面加载时自动探测 LLM 配置是否可用，异常时顶部提示
+  const [configAlert, setConfigAlert] = useState(false)
 
   useEffect(() => {
     getLLMSettings().then((r) => {
@@ -317,6 +359,12 @@ function LLMConfig() {
           api_key: d.api_key_masked || '',
         })
         setCfg({ configured: !!d.configured, api_key_set: !!d.api_key_set })
+        // P0-1: 已配置时自动测一次连接（空 body），失败则提示重新填写 API Key
+        if (d.configured) {
+          testLLMConnection({}).then((tr) => {
+            if (tr.data && tr.data.success === false) setConfigAlert(true)
+          }).catch(() => { /* 接口异常不阻塞页面 */ })
+        }
       }
     }).catch(() => {}).finally(() => setLoading(false))
   }, [])
@@ -381,6 +429,10 @@ function LLMConfig() {
 
   return (
     <div style={{ maxWidth: 720 }}>
+      {configAlert && (
+        <Alert type="warning" showIcon closable style={{ marginBottom: 16 }}
+          message="检测到 LLM 配置异常（API Key 可能已失效），请重新填写 API Key" />
+      )}
       <div className="card" style={{ padding: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>AI 模型配置</div>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
@@ -419,6 +471,61 @@ function LLMConfig() {
           </Form.Item>
         </Form>
       </div>
+    </div>
+  )
+}
+
+// ---- 平台健康（5s 轮询组件状态）----
+function PlatformHealth() {
+  const [list, setList] = useState<SystemComponent[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true)
+    try {
+      const r = await getSystemComponents()
+      const d = r.data as any
+      setList(Array.isArray(d) ? d : (d?.components ?? d?.items ?? d?.data ?? []))
+    } catch {
+      setList([])
+    } finally {
+      if (!silent) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    load(false)
+    const timer = setInterval(() => load(true), 5000) // 5s 轮询
+    return () => clearInterval(timer)
+  }, [])
+
+  // 状态 → Tag 颜色：ok=绿 degraded=橙 down=红
+  const tone = (s?: string) => {
+    if (s === 'ok' || s === 'healthy' || s === 'up' || s === 'running') return 'green'
+    if (s === 'degraded' || s === 'warning' || s === 'warn' || s === 'unknown') return 'orange'
+    if (s === 'down' || s === 'error' || s === 'failed' || s === 'critical' || s === 'stopped') return 'red'
+    return 'default'
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>平台健康</div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>平台各系统组件运行状态，每 5 秒自动刷新。</div>
+      <Table
+        rowKey={(r) => `${r.type}-${r.name}`}
+        size="small"
+        loading={loading}
+        dataSource={list}
+        pagination={false}
+        locale={{ emptyText: <Empty text="暂无组件状态数据" hint="后端 /system/components 尚未上报组件状态" /> }}
+        columns={[
+          { title: '组件', dataIndex: 'name' },
+          { title: '类型', dataIndex: 'type', width: 140 },
+          { title: '状态', dataIndex: 'status', width: 120, render: (s?: string) => <Tag color={tone(s)}>{s || '-'}</Tag> },
+          { title: '延迟', dataIndex: 'latency_ms', width: 100, render: (v?: number) => (v != null ? `${v}ms` : '-') },
+          { title: '详情', dataIndex: 'detail', ellipsis: true },
+        ]}
+      />
     </div>
   )
 }
@@ -466,6 +573,7 @@ const AdminSettings: React.FC = () => {
           { key: 'llm', label: 'AI 模型配置', children: <LLMConfig /> },
           { key: 'clusters', label: '纳管集群', children: <ClusterManager /> },
           { key: 'audit', label: '审计日志', children: <AuditLog /> },
+          { key: 'health', label: '平台健康', children: <PlatformHealth /> },
         ]}
       />
     </div>

@@ -20,6 +20,7 @@ const GROUPS: { title: string; items: Cmd[] }[] = [
       { icon: 'topology', label: '服务全景', path: '/observability/service', kbd: 'G S' },
       { icon: 'traces', label: '链路追踪', path: '/observability/trace', kbd: 'G T' },
       { icon: 'logs', label: '日志与指标', path: '/observability/log', kbd: 'G L' },
+      { icon: 'desktop', label: '虚拟机', path: '/observability/vms', kbd: 'G V' },
     ],
   },
   {

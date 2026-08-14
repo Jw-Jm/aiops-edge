@@ -16,6 +16,7 @@ const Overview = lazy(() => import('./pages/Overview'))
 const ServiceObservability = lazy(() => import('./pages/observability/ServiceObservability'))
 const Trace = lazy(() => import('./pages/observability/Trace'))
 const LogMetrics = lazy(() => import('./pages/observability/LogMetrics'))
+const VirtualMachines = lazy(() => import('./pages/observability/VirtualMachines'))
 const AlertEvents = lazy(() => import('./pages/alerts/AlertEvents'))
 const AlertRules = lazy(() => import('./pages/alerts/AlertRules'))
 const AiChat = lazy(() => import('./pages/ai/AiChat'))
@@ -42,6 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
       { path: '/observability/service', label: '服务全景', icon: 'topology' },
       { path: '/observability/trace', label: '链路追踪', icon: 'traces' },
       { path: '/observability/log', label: '日志与指标', icon: 'logs' },
+      { path: '/observability/vms', label: '虚拟机', icon: 'desktop' },
     ],
   },
   {
@@ -290,6 +292,7 @@ function AppLayout() {
               <Route path="/observability/service" element={<ServiceObservability />} />
               <Route path="/observability/trace" element={<Trace />} />
               <Route path="/observability/log" element={<LogMetrics />} />
+              <Route path="/observability/vms" element={<VirtualMachines />} />
               <Route path="/alerts/events" element={<AlertEvents />} />
               <Route path="/alerts/rules" element={<AlertRules />} />
               <Route path="/ai/chat" element={<AiChat />} />

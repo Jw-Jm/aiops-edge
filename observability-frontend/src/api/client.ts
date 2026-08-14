@@ -138,7 +138,13 @@ export const updateAlertRule = (id: string, data: Record<string, unknown>) => ap
 export const deleteAlertRule = (id: string) => api.delete(`/alerts/rules/${id}`)
 
 // Alert Events
-export const getAlertEvents = (params?: Record<string, unknown>) => api.get('/alerts/events', { params })
+export interface DashboardAlertEvent {
+  id: string | number
+  rule_name?: string; service?: string; severity?: string; message?: string
+  status?: string; count?: number; first_timestamp?: string; last_timestamp?: string
+}
+export interface DashboardAlertResponse { data?: DashboardAlertEvent[]; events?: DashboardAlertEvent[]; total?: number }
+export const getAlertEvents = (params?: Record<string, unknown>) => api.get<DashboardAlertResponse | DashboardAlertEvent[]>('/alerts/events', { params })
 export const getAlertEventByID = (id: string) => api.get(`/alerts/events/${id}`)
 export const ackAlertEvent = (id: string) => api.post(`/alerts/events/${id}/ack`)
 export const resolveAlertEvent = (id: string) => api.post(`/alerts/events/${id}/resolve`)
@@ -348,7 +354,12 @@ export const syncClusters = () => api.post('/clusters/sync')
 export const updateCluster = (id: number, data: Record<string, unknown>) => api.put(`/clusters/${id}`, data)
 export const deleteCluster = (id: number) => api.delete(`/clusters/${id}`)
 export const listClusterNodes = (id: number) => api.get(`/clusters/${id}/nodes`)
-export const getNodeMetrics = () => api.get('/nodes/metrics')
+export interface NodeMetric {
+  node?: string; cpu_usage_pct?: number; mem_usage_pct?: number
+  cpu_capacity?: number; mem_capacity?: number; cpu_usage?: number; mem_usage?: number
+}
+export interface NodeMetricsResponse { nodes?: NodeMetric[] }
+export const getNodeMetrics = () => api.get<NodeMetricsResponse>('/nodes/metrics')
 
 // ===== SNMP 网络设备 =====
 export interface SnmpDevice {
@@ -370,6 +381,20 @@ export interface IpmiSensor { node_name: string; sensor_name: string; sensor_typ
 export interface NodeHealthRow { node_name: string; component: string; status: string; updated_at: string }
 export const listIpmiSensors = (params?: Record<string, unknown>) => api.get('/ipmi/sensors', { params })
 export const listNodeHealth = (params?: Record<string, unknown>) => api.get('/node/health', { params })
+
+// ===== 系统健康组件（平台健康页）=====
+export interface SystemComponent {
+  name: string; type: string; status: string; latency_ms?: number; detail?: string
+}
+export const getSystemComponents = () => api.get<SystemComponent[]>('/system/components')
+
+// ===== KubeVirt 虚拟机 =====
+export interface VmItem {
+  name: string; namespace: string; status: string; node?: string; cpu?: string; memory?: string
+}
+export const listVms = (params?: Record<string, unknown>) => api.get('/infrastructure/vms', { params })
+export const getVm = (ns: string, name: string) =>
+  api.get(`/infrastructure/vms/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`)
 
 // ===== MCP 工具目录 =====
 export const getMcpTools = () => api.get('/mcp/tools')

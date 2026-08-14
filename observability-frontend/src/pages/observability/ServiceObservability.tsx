@@ -374,6 +374,13 @@ const ServiceObservability: React.FC = () => {
     { title: '服务', dataIndex: 'service_name', key: 'service_name' },
     { title: '状态', dataIndex: 'is_error', key: 'is_error', width: 70, render: (v: number) => v ? <StatusBadge text="错误" tone="crit" /> : <StatusBadge text="正常" tone="ok" /> },
     { title: '延迟', dataIndex: 'ms', key: 'ms', render: (v: number) => `${Number(v || 0).toFixed(2)}ms` },
+    // P3-2: 端点占位容错 —— ep 为空 / null / '?' 时显示"未知端点"而非 "ep=?"
+    { title: '端点', dataIndex: 'http_url', key: 'http_url', width: 220, ellipsis: true, render: (v: string, r: any) => {
+      const ep = v ?? r?.ep
+      return (ep !== null && ep !== undefined && ep !== '?' && String(ep).trim())
+        ? <span style={{ fontSize: 12 }}>{String(ep)}</span>
+        : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>未知端点</span>
+    } },
   ]
 
   const columns = [
