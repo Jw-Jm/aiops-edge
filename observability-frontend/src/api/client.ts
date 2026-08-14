@@ -97,11 +97,6 @@ export const saveRecoveryPolicy = (data: Record<string, unknown>) => api.put('/o
 // ===== 审计日志 =====
 export const listAuditLogs = (params?: Record<string, unknown>) => api.get('/ops/audit-logs', { params })
 
-// ===== 知识库 =====
-export const listKnowledge = (params?: Record<string, unknown>) => api.get('/ai/knowledge', { params })
-export const addKnowledge = (data: Record<string, unknown>) => api.post('/ai/knowledge', data)
-export const deleteKnowledge = (id: number) => api.delete(`/ai/knowledge/${id}`)
-
 // ===== 规则管理 =====
 export const listRules = () => api.get('/ai/rules')
 export const saveRule = (data: Record<string, unknown>) => api.post('/ai/rules', data)
@@ -226,6 +221,24 @@ export interface DashboardResources {
 }
 export const getDashboardResources = (params?: Record<string, unknown>) =>
   api.get<DashboardResources>('/dashboard/resources', { params })
+
+// ===== 知识库 =====
+export interface KnowledgeItem {
+  id: number
+  title: string
+  content: string
+  source: string
+  tags: string
+  code_ref: any
+  created_at?: string
+  updated_at?: string
+}
+export interface RagStats { collection: string; total: number }
+export const listKnowledge = (params?: Record<string, unknown>) => api.get('/ai/knowledge', { params })
+export const addKnowledge = (data: Record<string, unknown>) => api.post('/ai/knowledge', data)
+export const deleteKnowledge = (id: number) => api.delete(`/ai/knowledge/${id}`)
+export const getRagStats = () => api.get('/ai/knowledge/rag/stats')
+export const reloadRagKnowledge = () => api.post('/ai/knowledge/rag/reload')
 
 // ===== NL2SQL =====
 export const nl2sqlTranslate = (data: { question: string }) => api.post('/ai/nl2sql/translate', data)
