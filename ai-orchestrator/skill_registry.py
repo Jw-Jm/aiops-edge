@@ -90,6 +90,9 @@ class SkillDef:
     tools: List[str]                            # 关联工具名
     system_prompt: str = ""                     # 该技能的领域系统提示词
     trigger_actions: List[str] = field(default_factory=list)  # 可触发的动作（如审批执行）
+    when_to_use: str = ""                       # 何时使用（来自 SKILL.md frontmatter）
+    activation_keywords: List[str] = field(default_factory=list)   # activation.keywords（优先级高）
+    description_keywords: List[str] = field(default_factory=list)  # 描述关键词（match 兜底）
 
     def to_summary(self) -> dict:
         """导出技能元数据，供 /ai/skills 接口与前端渲染。"""
@@ -107,6 +110,7 @@ class SkillDef:
             "key": self.name,
             "name": self.title,
             "description": self.description,
+            "when_to_use": self.when_to_use,
             "intent_keywords": self.intent_keywords,
             "tools": tools,
             "system_prompt": self.system_prompt,
@@ -122,16 +126,53 @@ class SkillRegistry:
         return skill
 
     @classmethod
+    def load_from_skills(cls, files) -> None:
+        """将 skill_loader.load_skills() 的 SkillFile 映射为 SkillDef 并注册（重置现有技能集）。
+
+        activation.keyword 与 intent_keywords 合并（去重保序）。
+        """
+        cls._skills = {}
+        for sf in files.values():
+            act = [str(k) for k in sf.activation_keywords]
+            merged = list(dict.fromkeys(act + [str(k) for k in sf.description_keywords]))
+            cls._skills[sf.name] = SkillDef(
+                name=sf.name,
+                title=sf.title or sf.name,
+                description=sf.description,
+                intent_keywords=merged,
+                tools=list(sf.tools),
+                system_prompt=sf.system_prompt,
+                trigger_actions=list(sf.trigger_actions),
+                when_to_use=sf.when_to_use,
+                activation_keywords=act,
+                description_keywords=list(sf.description_keywords),
+            )
+
+    @classmethod
+    def reload(cls) -> None:
+        """热重载: 重新扫描 builtin + 用户 skills 目录（marketplace 安装/卸载后调用）。"""
+        from skills import init_skills
+        init_skills()
+
+
+    @classmethod
     def get(cls, name: str) -> Optional[SkillDef]:
         return cls._skills.get(name)
 
     @classmethod
     def match(cls, user_message: str) -> List[SkillDef]:
-        """按意图关键词匹配最相关的 Skill 列表（按命中数降序）"""
+        """按意图关键词匹配最相关的 Skill 列表（按命中数降序）。
+
+        优先 activation.keyword（激活关键词，权重 2），其次 description/when_to_use
+        推导出的描述关键词（权重 1）做兜底匹配。
+        """
         msg = (user_message or "").lower()
         scored = []
         for s in cls._skills.values():
-            score = sum(1 for kw in s.intent_keywords if kw in msg)
+            act_kws = s.activation_keywords or s.intent_keywords
+            act_hits = sum(1 for kw in act_kws if (kw or "").lower() in msg)
+            desc_hits = sum(1 for kw in s.description_keywords if kw in msg)
+            score = act_hits * 2 + desc_hits
             if score > 0:
                 scored.append((score, s))
         scored.sort(key=lambda x: x[0], reverse=True)
