@@ -175,13 +175,18 @@ func (s *DeepFlowSyncer) Sync() error {
 		shanghai = time.FixedZone("CST", 8*3600)
 	}
 	startStr := start.In(shanghai).Format("2006-01-02 15:04:05")
-	sql := "SELECT time, s0.name AS src, s1.name AS dst, sum(request) AS calls, " +
-		"sum(client_error) + sum(server_error) + sum(timeout) AS errs " +
+	// namespace 映射：pod_service_map 的 pod_ns_id → pod_ns_map.name（K8s namespace）。
+	// 修复：此前只取服务名不取 ns，导致 deepflow 同步的 span k8s_namespace 恒为空，
+	// 服务全景无法按 observability 等真实 ns 过滤。
+	sql := "SELECT time, s0.name AS src, n0.name AS src_ns, s1.name AS dst, n1.name AS dst_ns, " +
+		"sum(request) AS calls, sum(client_error) + sum(server_error) + sum(timeout) AS errs " +
 		"FROM flow_metrics.`application_map.1m` " +
 		"LEFT JOIN flow_tag.pod_service_map s0 ON s0.id = auto_service_id_0 " +
+		"LEFT JOIN flow_tag.pod_ns_map n0 ON n0.id = s0.pod_ns_id " +
 		"LEFT JOIN flow_tag.pod_service_map s1 ON s1.id = auto_service_id_1 " +
+		"LEFT JOIN flow_tag.pod_ns_map n1 ON n1.id = s1.pod_ns_id " +
 		"WHERE s0.name IS NOT NULL AND s1.name IS NOT NULL AND time >= '" + startStr + "' " +
-		"GROUP BY time, src, dst"
+		"GROUP BY time, src, src_ns, dst, dst_ns"
 
 	rows, err := s.queryDF(sql)
 	if err != nil {
@@ -192,6 +197,8 @@ func (s *DeepFlowSyncer) Sync() error {
 	for _, r := range rows {
 		src, _ := r["src"].(string)
 		dst, _ := r["dst"].(string)
+		srcNS, _ := r["src_ns"].(string)
+		dstNS, _ := r["dst_ns"].(string)
 		if src == "" || dst == "" {
 			continue
 		}
@@ -213,15 +220,17 @@ func (s *DeepFlowSyncer) Sync() error {
 		// DeepFlow 返回的是 Asia/Shanghai 时区；写入时统一转成 UTC 存储（与 observability 一致）
 		tbUTC := tb.In(time.UTC)
 		s.edgeWriter.AddEdge(&model.TopologyEdge{
-			TenantID:      s.tenantID,
-			ClusterID:     s.cluster,
-			SourceService: src,
-			TargetService: dst,
-			TimeBucket:    tbUTC,
-			CallCount:     calls,
-			ErrorCount:    errs,
-			AvgDurationNs: 0, // application_map 无时长字段，可后续扩展
-			Date:          tbUTC.Format("2006-01-02"),
+			TenantID:        s.tenantID,
+			ClusterID:       s.cluster,
+			SourceService:   src,
+			TargetService:   dst,
+			SourceNamespace: srcNS,
+			TargetNamespace: dstNS,
+			TimeBucket:      tbUTC,
+			CallCount:       calls,
+			ErrorCount:      errs,
+			AvgDurationNs:   0, // application_map 无时长字段，可后续扩展
+			Date:            tbUTC.Format("2006-01-02"),
 		})
 		count++
 	}
@@ -252,12 +261,17 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 	if errLoc != nil {
 		shanghai = time.FixedZone("CST", 8*3600)
 	}
+	// namespace 映射：与 Sync() 一致，通过 pod_service_map.pod_ns_id → pod_ns_map.name
+	// 提取源/目标服务的 K8s namespace，写入 span.k8s_namespace（修复 ns 缺失）。
 	windowStartStr := windowStart.In(shanghai).Format("2006-01-02 15:04:05")
-	sql := "SELECT start_time, response_duration, s0.name AS src, s1.name AS dst, " +
+	sql := "SELECT start_time, response_duration, s0.name AS src, n0.name AS src_ns, " +
+		"s1.name AS dst, n1.name AS dst_ns, " +
 		"request_resource, response_code " +
 		"FROM flow_log.`l7_flow_log` " +
 		"LEFT JOIN flow_tag.pod_service_map s0 ON s0.id = auto_service_id_0 " +
+		"LEFT JOIN flow_tag.pod_ns_map n0 ON n0.id = s0.pod_ns_id " +
 		"LEFT JOIN flow_tag.pod_service_map s1 ON s1.id = auto_service_id_1 " +
+		"LEFT JOIN flow_tag.pod_ns_map n1 ON n1.id = s1.pod_ns_id " +
 		"WHERE s0.name IS NOT NULL AND s1.name IS NOT NULL " +
 		"AND l7_protocol IN (20, 21, 22, 30) " + // HTTP/HTTP2/HTTPS/DNS 等应用协议
 		"AND start_time >= '" + windowStartStr + "' " +
@@ -283,6 +297,9 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 		if dst == "" {
 			continue
 		}
+		// 源/目标服务的 K8s namespace（deepflow pod_ns_map 映射，无则空）
+		srcNS, _ := r["src_ns"].(string)
+		dstNS, _ := r["dst_ns"].(string)
 		operation := fmt.Sprintf("%v", r["request_resource"])
 		if operation == "" || operation == "<nil>" {
 			operation = "unknown"
@@ -334,6 +351,7 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 			IsSlow:        boolToU8(clientDur >= 500000000),
 			IsError:       isErr,
 			ServiceInstanceID: srcName,
+			K8sNamespace:  srcNS,
 		}
 		s.spanWriter.Add(clientSpan)
 		serverSpan := &model.Span{
@@ -355,6 +373,7 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 			IsSlow:        boolToU8(durNs >= 500000000),
 			IsError:       isErr,
 			ServiceInstanceID: srcName,
+			K8sNamespace:  dstNS,
 		}
 		s.spanWriter.Add(serverSpan)
 

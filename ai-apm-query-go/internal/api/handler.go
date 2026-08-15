@@ -100,6 +100,7 @@ type Handler struct {
 	chPassword string // ClickHouse 密码（经 Secret 注入，空则不启用认证）
 	client     *http.Client
 	vmURL      string // VictoriaMetrics base URL（经 env 注入，可移植）
+	podNS      *podNSResolver // K8s pod→ns 兜底映射（GlobalTopology 对空 ns 服务使用；nil 时不启用）
 }
 
 // NewHandler creates a new Handler.
@@ -111,6 +112,7 @@ func NewHandler(chHost string, chPort int) *Handler {
 		chPassword: os.Getenv("CLICKHOUSE_PASSWORD"),
 		client:     &http.Client{Timeout: 30 * time.Second},
 		vmURL:      firstNonEmpty(os.Getenv("VICTORIA_METRICS_URL"), "http://victoria-metrics.observability.svc.cluster.local:8428"),
+		podNS:      newPodNSResolver(),
 	}
 }
 
@@ -1320,6 +1322,20 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	// ns 过滤（契约4）：传 namespace 时返回该 ns 全部节点（正常渲染）+ 与之有调用关系的
 	// 其他 ns 节点（标记 external:true 并带真实 namespace）；跨 ns 边保留。未传 = 全部节点。
 	nodes := make([]map[string]interface{}, 0, len(nodeMap))
+	// K8s 兜底（层2）：ns 为空的服务节点用 K8s pod 映射补 namespace（修复 deepflow 同步/
+	// 存量 span 无 k8s_namespace 时无法按真实 ns 过滤的问题）。只补空 ns，不覆盖已有 span ns。
+	// 兜底结果写回 serviceNS，使 namespaces 列表与 ns 过滤同时生效。
+	if h.podNS != nil {
+		for name, n := range nodeMap {
+			if ns, _ := n["namespace"].(string); ns != "" {
+				continue
+			}
+			if mapped := h.podNS.resolve(name); mapped != "" {
+				n["namespace"] = mapped
+				serviceNS[name] = mapped
+			}
+		}
+	}
 	if namespaceFilter != "" {
 		inNS := map[string]bool{}
 		for name, n := range nodeMap {

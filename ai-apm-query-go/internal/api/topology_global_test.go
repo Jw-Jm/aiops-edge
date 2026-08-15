@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockGlobalTopologyCH 构造一个按查询内容返回不同 JSONEachRow 的 mock ClickHouse：
@@ -309,4 +310,97 @@ func keysOf(m map[string]map[string]interface{}) []string {
 		ks = append(ks, k)
 	}
 	return ks
+}
+
+// ===== 层2：K8s pod 兜底映射（空 ns 服务补 namespace）=====
+
+// mockGlobalTopologyCHWithPodNS 构造与 mockGlobalTopologyCH 相同的 mock CH，
+// 并注入 podNS 兜底解析器（fetchFn 返回真实 pod→ns 映射）。
+// nsRows 中 ns 为空的服务应被 K8s pod 兜底补上 namespace。
+func mockGlobalTopologyCHWithPodNS(t *testing.T, edgeRows, nodeRows, nsRows string, podMap map[string]string) *Handler {
+	h := mockGlobalTopologyCH(t, edgeRows, nodeRows, nsRows)
+	h.podNS = &podNSResolver{
+		svcNS:   podMap,
+		fetched: time.Now(), // 视为已拉取，跳过 fetch
+		ttl:     podNSFallbackTTL,
+	}
+	return h
+}
+
+// TestGlobalTopologyPodNSFallback 验证：
+//   - 空 ns 服务（query-api/victoria-logs 等真实 K8s 服务）经 K8s pod 兜底补上 observability ns
+//   - 已有 span ns（frontend=app）不被覆盖
+//   - namespaces 列表包含兜底补出的 ns
+func TestGlobalTopologyPodNSFallback(t *testing.T) {
+	edgeRows := "" +
+		`{"source_service":"frontend","target_service":"query-api","calls":10,"errs":0,"avg_ns":1000000}` + "\n"
+	nodeRows := "" +
+		`{"service":"frontend","calls":100,"errs":1,"avg_ns":1000000}` + "\n" +
+		`{"service":"query-api","calls":80,"errs":0,"avg_ns":1200000}` + "\n" +
+		`{"service":"victoria-logs","calls":60,"errs":0,"avg_ns":900000}` + "\n"
+	// query-api / victoria-logs 的 ns 为空（deepflow 同步数据无 k8s_namespace）
+	nsRows := "" +
+		`{"service":"frontend","ns":"app","calls":100}` + "\n" +
+		`{"service":"query-api","ns":"","calls":80}` + "\n" +
+		`{"service":"victoria-logs","ns":"","calls":60}` + "\n"
+	podMap := map[string]string{
+		"query-api":      "observability",
+		"victoria-logs":  "observability",
+		"ingest":         "observability",
+	}
+
+	h := mockGlobalTopologyCHWithPodNS(t, edgeRows, nodeRows, nsRows, podMap)
+	resp := callGlobalTopology(t, h, "")
+
+	nodes := nodeByName(t, resp)
+	// 兜底补 ns
+	if got, _ := nodes["query-api"]["namespace"].(string); got != "observability" {
+		t.Errorf("query-api namespace=%q, want observability (pod fallback)", got)
+	}
+	if got, _ := nodes["victoria-logs"]["namespace"].(string); got != "observability" {
+		t.Errorf("victoria-logs namespace=%q, want observability (pod fallback)", got)
+	}
+	// 已有 span ns 不被覆盖
+	if got, _ := nodes["frontend"]["namespace"].(string); got != "app" {
+		t.Errorf("frontend namespace=%q, want app (span ns preserved)", got)
+	}
+	// namespaces 列表包含兜底 ns
+	nsRaw, _ := resp["namespaces"].([]interface{})
+	var nss []string
+	for _, it := range nsRaw {
+		nss = append(nss, it.(string))
+	}
+	want := []string{"app", "observability"}
+	if len(nss) != len(want) {
+		t.Fatalf("namespaces=%v, want %v", nss, want)
+	}
+	for i := range want {
+		if nss[i] != want[i] {
+			t.Fatalf("namespaces=%v, want %v", nss, want)
+		}
+	}
+	// 兜底 ns 参与过滤：namespace=observability 命中 query-api
+	resp2 := callGlobalTopology(t, h, "namespace=observability")
+	nodes2 := nodeByName(t, resp2)
+	if _, ok := nodes2["query-api"]; !ok {
+		t.Error("query-api should be present when filtering by observability (fallback ns)")
+	}
+	if ext, _ := nodes2["query-api"]["external"].(bool); ext {
+		t.Error("query-api (in observability) should not be external")
+	}
+}
+
+// TestGlobalTopologyPodNSFallbackDoesNotOverride 验证：服务已有 span ns 时，
+// pod 兜底不覆盖（即使 podMap 有不同值）。
+func TestGlobalTopologyPodNSFallbackDoesNotOverride(t *testing.T) {
+	h := mockGlobalTopologyCHWithPodNS(t, gtEdgeRows, gtNodeRows, gtNSRows,
+		map[string]string{"frontend": "kube-system", "backend": "kube-system"})
+	resp := callGlobalTopology(t, h, "")
+	nodes := nodeByName(t, resp)
+	if got, _ := nodes["frontend"]["namespace"].(string); got != "app" {
+		t.Errorf("frontend namespace=%q, want app (not overridden by podMap)", got)
+	}
+	if got, _ := nodes["backend"]["namespace"].(string); got != "app" {
+		t.Errorf("backend namespace=%q, want app (not overridden by podMap)", got)
+	}
 }

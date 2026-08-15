@@ -1,6 +1,10 @@
 package pipeline
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,7 +67,7 @@ func TestClampStartTime_Future(t *testing.T) {
 
 func TestClampStartTime_TooOld(t *testing.T) {
 	now := time.Now().UTC()
-	if got := clampStartTime(now.Add(-2*time.Hour), now); got.Before(now.Add(-15*time.Minute)) {
+	if got := clampStartTime(now.Add(-2*time.Hour), now); got.Before(now.Add(-15 * time.Minute)) {
 		t.Fatalf("clamp allowed too-old start: %v", got)
 	}
 }
@@ -141,6 +145,93 @@ func (s *DeepFlowSyncer) accumulateREDFromRows(rows []map[string]interface{}) {
 		}
 		if s.redMetric != nil {
 			s.redMetric.AddServiceREDForCluster(s.cluster, dst, isErr == 1, durNs)
+		}
+	}
+}
+
+// capturingSpanWriter 记录写入的 span，用于验证 ns 映射。
+type capturingSpanWriter struct {
+	spans []*model.Span
+}
+
+func (w *capturingSpanWriter) Add(s *model.Span) {
+	w.spans = append(w.spans, s)
+}
+
+// mockDFCH 构造 mock DeepFlow ClickHouse：解析 query 参数返回固定 JSON 行。
+// 返回 syncer 所需的 host/port（用于 NewDeepFlowSyncer）。
+func mockDFCH(t *testing.T, rowsJSON string) (host string, port int) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"meta":[],"data":[` + rowsJSON + `]}`))
+	}))
+	t.Cleanup(srv.Close)
+	h, pStr := splitHostPortMock(srv.URL)
+	p, _ := strconv.Atoi(pStr)
+	return h, p
+}
+
+// splitHostPortMock 从 test server URL 拆 host/port（避免依赖 url.Parse 细节）。
+func splitHostPortMock(u string) (string, string) {
+	s := strings.TrimPrefix(u, "http://")
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		return s[:i], s[i+1:]
+	}
+	return s, ""
+}
+
+// TestSyncTracesWritesK8sNamespace 验证 deepflow 同步写 span 时 k8s_namespace 有值：
+// 修复前 src_ns/dst_ns 未提取，所有 deepflow 同步服务的 k8s_namespace 为空串。
+func TestSyncTracesWritesK8sNamespace(t *testing.T) {
+	rows := "" +
+		`{"start_time":"2026-08-15 10:00:00.000000","response_duration":1000,"src":"query-api","src_ns":"observability","dst":"ingest","dst_ns":"observability","request_resource":"/api/orders","response_code":200},` +
+		`{"start_time":"2026-08-15 10:00:01.000000","response_duration":2000,"src":"deepflow-server","src_ns":"deepflow","dst":"deepflow-mysql","dst_ns":"deepflow","request_resource":"/query","response_code":503}`
+	host, port := mockDFCH(t, rows)
+
+	sw := &capturingSpanWriter{}
+	s := NewDeepFlowSyncer(host, port, "cluster-x", nil, sw, nil, nil)
+	s.sampleRate = 1.0 // 关闭抽样，确保全部写入
+	windowStart := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC)
+	if err := s.syncTraces(windowStart); err != nil {
+		t.Fatalf("syncTraces: %v", err)
+	}
+	if len(sw.spans) != 4 {
+		t.Fatalf("expected 4 spans (2 flows × client+server), got %d", len(sw.spans))
+	}
+	// 服务名 → ns 校验
+	nsByService := map[string]string{}
+	for _, sp := range sw.spans {
+		nsByService[sp.ServiceName] = sp.K8sNamespace
+	}
+	want := map[string]string{
+		"query-api":       "observability",
+		"ingest":          "observability",
+		"deepflow-server": "deepflow",
+		"deepflow-mysql":  "deepflow",
+	}
+	for svc, ns := range want {
+		if got := nsByService[svc]; got != ns {
+			t.Errorf("service %s k8s_namespace=%q, want %q", svc, got, ns)
+		}
+	}
+}
+
+// TestSyncTracesK8sNamespaceEmptyFallback 验证 deepflow 无 ns 数据时 k8s_namespace 为空串（不 panic）。
+func TestSyncTracesK8sNamespaceEmptyFallback(t *testing.T) {
+	rows := `{"start_time":"2026-08-15 10:00:00.000000","response_duration":1000,"src":"legacy","src_ns":"","dst":"old-svc","dst_ns":"","request_resource":"/api","response_code":200}`
+	host, port := mockDFCH(t, rows)
+
+	sw := &capturingSpanWriter{}
+	s := NewDeepFlowSyncer(host, port, "cluster-x", nil, sw, nil, nil)
+	s.sampleRate = 1.0
+	windowStart := time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC)
+	if err := s.syncTraces(windowStart); err != nil {
+		t.Fatalf("syncTraces: %v", err)
+	}
+	for _, sp := range sw.spans {
+		if sp.K8sNamespace != "" {
+			t.Errorf("span %s/%s k8s_namespace=%q, want empty when deepflow has no ns", sp.ServiceName, sp.SpanKind, sp.K8sNamespace)
 		}
 	}
 }
