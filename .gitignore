@@ -74,3 +74,6 @@ ai-apm-ingest-go/loadgen
 ai-apm-query-go/query-api
 # 测试截图产物（不入库）
 gui-test-screenshots/
+
+# deepwork 进度文件
+.slim/deepwork/
