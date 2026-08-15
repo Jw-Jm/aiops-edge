@@ -10,6 +10,34 @@ from concurrent.futures import ThreadPoolExecutor
 from function_calling import run_tool_loop, WHITELIST_READONLY
 from skill_registry import ExpertRegistry, ToolRegistry
 
+# B5: 协调器/子 Agent 工具循环白名单——额外放行 spawn_worker 派活工具
+WORKER_WHITELIST = WHITELIST_READONLY | {"spawn_worker"}
+
+_SPAWN_WORKER_TOOL = None
+
+
+def _spawn_worker_tool():
+    """缓存的 spawn_worker ToolDef（agent_tool 构造，避免每轮重建）。"""
+    global _SPAWN_WORKER_TOOL
+    if _SPAWN_WORKER_TOOL is None:
+        from agent_tool import make_spawn_worker_tool
+        _SPAWN_WORKER_TOOL = make_spawn_worker_tool()
+    return _SPAWN_WORKER_TOOL
+
+
+def coordinator_system_prompt(catalog: str = "") -> str:
+    """Coordinator system prompt。catalog 非空时注入 specialist 目录，让 LLM 选择。"""
+    if not catalog:
+        return ("你是任务协调器。把用户请求拆解为可并行执行的子任务，"
+                "输出 JSON 数组，每项含 task_id/task_type/target_service/query。"
+                "task_type 限 diagnosis/inspection/ops/query。只输出 JSON。")
+    return ("你是任务协调器。把用户请求拆解为可并行执行的子任务，并优先指派给下面的"
+            "specialist（persona）。task_type 用 specialist 名；你拥有 spawn_worker 工具，"
+            "可在子 Agent 循环中派活，保留 ExpertRegistry keyword 兜底。\n\n"
+            "可用 specialist 目录:\n"
+            f"{catalog}\n\n"
+            "输出 JSON 数组，每项含 task_id/task_type/target_service/query。只输出 JSON。")
+
 
 def parse_subtasks(raw: str) -> list:
     """解析 Coordinator LLM 输出的子任务拆解 JSON（容忍 ```json 围栏/噪声）。"""
@@ -59,6 +87,10 @@ def _expert_tools(expert_registry, task_type: str) -> list:
     # 退化为白名单内全部已注册只读工具（当无专家工具或全部为空时）
     if not resolved:
         resolved = [t for t in ToolRegistry.list_all() if t.name in WHITELIST_READONLY and t.cls == "safe"]
+    # B5: 协调器/子 Agent 工具集额外放行 spawn_worker（可派活给 specialist persona）
+    sw = _spawn_worker_tool()
+    if sw and not any(t.name == "spawn_worker" for t in resolved):
+        resolved = list(resolved) + [sw]
     return resolved
 
 
@@ -69,7 +101,7 @@ def run_subtask(subtask: dict, llm_decision, expert_registry, on_tool=None) -> d
     tools = _expert_tools(expert_registry, task_type)
     started = time.time()
     res = run_tool_loop(llm_decision, tools, query,
-                        whitelist=WHITELIST_READONLY, on_tool=on_tool)
+                        whitelist=WORKER_WHITELIST, on_tool=on_tool)
     return {
         "task_id": subtask.get("task_id", "task"),
         "task_type": task_type,
