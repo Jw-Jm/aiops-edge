@@ -18,3 +18,20 @@ server:
   resources:
     requests: { cpu: "500m", memory: "1Gi" }
     limits: { cpu: "2", memory: "2Gi" }
+
+# ---------------------------------------------------------------------------
+# grafana 嵌入配置（工作流 F2）
+# deepflow chart 将 grafana/grafana 作为子 chart，其 values 挂在顶层 `grafana:` 键下，
+# 配置段为 `grafana.ini:`（= 常见写法 grafana.grafana.ini.<段>.<键>）。
+# 目的：允许平台 iframe 嵌入 + 匿名只读（Viewer），供 query-api Grafana 代理与 v3 页面使用。
+# 部署在验收阶段执行（helm upgrade deepflow deepflow/deepflow -n deepflow -f 本文件）。
+# ---------------------------------------------------------------------------
+grafana:
+  grafana.ini:
+    security:
+      allow_embedding: true
+      cookie_samesite: none
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+
