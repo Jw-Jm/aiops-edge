@@ -80,6 +80,8 @@ class ShellPolicy:
         r"kubectl describe vm", r"kubectl describe vmi",
         r"kubectl get vmrestore", r"kubectl get vmsnapshot",
         r"virtctl version", r"virtctl vnc \S+", r"virtctl console \S+",
+        # 结构化动作预检/描述: kubectl get|describe <kind>/<name> (工作流 C)
+        r"kubectl (get|describe) (deployment|statefulset|daemonset|pod|node)/\S+",
         # 管道只读过滤器(kubectl ... | grep/head/tail/awk/wc/sort)
         r"^\s*(grep|egrep|head|tail|awk|wc|sort|uniq|sed)\s+",
     ]
@@ -89,6 +91,10 @@ class ShellPolicy:
         r"kubectl rollout undo deployment/\S+",
         r"kubectl delete pod \S+ --grace-period=\d+",
         r"kubectl exec \S+ -- ",
+        # 节点调度写操作 (工作流 C, 需人工审批)
+        r"kubectl cordon node \S+",
+        r"kubectl uncordon node \S+",
+        r"kubectl drain node \S+",
         # KubeVirt VM 操作白名单 (需人工审批)
         r"virtctl restart \S+",
         r"virtctl stop \S+",
@@ -105,7 +111,10 @@ class ShellPolicy:
         现在: ① 元字符拦截(见 check_shell_metachars); ② 整段命令必须命中
         EXEC_READONLY/EXEC_WRITE 之一(前缀匹配仅作兼容提示); ③ 危险参数黑名单
         (kubectl delete/exec/apply/rollout undo、curl 外联下载、systemctl stop、
-        docker 写操作等)一律拒绝。保持函数签名不变。
+        docker 写操作等)对**未命中白名单**的命令兜底拦截——白名单显式放行的受控
+        形式(如 `kubectl delete pod X --grace-period=N` / `kubectl drain node X
+        --ignore-daemonsets`)按白名单通过, 防止宽泛黑名单误伤受控写操作。
+        保持函数签名不变。
         """
         if not command or not command.strip():
             return (False, "empty")
@@ -113,24 +122,14 @@ class ShellPolicy:
         meta = self.check_shell_metachars(command)
         if meta:
             return (False, "metachars")
-        # 2) 危险参数黑名单(整段命令, 不限首行)
+        # 2) 危险参数黑名单(整段命令, 不限首行) — 白名单外的 kubectl 危险动词兜底
         for pattern, cat, desc in self.EXTRA_BLACKLIST:
             if re.search(pattern, command, re.IGNORECASE):
                 return (False, cat)
-        for pat in (
-            r"\bkubectl\b[^\n]*\b(delete|exec|edit|apply|create|replace|patch|drain|taint|rollout\s+undo)\b",
-            r"\bcurl\b[^\n]*\s(-o|--output|--data|--data-binary|-d|--upload-file)\s",
-            r"\bsystemctl\s+(stop|disable|mask|restart)\b",
-            r"\bdocker\s+(rm|rmi|run|exec|build|push|pull)\b",
-            r"\brm\s+(-[rf]+\s+)*(/|/etc|/var|/usr|/root)",
-            r"\bchmod\s+777\b|\bchown\b",
-            r"\bbase64\s+-d\b",
-        ):
-            if re.search(pat, command, re.IGNORECASE):
-                return (False, "dangerous_params")
         # 3) 白名单: 整段命令(去管道后逐段)必须整体命中只读或写规则
         segments = [s.strip() for s in re.split(r"\s*\|\s*", command) if s.strip()]
         readonly_hit = write_hit = False
+        all_whitelisted = True
         for seg in segments:
             seg_ro = any(re.search(p, seg) for p in self.EXEC_READONLY)
             seg_wr = any(re.search(p, seg) for p in self.EXEC_WRITE)
@@ -140,7 +139,27 @@ class ShellPolicy:
                 write_hit = True
             # 任一段既非只读也非写白名单 → 拒绝(管道内也不允许任意命令)
             if not seg_ro and not seg_wr:
-                return (False, "not_whitelisted")
+                all_whitelisted = False
+                break
+        if all_whitelisted:
+            if write_hit:
+                return (True, "write")
+            if readonly_hit:
+                return (True, "readonly")
+            return (False, "not_whitelisted")
+        # 4) 未命中白名单: 危险参数黑名单兜底(整段命令, 不限首行)
+        for pat in (
+            r"\bkubectl\b[^\n]*\b(delete|exec|edit|apply|create|replace|patch|drain|taint|rollout\s+undo)\b",
+            r"\bcurl\b[^\n]*\s(-o|--output|--data|--data-binary|-d|--upload-file)\s",
+            r"\bsystemctl\s+(stop|disable|mask|restart)\b",
+            r"\bdocker\s+(rm|rmi|run|exec|build|push|pull)\b",
+            r"\brm\s+(-[rf]+\s*)*(/|/etc|/var|/usr|/root)",
+            r"\bchmod\s+777\b|\bchown\b",
+            r"\bbase64\s+-d\b",
+        ):
+            if re.search(pat, command, re.IGNORECASE):
+                return (False, "dangerous_params")
+        return (False, "not_whitelisted")
         if write_hit:
             return (True, "write")
         if readonly_hit:
