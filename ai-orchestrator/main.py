@@ -108,12 +108,28 @@ async def lifespan(app: FastAPI):
         _flow_sched.start()
     except Exception as e:  # noqa: BLE001
         print(f"[startup] flow cron scheduler error: {e}", flush=True)
-    # E2: 内置运维 playbook 向量化加载（幂等，后台线程，失败不阻塞）
+    # E2: 内置运维 playbook 向量化加载（重试直到 ChromaDB 就绪，幂等，失败不阻塞）
+    # 注意: ChromaDB 首次初始化可能失败(与 knowledge_seed 并行竞争 tenant 创建),
+    # 一次性线程会静默丢 playbook, 因此带重试循环 (10 次 × 15s)。
     try:
         import threading as _th
+        import time as _time
         from playbook_loader import load_playbooks as _load_playbooks
         from rag import rag as _rag_store
-        _th.Thread(target=lambda: _load_playbooks(_rag_store), daemon=True).start()
+
+        def _load_playbooks_bg():
+            for _attempt in range(10):
+                try:
+                    n = _load_playbooks(_rag_store)
+                    if n > 0:
+                        print(f"[startup] playbooks loaded: {n} chunks", flush=True)
+                        return
+                except Exception:
+                    pass
+                _time.sleep(15)
+            print("[startup] playbooks 加载失败(重试耗尽), 可稍后手动触发", flush=True)
+
+        _th.Thread(target=_load_playbooks_bg, daemon=True).start()
     except Exception:
         pass
 
