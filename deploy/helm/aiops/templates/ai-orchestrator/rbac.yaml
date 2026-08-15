@@ -1,0 +1,83 @@
+{{- if .Values.aiOrchestrator.enabled }}
+# ai-orchestrator 专用 ServiceAccount + K8s 写操作 RBAC
+# 支撑工作流 C 结构化动作（rollout restart / scale / delete pod / cordon / uncordon / drain）。
+# 采用与 query-api 相同的 in-cluster SA 模式：kubectl 自动使用容器内 SA token，
+# 无需挂载 kubeconfig secret（未挂载时 kubectl 回退当前 context / in-cluster SA）。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-orchestrator
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-orchestrator
+---
+# 只读基础：复用内置 view 角色（pods/deployments/services 等 get/list/watch）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ai-orchestrator-view
+  labels:
+    app: ai-orchestrator
+subjects:
+- kind: ServiceAccount
+  name: ai-orchestrator
+  namespace: {{ .Values.namespace.observability }}
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+---
+# 写操作：严格对齐 shell_policy.EXEC_WRITE 白名单能力（动作粒度最小授权）
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ai-orchestrator-ops
+  labels:
+    app: ai-orchestrator
+rules:
+# rollout restart / rollout undo / scale（apps 工作负载）
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale", "statefulsets/scale"]
+  verbs: ["get", "patch"]
+# delete pod --grace-period（白名单受控形式）
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "delete"]
+# pod 驱逐（drain 依赖 pods/eviction）
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]
+# kubectl exec（白名单受控形式：kubectl exec <res> -- <cmd>）
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+# cordon / uncordon / drain：节点调度状态变更
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+# drain 判定 workload 归属所需控制器只读
+- apiGroups: ["apps"]
+  resources: ["replicasets", "replicationcontrollers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["replicationcontrollers", "events", "pods/log"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ai-orchestrator-ops
+  labels:
+    app: ai-orchestrator
+subjects:
+- kind: ServiceAccount
+  name: ai-orchestrator
+  namespace: {{ .Values.namespace.observability }}
+roleRef:
+  kind: ClusterRole
+  name: ai-orchestrator-ops
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

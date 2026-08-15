@@ -19,6 +19,7 @@ spec:
       labels:
         app: ai-orchestrator
     spec:
+      serviceAccountName: ai-orchestrator
       containers:
         - name: ai-orchestrator
           image: {{ tpl .Values.aiOrchestrator.image . }}
