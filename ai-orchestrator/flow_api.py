@@ -155,6 +155,27 @@ def generate_flow(body: GenerateBody, request: Request):
             "graph": graph["graph"]}
 
 
+@router.post("/test-node")
+def test_node(body: TestNodeBody, request: Request):
+    """单节点试跑: 构造 1 节点临时图经 Engine.execute 执行, 返回该节点 output。"""
+    _require_admin(request)
+    svc = get_flow_service()
+    if node_registry.lookup(body.type) is None:
+        raise HTTPException(400, f"unknown node type: {body.type}")
+    graph = graph_from_dict({"nodes": [{"id": "n1", "type": body.type,
+                                        "config": body.config or {}, "position": {}}],
+                             "edges": []})
+    try:
+        validate_graph(graph)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    result = svc.engine.execute(graph, body.trigger or {})
+    nr = result.node_results.get("n1")
+    if nr is None:
+        raise HTTPException(400, "node did not execute")
+    return {"ok": nr.status != "error", "output": nr.output, "error": nr.error}
+
+
 @router.get("")
 def list_flows():
     svc = get_flow_service()
