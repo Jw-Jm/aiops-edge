@@ -58,9 +58,10 @@ def _chunkify(sections: list, max_chars: int = CHUNK_MAX_CHARS) -> list:
 
 
 def _norm_meta_list(values):
-    """metadata 值归一化: 非空列表存列表(chromadb $contains 成员匹配), 空列表存空串(空 list 会被 chromadb 拒绝)。"""
+    """metadata 值归一化: 列表 join 成逗号分隔字符串 (chromadb 0.4.x~1.5.x 均接受 str;
+    list 值在 1.1.1 及更早的 validate_metadata 会被拒绝)。空列表 → 空串。"""
     v = [str(x) for x in (values or [])]
-    return v if v else ""
+    return ",".join(v)
 
 
 def load_playbooks(store, playbooks_dir: str = None) -> int:
@@ -89,8 +90,8 @@ def load_playbooks(store, playbooks_dir: str = None) -> int:
             meta, body = split_frontmatter(text)
             category = os.path.dirname(relpath)
             title = meta.get("title") or os.path.splitext(fn)[0]
-            # tags/alert_keys/applies_to 存为列表 (chromadb 1.x $contains 按数组成员匹配);
-            # 空列表归一化为空串, 否则 chromadb 拒绝空 list metadata
+            # tags/alert_keys/applies_to 存为逗号分隔字符串 (跨 chromadb 版本兼容,
+            # 检索侧在 Python 里按 split(",") 集合匹配, 不依赖 $contains 数组语义)
             m_tags = _norm_meta_list(meta.get("tags"))
             m_alert_keys = _norm_meta_list(meta.get("alert_keys"))
             m_applies_to = _norm_meta_list(meta.get("applies_to"))
@@ -112,6 +113,13 @@ def _default_store():
     """模块级 RAGStore 单例 (与 skills/rag_skill.py 的 case_search 同一实例)。"""
     from rag import rag
     return rag
+
+
+def _tags_to_list(tags):
+    """对外契约: items[].tags 恒为数组。metadata 内为逗号分隔字符串, 统一转 list。"""
+    if isinstance(tags, (list, tuple)):
+        return [str(t) for t in tags]
+    return [t for t in str(tags or "").split(",") if t]
 
 
 def query_knowledge(query: str, path_prefix: str = None, tags=None,
@@ -147,7 +155,7 @@ def query_knowledge(query: str, path_prefix: str = None, tags=None,
             "title": pb["title"],
             "path": pb["path"],
             "category": pb["category"],
-            "tags": pb["tags"],
+            "tags": _tags_to_list(pb["tags"]),
             "score": pb["score"],
             "preview": (pb["content"] or "")[:PREVIEW_MAX_CHARS],
         })
@@ -159,7 +167,7 @@ def query_knowledge(query: str, path_prefix: str = None, tags=None,
                 "title": (c.get("title") or c.get("symptom", ""))[:80],
                 "path": "cases/" + c.get("case_id", ""),
                 "category": c.get("type", "case"),
-                "tags": c.get("tags", ""),
+                "tags": _tags_to_list(c.get("tags", "")),
                 "score": c.get("score", 0),
                 "preview": (c.get("symptom", "") or "")[:PREVIEW_MAX_CHARS],
             })

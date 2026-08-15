@@ -406,8 +406,12 @@ class RAGStore:
         Args:
             query: 检索词
             limit: 返回条数
-            path_prefix: 按 relpath 前缀过滤 (如 "diagnostics", 结果侧 Python 过滤)
-            tags: 标签列表, 全部命中才返回 (metadata.tags 存为列表, 走 $contains 成员匹配)
+            path_prefix: 按 relpath 前缀过滤 (如 "diagnostics")
+            tags: 标签列表, 全部命中才返回 (metadata.tags 存为逗号分隔字符串)
+
+        过滤策略: 不依赖 chromadb where 的 $contains (0.4.x~1.5.x 语义不一致,
+        1.5.x 的 $contains 是数组成员匹配而 1.1.x 才是子串), 因此取回 top-k 后在
+        Python 侧按 path 前缀 + tags split(",") 集合包含过滤, 再截断 limit。
 
         Returns:
             按相似度降序的 chunk 列表, 每条含
@@ -422,28 +426,21 @@ class RAGStore:
             total = coll.count()
             if total == 0:
                 return []
-            conds = []
-            if tags:
-                for t in tags:
-                    conds.append({"tags": {"$contains": str(t)}})
-            where = conds[0] if len(conds) == 1 else ({"$and": conds} if conds else None)
             n = min(max(limit * 5, 10), total)
-            if where is not None:
-                results = coll.query(query_texts=[query], n_results=n, where=where)
-            else:
-                results = coll.query(query_texts=[query], n_results=n)
+            results = coll.query(query_texts=[query], n_results=n)
             out = []
             if results["ids"] and results["ids"][0]:
                 for i, doc_id in enumerate(results["ids"][0]):
                     meta = results["metadatas"][0][i] if results["metadatas"] else {}
                     distance = results["distances"][0][i] if results["distances"] else 1.0
                     path = meta.get("path", "")
-                    # path_prefix 在结果侧按真前缀过滤
+                    # path_prefix 按真前缀过滤
                     if path_prefix and not path.startswith(path_prefix):
                         continue
-                    tag_list = meta.get("tags") or []
-                    if isinstance(tag_list, str):
-                        tag_list = tag_list.split(",")
+                    tags_str = meta.get("tags") or ""
+                    tag_list = tags_str.split(",") if isinstance(tags_str, str) else \
+                        [str(t) for t in tags_str]
+                    tag_list = [t for t in tag_list if t]
                     if tags and not all(str(t) in tag_list for t in tags):
                         continue
 

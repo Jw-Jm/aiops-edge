@@ -74,9 +74,10 @@ def test_frontmatter_fields_in_metadata(store):
     meta = got["metadatas"][0]
     assert meta["category"] == "diagnostics"
     assert meta["title"] == "OOMKilled 容器内存溢出"
-    assert "oom" in meta["tags"]
-    assert "ContainerOOMKilled" in meta["alert_keys"]
-    assert "k8s" in meta["applies_to"]
+    # tags/alert_keys/applies_to 存为逗号分隔字符串 (跨 chromadb 版本兼容)
+    assert "oom" in meta["tags"].split(",")
+    assert "ContainerOOMKilled" in meta["alert_keys"].split(",")
+    assert "k8s" in meta["applies_to"].split(",")
 
 
 def test_chunks_split_by_sections(store):

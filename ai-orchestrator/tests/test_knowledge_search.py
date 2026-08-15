@@ -74,6 +74,7 @@ def test_search_playbooks_path_prefix_filter(store):
 def test_search_playbooks_tags_filter(store):
     results = store.search_playbooks("容器内存溢出", limit=5, tags=["oom"])
     assert results
+    # search_playbooks 返回 tags 字符串, Python 侧按逗号分隔匹配
     assert all("oom" in r["tags"].split(",") for r in results)
 
 
@@ -82,6 +83,8 @@ def test_query_knowledge_shape_and_preview(store):
     assert "items" in out and out["items"]
     it = out["items"][0]
     assert {"title", "path", "category", "tags", "score", "preview"}.issubset(it.keys())
+    # 对外契约: items[].tags 恒为数组
+    assert isinstance(it["tags"], list) and "oom" in it["tags"]
     assert len(it["preview"]) <= 800, "preview 不超过 800 字符"
     assert it["source"] == "playbook"
     assert it["path"] == "diagnostics/oom-killed.md"
@@ -111,4 +114,4 @@ def test_query_knowledge_path_prefix_filter(store):
 def test_query_knowledge_tags_filter(store):
     out = query_knowledge("容器内存溢出", tags="oom", store=store)
     assert out["items"]
-    assert all("oom" in it["tags"].split(",") for it in out["items"])
+    assert all("oom" in it["tags"] for it in out["items"])
