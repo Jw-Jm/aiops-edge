@@ -406,8 +406,8 @@ class RAGStore:
         Args:
             query: 检索词
             limit: 返回条数
-            path_prefix: 按 relpath 前缀过滤 (如 "diagnostics")
-            tags: 标签列表, 全部命中才返回 (metadata.tags 为逗号分隔字符串)
+            path_prefix: 按 relpath 前缀过滤 (如 "diagnostics", 结果侧 Python 过滤)
+            tags: 标签列表, 全部命中才返回 (metadata.tags 存为列表, 走 $contains 成员匹配)
 
         Returns:
             按相似度降序的 chunk 列表, 每条含
@@ -426,8 +426,6 @@ class RAGStore:
             if tags:
                 for t in tags:
                     conds.append({"tags": {"$contains": str(t)}})
-            if path_prefix:
-                conds.append({"path": {"$contains": path_prefix}})
             where = conds[0] if len(conds) == 1 else ({"$and": conds} if conds else None)
             n = min(max(limit * 5, 10), total)
             if where is not None:
@@ -440,20 +438,30 @@ class RAGStore:
                     meta = results["metadatas"][0][i] if results["metadatas"] else {}
                     distance = results["distances"][0][i] if results["distances"] else 1.0
                     path = meta.get("path", "")
-                    # where 的 $contains 是子串匹配, 这里再按真前缀严格过滤
+                    # path_prefix 在结果侧按真前缀过滤
                     if path_prefix and not path.startswith(path_prefix):
                         continue
-                    tags_str = meta.get("tags", "")
-                    if tags and not all(str(t) in tags_str.split(",") for t in tags):
+                    tag_list = meta.get("tags") or []
+                    if isinstance(tag_list, str):
+                        tag_list = tag_list.split(",")
+                    if tags and not all(str(t) in tag_list for t in tags):
                         continue
+
+                    def _join(v):
+                        if v is None:
+                            return ""
+                        if isinstance(v, (list, tuple)):
+                            return ",".join(str(x) for x in v)
+                        return str(v)
+
                     out.append({
                         "doc_id": doc_id,
                         "title": meta.get("title", ""),
                         "path": path,
                         "category": meta.get("category", ""),
-                        "tags": tags_str,
-                        "alert_keys": meta.get("alert_keys", ""),
-                        "applies_to": meta.get("applies_to", ""),
+                        "tags": _join(tag_list),
+                        "alert_keys": _join(meta.get("alert_keys")),
+                        "applies_to": _join(meta.get("applies_to")),
                         "content": (results["documents"][0][i] if results["documents"] else ""),
                         "score": round(1 - distance, 4),
                     })

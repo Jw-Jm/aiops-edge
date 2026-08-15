@@ -37,6 +37,13 @@ class FakeEmbedding:
         texts = input if isinstance(input, (list, tuple)) else [input]
         return [self._vec(t) for t in texts]
 
+    # chromadb 1.x 查询路径走 embed_query / 入库走 embed_documents
+    def embed_query(self, input):
+        return self._vec(input) if isinstance(input, str) else self.__call__(input)
+
+    def embed_documents(self, input):
+        return self.__call__(input)
+
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
@@ -69,7 +76,7 @@ def test_frontmatter_fields_in_metadata(store):
     assert meta["title"] == "OOMKilled 容器内存溢出"
     assert "oom" in meta["tags"]
     assert "ContainerOOMKilled" in meta["alert_keys"]
-    assert meta["applies_to"] == "k8s"
+    assert "k8s" in meta["applies_to"]
 
 
 def test_chunks_split_by_sections(store):

@@ -57,6 +57,12 @@ def _chunkify(sections: list, max_chars: int = CHUNK_MAX_CHARS) -> list:
     return chunks
 
 
+def _norm_meta_list(values):
+    """metadata 值归一化: 非空列表存列表(chromadb $contains 成员匹配), 空列表存空串(空 list 会被 chromadb 拒绝)。"""
+    v = [str(x) for x in (values or [])]
+    return v if v else ""
+
+
 def load_playbooks(store, playbooks_dir: str = None) -> int:
     """扫描 playbooks_dir 下所有 .md, 解析 frontmatter 并按 `## ` 切块入库。
 
@@ -83,9 +89,11 @@ def load_playbooks(store, playbooks_dir: str = None) -> int:
             meta, body = split_frontmatter(text)
             category = os.path.dirname(relpath)
             title = meta.get("title") or os.path.splitext(fn)[0]
-            m_tags = ",".join(str(t) for t in (meta.get("tags") or []))
-            m_alert_keys = ",".join(str(a) for a in (meta.get("alert_keys") or []))
-            m_applies_to = ",".join(str(a) for a in (meta.get("applies_to") or []))
+            # tags/alert_keys/applies_to 存为列表 (chromadb 1.x $contains 按数组成员匹配);
+            # 空列表归一化为空串, 否则 chromadb 拒绝空 list metadata
+            m_tags = _norm_meta_list(meta.get("tags"))
+            m_alert_keys = _norm_meta_list(meta.get("alert_keys"))
+            m_applies_to = _norm_meta_list(meta.get("applies_to"))
             for i, chunk_text in enumerate(_chunkify(_split_sections(body))):
                 doc_id = f"{relpath}#{i}"
                 if store.upsert_playbook_chunk(doc_id, chunk_text, {
