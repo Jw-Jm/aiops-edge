@@ -1042,20 +1042,17 @@ async def ops_webhook(request: Request):
 
         def _investigate_bg():
             try:
-                print(f"[B6] 告警到达 rule={source} severity={severity}, 启动调查", flush=True)
-                result = maybe_investigate(
+                maybe_investigate(
                     source, severity,
                     {"service": service, "summary": context, "context": context},
                     run_worker=None)
-                print(f"[B6] 调查返回: {str(result)[:200]!r}", flush=True)
-            except Exception as e:  # noqa: BLE001
+            except Exception:
                 _inv_log.exception("告警自动调查失败(不影响告警入库)")
-                print(f"[B6] 调查异常: {e!r}", flush=True)
 
         _t.Thread(target=_investigate_bg, daemon=True,
                   name=f"investigate-{tid}").start()
-    except Exception as e:  # noqa: BLE001
-        print(f"[B6] 挂载失败: {e!r}", flush=True)
+    except Exception:
+        pass
 
     # 不再自动触发 LLM 诊断：只登记任务，等待人工在任务工作台手动触发
     # (避免每次告警都自动调用 LLM，造成大量开销；也避免 vmalert 15s 重复 webhook 反复诊断)
