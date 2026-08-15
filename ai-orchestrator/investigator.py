@@ -88,7 +88,10 @@ def _build_prompt(rule: str, severity: str, payload: dict | None = None) -> str:
 
 def _run_worker(persona, prompt: str, run_worker=None,
                 timeout: int = WORKER_TIMEOUT):
-    """提交到 agent_tool._BG_EXECUTOR 并等待结果; 超时返回 None 并记日志。
+    """提交到 agent_tool._BG_EXECUTOR 并等待结果; 超时返回占位报告并记日志。
+
+    修复: 真实 LLM 环境下 worker 可能超过 timeout 仍未完成, 此时返回
+    占位报告文本(而非 None), 保证调查报告仍入库、告警调查闭环不静默丢数据。
 
     run_worker 可注入 (测试/替换用); 缺省 agent_tool.run_worker。
     """
@@ -97,8 +100,9 @@ def _run_worker(persona, prompt: str, run_worker=None,
     try:
         return future.result(timeout=timeout)
     except FutureTimeoutError:
-        log.error("告警调查超时(%ss): 返回 None, 后台任务继续执行", timeout)
-        return None
+        log.error("告警调查超时(%ss): 返回占位报告, 后台任务继续执行", timeout)
+        return ("(调查超时: worker 在 %s 秒内未完成, 已终止等待; "
+                "可稍后重试触发调查)" % timeout)
 
 
 def _store_report(rule: str, severity: str, payload: dict | None, report: str) -> str:
