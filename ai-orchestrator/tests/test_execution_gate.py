@@ -57,9 +57,20 @@ def test_unknown_tool_rejected():
 
 def test_real_tools_classified():
     """验证实际注册的工具已正确分级（C1 补全）。"""
-    from skills import init_skills
     from skill_registry import ToolRegistry
-    init_skills()
+    # D1 后 init_skills() 为占位，工具注册改由各内置 skill 模块负责
+    from skills.observability import register_observability_skill
+    from skills.infra import register_infra_skill
+    from skills.rca_skill import register_rca_skill
+    from skills.rag_skill import register_rag_skill
+    from skills.vm_ops import register_vm_skill
+    from skills.alert_ops import register_alert_skill
+    from skills.automation import register_automation_skill
+    from skills.diagnose import register_diagnose_skill
+    for fn in (register_observability_skill, register_infra_skill, register_rca_skill,
+               register_rag_skill, register_vm_skill, register_alert_skill,
+               register_automation_skill, register_diagnose_skill):
+        fn()
     vm = ToolRegistry.get("vm_operate")
     assert vm is not None and vm.cls == "mutating", f"vm_operate cls={vm.cls if vm else None}"
     shell = ToolRegistry.get("execute_shell")
