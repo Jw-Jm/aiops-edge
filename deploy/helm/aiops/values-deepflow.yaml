@@ -11,6 +11,10 @@ global:
   timezone: "Asia/Shanghai"
   # 完整装：server + agent(DaemonSet) + clickhouse + mysql + grafana
   allInOneLocalStorage: true
+  # 环境修复: 本机无法访问 registry.cn-hongkong.aliyuncs.com (EOF),
+  # 但本地 docker 已缓存全部 deepflow 镜像 → IfNotPresent 直接用本地镜像。
+  image:
+    pullPolicy: IfNotPresent
 
 # server 与各组件单副本（本机）
 server:
@@ -27,6 +31,10 @@ server:
 # 部署在验收阶段执行（helm upgrade deepflow deepflow/deepflow -n deepflow -f 本文件）。
 # ---------------------------------------------------------------------------
 grafana:
+  # 环境修复: grafana 子 chart values 默认 IfNotPresent, 但父 chart 默认值
+  # grafana.image.pullPolicy=Always 会覆盖 → 显式设 IfNotPresent 用本地缓存镜像。
+  image:
+    pullPolicy: IfNotPresent
   grafana.ini:
     security:
       allow_embedding: true
@@ -34,4 +42,19 @@ grafana:
     auth.anonymous:
       enabled: true
       org_role: Viewer
+
+# 环境修复: deepflow-agent 子 chart 默认 pullPolicy=Always (daemonset + init 容器),
+# 覆盖为 IfNotPresent 使用本地缓存镜像。
+deepflow-agent:
+  image:
+    pullPolicy: IfNotPresent
+
+# 环境修复: mysql/clickhouse 各自 image.pullPolicy=Always → IfNotPresent (本地缓存镜像)。
+mysql:
+  image:
+    pullPolicy: IfNotPresent
+
+clickhouse:
+  image:
+    pullPolicy: IfNotPresent
 
