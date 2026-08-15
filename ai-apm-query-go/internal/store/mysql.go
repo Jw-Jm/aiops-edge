@@ -48,6 +48,14 @@ func GetDB() *sql.DB {
 	return db
 }
 
+// SetDB 覆盖全局 DB 连接池（仅测试用：注入 sqlmock 等）。
+// 传入 nil 恢复 GetDB 的自动初始化行为。调用方负责在测试结束时恢复原连接。
+func SetDB(conn *sql.DB) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	db = conn
+}
+
 // hasColumn 检查表是否存在指定列（幂等迁移辅助）。
 func hasColumn(conn *sql.DB, table, column string) bool {
 	if conn == nil {

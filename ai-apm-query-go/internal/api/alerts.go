@@ -903,6 +903,10 @@ func (h *Handler) AlertSilences(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"data": active, "count": len(active)})
 	case http.MethodPost:
+		// 安全(P1-10)：创建静默是写操作，需 admin 角色（与规则/事件写分支同款守卫）。
+		if !isAdmin(w, r) {
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			respondError(w, http.StatusBadRequest, "failed to read body")

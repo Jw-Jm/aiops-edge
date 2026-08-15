@@ -21,7 +21,7 @@ from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
-from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check
+from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check, _llm_async
 from flow_api import router as flow_router
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
@@ -201,8 +201,11 @@ def _parse_llm_config(request: Request):
         })
     else:
         # 无请求头 → 回退到数据库已保存的启用配置
+        # P1-4: 拉取失败(None)时**不清空**现有配置，保留 holder 上次有效值——
+        # 避免 NL2SQL 等端点因一次拉取抖动（网络/query-api 不可用）丢 key 而静默降级。
         saved = _fetch_saved_llm_config()
-        _get_brain().set_llm_config(saved)
+        if saved is not None:
+            _get_brain().set_llm_config(saved)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -962,16 +965,21 @@ async def run_task(tid: str):
 
 
 def _audit_operator(request: Request) -> str:
-    """审计日志 operator：优先 X-Internal-Role，其次 X-Internal-User / X-Internal-Approver
-    用户名，最后默认 "system"。
+    """审计日志 operator：优先 X-Internal-User（query-api 代理注入的真实用户名），
+    其次 X-Internal-Approver 用户名（排除 "0"/"1" 标志位），最后 X-Internal-Role
+    **标注为 role:<角色>** 回退，不再把角色当用户名裸写入。
     X-Internal-Approver 常为 "1"/"0" 标志位（见 _require_approver），不作为用户名写入。"""
-    role = (request.headers.get("X-Internal-Role") or "").strip()
-    if role:
-        return role
-    for h in ("X-Internal-User", "X-Internal-Approver"):
+    user = (request.headers.get("X-Internal-User") or "").strip()
+    if user:
+        return user
+    for h in ("X-Internal-Approver",):
         v = (request.headers.get(h) or "").strip()
         if v and v not in ("0", "1"):
             return v
+    role = (request.headers.get("X-Internal-Role") or "").strip()
+    if role:
+        # 标注来源为角色而非用户名，避免审计 operator 被误读为具体操作人
+        return f"role:{role}"
     return "system"
 
 
@@ -2161,40 +2169,55 @@ def _extract_time_window(question: str) -> tuple:
 def _fallback_nl2sql(question: str) -> str:
     """在 LLM 不可用 / mock 输出非 SQL 时，根据问题关键词生成一条白名单内、确定性的合法 SQL。
     仅支持白名单表，始终 SELECT + 加 LIMIT 护栏，确保通过 validate_sql。
-    P1-1: 时间窗口从问题中解析（近 N 分钟/小时/天），不再恒为 INTERVAL 24 HOUR。"""
+    P1-1: 时间窗口从问题中解析（近 N 分钟/小时/天），不再恒为 INTERVAL 24 HOUR。
+    P1-4: 错误类查询按**错误率**（countIf 比例）排序而非错误总量，聚焦 Top 10（LIMIT 10）。
+    """
     q = question.lower()
     value, unit = _extract_time_window(question)
     iv = f"INTERVAL {value} {unit}"
     if "错误" in q or "error" in q:
         if "日志" in q or "log" in q:
-            return f"SELECT service_name, count() AS errors FROM observability.log_records WHERE severity = 'error' AND timestamp >= now() - {iv} GROUP BY service_name ORDER BY errors DESC LIMIT 100"
-        return (f"SELECT service_name, countIf(is_error = 1) AS errors, count() AS calls "
-                f"FROM observability.trace_spans WHERE start_time >= now() - {iv} GROUP BY service_name ORDER BY errors DESC LIMIT 100")
+            return (f"SELECT service_name, countIf(severity = 'error') AS errors, count() AS logs, "
+                    f"round(countIf(severity = 'error') / count() * 100, 2) AS error_rate "
+                    f"FROM observability.log_records WHERE timestamp >= now() - {iv} "
+                    f"GROUP BY service_name ORDER BY error_rate DESC LIMIT 10")
+        return (f"SELECT service_name, countIf(is_error = 1) AS errors, count() AS calls, "
+                f"round(countIf(is_error = 1) / count() * 100, 2) AS error_rate "
+                f"FROM observability.trace_spans WHERE start_time >= now() - {iv} "
+                f"GROUP BY service_name ORDER BY error_rate DESC LIMIT 10")
     if "日志" in q or "log" in q:
-        return f"SELECT service_name, count() AS logs FROM observability.log_records WHERE timestamp >= now() - {iv} GROUP BY service_name ORDER BY logs DESC LIMIT 100"
+        return f"SELECT service_name, count() AS logs FROM observability.log_records WHERE timestamp >= now() - {iv} GROUP BY service_name ORDER BY logs DESC LIMIT 10"
     if "拓扑" in q or "topology" in q or "调用关系" in q:
         return (f"SELECT source_service, destination_service, calls, error_rate "
-                f"FROM observability.service_topology WHERE time_bucket >= now() - {iv} ORDER BY calls DESC LIMIT 100")
+                f"FROM observability.service_topology WHERE time_bucket >= now() - {iv} ORDER BY calls DESC LIMIT 10")
     if "延迟" in q or "latency" in q or "响应" in q:
         return (f"SELECT service_name, quantile(0.95)(duration_ns)/1000000 AS p95_ms, avg(duration_ns)/1000000 AS avg_ms "
-                f"FROM observability.trace_spans WHERE start_time >= now() - {iv} GROUP BY service_name ORDER BY p95_ms DESC LIMIT 100")
-    # 默认：近 24h 各服务调用量/错误率
-    return (f"SELECT service_name, count() AS calls, countIf(is_error = 1) AS errors "
+                f"FROM observability.trace_spans WHERE start_time >= now() - {iv} GROUP BY service_name ORDER BY p95_ms DESC LIMIT 10")
+    # 默认：近窗口各服务调用量/错误率（附错误率字段便于前端按异常排序）
+    return (f"SELECT service_name, count() AS calls, countIf(is_error = 1) AS errors, "
+            f"round(countIf(is_error = 1) / count() * 100, 2) AS error_rate "
             f"FROM observability.trace_spans WHERE start_time >= now() - {iv} "
-            f"GROUP BY service_name ORDER BY calls DESC LIMIT 100")
+            f"GROUP BY service_name ORDER BY calls DESC LIMIT 10")
 
 
 @app.post("/api/v1/ai/nl2sql/translate")
-async def nl2sql_translate(body: dict = None):
+async def nl2sql_translate(body: dict = None, request: Request = None):
     b = body or {}
     question = (b.get("question") or "").strip()
     if not question:
         raise HTTPException(400, "question is required")
 
+    # P1-4: 与其他端点一致，从请求头解析 LLM 配置（优先 X-LLM-API-Key / 已保存配置），
+    # 不再依赖 brain.llm_config 残留状态（密钥持有者生命周期由 set_llm_config 统一管理）。
+    if request is not None:
+        _parse_llm_config(request)
+
     sql_raw = ""
     try:
         cfg = _get_brain().llm_config
-        sql_raw = _llm(cfg, _NL2SQL_SYSTEM, question, role="ClickHouse SQL 专家")
+        # P2: async 端点内改用 _llm_async（内部 asyncio.to_thread + 共享线程池），
+        # 不阻塞 event loop；同时修复此前 _llm 未在模块层导入导致的 NameError 静默 fallback。
+        sql_raw = await _llm_async(cfg, _NL2SQL_SYSTEM, question, role="ClickHouse SQL 专家")
     except Exception:
         sql_raw = ""
     sql_raw = extract_sql_from_markdown(sql_raw or "")
@@ -2205,7 +2228,7 @@ async def nl2sql_translate(body: dict = None):
         used_fallback = True
         if not validate_sql(sql_raw):
             return {"error": "生成的 SQL 未通过安全校验，请重试或简化查询",
-                    "sql": sql_raw, "id": None, "pending": False}
+                    "sql": sql_raw, "id": None, "pending": False, "used_fallback": True}
     sql = normalize_sql(sql_raw)
     # P1-1: fallback 时把解析出的时间窗口写入 explanation（如 "近1小时错误率最高的服务 (时间窗口: 1小时)"）
     if used_fallback:
@@ -2216,7 +2239,9 @@ async def nl2sql_translate(body: dict = None):
         explanation = question
     item = new_item(sql, explanation)
     sid = _nl2sql_store.save(item)
-    return {"id": sid, "sql": sql, "explanation": explanation, "pending": True}
+    # P1-4: 显式返回 used_fallback，前端可据此提示"AI 降级为模板 SQL"
+    return {"id": sid, "sql": sql, "explanation": explanation, "pending": True,
+            "used_fallback": used_fallback}
 
 
 @app.post("/api/v1/ai/nl2sql/{sid}/execute")
@@ -2228,6 +2253,11 @@ def nl2sql_execute(sid: str):
         raise HTTPException(404, "not found")
     if item.get("status") == "executed":
         raise HTTPException(409, "already executed")
+    # P1-4 安全: 执行前重新跑 validate_sql，不过则拒绝执行——
+    # 防止存储层被污染（LLM 原文/越权表/拼接注入）时执行任意 SQL。
+    if not validate_sql(item.get("sql", "")):
+        return {"error": "SQL 未通过安全校验，已拒绝执行（存储层可能被污染）",
+                "columns": [], "rows": [], "count": 0}
     try:
         rows = _ch_query_json(item["sql"])
     except Exception as e:

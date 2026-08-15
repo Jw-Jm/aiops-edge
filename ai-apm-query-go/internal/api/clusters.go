@@ -219,6 +219,13 @@ func (h *Handler) clusterNodes(w http.ResponseWriter, r *http.Request, id int64)
 func (h *Handler) clusterNamespaces(w http.ResponseWriter, r *http.Request, id int64) {
 	kc, err := clusterKubeconfig(id)
 	if err != nil {
+		if errors.Is(err, errNoKubeconfig) {
+			respondJSON(w, 200, map[string]interface{}{
+				"namespaces": []string{}, "count": 0,
+				"error": "cluster has no kubeconfig, cannot query namespaces",
+			})
+			return
+		}
 		respondJSON(w, 500, map[string]interface{}{"namespaces": []string{}, "error": err.Error()})
 		return
 	}
@@ -240,6 +247,13 @@ func (h *Handler) clusterNamespaces(w http.ResponseWriter, r *http.Request, id i
 func (h *Handler) clusterEvents(w http.ResponseWriter, r *http.Request, id int64) {
 	kc, err := clusterKubeconfig(id)
 	if err != nil {
+		if errors.Is(err, errNoKubeconfig) {
+			respondJSON(w, 200, map[string]interface{}{
+				"events": []map[string]interface{}{}, "count": 0,
+				"error": "cluster has no kubeconfig, cannot query events",
+			})
+			return
+		}
 		respondJSON(w, 500, map[string]interface{}{"events": []map[string]interface{}{}, "error": err.Error()})
 		return
 	}
@@ -252,7 +266,14 @@ func (h *Handler) clusterEvents(w http.ResponseWriter, r *http.Request, id int64
 	respondJSON(w, 200, map[string]interface{}{"events": events, "count": len(events)})
 }
 
+// errNoKubeconfig 非默认集群未配置 kubeconfig 时的守卫错误。
+// 安全(P1-1)：阻止 namespaces/events 静默回退 in-cluster / 当前 context，
+// 避免泄漏真实集群数据。
+var errNoKubeconfig = errors.New("cluster has no kubeconfig")
+
 // clusterKubeconfig 返回集群的 kubeconfig（若有）；无则返回空串。
+// 守卫下沉（P1-1）：非默认集群（id!=1 且非 kubernetes-cluster）无 kubeconfig 时
+// 返回 errNoKubeconfig，与 clusterNodes 守卫同款，不静默回退。
 func clusterKubeconfig(id int64) (string, error) {
 	d := &store.ClusterDAO{}
 	c, err := d.GetByID(id)
@@ -261,6 +282,9 @@ func clusterKubeconfig(id int64) (string, error) {
 	}
 	if c == nil {
 		return "", errors.New("cluster not found")
+	}
+	if c.Kubeconfig == "" && c.ID != 1 && c.Name != "kubernetes-cluster" {
+		return "", errNoKubeconfig
 	}
 	return c.Kubeconfig, nil
 }
@@ -409,7 +433,18 @@ func (h *Handler) clusterUpdate(w http.ResponseWriter, r *http.Request, id int64
 }
 
 func (h *Handler) clusterDelete(w http.ResponseWriter, r *http.Request, id int64) {
-	if err := (&store.ClusterDAO{}).Delete(id); err != nil {
+	d := &store.ClusterDAO{}
+	// P3-1 修复：删除不存在的集群返回 404。
+	existing, err := d.GetByID(id)
+	if err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	if existing == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "cluster not found"})
+		return
+	}
+	if err := d.Delete(id); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}

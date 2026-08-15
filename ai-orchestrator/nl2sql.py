@@ -2,7 +2,9 @@
 
 安全规则：
 - 只允许 SELECT（拒绝 INSERT/UPDATE/DELETE/DROP/ALTER/CREATE 等）
-- 表名必须来自白名单
+- 表名必须来自白名单（且必须带库前缀，拒绝裸表名）
+- 禁止 ClickHouse 表函数（file/url/remote/mysql/s3 等 → SSRF/出网/落盘/CPU 放大）
+- 禁止 INTO OUTFILE（任意落盘）
 - 多语句（含分号）拒绝
 - 强制追加 LIMIT 护栏
 """
@@ -21,9 +23,29 @@ _FORBIDDEN_KEYWORDS = re.compile(
     r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|"
     r"attach|detach|rename|kill|optimize|system)\b", re.IGNORECASE)
 
+# P1-1 加固: ClickHouse 表函数可导致 SSRF(url/remote/jdbc)、任意出网(s3/hdfs/gcs)、
+# 任意文件读取(file)、CPU 放大(numbers/generateRandom)、跨库读写(mysql/postgresql/mongodb)。
+# 用 \b(keyword)\s*\( 匹配（大小写不敏感），仅在作为函数调用时拒绝。
+_TABLE_FUNCTION_KEYWORDS = (
+    "file", "url", "remote", "remoteSecure", "mysql", "postgresql", "mongodb",
+    "jdbc", "s3", "hdfs", "gcs", "numbers", "generateRandom",
+)
+_TABLE_FUNCTION_RE = re.compile(
+    r"\b(" + "|".join(_TABLE_FUNCTION_KEYWORDS) + r")\s*\(", re.IGNORECASE)
+
+# P1-1 加固: INTO OUTFILE 会把查询结果落盘到任意路径（写入攻击面）。
+_INTO_OUTFILE_RE = re.compile(r"\bINTO\s+OUTFILE\b", re.IGNORECASE)
+
+# P1-1 加固: FROM/JOIN 后的表引用必须带库前缀（db.table），裸表名（FROM 表名）一律拒绝，
+# 防止绕过硬白名单读取默认库/未知库表。同时拒绝反引号/引号包裹的标识符引用
+# （``FROM `trace_spans` `` 可绕过上述基于字符的白名单匹配）。
+_BARE_TABLE_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)", re.IGNORECASE)
+_QUOTED_TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+[`'\"]", re.IGNORECASE)
+
 
 def validate_sql(sql: str, allowed: set = _ALLOWED_TABLES) -> bool:
-    """安全校验：只允许 SELECT、表白名单、禁止多语句与非查询关键字。"""
+    """安全校验：只允许 SELECT、表白名单（带库前缀）、禁止多语句/非查询关键字/表函数/INTO OUTFILE。"""
     if not sql or not sql.strip():
         return False
     s = sql.strip()
@@ -35,6 +57,17 @@ def validate_sql(sql: str, allowed: set = _ALLOWED_TABLES) -> bool:
         return False
     if _FORBIDDEN_KEYWORDS.search(body):
         return False
+    # P1-1: 表函数（SSRF/出网/落盘/CPU 放大）与 INTO OUTFILE（落盘）一律拒绝
+    if _TABLE_FUNCTION_RE.search(body):
+        return False
+    if _INTO_OUTFILE_RE.search(body):
+        return False
+    # P1-1: FROM/JOIN 后的表引用必须带库前缀；反引号/引号包裹的标识符引用一并拒绝
+    if _QUOTED_TABLE_RE.search(body):
+        return False
+    for m in _BARE_TABLE_RE.finditer(body):
+        if "." not in m.group(1):
+            return False
     # 表名白名单：SQL 中出现的所有 "库.表" 引用，必须且只能命中允许集合。
     # 禁止任何非 observability 库的表（如 system.*、default.*、其他库），
     # 防止越权读取集群元数据/未知表。

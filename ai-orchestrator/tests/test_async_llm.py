@@ -32,7 +32,7 @@ def test_llm_async_does_not_block_event_loop():
         # patch _llm 为带 0.3s sleep 的同步慢函数，模拟真实 LLM 阻塞调用
         original_llm = orchestrator._llm
 
-        def slow_llm(cfg, system_prompt, user_prompt, role="分析专家"):
+        def slow_llm(cfg, system_prompt, user_prompt, role="分析专家", timeout=60):
             time.sleep(0.3)
             return "[mock] slow response"
 
@@ -64,7 +64,7 @@ def test_llm_async_returns_llm_result():
 
     async def run_test():
         original_llm = orchestrator._llm
-        orchestrator._llm = lambda cfg, sp, up, role="分析专家": f"[ok] {sp}/{up}"
+        orchestrator._llm = lambda cfg, sp, up, role="分析专家", timeout=60: f"[ok] {sp}/{up}"
         try:
             result = await orchestrator._llm_async(None, "SYS", "UP")
             assert result == "[ok] SYS/UP", f"unexpected result: {result!r}"

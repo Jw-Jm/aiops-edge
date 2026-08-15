@@ -9,7 +9,7 @@ import { computeHealth, healthColor } from '../../lib/health'
 
 const { Text } = Typography
 
-interface TopoNode { id: string; name: string; category: number; symbolSize?: number; _seed?: number; _count?: number }
+interface TopoNode { id: string; name: string; category: number; symbolSize?: number; _seed?: number; _count?: number; namespace?: string; external?: boolean }
 interface TopoLink { source: string; target: string; value?: number }
 interface ServiceRow { service: string; calls?: number; errors?: number; error_rate?: number; avg_latency_ms?: number }
 
@@ -68,17 +68,39 @@ const ServiceObservability: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [metricType, setMetricType] = useState('errorRate')
+  // 命名空间过滤：'' = 全部命名空间；选具体 ns 时拓扑只展示该 ns + 跨 ns 外部节点
+  const [namespace, setNamespace] = useState('')
+  const [namespaces, setNamespaces] = useState<string[]>([])
+  const [deletedNodeCount, setDeletedNodeCount] = useState(0)
+  const [deletedSvcCount, setDeletedSvcCount] = useState(0)
 
   // Issue5: 拓扑/服务数据加载；抽成函数以便定时刷新（默认 30s 轮询，接近实时）
   const loadData = (silent = false) => {
     if (!silent) setLoading(true)
     // P1: 时间窗由 1h 放宽到 24h，与总览口径一致（trace/log 为种子数据，1h 窗口会全零）
-    Promise.all([getTopology({ minutes: 1440 }), getServices()])
+    const topoParams: Record<string, unknown> = { minutes: 1440 }
+    // 选具体命名空间时带 namespace 参数，后端只返回该 ns 的拓扑 + 跨 ns 外部节点
+    if (namespace) topoParams.namespace = namespace
+    Promise.all([getTopology(topoParams), getServices()])
       .then(([t, s]) => {
         const td = t.data
-        const rawNodes: any[] = (td.nodes || []).map((n: any, i: number) => ({
+        // 命名空间下拉来源：优先用响应顶层 namespaces 字段；降级从 nodes 的 namespace 去重
+        const nsList: string[] = Array.isArray(td.namespaces)
+          ? td.namespaces.filter((x: any) => x).map((x: any) => String(x))
+          : Array.from(new Set((td.nodes || []).map((n: any) => n.namespace).filter((x: any) => x))).map((x: any) => String(x))
+        setNamespaces(nsList)
+
+        // 防御性过滤 deleted 节点（后端已过滤，前端再兜底：服务名含 "(deleted)" 的跳过）
+        const allRaw = (td.nodes || []) as any[]
+        const nodeKeep = allRaw.filter((n: any) => !String(n.name || '').includes('(deleted)'))
+        setDeletedNodeCount(allRaw.length - nodeKeep.length)
+
+        const rawNodes: any[] = nodeKeep.map((n: any, i: number) => ({
           id: String(n.id ?? n.name ?? i), name: n.name || n.id, category: n.category ?? 0,
           symbolSize: 30 + ((n.metrics?.calls || 0) % 40),
+          namespace: n.namespace,
+          // 选具体 ns 时，namespace 不匹配或后端标记 external 的节点视为外部节点
+          external: !!namespace && (n.external === true || (!!n.namespace && n.namespace !== namespace)),
         }))
         // 预置环形初始坐标，保证力导向布局在画布范围内（节点不超出页面）
         const N = Math.max(1, rawNodes.length)
@@ -87,16 +109,15 @@ const ServiceObservability: React.FC = () => {
           _seed: i,
           _count: N,
         }))
+        // 边过滤：两端节点必须都在保留节点集合内（剔除指向 deleted 节点的悬空边）
+        const validNames = new Set(nodesData.map((n) => n.name))
         const linksData: TopoLink[] = (td.edges || td.links || []).map((e: any) => ({
           source: String(e.source_service ?? e.source ?? e.src),
           target: String(e.target_service ?? e.target ?? e.dst),
           value: e.calls ?? e.value ?? 1,
-        })).filter((l: TopoLink) => l.source && l.target)
+        })).filter((l: TopoLink) => l.source && l.target && validNames.has(l.source) && validNames.has(l.target))
         // 修复：30s 静默轮询只在数据真正变化时才 setState，避免每次都触发 force 重新 simulation
-        // 导致节点持续飘移（用户反馈"节点乱飘"）。比较 nodes id+name 与 links source+target 字符串指纹。
-        const fp = (a: any[]) => a.map((x) => `${x.id || x.name}|${x.source || ''}|${x.target || ''}|${x.value || ''}`).sort().join(';')
-        // 修复 2：如果只是拓扑结构（节点/边列表）未变，但调用量 value 变化，节点大小不变，无需重渲染
-        // 只在节点/边的身份（id / source / target）变化时才更新 state
+        // 导致节点持续飘移（用户反馈"节点乱飘"）。只在节点/边身份变化时才更新 state。
         const idFp = (a: any[]) => a.map((x) => `${x.id || x.name}|${x.source || ''}|${x.target || ''}`).sort().join(';')
         setNodes((prev) => {
           if (idFp(prev) !== idFp(nodesData)) return nodesData
@@ -110,10 +131,27 @@ const ServiceObservability: React.FC = () => {
           // 边身份没变：返回 prev 原引用，避免 effect[links] 重跑致 force 重启。
           return prev
         })
+
+        // 服务名 -> 命名空间 映射（用于按 ns 过滤服务列表；来源为拓扑节点 namespace 字段）
+        const nameToNs = new Map<string, string>()
+        for (const n of allRaw) {
+          if (n.name && n.namespace) nameToNs.set(String(n.name), String(n.namespace))
+        }
+
         const sd = s.data
         // Issue6: 后端 /services 返回字段为 service_name / traces / spans / avg_ms / max_ms，
         // 前端需映射为 service / calls / avg_latency_ms 等表格列字段，否则服务名为空、调用量为 0。
-        const rawSvc = (Array.isArray(sd) ? sd : sd?.data || sd?.services || []) as any[]
+        const rawSvcAll = (Array.isArray(sd) ? sd : sd?.data || sd?.services || []) as any[]
+        // 防御性过滤 deleted 服务（服务名含 "(deleted)" 跳过）
+        const deletedSvc = rawSvcAll.filter((x: any) => String(x.service_name ?? x.service ?? '').includes('(deleted)'))
+        setDeletedSvcCount(deletedSvc.length)
+        // /services 不支持 namespace 参数，前端用拓扑节点的 ns 映射过滤当前 ns 的服务
+        const rawSvc = rawSvcAll.filter((x: any) => {
+          const name = String(x.service_name ?? x.service ?? '')
+          if (name.includes('(deleted)')) return false
+          if (namespace) return nameToNs.get(name) === namespace
+          return true
+        })
         setServices((prev) => {
           const fp2 = (a: any[]) => a.map((x) => `${x.service}|${x.calls}|${x.errors}|${x.avg_latency_ms}`).sort().join(';')
           const next = rawSvc.map((x: any) => ({
@@ -127,16 +165,21 @@ const ServiceObservability: React.FC = () => {
           return fp2(prev) === fp2(next) ? prev : next
         })
       })
-      .catch(() => { if (!silent) { setNodes([]); setLinks([]); setServices([]) } })
+      .catch(() => { if (!silent) { setNodes([]); setLinks([]); setServices([]); setDeletedNodeCount(0); setDeletedSvcCount(0) } })
       .finally(() => { if (!silent) setLoading(false) })
   }
 
   useEffect(() => {
     loadData(false)
-    // Issue5: 30s 静默轮询，保持拓扑/服务列表近实时；切换集群时也会因 uiStore 变化重新加载
+    // Issue5: 30s 静默轮询，保持拓扑/服务列表近实时；切换集群/命名空间时也会重新加载
     const timer = setInterval(() => loadData(true), 30000)
     return () => clearInterval(timer)
-  }, [currentClusterId])
+  }, [currentClusterId, namespace])
+
+  // 切换命名空间时清空稳定坐标缓存，让新 ns 的拓扑重新做力导向布局（不复用旧 ns 节点位置）
+  useEffect(() => {
+    stablePosRef.current = {}
+  }, [namespace])
 
   // 支持 ?node=xxx 自动打开节点详情（深链分享 / 测试验证）
   useEffect(() => {
@@ -168,10 +211,21 @@ const ServiceObservability: React.FC = () => {
     const inst = chartInst.current
     // Issue3: 边宽按调用量缩放，但整体调细（0.7 + 1.3 缩放，最大约 2），避免太粗
     const maxCalls = Math.max(1, ...links.map((l: any) => Number(l.value) || 1))
-    const linksWithWidth = links.map((l: any) => ({
-      ...l,
-      lineStyle: { width: 0.7 + 1.3 * (Number(l.value) || 0) / maxCalls },
-    }))
+    // 命名空间映射（用于跨 ns 边样式区分 + tooltip 标注两端 ns）
+    const nsOf: Record<string, string> = {}
+    nodes.forEach((n: any) => { if (n.namespace) nsOf[n.name] = n.namespace })
+    const linksWithWidth = links.map((l: any) => {
+      const sNs = nsOf[l.source], tNs = nsOf[l.target]
+      const crossNs = !!(sNs && tNs && sNs !== tNs)
+      return {
+        ...l,
+        lineStyle: {
+          width: 0.7 + 1.3 * (Number(l.value) || 0) / maxCalls,
+          // 全部命名空间视图下，两端 ns 不同的边用虚线 + 暖色区分跨 ns 调用
+          ...(crossNs ? { type: 'dashed', color: '#faad14', opacity: 0.55 } : {}),
+        },
+      }
+    })
     // 自研力导向布局 + 硬性边界约束：ECharts 原生 force 布局没有"节点不飘出画布"的参数，
     // repulsion 调大后节点会被推离中心、飘出画布。这里手写力导向迭代，每轮把节点坐标
     // clamp 到画布范围内（padding 24px），从算法层面保证节点永不超出画布。
@@ -231,14 +285,27 @@ const ServiceObservability: React.FC = () => {
         p.y = Math.max(PAD, Math.min(ch - PAD, p.y))
       }
     }
-    const dataWithPos = nodes.map((n) => ({ ...n, x: positions[n.name].x, y: positions[n.name].y }))
+    const dataWithPos = nodes.map((n) => ({
+      ...n,
+      x: positions[n.name].x, y: positions[n.name].y,
+      // 外部（跨 ns）节点：虚线边框 + 半透明 + 暖色，与本 ns 节点区分
+      ...(n.external ? {
+        itemStyle: { color: '#fff7e6', borderColor: '#faad14', borderWidth: 1.5, borderType: 'dashed', opacity: 0.75 },
+      } : {}),
+    }))
     try {
     inst.setOption({
       tooltip: {
         trigger: 'item',
         formatter: (p: any) => {
-          if (p.dataType === 'edge') return `${p.data.source} → ${p.data.target}<br/>调用 ${p.data.value || 0} 次`
-          return `<b>${p.data.name}</b>`
+          if (p.dataType === 'edge') {
+            const sNs = nsOf[p.data.source], tNs = nsOf[p.data.target]
+            const cross = !!(sNs && tNs && sNs !== tNs)
+            return `${p.data.source} → ${p.data.target}<br/>调用 ${p.data.value || 0} 次${cross ? `<br/>${sNs} → ${tNs}` : ''}`
+          }
+          const d = p.data
+          if (d.external) return `<b>${d.name}</b><br/>外部节点 · 命名空间 ${d.namespace || '?'}`
+          return `<b>${d.name}</b>${d.namespace ? `<br/>命名空间 ${d.namespace}` : ''}`
         },
       },
       series: [{
@@ -259,6 +326,13 @@ const ServiceObservability: React.FC = () => {
           distance: 10,
           overflow: 'truncate', width: 110,
           showAbove: true,
+          // 外部节点在服务名下方以小字标注"外 · ns"，清晰区分跨 ns 身份
+          formatter: (p: any) => {
+            const d = p.data
+            if (d.external && d.namespace) return `${d.name}\n{ns|外 · ${d.namespace}}`
+            return d.name
+          },
+          rich: { ns: { fontSize: 9, color: '#faad14', lineHeight: 14, fontWeight: 600 } },
         },
         // Issue4: 边按调用量缩放宽度 + 末端箭头表达调用方向 + 增大曲率让双向调用分离
         lineStyle: {
@@ -417,11 +491,19 @@ const ServiceObservability: React.FC = () => {
     { title: '调用次数', dataIndex: 'count', key: 'count', width: 90, render: (v: number) => (v ?? 0).toLocaleString() },
   ]
 
+  // 命名空间下拉选项：第一项固定为"全部命名空间"，其余为后端返回的 ns 列表
+  const nsOptions = [{ value: '', label: '全部命名空间' }, ...namespaces.map((ns) => ({ value: ns, label: ns }))]
+
   return (
     <div>
       <Breadcrumb items={[{ t: '可观测' }, { t: '服务全景' }]} />
       <PageHeader title="服务全景" desc="服务调用关系与健康一览 · 点击节点/服务查看详情"
-        actions={<Segmented value={view} onChange={(v) => setView(v as any)} options={[{ label: '拓扑视图', value: 'topo' }, { label: '服务列表', value: 'list' }]} />} />
+        actions={
+          <Space>
+            <Segmented value={view} onChange={(v) => setView(v as any)} options={[{ label: '拓扑视图', value: 'topo' }, { label: '服务列表', value: 'list' }]} />
+            <Select value={namespace} onChange={setNamespace} style={{ width: 180 }} options={nsOptions} placeholder="选择命名空间" />
+          </Space>
+        } />
 
       {view === 'topo' ? (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -431,6 +513,7 @@ const ServiceObservability: React.FC = () => {
           </Spin>
           <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--text-muted)' }}>
             {nodes.length} 节点 · {links.length} 关系 · 拖拽可移动节点，点击节点查看详情
+            {deletedNodeCount > 0 && <span style={{ marginLeft: 8 }}>· 已过滤 {deletedNodeCount} 个 deleted 节点</span>}
           </div>
         </div>
       ) : (
@@ -444,11 +527,16 @@ const ServiceObservability: React.FC = () => {
                 </AntdEmpty>
               ),
             }} />
+          {deletedSvcCount > 0 && (
+            <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--text-muted)' }}>
+              已过滤 {deletedSvcCount} 个 deleted 服务
+            </div>
+          )}
         </div>
       )}
 
       <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose
-        title={<Space><Text style={{ fontSize: 15, color: 'var(--text)', fontWeight: 600 }}>{nodeName}</Text></Space>}
+        title={<Space><Text style={{ fontSize: 15, color: 'var(--text)', fontWeight: 600 }}>{nodeName}</Text>{selectedNode?.external && <Tag color="warning">外部 · {selectedNode?.namespace || '?'}</Tag>}</Space>}
         styles={{ body: { padding: 16, background: 'var(--surface-1)' } }}>
         <Spin spinning={drawerLoading}>
           {desc.status !== '未知' && (

@@ -45,6 +45,9 @@ spec:
               value: {{ .Values.ingest.spanSampleRate | default 1.0 | quote }}
             - name: INGEST_WAL_DIR
               value: "/wal"
+            # 多集群纳管：本 ingest 实例所属集群 ID（代码默认 "default"，主集群显式注入保持一致）
+            - name: CLUSTER_ID
+              value: {{ .Values.ingest.clusterId | default "default" | quote }}
             - name: INGEST_API_KEY
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INGEST_API_KEY }

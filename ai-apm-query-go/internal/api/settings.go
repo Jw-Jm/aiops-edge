@@ -601,7 +601,8 @@ func (h *Handler) GetLLMConfig() LLMSettings {
 }
 
 func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
-	url := "http://ai-orchestrator.observability.svc.cluster.local:8080" + r.URL.Path
+	// 用 orchestratorBase()（env 可覆盖），与 ProxyShellWS 一致，便于测试注入 mock。
+	url := orchestratorBase() + r.URL.Path
 	if r.URL.RawQuery != "" {
 		url += "?" + r.URL.RawQuery
 	}
@@ -627,6 +628,16 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		if approver {
 			req.Header.Set("X-Internal-Approver", "1")
 		}
+	}
+	// 注入请求者用户名（JWT sub），供 orchestrator 审计写入使用。
+	// 安全加固：JWT 缺失/无效时显式剥离客户端伪造的 X-Internal-* 头（req 为新建请求、
+	// 默认不拷贝客户端头，此 Del 为纵深防御），防止伪造审计/审批身份。
+	if username, ok := requestUsername(r); ok {
+		req.Header.Set("X-Internal-User", username)
+	} else {
+		req.Header.Del("X-Internal-User")
+		req.Header.Del("X-Internal-Role")
+		req.Header.Del("X-Internal-Approver")
 	}
 	// 注入内部服务共享 token（仅当已配置），供 orchestrator 校验请求确实来自可信的
 	// query-api 代理（该代理已通过 AuthMiddleware 完成 JWT 鉴权与角色注入），
@@ -666,4 +677,14 @@ func requesterApprover(r *http.Request) (string, bool, bool) {
 		approver = true
 	}
 	return role, approver, true
+}
+
+// requestUsername 从请求 JWT 提取请求者用户名（sub），供审计注入。
+func requestUsername(r *http.Request) (string, bool) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	username, _, _, ok := validateJWT(token)
+	if !ok {
+		return "", false
+	}
+	return username, true
 }

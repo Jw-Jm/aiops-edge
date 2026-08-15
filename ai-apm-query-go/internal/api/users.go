@@ -42,13 +42,21 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 		Username, Password, DisplayName, Role, Email string
 		IsApprover                                   bool
 	}
-	json.Unmarshal(body, &req)
+	if err := json.Unmarshal(body, &req); err != nil {
+		respondJSON(w, 400, map[string]interface{}{"error": "invalid JSON"})
+		return
+	}
 	if req.Username == "" || req.Password == "" {
 		respondJSON(w, 400, map[string]interface{}{"error": "username and password required"})
 		return
 	}
 	if req.Role == "" {
 		req.Role = "user"
+	}
+	// 安全(P3-2)：角色白名单校验，非法角色直接 400（拒绝任意字符串注入）。
+	if req.Role != "admin" && req.Role != "user" {
+		respondJSON(w, 400, map[string]interface{}{"error": "role must be admin or user"})
+		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -91,7 +99,11 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		Scope                    string
 		IsApprover               *bool
 	}
-	json.Unmarshal(body, &req)
+	// P3-3 修复：JSON 解析失败返回 400，而非静默零值覆盖原数据。
+	if err := json.Unmarshal(body, &req); err != nil {
+		respondJSON(w, 400, map[string]interface{}{"error": "invalid JSON"})
+		return
+	}
 	status := req.Status
 	if status == 0 {
 		status = 1
@@ -158,7 +170,18 @@ func (h *Handler) UserDelete(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 400, map[string]interface{}{"error": "bad id"})
 		return
 	}
-	if err := (&store.UserDAO{}).Delete(id); err != nil {
+	d := &store.UserDAO{}
+	// P3-1 修复：删除不存在的资源返回 404（而非 200 静默成功）。
+	existing, err := d.GetByID(id)
+	if err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	if existing == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "user not found"})
+		return
+	}
+	if err := d.Delete(id); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
@@ -196,6 +219,11 @@ func (h *Handler) UserRouter(w http.ResponseWriter, r *http.Request) {
 
 // Me GET /api/v1/me — 当前登录用户信息。
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+	// P3-5 修复：非 GET 方法返回 405，而非 200 空体。
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	username, role, scopeClaim, ok := validateJWT(token)
 	if !ok {

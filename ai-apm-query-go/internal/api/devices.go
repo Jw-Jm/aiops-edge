@@ -158,7 +158,18 @@ func (h *Handler) deviceUpdate(w http.ResponseWriter, r *http.Request, id int64)
 }
 
 func (h *Handler) deviceDelete(w http.ResponseWriter, r *http.Request, id int64) {
-	if err := (&store.DeviceDAO{}).Delete(id); err != nil {
+	d := &store.DeviceDAO{}
+	// P3-1 修复：删除不存在的设备返回 404。
+	existing, err := d.GetByID(id)
+	if err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	if existing == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "device not found"})
+		return
+	}
+	if err := d.Delete(id); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}

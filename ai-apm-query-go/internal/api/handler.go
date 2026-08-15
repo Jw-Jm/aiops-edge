@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -820,11 +821,23 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 }
 
 // QueryMetrics handles GET /api/v1/metrics/query?service={name}
-// service 参数可选：有则按服务过滤，无则返回全局聚合
+// service 参数可选：有则按服务过滤，无则返回全局聚合。
+// P2-6 修复：当请求带 `query`（PromQL 表达式）参数且无 service 参数时，
+// 代理到 VictoriaMetrics /api/v1/query（instant query），与 /metrics/query_range 语义对齐；
+// service 参数存在时保持现有 CH RED 聚合行为不变（向后兼容）。
+// 安全（文档化已知限制）：PromQL 透传路径无租户/cluster 隔离（见 proxyVMInstantQuery），
+// 已由 AuthMiddleware 强制 JWT 鉴权，需配合网络层隔离控制可达性。
 func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+	service := r.URL.Query().Get("service")
+
+	if query != "" && service == "" {
+		h.proxyVMInstantQuery(w, r, query)
+		return
+	}
+
 	tid := extractTenantID(r)
 	clusterClause := extractClusterClause(r)
-	service := r.URL.Query().Get("service")
 
 	serviceClause := ""
 	if service != "" {
@@ -948,8 +961,12 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	}
 	if edgeCount > 0 {
 		stats.Edges = edgeCount
-	} else if mysqlEdges := loadTopologyEdgesFromMySQL(); len(mysqlEdges) > 0 {
-		stats.Edges = int64(len(mysqlEdges))
+	} else if extractClusterClause(r) == "" {
+		// 安全(P1-9)：MySQL topology_relations 无 cluster/tenant/scope 区分，
+		// 仅在未按集群过滤（cluster_id 为空/all 的全集群视图）时回退，避免返回他集群合成边。
+		if mysqlEdges := loadTopologyEdgesFromMySQL(); len(mysqlEdges) > 0 {
+			stats.Edges = int64(len(mysqlEdges))
+		}
 	}
 
 	// P95 延迟（给聚合列加别名，避免 ClickHouse 将 / 规范化为 divide() 导致 key 匹配失败）
@@ -1052,6 +1069,8 @@ func topologyNodeType(name string) (typ string, rank int) {
 func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	clusterClause := extractClusterClause(r)
+	// ns 过滤（契约）：namespace 参数省略 = 全部；指定时返回该 ns 节点 + 外部邻居节点
+	namespaceFilter := r.URL.Query().Get("namespace")
 
 	// 时间过滤：minutes 参数（前端"近 N 分钟"），默认 24 小时，避免清理/低流量期出现空拓扑
 	minutes := 1440
@@ -1135,7 +1154,9 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	}
 	// P0-2: 若 ClickHouse 仍无边（service_topology 为空且 trace 无 parent_span_id），
 	// 回退到 MySQL topology_relations（由 SyncTopologyCatalog 按 trace 内服务时序生成的真实调用边）。
-	if len(edgeRows) == 0 {
+	// 安全(P1-9)：MySQL 边无 cluster/tenant/scope 区分，仅在未按集群过滤（全集群视图）时回退，
+	// 避免按集群过滤后返回他集群合成边。
+	if len(edgeRows) == 0 && extractClusterClause(r) == "" {
 		if mysqlEdges := loadTopologyEdgesFromMySQL(); len(mysqlEdges) > 0 {
 			edgeRows = mysqlEdges
 		}
@@ -1160,10 +1181,46 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ns 聚合（契约2/3）：窗口内 trace_spans 按 service 取调用量最大的 k8s_namespace，
+	// 生成 服务→namespace 映射。k8s_namespace 为可选列，查询/解析失败时降级为空映射
+	// （拓扑主视图仍可渲染，仅 namespaces 列表与节点 ns 标注为空），与其他可选富化查询一致。
+	serviceNS := map[string]string{}
+	nsSQL := fmt.Sprintf(
+		"SELECT service_name AS service, k8s_namespace AS ns, count() AS calls "+
+			"FROM observability.trace_spans WHERE tenant_id=%s%s%s%s%s "+
+			"GROUP BY service_name, k8s_namespace ORDER BY calls DESC",
+		chQuote(tid), clusterClause, timeCond, dateCond, scopeServicesClause(r),
+	)
+	if nsBody, qerr := h.queryClickHouse(ctx, nsSQL); qerr == nil {
+		if nsRows, perr := parseRows(nsBody); perr == nil {
+			best := map[string]int64{} // service → 该 ns 组合的最大调用量
+			for _, nr := range nsRows {
+				svc, _ := nr["service"].(string)
+				ns, _ := nr["ns"].(string)
+				calls, _ := toInt64(nr["calls"])
+				if svc == "" {
+					continue
+				}
+				if prev, ok := best[svc]; !ok || calls > prev {
+					best[svc] = calls
+					serviceNS[svc] = ns
+				}
+			}
+		} else {
+			log.Printf("GlobalTopology ns parse error: %v", perr)
+		}
+	} else {
+		log.Printf("GlobalTopology ns query error: %v", qerr)
+	}
+
 	// 构建节点（去重）
 	nodeMap := map[string]map[string]interface{}{}
 	for _, nr := range nodeRows {
 		name := fmt.Sprintf("%v", nr["service"])
+		// 契约5：剔除含 "(deleted)" 的已删除服务节点
+		if strings.Contains(name, "(deleted)") {
+			continue
+		}
 		calls := toFloat(nr["calls"])
 		errs := toFloat(nr["errs"])
 		avgNs := toFloat(nr["avg_ns"])
@@ -1194,6 +1251,7 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		throughput := calls
 		nodeMap[name] = map[string]interface{}{
 			"name":         name,
+			"namespace":    serviceNS[name],
 			"type":         typ,
 			"rank":         rank,
 			"calls":        int64(calls),
@@ -1216,6 +1274,10 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	for _, er := range edgeRows {
 		src := fmt.Sprintf("%v", er["source_service"])
 		tgt := fmt.Sprintf("%v", er["target_service"])
+		// 契约5：剔除两端任一端含 "(deleted)" 的边（含因此引入的占位节点）
+		if strings.Contains(src, "(deleted)") || strings.Contains(tgt, "(deleted)") {
+			continue
+		}
 		if src == "" || tgt == "" || src == tgt {
 			selfLoops++
 			continue
@@ -1224,10 +1286,10 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		errs := toFloat(er["errs"])
 		avgNs := toFloat(er["avg_ns"])
 		if _, ok := nodeMap[src]; !ok {
-			nodeMap[src] = buildSyntheticNode(src)
+			nodeMap[src] = buildSyntheticNode(src, serviceNS[src])
 		}
 		if _, ok := nodeMap[tgt]; !ok {
-			nodeMap[tgt] = buildSyntheticNode(tgt)
+			nodeMap[tgt] = buildSyntheticNode(tgt, serviceNS[tgt])
 		}
 		errRate := 0.0
 		if calls > 0 {
@@ -1255,17 +1317,77 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// ns 过滤（契约4）：传 namespace 时返回该 ns 全部节点（正常渲染）+ 与之有调用关系的
+	// 其他 ns 节点（标记 external:true 并带真实 namespace）；跨 ns 边保留。未传 = 全部节点。
 	nodes := make([]map[string]interface{}, 0, len(nodeMap))
-	for _, n := range nodeMap {
-		nodes = append(nodes, n)
+	if namespaceFilter != "" {
+		inNS := map[string]bool{}
+		for name, n := range nodeMap {
+			if ns, _ := n["namespace"].(string); ns == namespaceFilter {
+				inNS[name] = true
+			}
+		}
+		keep := map[string]bool{}
+		for name := range inNS {
+			keep[name] = true
+		}
+		// 扩展：与选中 ns 节点有调用边（任一方向）的外部邻居节点
+		for _, e := range edges {
+			src, _ := e["source_service"].(string)
+			tgt, _ := e["target_service"].(string)
+			if inNS[src] {
+				keep[tgt] = true
+			}
+			if inNS[tgt] {
+				keep[src] = true
+			}
+		}
+		keptEdges := make([]map[string]interface{}, 0, len(edges))
+		for _, e := range edges {
+			src, _ := e["source_service"].(string)
+			tgt, _ := e["target_service"].(string)
+			if keep[src] && keep[tgt] {
+				keptEdges = append(keptEdges, e)
+			}
+		}
+		edges = keptEdges
+		for name, n := range nodeMap {
+			if !keep[name] {
+				continue
+			}
+			// 契约4：namespace 参数存在时，节点 namespace != 选中 ns 的标记 external:true
+			if ns, _ := n["namespace"].(string); ns != namespaceFilter {
+				n["external"] = true
+			}
+			nodes = append(nodes, n)
+		}
+	} else {
+		for _, n := range nodeMap {
+			nodes = append(nodes, n)
+		}
 	}
 
+	// namespaces 列表（契约2）：窗口内全部非 deleted 服务映射出的非空 ns，去重排序。
+	nsSet := map[string]bool{}
+	for svc, ns := range serviceNS {
+		if ns == "" || strings.Contains(svc, "(deleted)") {
+			continue
+		}
+		nsSet[ns] = true
+	}
+	namespaces := make([]string, 0, len(nsSet))
+	for ns := range nsSet {
+		namespaces = append(namespaces, ns)
+	}
+	sort.Strings(namespaces)
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes":          nodes,
-		"edges":          edges,
-		"node_count":     len(nodes),
-		"edge_count":     len(edges),
+		"nodes":           nodes,
+		"edges":           edges,
+		"node_count":      len(nodes),
+		"edge_count":      len(edges),
 		"self_loop_count": selfLoops,
+		"namespaces":      namespaces,
 	})
 }
 
@@ -1305,11 +1427,13 @@ func loadTopologyEdgesFromMySQL() []map[string]interface{} {
 	return rows
 }
 
-// buildSyntheticNode 为拓扑边缘未聚合到的节点生成占位（类型推断 + 健康）
-func buildSyntheticNode(name string) map[string]interface{} {
+// buildSyntheticNode 为拓扑边缘未聚合到的节点生成占位（类型推断 + 健康）。
+// namespace 取自窗口内 trace_spans 的 ns 聚合（无记录为空串）。
+func buildSyntheticNode(name, namespace string) map[string]interface{} {
 	typ, rank := topologyNodeType(name)
 	return map[string]interface{}{
 		"name":         name,
+		"namespace":    namespace,
 		"type":         typ,
 		"rank":         rank,
 		"calls":        0,
@@ -1507,6 +1631,11 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	service := r.URL.Query().Get("service")
 	queryText := r.URL.Query().Get("query")
+	// P2-5 修复：keyword 作为 query 的别名（前端兼容），
+	// 两者都传时取 query 优先，keyword 非空才作过滤条件。
+	if queryText == "" {
+		queryText = r.URL.Query().Get("keyword")
+	}
 	source := r.URL.Query().Get("source")
 	minutes := 1440 // 默认近 24 小时
 

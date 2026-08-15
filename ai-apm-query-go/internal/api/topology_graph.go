@@ -133,7 +133,18 @@ func (h *Handler) topologyNodeUpdate(w http.ResponseWriter, r *http.Request, id 
 }
 
 func (h *Handler) topologyNodeDelete(w http.ResponseWriter, r *http.Request, id int64) {
-	if err := (&store.TopologyNodeDAO{}).Delete(id); err != nil {
+	d := &store.TopologyNodeDAO{}
+	// P3-1 修复：删除不存在的节点返回 404。
+	existing, err := d.Get(id)
+	if err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	if existing == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "node not found"})
+		return
+	}
+	if err := d.Delete(id); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
@@ -222,7 +233,18 @@ func (h *Handler) topologyRelationUpdate(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) topologyRelationDelete(w http.ResponseWriter, r *http.Request, id int64) {
-	if err := (&store.TopologyRelationDAO{}).Delete(id); err != nil {
+	d := &store.TopologyRelationDAO{}
+	// P3-1 修复：删除不存在的关系返回 404。
+	existing, err := d.Get(id)
+	if err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	if existing == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "relation not found"})
+		return
+	}
+	if err := d.Delete(id); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}

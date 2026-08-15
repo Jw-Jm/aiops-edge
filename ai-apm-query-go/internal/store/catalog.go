@@ -76,6 +76,26 @@ func (d *CatalogDAO) GetByService(service string) (*ServiceCatalog, error) {
 	return &c, nil
 }
 
+// GetByID 按 ID 查目录项；未找到返回 nil。
+func (d *CatalogDAO) GetByID(id int64) (*ServiceCatalog, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	row := conn.QueryRow(
+		"SELECT id, service_name, display_name, description, owner, team, tags, status, created_at, updated_at FROM service_catalog WHERE id = ?",
+		id)
+	var c ServiceCatalog
+	if err := row.Scan(&c.ID, &c.ServiceName, &c.DisplayName, &c.Description,
+		&c.Owner, &c.Team, &c.Tags, &c.Status, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
 // Create 新增目录项。
 func (d *CatalogDAO) Create(c *ServiceCatalog) (int64, error) {
 	conn := GetDB()

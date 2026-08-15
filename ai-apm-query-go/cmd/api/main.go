@@ -247,8 +247,10 @@ func main() {
 	// Dashboard Monitor 看板面板（B4）
 	mux.HandleFunc("/api/v1/dashboard/panels", handler.DashboardRouter)
 	mux.HandleFunc("/api/v1/dashboard/panels/", handler.DashboardRouterByID)
-	// Tenants (List/Create)
-	mux.HandleFunc("/api/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
+	// Tenants (List any, Create/Delete admin)
+	// 安全(P2-2)：POST /tenants 与 DELETE /tenants/{id} 是写操作，需 admin 角色
+	//（GET 列表保持登录可读）。
+	mux.HandleFunc("/api/v1/tenants", handler.RequireRoleForWrite("admin", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			handler.ListTenants(w, r)
@@ -257,8 +259,8 @@ func main() {
 		default:
 			w.WriteHeader(405)
 		}
-	})
-	mux.HandleFunc("/api/v1/tenants/", handler.DeleteTenant)
+	}))
+	mux.HandleFunc("/api/v1/tenants/", handler.RequireRoleForWrite("admin", handler.DeleteTenant))
 	// System (HPA + Cache + Redis + Components)
 	mux.HandleFunc("/api/v1/system/status", handler.SystemStatus)
 	mux.HandleFunc("/api/v1/system/cache", handler.CacheStats)

@@ -175,6 +175,8 @@ ingest:
   image: "ingest-pipeline:{{ .Values.global.imageTag }}"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
+  # 多集群纳管：本 ingest 实例所属集群 ID（代码默认 "default"；纳管集群采集器注入各自 cluster_id）
+  clusterId: "default"
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
   deepflowChHost: "deepflow-clickhouse.deepflow.svc.cluster.local"
   deepflowChPort: "8123"

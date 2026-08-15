@@ -170,7 +170,7 @@ func singleTrace(round int, svc string, i int, errorRate float64, mode string, r
 		SpanID:            spanID,
 		ParentSpanID:      "",
 		Name:              name,
-		Kind:              2, // SERVER
+		Kind:              1, // SERVER（模型 KindMap: 0=INTERNAL,1=SERVER,2=CLIENT；此前误用 2 导致压测 span 被映射为 CLIENT）
 		StartTimeUnixNano: fmt.Sprintf("%d", start),
 		EndTimeUnixNano:   fmt.Sprintf("%d", start+durMs*1000000),
 		Status:            status,

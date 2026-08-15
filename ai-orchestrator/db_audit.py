@@ -12,9 +12,9 @@ import pymysql
 
 _CFG = None
 
-# P1-2: operator 字段兜底清洗 —— 只允许 [a-zA-Z0-9_@.-]，
+# P1-2: operator 字段兜底清洗 —— 只允许 [a-zA-Z0-9_@.-] 及 ':'（role:<角色> 标注），
 # 防止把状态值（approved/user/1）或 markdown 标题误写入审计日志。
-_OPERATOR_CLEAN_RE = re.compile(r"[^a-zA-Z0-9_@.\-]")
+_OPERATOR_CLEAN_RE = re.compile(r"[^a-zA-Z0-9_@.\-:]")
 
 
 def _clean_operator(operator: str) -> str:

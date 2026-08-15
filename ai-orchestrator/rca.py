@@ -451,7 +451,8 @@ def generate_hypotheses(fingerprint: dict, alert_context: dict = None) -> list[d
         ctx += f"- {{{k}}}: {v}\n"
 
     from orchestrator import _llm as llm_call
-    result = llm_call(cfg, HYPO_SYSTEM_PROMPT, ctx, "故障假设生成器")
+    # P1-5: 诊断类 LLM 调用放宽超时到 120s
+    result = llm_call(cfg, HYPO_SYSTEM_PROMPT, ctx, "故障假设生成器", timeout=120)
     try:
         # 提取 JSON
         import re

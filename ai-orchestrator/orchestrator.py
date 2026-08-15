@@ -114,7 +114,29 @@ def _llm_key_ready() -> bool:
     return bool(_LLM_KEY_HOLDER.get("api_key"))
 
 
-def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家") -> str:
+def _is_llm_failure(text) -> bool:
+    """判断 LLM 输出是否为超时/错误占位符（P1-5）。
+
+    这些占位符不应直接进入最终报告/案例库，下游应降级为确定性诊断段落。
+    """
+    if not text:
+        return False
+    s = str(text)
+    return s.startswith("[LLM") or "LLM 调用超时" in s or "LLM error" in s
+
+
+# P1-5: LLM 调用并发控制——进程级 Semaphore + 共享有界线程池。
+# Semaphore(4) 限制同时运行的 LLM 调用数（含排队等待者）；
+# 共享 executor max_workers=4 保证即使 kickoff 超时被放弃，遗留后台线程
+# 数量也恒 ≤ 4（不再每次调用新建 executor 导致超时线程无界累积）。
+import threading as _threading
+import concurrent.futures as _cf
+_LLM_SEMAPHORE = _threading.Semaphore(4)
+_LLM_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm-call")
+
+
+def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专家",
+         timeout: float = 60) -> str:
     if is_mock_enabled():
         return mock_llm_response(system_prompt + user_prompt)
     if not cfg:
@@ -146,23 +168,21 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
         task = Task(description=user_prompt, agent=agent, expected_output="请用中文输出。")
         crew = Crew(agents=[agent], tasks=[task], verbose=False)
 
-        # 解决: FastAPI 异步事件循环与 CrewAI 同步 kickoff 冲突
-        # 在线程中执行同步 kickoff。
-        # 关键修复: 不能使用 with 语句管理 executor，否则 future.result 超时后，
-        # with 退出会等待 kickoff 跑完（可能 15 分钟）才释放。必须用 shutdown(wait=False)。
-        import asyncio
-        import concurrent.futures
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # 解决: FastAPI 异步事件循环与 CrewAI 同步 kickoff 冲突。
+        # _llm 恒在 to_thread 线程中执行（_llm_async）或调用方线程（同步调用方），
+        # 信号量 acquire 不会阻塞 event loop。
+        # P1-5: 信号量限制并发 LLM 调用 ≤4；共享 executor 的 max_workers=4 兜底，
+        # 超时后遗留的 kickoff 线程数有界（≤4），不会每次超时泄漏一个线程。
+        _LLM_SEMAPHORE.acquire()
         try:
-            # 无论是否在事件循环中，统一在线程池中执行，并强制 60s 超时
-            future = executor.submit(crew.kickoff)
+            # 超时直接放弃，不等待后台线程（executor 中遗留线程由 max_workers 上界约束）
+            future = _LLM_EXECUTOR.submit(crew.kickoff)
             try:
-                return str(future.result(timeout=60))[:4000]
-            except concurrent.futures.TimeoutError:
-                # 超时直接放弃，不等待后台线程
+                return str(future.result(timeout=timeout))[:4000]
+            except _cf.TimeoutError:
                 return "[LLM 调用超时, 请稍后重试]"
         finally:
-            executor.shutdown(wait=False)
+            _LLM_SEMAPHORE.release()
             # 清理本次调用设置的环境变量（恢复原值或删除），避免 key 常驻进程环境
             for k, prev in (("OPENAI_API_KEY", _prev_key),
                             ("OPENAI_BASE_URL", _prev_base),
@@ -176,7 +196,7 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
 
 
 async def _llm_async(cfg: dict, system_prompt: str, user_prompt: str,
-                     role: str = "分析专家") -> str:
+                     role: str = "分析专家", timeout: float = 60) -> str:
     """LLM 调用丢到线程池，不阻塞 event loop。
 
     502 根因修复: _llm() 内部 future.result(timeout=60) 是同步阻塞调用，若直接在
@@ -184,8 +204,9 @@ async def _llm_async(cfg: dict, system_prompt: str, user_prompt: str,
     用 asyncio.to_thread 把整个 _llm (含 crew.kickoff 阻塞) 丢到默认线程池执行，
     event loop 可继续处理 liveness probe / 其他请求。
     不重写 crewai，只包裹其同步 kickoff。
+    P1-5: timeout 透传（诊断/汇总类节点传 120s），并发由 _llm 内信号量 + 共享 executor 控制。
     """
-    return await asyncio.to_thread(_llm, cfg, system_prompt, user_prompt, role)
+    return await asyncio.to_thread(_llm, cfg, system_prompt, user_prompt, role, timeout)
 
 
 def _extract_script(text: str) -> str:
@@ -304,8 +325,9 @@ def _fallback_script(text: str, service: str = "") -> str:
 
 
 def _action_summary(script: str, analysis: str, service: str = "") -> str:
-    """生成简洁的处置动作摘要（命令 + 一句依据），避免卡片只罗列整篇分析报告。"""
-    svc = service or "default"
+    """生成简洁的处置动作摘要（命令 + 一句依据），避免卡片只罗列整篇分析报告。
+    P3-7: 目标为空时输出"未指定"，不残留 '-'。"""
+    svc = service or "未指定"
     lines = [f"**目标**: {svc}"]
     if script:
         lines.append(f"**建议执行命令**:")
@@ -501,20 +523,41 @@ def _has_anomaly_evidence(text: str) -> bool:
 
 
 def _build_info_answer(state: dict) -> str:
-    """信息查询（如"有哪些服务在运行"）直接基于已采集数据作答。"""
-    msg = state.get("user_message", "")
-    parts = [f"**问题**: {msg}"]
-    svc_data = state.get("services_data", "")
-    infra = state.get("infra_data", "")
-    alerts = state.get("alert_data", "")
-    if svc_data:
-        parts.append(f"### 当前服务\n{svc_data[:1500]}")
-    elif infra:
-        parts.append(f"### 基础设施\n{infra[:1500]}")
-    if alerts:
+    """信息查询（如"有哪些服务在运行"）基于已采集数据**针对用户问题**作答。
+
+    P1-7: 必须包含用户原始问题并要求针对性回答——列出与问题直接相关的数据摘要
+    （服务名清单/关键指标），不允许输出全量原始数据转储。
+    """
+    msg = (state.get("user_message", "") or "").strip()
+    svc_data = state.get("services_data", "") or ""
+    infra = state.get("infra_data", "") or ""
+    alerts = state.get("alert_data", "") or ""
+    low = msg.lower()
+    parts = [f"**问题**: {msg or '(未提供)'}"]
+
+    # 服务清单：解析 "- name: 指标..." 行，仅提取服务名（针对"有哪些服务"类问题）
+    svc_names = []
+    for line in svc_data.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            svc_names.append(line[2:].split(":")[0].strip() or line[2:].strip())
+    if svc_names:
+        parts.append(
+            f"### 回答\n当前共有 **{len(svc_names)}** 个服务在运行：\n"
+            + "\n".join(f"- {s}" for s in svc_names[:30])
+            + (f"\n\n（共 {len(svc_names)} 个，仅展示前 30 个）" if len(svc_names) > 30 else "")
+        )
+    else:
+        # 非服务清单场景：摘要展示与问题相关的采集数据（截断，非全量转储）
+        relevant = ""
+        if svc_data:
+            relevant = svc_data[:1200]
+        elif infra:
+            relevant = infra[:1200]
+        parts.append(f"### 回答\n{relevant if relevant else '（未采集到实时数据，请稍后重试）'}")
+    # 告警态势仅在问题涉及告警/异常/健康/状态时附带（针对性，而非每次全量）
+    if alerts and any(k in low for k in ("告警", "异常", "健康", "报警", "状态", "正常")):
         parts.append(f"### 告警态势\n{alerts[:600]}")
-    if len(parts) == 1:
-        parts.append("（未采集到实时数据，请稍后重试）")
     return "\n\n".join(parts)
 
 
@@ -667,9 +710,11 @@ async def node_collect(state: AgentState) -> dict:
         result["logs_data"] = await asyncio.to_thread(query_logs, svc, 30, cluster_id=cid)
     except:
         result["logs_data"] = ""
-    # K8sGPT — 每次对话无条件调用，失败快速跳过不阻塞（timeout 10s）
+    # P1-6: K8sGPT 不再每次对话无条件调用——仅 diagnosis 意图且非信息查询时调用，
+    # 避免聊天/信息查询链路被 k8sgpt analyze 拖慢；失败快速跳过不阻塞（timeout 10s）
     import shutil
-    if shutil.which("k8sgpt"):
+    is_diag = (state.get("intent") or "").lower() == "diagnosis"
+    if is_diag and not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt"):
         try:
             env = dict(os.environ)
             if api_key:
@@ -972,7 +1017,10 @@ async def node_crewai(state: AgentState) -> dict:
             f"4. 若缺少具体资源名，先用 `kubectl get pods -A | grep <关键词>` 定位，再给出针对性命令。"
         )
 
-    result = await _llm_async(cfg, system_prompt, f"用户问题:「{user_msg}」\n已采集数据:\n{context}", expert.role if expert else "巡检专家")
+    # P1-5: 诊断类节点 LLM 超时放宽到 120s；超时占位符不进入报告——降级为确定性诊断段落
+    result = await _llm_async(cfg, system_prompt, f"用户问题:「{user_msg}」\n已采集数据:\n{context}", expert.role if expert else "巡检专家", timeout=120)
+    if _is_llm_failure(result):
+        result = _deterministic_diagnosis(state)
     return {"crewai_result": result, "messages": [f"[{_now()}] CrewAI ({expert.role if expert else '巡检'}) 分析完成"]}
 
 
@@ -982,7 +1030,7 @@ async def node_holmes(state: AgentState) -> dict:
         return {"holmesgpt_result": ""}
     svc = state.get("service", "")
     context = f"服务: {svc}\nRED: {state.get('red_metrics','')}\nTrace: {state.get('trace_data','')}"[:4000]
-    result = await _llm_async(cfg, "你是 Trace 调查引擎。深入分析 Trace 与指标，定位根因。", context, "Trace专家")
+    result = await _llm_async(cfg, "你是 Trace 调查引擎。深入分析 Trace 与指标，定位根因。", context, "Trace专家", timeout=120)
     return {"holmesgpt_result": result, "messages": [f"[{_now()}] HolmesGPT 分析完成"]}
 
 
@@ -1021,7 +1069,10 @@ async def node_plan(state: AgentState) -> dict:
         return _deterministic_plan(state)
     analysis = state.get("crewai_result", "")[:6000]
     prompt = f"基于诊断结果，生成执行计划 + Shell/K8s 命令。只输出可执行的脚本。诊断:\n{analysis}"
-    result = await _llm_async(cfg, "你是 K8s 运维工程师。生成可直接执行的 Shell 脚本。", prompt, "运维工程师")
+    result = await _llm_async(cfg, "你是 K8s 运维工程师。生成可直接执行的 Shell 脚本。", prompt, "运维工程师", timeout=120)
+    # P1-5: LLM 超时/失败时不把占位符当 plan 使用——回退确定性处置方案
+    if _is_llm_failure(result):
+        return _deterministic_plan(state)
     plan = result[:6000]
     # Extract script block
     script = ""
@@ -1042,7 +1093,7 @@ async def node_risk(state: AgentState) -> dict:
     plan = state.get("plan", "")[:4000]
     result = await _llm_async(cfg,
         "评估执行计划风险，输出 JSON: {\"score\": 1-5, \"reason\": \"理由\"}",
-        f"执行计画:\n{plan}", "风险评估师")
+        f"执行计画:\n{plan}", "风险评估师", timeout=120)
     try:
         d = json.loads(result.strip().split("\n")[-1] if "{" in result else result)
         return {"risk_score": int(d.get("score", 3)), "risk_reason": d.get("reason", result[:200])}
@@ -1286,6 +1337,12 @@ async def node_summarize(state: AgentState) -> dict:
     plan = state.get("plan", "")
     risk = state.get("risk_score", 0)
 
+    # P1-5: LLM 超时/错误占位符不得进入最终报告诊断结论 → 降级为确定性诊断段落
+    if _is_llm_failure(crewai):
+        crewai = _deterministic_diagnosis(state)
+    if _is_llm_failure(holmes):
+        holmes = ""
+
     parts = [f"## 分析报告\n**时间**: {_now()}"]
     if state.get("light_query"):
         # P1-5: 信息查询类问题 → 直接基于采集数据作答，不做异常判定
@@ -1293,8 +1350,8 @@ async def node_summarize(state: AgentState) -> dict:
     elif intent == "inspection":
         parts.append(crewai or "LLM 未配置")
     elif intent == "diagnosis":
-        # P3-1: 目标为空时输出 '-'，避免 "**目标**:  | **问题**" 的 markdown 残留
-        parts.append(f"**目标**: {svc or '-'} | **问题**: {msg}")
+        # P3-7: 目标为空时输出"未指定"，不残留 '-'（P3-1 遗留的 markdown 残留修复）
+        parts.append(f"**目标**: {svc or '未指定'} | **问题**: {msg}")
         if holmes: parts.append(f"### Trace 分析\n{holmes[:3000]}")
         if k8sgpt: parts.append(f"### K8s 诊断\n{k8sgpt[:2000]}")
         if crewai: parts.append(f"### 诊断结论\n{crewai[:3000]}")
@@ -1539,16 +1596,25 @@ class BrainOrchestrator:
         # LLM 调用时（_llm 内）按每次请求传入的 cfg + 内存单例 key 临时设置所需环境变量，
         # 用完即走，避免跨请求/跨会话共享明文 key。
 
-    async def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default", cluster_id: str = "all") -> str:
-        """Run full DAG and return final_response text. (async — 调用方需 await)"""
-        final = await self._run_dag(intent, service, message, thread_id, cluster_id)
+    async def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
+                           cluster_id: str = "all", mode: str = "chat") -> str:
+        """Run DAG and return final_response text. (async — 调用方需 await)
+
+        P1-2 修复: 默认走 chat_graph（精简图，无 wait_approval interrupt），
+        避免非流式 /ai/chat 因 full 图挂在审批中断上而恒返回空报告。
+        需要完整运维图请用 execute_sync_full(mode="full")。
+        """
+        final = await self._run_dag(intent, service, message, thread_id, cluster_id, mode=mode)
         return final.get("final_response", "")
 
-    async def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default", cluster_id: str = "all") -> dict:
-        """Run full DAG and return complete final state. (async — 调用方需 await)"""
-        return await self._run_dag(intent, service, message, thread_id, cluster_id)
+    async def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default",
+                                cluster_id: str = "all", mode: str = "full") -> dict:
+        """Run full DAG and return complete final state. (async — 调用方需 await)
+        /ops/tasks、workflow run 等完整运维链路使用 mode="full"（含审批/执行/验证）。"""
+        return await self._run_dag(intent, service, message, thread_id, cluster_id, mode=mode)
 
-    async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default", cluster_id: str = "all") -> dict:
+    async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default",
+                       cluster_id: str = "all", mode: str = "chat") -> dict:
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
         if not service: service = await asyncio.to_thread(self._detect_service, message)
         initial: AgentState = {
@@ -1572,7 +1638,15 @@ class BrainOrchestrator:
             # 节点已全部改为 async def，必须用 ainvoke（sync invoke 会在已运行的
             # event loop 中失败）。ainvoke 内部并发执行 async 节点，LLM 调用走
             # asyncio.to_thread 不阻塞 event loop → liveness probe 不超时。
-            return await self.graph.ainvoke(initial, config)
+            # P1-2: 与 stream_sync 的图选择逻辑保持一致——chat/dual/full 各用其图；
+            # chat 图无 wait_approval interrupt，非流式对话不再挂起返回空报告。
+            if mode == "dual":
+                graph = getattr(self, "dual_graph", self.graph)
+            elif mode == "full":
+                graph = getattr(self, "graph", self.graph)
+            else:
+                graph = getattr(self, "chat_graph", self.graph)
+            return await graph.ainvoke(initial, config)
         except Exception as e:
             return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
 
@@ -1707,11 +1781,12 @@ class BrainOrchestrator:
             # 替换为真实服务名/命名空间，避免"不可执行命令"建议。
             if script:
                 script = _sanitize_script_placeholders(script, service)
-            # P1-5b: 处置建议只在存在真实异常证据（服务错误率>5% 或活跃告警）时生成，
-            # 信息查询/无异常对话不再弹处置建议卡。
+            # P1-5b/P1-8: 处置建议只在【诊断意图(intent=diagnosis) 且非信息查询 且存在真实异常证据】
+            # 时生成，信息查询/巡检意图不产出处置命令建议卡（_extract_script 提取也一并跳过）。
             ev_text = " ".join(str(v) for v in evidence.values())
             has_anomaly = _has_anomaly_evidence(ev_text)
-            if (script or plan) and has_anomaly and not is_light:
+            is_diagnosis = (intent or "").lower() == "diagnosis"
+            if is_diagnosis and (script or plan) and has_anomaly and not is_light:
                 # P1-5c: 统一 0~1 风险分（与报告中心 _risk_from_evidence 一致），
                 # 前端 1-5 星换算由前端做，后端不再输出 ⭐(1/5) 文本。
                 risk_score = _risk_from_evidence(full_resp or analysis or "")

@@ -127,7 +127,18 @@ func (h *Handler) catalogUpdate(w http.ResponseWriter, r *http.Request, id int64
 }
 
 func (h *Handler) catalogDelete(w http.ResponseWriter, r *http.Request, id int64) {
-	if err := (&store.CatalogDAO{}).Delete(id); err != nil {
+	d := &store.CatalogDAO{}
+	// P3-1 修复：删除不存在的目录项返回 404。
+	existing, err := d.GetByID(id)
+	if err != nil {
+		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	if existing == nil {
+		respondJSON(w, 404, map[string]interface{}{"error": "service not found"})
+		return
+	}
+	if err := d.Delete(id); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}

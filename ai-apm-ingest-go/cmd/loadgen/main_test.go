@@ -17,8 +17,8 @@ func TestSingleTraceSteadyStructure(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
 	sp := spans[0]
-	if sp.Kind != 2 {
-		t.Fatalf("expected kind SERVER(2), got %d", sp.Kind)
+	if sp.Kind != 1 {
+		t.Fatalf("expected kind SERVER(1), got %d", sp.Kind)
 	}
 	if sp.StartTimeUnixNano == "" || sp.EndTimeUnixNano == "" {
 		t.Fatalf("missing timestamps")

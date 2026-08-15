@@ -79,6 +79,10 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 405, map[string]interface{}{"error": "method not allowed"})
 		return
 	}
+	// 安全(P2-2)：租户写接口 admin 门禁（与 users/catalog 等写分支一致）。
+	if !isAdmin(w, r) {
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	var t Tenant
 	if json.Unmarshal(body, &t) != nil || t.ID == "" {
@@ -102,6 +106,10 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		respondJSON(w, 405, map[string]interface{}{"error": "method not allowed"})
+		return
+	}
+	// 安全(P2-2)：租户写接口 admin 门禁。
+	if !isAdmin(w, r) {
 		return
 	}
 	id := r.URL.Path[len("/api/v1/tenants/"):]

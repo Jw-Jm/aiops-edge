@@ -112,6 +112,16 @@ func (h *Handler) updatePanel(w http.ResponseWriter, r *http.Request, id string)
 
 func (h *Handler) deletePanel(w http.ResponseWriter, r *http.Request, id string) {
 	dao := &store.DashboardPanelDAO{}
+	// P3-1 修复：删除不存在的面板返回 404。
+	existing, err := dao.Get(id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		respondError(w, http.StatusNotFound, "panel not found")
+		return
+	}
 	if err := dao.Delete(id); err != nil {
 		respondError(w, http.StatusInternalServerError, "delete panel: "+err.Error())
 		return
