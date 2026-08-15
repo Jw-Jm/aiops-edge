@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Popconfirm } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, Tag, Space, Tabs, Menu, Spin, message, Popconfirm } from 'antd'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { listKnowledge, addKnowledge, deleteKnowledge, getRagStats, reloadRagKnowledge, KnowledgeItem, RagStats } from '../../api/client'
+import { getPlaybooks, getPlaybookContent, PlaybookEntry, PlaybookDoc } from '../../api/playbooks'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 
 const Knowledge: React.FC = () => {
@@ -106,7 +109,7 @@ const Knowledge: React.FC = () => {
   return (
     <div>
       <Breadcrumb items={[{ t: '智能运维' }, { t: '知识库' }]} />
-      <PageHeader title="知识库" desc="RAG 故障案例库，供 AI 诊断检索与团队沉淀"
+      <PageHeader title="知识库" desc="RAG 故障案例库 + 内置运维 Playbook，供 AI 诊断检索与团队沉淀"
         actions={
           <Space>
             <Button onClick={() => { setQ(''); load() }}>刷新</Button>
@@ -114,7 +117,13 @@ const Knowledge: React.FC = () => {
           </Space>
         } />
 
-      {/* 统计卡：故障案例 + 统一总数（知识文档已归档，不再展示） */}
+      <Tabs
+        items={[
+          {
+            key: 'cases', label: '故障案例',
+            children: (
+              <>
+                {/* 统计卡：故障案例 + 统一总数（知识文档已归档，不再展示） */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
         <div className="card" style={{ flex: 1, minWidth: 200, marginBottom: 0, padding: 16 }}>
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>故障案例（AI 检索）</div>
@@ -149,7 +158,16 @@ const Knowledge: React.FC = () => {
         <Table rowKey="id" loading={loading} columns={cols} dataSource={data} size="middle"
           pagination={{ total, pageSize: 50, showTotal: (t) => `共 ${t} 条` }}
           locale={{ emptyText: <Empty text={'暂无故障案例，点击右上角「新增案例」录入，或「导入内置案例」'} /> }} />
-      </div>
+              </div>
+              </>
+            ),
+          },
+          {
+            key: 'playbooks', label: '运维 Playbook',
+            children: <PlaybookTab />,
+          },
+        ]}
+      />
 
       <Modal title="新增故障案例" open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose width={620}>
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
@@ -161,6 +179,125 @@ const Knowledge: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+    </div>
+  )
+}
+
+// ===== 运维 Playbook Tab：分类浏览 + 向量检索 + 原文渲染（Task E4）=====
+const PlaybookTab: React.FC = () => {
+  const [all, setAll] = useState<PlaybookEntry[]>([])
+  const [listLoading, setListLoading] = useState(true)
+  const [cats, setCats] = useState<{ name: string; count: number }[]>([])
+  const [activeCat, setActiveCat] = useState('')
+  const [q, setQ] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [hits, setHits] = useState<PlaybookEntry[] | null>(null)
+  const [doc, setDoc] = useState<PlaybookDoc | null>(null)
+  const [docLoading, setDocLoading] = useState(false)
+
+  // 首屏拉全量，本地按 category 分组（diagnostics/alerts/concepts/reference）
+  const loadAll = () => {
+    setListLoading(true)
+    getPlaybooks()
+      .then((r) => {
+        const d = r.data || {}
+        const list = Array.isArray(d) ? d : d.playbooks || []
+        setAll(list)
+        const m = new Map<string, number>()
+        list.forEach((p) => { const c = p.category || 'other'; m.set(c, (m.get(c) || 0) + 1) })
+        setCats([...m.entries()].map(([name, count]) => ({ name, count })))
+      })
+      .catch(() => { setAll([]); setCats([]) })
+      .finally(() => setListLoading(false))
+  }
+  useEffect(() => { loadAll() }, [])
+
+  const visible: PlaybookEntry[] = hits !== null
+    ? hits
+    : (activeCat ? all.filter((p) => p.category === activeCat) : all)
+
+  const onSearch = () => {
+    if (!q.trim()) { setHits(null); return }
+    setSearching(true)
+    getPlaybooks({ q: q.trim() })
+      .then((r) => {
+        const d = r.data || {}
+        setHits(Array.isArray(d) ? d : d.items || [])
+      })
+      .catch(() => setHits([]))
+      .finally(() => setSearching(false))
+  }
+
+  const openDoc = (path: string) => {
+    setDocLoading(true)
+    getPlaybookContent(path)
+      .then((r) => setDoc(r.data))
+      .catch(() => { message.error('加载 Playbook 原文失败'); setDoc(null) })
+      .finally(() => setDocLoading(false))
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+      {/* 左：搜索 + 分类 + 列表 */}
+      <div className="card" style={{ width: 320, flexShrink: 0, padding: 0, marginBottom: 0 }}>
+        <div style={{ padding: 12, borderBottom: '1px solid var(--border-soft)' }}>
+          <Space.Compact style={{ width: '100%' }}>
+            <Input value={q} onChange={(e) => setQ(e.target.value)} onPressEnter={onSearch} allowClear placeholder="搜索 playbook…" />
+            <Button type="primary" loading={searching} onClick={onSearch}>搜索</Button>
+          </Space.Compact>
+        </div>
+        <Menu
+          mode="inline"
+          selectedKeys={[activeCat || '__all']}
+          onClick={(e) => setActiveCat(e.key === '__all' ? '' : e.key)}
+          style={{ borderInlineEnd: 'none' }}
+          items={[
+            { key: '__all', label: '全部' },
+            ...cats.map((c) => ({ key: c.name, label: `${c.name}（${c.count}）` })),
+          ]}
+        />
+        <div style={{ maxHeight: 'calc(100vh - 440px)', overflow: 'auto', borderTop: '1px solid var(--border-soft)' }}>
+          {listLoading || searching ? (
+            <div style={{ textAlign: 'center', padding: 24 }}><Spin size="small" /></div>
+          ) : visible.length === 0 ? (
+            <Empty text={hits !== null ? '未检索到相关内容' : '暂无 Playbook'} hint={hits !== null ? '尝试更换关键词' : ''} />
+          ) : visible.map((p) => (
+            <div key={p.path} onClick={() => openDoc(p.path)} role="button"
+              style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid var(--border-soft)' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title || p.path}</span>
+                {typeof p.score === 'number' && (
+                  <Tag color={p.score >= 0.7 ? 'green' : p.score >= 0.6 ? 'orange' : 'default'} style={{ marginRight: 0, flexShrink: 0 }}>{p.score.toFixed(2)}</Tag>
+                )}
+              </div>
+              {p.preview && (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.preview}</div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontFamily: 'monospace' }}>{p.path}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 右：原文详情（react-markdown 渲染） */}
+      <div className="card" style={{ flex: 1, minWidth: 0, padding: 16, marginBottom: 0 }}>
+        {docLoading ? (
+          <div style={{ textAlign: 'center', padding: 48 }}><Spin /></div>
+        ) : doc ? (
+          <>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, borderBottom: '1px solid var(--border-soft)', paddingBottom: 10, fontFamily: 'monospace' }}>
+              {doc.path}
+            </div>
+            <div style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--text-secondary)' }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content}</ReactMarkdown>
+            </div>
+          </>
+        ) : (
+          <Empty text="选择左侧 Playbook 查看原文" hint="支持关键词搜索进行向量检索" />
+        )}
+      </div>
     </div>
   )
 }

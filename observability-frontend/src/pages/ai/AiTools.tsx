@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Tabs, Input, Button, Space, Table, Tag, Empty, Spin, Typography, message } from 'antd'
+import { Tabs, Input, Button, Space, Table, Tag, Empty, Spin, Select, Popconfirm, Typography, message } from 'antd'
 import { nl2sqlTranslate, nl2sqlExecute, getMcpTools, listSkills, callMcpTool } from '../../api/client'
+import {
+  installMarketplacePack, listInstalledPacks, uninstallMarketplacePack,
+  type InstalledPack, type InstallResult, type SourceType,
+} from '../../api/marketplace'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
 import AppIcon from '../../components/AppIcons'
 import { useUIStore } from '../../store/uiStore'
@@ -152,9 +156,128 @@ const AiTools: React.FC = () => {
               </div>
             ),
           },
+          {
+            key: 'market', label: '市场',
+            children: <MarketplaceTab />,
+          },
         ]}
       />
     </div>
+  )
+}
+
+// ===== Skill 市场 Tab：安装 pack + 已安装列表（Task D5）=====
+const MarketplaceTab: React.FC = () => {
+  const [source, setSource] = useState('')
+  const [sourceType, setSourceType] = useState<SourceType>('local')
+  const [installing, setInstalling] = useState(false)
+  const [installed, setInstalled] = useState<InstalledPack[]>([])
+  const [listLoading, setListLoading] = useState(true)
+  const [result, setResult] = useState<InstallResult | null>(null)
+
+  const loadInstalled = () => {
+    setListLoading(true)
+    listInstalledPacks()
+      .then((r) => {
+        const d = r.data || {}
+        setInstalled(Array.isArray(d) ? d : d.installed || [])
+      })
+      .catch(() => setInstalled([]))
+      .finally(() => setListLoading(false))
+  }
+  useEffect(() => { loadInstalled() }, [])
+
+  const onInstall = () => {
+    if (!source.trim()) { message.warning('请填写安装来源'); return }
+    setInstalling(true); setResult(null)
+    installMarketplacePack(source.trim())
+      .then((r) => {
+        setResult(r.data)
+        message.success('安装成功')
+        setSource('')
+        loadInstalled()
+      })
+      .catch((e) => message.error(e?.response?.data?.detail || e?.response?.data?.error || '安装失败'))
+      .finally(() => setInstalling(false))
+  }
+
+  const sigTag = (s?: string) =>
+    s === 'verified' ? <Tag color="green">verified</Tag>
+      : s === 'failed' ? <Tag color="red">failed</Tag>
+        : <Tag>unsigned</Tag>
+
+  const fmtTime = (v?: string) => {
+    if (!v) return '-'
+    const n = Number(v)
+    const d = new Date(!isNaN(n) && String(v).length <= 11 ? n * 1000 : v)
+    return isNaN(d.getTime())
+      ? String(v)
+      : d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  }
+
+  const cols = [
+    { title: 'pack_id', dataIndex: 'pack_id', key: 'pack_id', render: (v: string) => <span style={{ fontWeight: 600, fontFamily: 'monospace' }}>{v || '-'}</span> },
+    { title: '来源', dataIndex: 'source', key: 'source', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)', wordBreak: 'break-all' }}>{v || '-'}</span> },
+    { title: '签名状态', dataIndex: 'signature_state', key: 'signature_state', width: 110, render: (v: string) => sigTag(v) },
+    { title: '安装时间', dataIndex: 'installed_at', key: 'installed_at', width: 150, render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{fmtTime(v)}</span> },
+    {
+      title: '操作', key: 'act', width: 90,
+      render: (_: unknown, r: InstalledPack) => (
+        <Popconfirm title={`确认卸载 ${r.pack_id}？卸载后对应 skill 将立即失效`} onConfirm={() => {
+          uninstallMarketplacePack(r.pack_id)
+            .then(() => { message.success('已卸载'); setResult(null); loadInstalled() })
+            .catch(() => message.error('卸载失败'))
+        }}>
+          <Button size="small" type="link" danger>卸载</Button>
+        </Popconfirm>
+      ),
+    },
+  ]
+
+  return (
+    <>
+      <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>安装 Skill Pack</div>
+        <Space wrap style={{ width: '100%' }}>
+          <Select value={sourceType} onChange={(v) => setSourceType(v as SourceType)} style={{ width: 116 }}
+            options={[
+              { value: 'local', label: '本地目录' },
+              { value: 'tarball', label: 'Tarball' },
+              { value: 'git', label: 'Git URL' },
+            ]} />
+          <Input
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            onPressEnter={onInstall}
+            allowClear
+            placeholder={sourceType === 'git' ? '如 https://github.com/org/skill-pack.git' : '如 /data/skills/packs/example-pack 或 /tmp/example.tgz'}
+            style={{ width: 480 }}
+          />
+          <Button type="primary" loading={installing} onClick={onInstall}>安装</Button>
+        </Space>
+        {result && (
+          <div style={{ marginTop: 12, fontSize: 13, background: 'var(--bg-soft)', borderRadius: 8, padding: 12 }}>
+            <Space wrap>
+              <span>已安装 <b style={{ fontFamily: 'monospace' }}>{result.pack_id}</b></span>
+              {sigTag(result.signature_state)}
+            </Space>
+            {result.skills && result.skills.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12 }}>
+                包含技能：
+                {result.skills.map((s) => <Tag key={s} style={{ marginLeft: 6 }}>{s}</Tag>)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="card" style={{ padding: 0 }}>
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-soft)', fontWeight: 600 }}>
+          已安装 Pack（{installed.length}）
+        </div>
+        <Table rowKey="pack_id" loading={listLoading} dataSource={installed} columns={cols} size="small" pagination={false}
+          locale={{ emptyText: <Empty description={<span style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无已安装 pack</span>} /> }} />
+      </div>
+    </>
   )
 }
 
