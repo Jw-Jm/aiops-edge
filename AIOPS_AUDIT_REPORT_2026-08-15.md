@@ -316,7 +316,76 @@
 - **真实 LLM**：DeepSeek（deepseek-v4-flash）经 provider 流启用，多轮流式/非流式/NL2SQL 实测
 - **环境处理**：CH 探针运行时修复（sh -c 包装，未改仓库）；LLM key 已配置（脱敏）；测试数据注入保留、业务测试数据已清理
 
-*报告完 · 全部结论基于 2026-08-15 实测与代码根因核对，测试产物见 .slim/deepwork/test-results/*
+---
+
+## 八、与 ongrid（github.com/ongridio/ongrid）能力对比与差距分析
+
+> 对比对象：ongrid v0.12.0（2026-08-08，637 star，AGPLv3）+ 本地副本（≈v0.12.0 发布前夜 main）代码侦察；本平台 = AIOps 智能可观测平台。
+
+### 8.1 定位差异（根本认知）
+
+- **ongrid** = "运维 AI 智能体平台"：定位是 **agent**（理解基础设施→定位根因→从 Slack/Telegram 修复），可观测栈（Prometheus/Loki/Tempo/Grafana）是**捆绑底座**，"agent 写查询"；核心价值在 AI 编排工程化 + 执行管控（审批/审计/白名单）。
+- **本平台** = "智能可观测平台"：定位是**数据平台本体**（指标/日志/链路/拓扑/告警/SLO 自研引擎 + ClickHouse/VM/VLogs 大规模底座），AI 是叠加在数据之上的诊断能力。
+- **关系判断**：上下游互补而非直接竞品——ongrid 是"消费可观测数据的上层智能体"，本平台是"生产可观测数据的下层平台"。但两者在 AI 运维助手能力域**直接重叠**（对话/RCA/处置/审批/知识库），该域是本平台差距所在。
+
+### 8.2 本平台缺失的能力（ongrid 有，按优先级分级）
+
+**P0（云平台运维定位下最该补齐）**
+
+| # | 能力 | ongrid 实现 | 本平台现状 | 差距说明 |
+|---|---|---|---|---|
+| 1 | 告警自动调查闭环 | alert_fired → 自动 spawn investigator worker → RCA 报告写回聊天/incident（biz/alert/investigator） | 仅 15 分钟"告警→case 草稿"定时器 + 手动 RCA 接口 | 缺"告警触发→自动 AI 调查→结果写回"的无人值守闭环 |
+| 2 | 工作流可视化前端 | FlowEditor（@xyflow/react 节点化 DAG + NL 一句话生成工作流 + cron/告警/HTTP 触发器） | flow_engine 后端活跃（/ai/workflows 11 端点），**v3 前端无页面**（仅 legacy v2 有） | 后端已就绪，补 UI 成本低价值高 |
+| 3 | 多智能体分工 | Coordinator + 8 个 Specialist persona（SRE/网络/DB/磁盘/计算）+ reviewer/reporter | 9 个 skills 但无 agent 注册表/派发机制（dual_agent 未启用） | 缺 coordinator→specialist 路由与角色分工 |
+| 4 | IM 双向通道 | Slack/Telegram/飞书/钉钉/企微 5 渠道双向收发（imbridge） | 仅 vmalert 兼容 webhook | 告警触达/移动指挥刚需（国内场景至少飞书/钉钉） |
+| 5 | K8s 生命周期动作 | scale/restart/delete_pod/cordon/drain 结构化动作 + 审批写门 | 通用白名单命令执行 + 审批（已具备） | 缺结构化 K8s 动作与资源级校验 |
+
+**P1（提升 AI 能力工程化）**
+
+| # | 能力 | 差距说明 |
+|---|---|---|
+| 6 | MCP 动态注册 | ongrid 可注册外部 MCP server（HTTP/stdio）动态刷新无需重启；本平台 8 个固定工具 |
+| 7 | Skill 文件化+市场 | ongrid SKILL.md + 签名验证 + marketplace 安装；本平台 Python 硬编码 |
+| 8 | 代码仓库 RAG | ongrid 索引 git 仓库，agent grep 源码定位行；本平台无 |
+| 9 | 凭据库 | ongrid AES-GCM vault + 注入执行/MCP；本平台仅 LLM key 加密 |
+| 10 | 内置运维知识库 | ongrid builtin_vault（alerts/concepts/diagnostics/systems/reference 预置 playbook）；本平台 42 条案例种子 |
+| 11 | 通知渠道路由 | ongrid 通用 notify（webhook/slack/feishu/dingtalk）复用告警/报告/工作流 |
+| 12 | 组织/成员模型 | ongrid org/membership/Casbin RBAC；本平台 users+role+scope 扁平 |
+| 13 | 浏览器 WebSSH | ongrid edge 反向隧道流式 shell（无密钥无跳板全审计）；本平台仅白名单命令 WS |
+
+**P2（视定位取舍）**
+
+| # | 能力 | 取舍说明 |
+|---|---|---|
+| 14 | WebSearch（SearXNG 自托管搜索） | 诊断时联网查资料，轻量可加 |
+| 15 | edge 零入站架构 | ongrid edge 拨出反向隧道；与本平台服务化 K8s 定位冲突，不建议照搬 |
+| 16 | 网络设备邻居发现（LLDP/ARP + SNMP 校验 + 拓扑映射） | 本平台有 SNMP 采集但无自动发现，硬件接入场景才需要 |
+| 17 | edge 升级 bundle | 本平台无边缘节点概念，不适用 |
+| 18 | Grafana 集成（内嵌+面板镜像） | 本平台 deepflow 有独立 Grafana；可选集成 |
+| 19 | 报告定时生成 + 生成式页面分享 | 本平台报告中心无定时 |
+
+### 8.3 本平台独有/领先的能力（ongrid 没有）
+
+| 能力 | 说明 |
+|---|---|
+| NL2SQL（带安全护栏） | SELECT-only + 表白名单 + 禁表函数/INTO OUTFILE；ongrid 仅 NL→PromQL/LogQL/TraceQL |
+| 容量预测 ETT | 线性+EWMA 双模型触达阈值时间预估 |
+| eBPF DeepFlow 深度观测 | 应用级网络流量/拓扑（ongrid 无 eBPF） |
+| IPMI 硬件健康 + KubeVirt VM 管理 | 硬件层与虚拟化层（云平台"三件套"定位核心） |
+| 多租户（X-Tenant-ID） | ongrid 仅组织模型 |
+| 异常检测多算法投票 + 确定性 3 层 RCA | zscore/MAD/changepoint + KubeVirt 物理拓扑 + 假设证伪 |
+| 大规模数据底座 | ClickHouse/VM/VLogs 服务化（对比 Prometheus/Loki/Tempo 轻量栈） |
+| LLM 配置历史/回滚 | 版本化+一键回滚 |
+
+### 8.4 结论与建议
+
+本平台的差距集中在 **AI 编排工程化与执行闭环**（P0 五项），而非可观测数据能力（后者本平台领先）。结合云平台"三件套"定位，建议按序补齐：
+
+1. **告警→AI 自动调查闭环**（最核心：把现有 RCA/chat 能力从"手动触发"升级为"告警驱动"）
+2. **工作流可视化前端**（后端就绪，性价比最高）
+3. **IM 通道**（飞书/钉钉 webhook 起步）
+4. **多智能体分工 + MCP 动态注册**（AI 能力工程化）
+5. **K8s 生命周期动作结构化**（复用现有审批+白名单底座）
 
 ---
 
@@ -358,7 +427,7 @@
 | 评审加固 | VM 透传隔离 | 限流+响应上限+文档化 | ✅ 3 测试 |
 
 ### 已知残留（非阻塞）
-- 服务→ns 映射依赖 trace_spans.k8s_namespace，当前多数服务该字段为空（deepflow 同步未映射），ns 下拉实际仅"全部/default"——属采集侧数据完备性问题，代码逻辑已就绪
+- ~~服务→ns 映射依赖 trace_spans.k8s_namespace，当前多数服务该字段为空~~ **已修复（8-15 第二轮）**：deepflow 同步器 join flow_tag.pod_ns_map 映射 ns（修复未来数据）+ 查询侧 K8s pod 兜底（修复存量数据展示，60s 缓存）。实测 namespaces=['deepflow','default','observability']，过滤与 external 标记正常
 - nl2sql 审计 operator 仍为 "system"（硬编码，非 _audit_operator 路径），语义可接受（系统生成的查询）
 - orchestrator 测试 3 个 pre-existing 失败（缺 LLM key / shell_policy 换行行为），非本轮引入
 - VM 透传端点无租户隔离（PromQL 结构任意无法安全注入 label），已文档化需网络层隔离
