@@ -27,6 +27,12 @@ const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
 const SLO = lazy(() => import('./pages/slo/SLO'))
 const Knowledge = lazy(() => import('./pages/ai/Knowledge'))
 const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'))
+// ongrid 对齐新增页面
+const Workflows = lazy(() => import('./pages/ai/Workflows'))
+const WorkflowsEditor = lazy(() => import('./pages/ai/Workflows/Editor'))
+const WorkflowsDetail = lazy(() => import('./pages/ai/Workflows/Detail'))
+const K8sActions = lazy(() => import('./pages/infra/K8sActions'))
+const Grafana = lazy(() => import('./pages/observability/Grafana'))
 
 // ===== 侧栏导航：7 大板块 =====
 interface NavItem { path: string; label: string; icon: AppIconName; badge?: string }
@@ -44,6 +50,7 @@ const NAV_GROUPS: NavGroup[] = [
       { path: '/observability/trace', label: '链路追踪', icon: 'traces' },
       { path: '/observability/log', label: '日志与指标', icon: 'logs' },
       { path: '/observability/vms', label: '虚拟机', icon: 'desktop' },
+      { path: '/observability/grafana', label: 'Grafana 面板', icon: 'gauge' },
     ],
   },
   {
@@ -58,6 +65,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: '/ai/chat', label: 'AI 对话', icon: 'chat' },
       { path: '/ai/tools', label: 'AI 工具', icon: 'nl2sql' },
+      { path: '/ai/workflows', label: '工作流', icon: 'workflow' },
       { path: '/slo', label: 'SLO 目标', icon: 'settings' },
       { path: '/knowledge', label: '知识库', icon: 'knowledge' },
     ],
@@ -66,6 +74,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '容量与资源',
     items: [
       { path: '/capacity', label: '容量预测', icon: 'capacity' },
+      { path: '/infra/k8s', label: 'K8s 运维', icon: 'k8s' },
     ],
   },
   {
@@ -298,9 +307,14 @@ function AppLayout() {
               <Route path="/ai/chat" element={<AiChat />} />
 
               <Route path="/ai/tools" element={<AiTools />} />
+              <Route path="/ai/workflows" element={<Workflows />} />
+              <Route path="/ai/workflows/editor" element={<WorkflowsEditor />} />
+              <Route path="/ai/workflows/:id" element={<WorkflowsDetail />} />
               <Route path="/slo" element={<SLO />} />
               <Route path="/knowledge" element={<Knowledge />} />
               <Route path="/capacity" element={<Capacity />} />
+              <Route path="/infra/k8s" element={<K8sActions />} />
+              <Route path="/observability/grafana" element={<Grafana />} />
               <Route path="/report" element={<Report />} />
               <Route path="/admin/users" element={<AdminUsers />} />
               <Route path="/admin/settings" element={<AdminSettings />} />
