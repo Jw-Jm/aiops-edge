@@ -1,0 +1,5 @@
+{
+  "algo": "ECDSA-SHA256",
+  "sig": "MABnYXJiYWdlLW5vdC1hLXJlYWwtc2lnbmF0dXJl",
+  "pub_key": "not-a-valid-pem"
+}

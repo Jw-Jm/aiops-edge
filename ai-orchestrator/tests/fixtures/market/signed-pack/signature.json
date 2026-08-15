@@ -1,0 +1,5 @@
+{
+  "algo": "ECDSA-SHA256",
+  "sig": "MEUCIQDmowJwZ4u40O5UEqZXcHJwHvFSchEooJK2eL9BIXkS1gIgCYj9wI9e4fJoqSmh2O07pLNUa0JijuQuNllpWZxkHBE=",
+  "pub_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEnGWg1mjE4Jld4eJA+K0WZJMlCxfJ\nPjIkXpRbOeaCPMfK1Ww/zViCvTKM2iGh/1pNqomXKxGphlD45AC7AdoBTg==\n-----END PUBLIC KEY-----\n"
+}
