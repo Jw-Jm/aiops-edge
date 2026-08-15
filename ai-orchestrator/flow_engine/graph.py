@@ -86,3 +86,11 @@ def validate_graph(g: Graph):
                 q.append(nxt)
     if visited != len(g.nodes):
         raise ValueError("cycle detected in graph")
+    # 4. trigger 规则: 图含 trigger.* 节点时必须有且仅有一个; trigger 不允许有入边
+    #    （零 trigger 的旧图仍放行，兼容既有内置/测试流程）
+    trigger_nodes = [n for n in g.nodes if n.type.startswith("trigger.")]
+    if len(trigger_nodes) > 1:
+        raise ValueError("graph must have exactly one trigger.* node")
+    trigger_with_in = {e.target for e in g.edges} & {n.id for n in trigger_nodes}
+    if trigger_with_in:
+        raise ValueError(f"trigger node cannot have incoming edge: {sorted(trigger_with_in)[0]}")

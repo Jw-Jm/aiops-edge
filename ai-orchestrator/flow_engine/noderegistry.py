@@ -38,3 +38,20 @@ node_registry = NodeRegistry()
 
 def register_node(spec: NodeSpec):
     node_registry.register(spec)
+
+
+def register_trigger_nodes():
+    """并入 nodes_trigger.TRIGGER_NODES 三种触发器节点（幂等）。
+
+    engine 以 execute(ctx, config) 两参调用 execute, 故此处用闭包包装
+    exec_trigger(ctx, node_id, node_type, config)（node_id 由引擎运行期确定,
+    包装器传空串, exec_trigger 落到固定键 "trigger"）。
+    """
+    from .nodes_trigger import TRIGGER_NODES, exec_trigger
+    for t, d in TRIGGER_NODES.items():
+        if node_registry.lookup(t) is None:
+            node_registry.register(NodeSpec(
+                type=t, kind=d["kind"], category="触发", label=d["label"],
+                ports=d["ports"],
+                config_fields=[{"name": k, **v} for k, v in d["config_fields"].items()],
+                execute=lambda ctx, config, _t=t: exec_trigger(ctx, "", _t, config)))
