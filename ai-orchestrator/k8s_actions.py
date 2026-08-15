@@ -149,3 +149,54 @@ def execute(action: str, kind: str, namespace: str, name: str, **kw) -> str:
     if not allowed:
         return f"命令被安全策略拒绝: {cmd}"
     return _run_cmd(cmd)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  C2: 端点核心逻辑 (main.py Mount C2 在 _require_approver 之后调用)
+# ══════════════════════════════════════════════════════════════════
+
+class K8sActionError(Exception):
+    """带 HTTP 状态码的动作错误 (挂载层映射为 HTTPException)。"""
+
+    def __init__(self, status_code: int = 400, message: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def require_approved_task(task_id: str, name: str = "") -> dict:
+    """审批门: ApprovalStore 任务必须存在且 status=approved, 且目标资源名在审批 script 内。"""
+    from db_approval import ApprovalStore
+    task = ApprovalStore().get(task_id or "")
+    if not task or task.get("status") != "approved":
+        raise K8sActionError(403, "审批未通过或不存在")
+    script = task.get("script", "") or ""
+    if name and script:
+        # 参数匹配: 审批单 script 必须引用目标资源名
+        if name not in script:
+            raise K8sActionError(403, "审批单参数与目标资源不匹配")
+    return task
+
+
+def execute_guarded(action: str, kind: str, namespace: str, name: str,
+                    preflight_token: str = "", expected_resource_version: str = "",
+                    approval_task_id: str = "", extra: dict = None,
+                    audit=None) -> dict:
+    """C2 execute 端点核心: 审批(destructive) → preflight token → 乐观锁 → 执行 → 审计回调。
+
+    - 403: destructive 动作未获审批单批准 (或参数不匹配)
+    - 400: preflight_token 缺失/篡改/过期
+    - 409: resourceVersion 变化, 需重新预检
+    - audit(action, kind, name, output) 由挂载层绑定 _audit_log
+    """
+    extra = extra or {}
+    if action in DESTRUCTIVE_ACTIONS:
+        require_approved_task(approval_task_id, name=name)
+    if not verify_preflight_token(preflight_token, action, kind, namespace, name, **extra):
+        raise K8sActionError(400, "preflight_token 无效或已过期")
+    current = current_resource_version(kind, namespace, name)
+    if expected_resource_version and current != expected_resource_version:
+        raise K8sActionError(409, "资源版本已变化, 请重新预检")
+    out = execute(action, kind, namespace, name, **extra)
+    if audit:
+        audit(action, kind, name, out)
+    return {"ok": True, "output": out}
