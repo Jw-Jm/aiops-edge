@@ -200,3 +200,73 @@ def execute_guarded(action: str, kind: str, namespace: str, name: str,
     if audit:
         audit(action, kind, name, out)
     return {"ok": True, "output": out}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  C3: chat 工具 (execute_k8s_action / describe_k8s_resource)
+#  由 main.py Mount C3 调用 register_k8s_tools(ToolRegistry) 注册
+# ══════════════════════════════════════════════════════════════════
+
+def execute_k8s_action(action: str = "", kind: str = "", namespace: str = "",
+                       name: str = "", replicas=None, grace_period_seconds=None,
+                       drain_timeout=None, **kw) -> str:
+    """结构化 K8s 动作工具 (Class=dangerous, 需审批)。
+
+    内部复用 build_command + EXEC_WRITE 白名单双策略校验, 输出经 execute_shell 截断。
+    """
+    for k, v in (("replicas", replicas), ("grace_period_seconds", grace_period_seconds),
+                 ("drain_timeout", drain_timeout)):
+        if v is not None:
+            kw[k] = v
+    try:
+        cmd = build_command(action, kind=kind, namespace=namespace, name=name, **kw)
+    except ValueError as e:
+        return f"动作参数非法: {e}"
+    allowed, cat = _whitelist(cmd)
+    if not allowed:
+        return f"命令被安全策略拒绝: {cmd}"
+    return _run_cmd(cmd)
+
+
+def describe_k8s_resource(kind: str = "", name: str = "", namespace: str = "") -> str:
+    """描述 K8s 资源 (Class=safe, kubectl describe 只读)。"""
+    if not kind or not name:
+        return "参数缺失: kind/name 必填"
+    cmd = f"kubectl describe {kind}/{name}"
+    if namespace:
+        cmd += f" -n {namespace}"
+    allowed, cat = _whitelist(cmd)
+    if not allowed:
+        return f"命令被安全策略拒绝: {cmd}"
+    return _run_cmd(cmd)
+
+
+def register_k8s_tools(registry):
+    """注册 K8s chat 工具 (main.py Mount C3 调用; 幂等)。"""
+    if not registry.get("execute_k8s_action"):
+        registry.register(
+            name="execute_k8s_action",
+            description="执行结构化 K8s 生命周期动作(rollout_restart/scale/delete_pod/evict_pod/"
+                        "cordon/uncordon/drain)，命令生成严格落在白名单内，需人工审批",
+            category="k8s", requires_approval=True, cls_="dangerous",
+            params={
+                "action": {"type": "string", "required": True, "desc": "动作名"},
+                "kind": {"type": "string", "required": True, "desc": "资源类型"},
+                "namespace": {"type": "string", "required": False, "desc": "命名空间"},
+                "name": {"type": "string", "required": True, "desc": "资源名"},
+                "replicas": {"type": "int", "required": False, "desc": "副本数(scale)"},
+                "grace_period_seconds": {"type": "int", "required": False, "desc": "优雅删除秒数(delete/evict pod)"},
+                "drain_timeout": {"type": "int", "required": False, "desc": "drain 超时秒数"},
+            },
+            scope="manager")(execute_k8s_action)
+    if not registry.get("describe_k8s_resource"):
+        registry.register(
+            name="describe_k8s_resource",
+            description="描述 K8s 资源(kubectl describe, 只读)",
+            category="k8s", cls_="safe",
+            params={
+                "kind": {"type": "string", "required": True, "desc": "资源类型"},
+                "name": {"type": "string", "required": True, "desc": "资源名"},
+                "namespace": {"type": "string", "required": False, "desc": "命名空间"},
+            },
+            scope="manager")(describe_k8s_resource)
