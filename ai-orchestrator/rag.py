@@ -1,4 +1,6 @@
 """ChromaDB RAG — bge-small-zh-v1.5 中文 embedding + 反馈闭环"""
+from __future__ import annotations
+
 import os
 import json
 import time
@@ -367,6 +369,99 @@ class RAGStore:
             "source": source,
             "title": title,
         })
+
+    # ─────────────────────────────────────────────
+    #  ops_playbooks 集合: 内置运维 playbook 向量检索
+    #  (与 ops_cases 复用同一嵌入器 bge-small-zh-v1.5, 独立 collection)
+    # ─────────────────────────────────────────────
+    def _playbooks_collection(self):
+        """懒加载 ops_playbooks 集合 (get/create, 复用 RAGStore 嵌入器)。"""
+        if not self._ensure_init():
+            return None
+        if getattr(self, "_playbooks", None) is None:
+            try:
+                self._playbooks = self.client.get_collection(
+                    "ops_playbooks", embedding_function=_get_ef())
+            except Exception:
+                self._playbooks = self.client.create_collection(
+                    "ops_playbooks", embedding_function=_get_ef(),
+                    metadata={"hnsw:space": "cosine"})
+        return self._playbooks
+
+    def upsert_playbook_chunk(self, doc_id: str, text: str, metadata: dict = None) -> bool:
+        """写入/覆盖一个 playbook chunk。doc_id 确定 (relpath#i), upsert 天然幂等。"""
+        coll = self._playbooks_collection()
+        if coll is None:
+            return False
+        try:
+            coll.upsert(ids=[doc_id], documents=[text], metadatas=[metadata or {}])
+            return True
+        except Exception:
+            return False
+
+    def search_playbooks(self, query: str, limit: int = 5,
+                         path_prefix: str = None, tags=None) -> list:
+        """在 ops_playbooks 集合检索 playbook chunk。
+
+        Args:
+            query: 检索词
+            limit: 返回条数
+            path_prefix: 按 relpath 前缀过滤 (如 "diagnostics")
+            tags: 标签列表, 全部命中才返回 (metadata.tags 为逗号分隔字符串)
+
+        Returns:
+            按相似度降序的 chunk 列表, 每条含
+            doc_id/title/path/category/tags/alert_keys/applies_to/content/score。
+        """
+        if not self._ensure_init():
+            return []
+        try:
+            coll = self._playbooks_collection()
+            if coll is None:
+                return []
+            total = coll.count()
+            if total == 0:
+                return []
+            conds = []
+            if tags:
+                for t in tags:
+                    conds.append({"tags": {"$contains": str(t)}})
+            if path_prefix:
+                conds.append({"path": {"$contains": path_prefix}})
+            where = conds[0] if len(conds) == 1 else ({"$and": conds} if conds else None)
+            n = min(max(limit * 5, 10), total)
+            if where is not None:
+                results = coll.query(query_texts=[query], n_results=n, where=where)
+            else:
+                results = coll.query(query_texts=[query], n_results=n)
+            out = []
+            if results["ids"] and results["ids"][0]:
+                for i, doc_id in enumerate(results["ids"][0]):
+                    meta = results["metadatas"][0][i] if results["metadatas"] else {}
+                    distance = results["distances"][0][i] if results["distances"] else 1.0
+                    path = meta.get("path", "")
+                    # where 的 $contains 是子串匹配, 这里再按真前缀严格过滤
+                    if path_prefix and not path.startswith(path_prefix):
+                        continue
+                    tags_str = meta.get("tags", "")
+                    if tags and not all(str(t) in tags_str.split(",") for t in tags):
+                        continue
+                    out.append({
+                        "doc_id": doc_id,
+                        "title": meta.get("title", ""),
+                        "path": path,
+                        "category": meta.get("category", ""),
+                        "tags": tags_str,
+                        "alert_keys": meta.get("alert_keys", ""),
+                        "applies_to": meta.get("applies_to", ""),
+                        "content": (results["documents"][0][i] if results["documents"] else ""),
+                        "score": round(1 - distance, 4),
+                    })
+                    if len(out) >= limit:
+                        break
+            return out
+        except Exception:
+            return []
 
 
 # ═══════════════════════════════════════════════════════════════
