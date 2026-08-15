@@ -6,7 +6,7 @@ import uuid
 from .store import FlowStore
 from .graph import graph_from_dict, graph_to_dict, validate_graph
 from .engine import Engine, RunStatus, resolve_config
-from .noderegistry import node_registry
+from .noderegistry import node_registry, register_trigger_nodes
 from .nodes_aiops import register_aiops_nodes
 
 
@@ -15,6 +15,7 @@ class WorkflowService:
         self.store = store
         self.engine = Engine()
         register_aiops_nodes()
+        register_trigger_nodes()
         self._seed_builtin_flows()
 
     def _seed_builtin_flows(self):
@@ -104,15 +105,17 @@ class WorkflowService:
                                 context_json=json.dumps({"trigger": trigger}, ensure_ascii=False))
         return result
 
-    def run_flow(self, flow_id, trigger: dict, run_id: str = None):
+    def run_flow(self, flow_id, trigger=None, run_id: str = None):
         flow = self.get_flow(flow_id)
         if not flow:
             raise KeyError(flow_id)
         if not flow["enabled"]:
             raise ValueError(f"flow disabled: {flow_id}")
+        trigger = trigger or {}
+        trigger_type = trigger.get("type", "manual")
         run_id = run_id or f"run_{uuid.uuid4().hex[:8]}"
-        self.store.create_run(flow_id, flow["version"], "manual", json.dumps(trigger, ensure_ascii=False),
-                              run_id=run_id)
+        self.store.create_run(flow_id, flow["version"], trigger_type,
+                              json.dumps(trigger, ensure_ascii=False), run_id=run_id)
         return self._run_with(flow["graph"], run_id, flow_id, trigger,
                               resume_hook=lambda ctx, node_id: (False, {}))
 
