@@ -817,6 +817,15 @@ async def create_task(req: TaskCreateRequest, request: Request):
         try:
             # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动
             final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", req.service, req.context, tid))
+            # P0-2: 非交互 full 图初始 approved=False，DAG 在 wait_approval 处中断等待人工审批。
+            # 中断态无 final_response，不能误标 done；回填 plan/script/risk 供审批面板展示。
+            if final_state.get("__interrupt__"):
+                _task_store[tid]["status"] = "waiting"
+                _task_store[tid]["plan"] = final_state.get("plan", "")[:6000]
+                _task_store[tid]["script"] = final_state.get("script", "")[:4000]
+                _task_store[tid]["risk_score"] = final_state.get("risk_score", 0)
+                _task_store[tid]["risk_reason"] = final_state.get("risk_reason", "")[:1000]
+                return
             _task_store[tid]["diagnosis"] = final_state.get("final_response", "")[:5000]
             _task_store[tid]["plan"] = final_state.get("plan", "")[:6000]
             _task_store[tid]["script"] = final_state.get("script", "")[:4000]
@@ -906,6 +915,15 @@ def _run_diagnosis(tid: str, svc: str, ctx: str):
         try:
             # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动
             final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", svc, ctx, tid))
+            # P0-2: 非交互 full 图初始 approved=False，DAG 在 wait_approval 处中断等待人工审批。
+            # 中断态无 final_response，不能误标 done；回填 plan/script/risk 供审批面板展示。
+            if final_state.get("__interrupt__"):
+                _task_store[tid]["status"] = "waiting"
+                _task_store[tid]["plan"] = final_state.get("plan", "")[:6000]
+                _task_store[tid]["script"] = final_state.get("script", "")[:4000]
+                _task_store[tid]["risk_score"] = final_state.get("risk_score", 0)
+                _task_store[tid]["risk_reason"] = final_state.get("risk_reason", "")[:1000]
+                return
             _task_store[tid]["status"] = "done"
             _task_store[tid]["diagnosis"] = final_state.get("final_response", "")[:5000]
             _task_store[tid]["plan"] = final_state.get("plan", "")[:6000]

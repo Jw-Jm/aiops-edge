@@ -137,12 +137,15 @@ func main() {
 	mux.HandleFunc("/api/v1/infrastructure/vms", handler.VMs)
 	mux.HandleFunc("/api/v1/infrastructure/vms/", handler.VMDetail)
 	// Settings (LLM + K8s)
-	mux.HandleFunc("/api/v1/settings/llm", handler.SettingsLLM)
+	// 安全(P0-4)：LLM 配置的写操作与敏感子路径一律要求 admin 角色，防止普通登录用户
+	// 篡改 base_url 窃取/回传已保存的 API key（GET /settings/llm 保持登录可读，
+	// 仅返回脱敏配置供前端判断"已配置"状态）。
+	mux.HandleFunc("/api/v1/settings/llm", handler.RequireRoleForWrite("admin", handler.SettingsLLM))
 	mux.HandleFunc("/api/v1/settings/llm/internal", handler.GetInternalLLMSettings)
-	mux.HandleFunc("/api/v1/settings/llm/test", handler.TestLLMConnection)
-	mux.HandleFunc("/api/v1/settings/llm/models", handler.ModelsLLM)
+	mux.HandleFunc("/api/v1/settings/llm/test", handler.RequireRole("admin", handler.TestLLMConnection))
+	mux.HandleFunc("/api/v1/settings/llm/models", handler.RequireRole("admin", handler.ModelsLLM))
 	mux.HandleFunc("/api/v1/settings/llm/history", handler.ListLLMHistory)
-	mux.HandleFunc("/api/v1/settings/llm/providers", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/settings/llm/providers", handler.RequireRoleForWrite("admin", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			handler.ListLLMProviders(w, r)
@@ -151,8 +154,8 @@ func main() {
 		default:
 			w.WriteHeader(405)
 		}
-	})
-	mux.HandleFunc("/api/v1/settings/llm/providers/", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/api/v1/settings/llm/providers/", handler.RequireRole("admin", func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/enable") {
 			handler.EnableLLMProvider(w, r)
 		} else {
@@ -165,14 +168,14 @@ func main() {
 				w.WriteHeader(405)
 			}
 		}
-	})
-	mux.HandleFunc("/api/v1/settings/llm/history/", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/api/v1/settings/llm/history/", handler.RequireRole("admin", func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "rollback") {
 			handler.RollbackLLMConfig(w, r)
 		} else {
 			w.WriteHeader(404)
 		}
-	})
+	}))
 	mux.HandleFunc("/api/v1/settings/k8s", handler.GetK8sSettings)
 	// DeepFlow integration
 	mux.HandleFunc("/api/v1/deepflow/status", handler.DeepFlowStatus)

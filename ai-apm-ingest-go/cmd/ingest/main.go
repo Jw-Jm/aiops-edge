@@ -50,7 +50,7 @@ func main() {
 	metricsWriter.OnEdgesWritten = func(n int) { met.AddEdgesWritten(int64(n)) }
 	defer metricsWriter.Close()
 
-	logWriter := clickhouse.NewLogWriter(*chHost, *chPort)
+	logWriter := clickhouse.NewLogWriter(*chHost, *chPort, walDir)
 	defer logWriter.Close()
 
 	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志，

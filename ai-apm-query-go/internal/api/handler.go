@@ -151,6 +151,47 @@ func extractClusterID(r *http.Request) string {
 	return cid
 }
 
+// scopeServicesClause 若 scope.services 非空，返回 " AND service_name IN (...)" SQL 子句；
+// 空 scope（不限制）= 返回空串，保持全量兼容（安全 P1-2 最小实现）。
+func scopeServicesClause(r *http.Request) string {
+	return scopeINClause(r, "")
+}
+
+// scopeINClause 构造 scope.services 的 IN 过滤子句；prefix 为列名前缀（如 "s1."、"s2."）。
+func scopeINClause(r *http.Request, prefix string) string {
+	svcs := currentScope(r).Services
+	if len(svcs) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(svcs))
+	for _, s := range svcs {
+		quoted = append(quoted, chQuote(s))
+	}
+	return " AND " + prefix + "service_name IN (" + strings.Join(quoted, ",") + ")"
+}
+
+// scopeEdgeClause 用于 source_service/target_service 型查询（service_topology）：
+// scope.services 非空时要求边两端都在授权范围内。
+func scopeEdgeClause(r *http.Request) string {
+	svcs := currentScope(r).Services
+	if len(svcs) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(svcs))
+	for _, s := range svcs {
+		quoted = append(quoted, chQuote(s))
+	}
+	in := "(" + strings.Join(quoted, ",") + ")"
+	return " AND source_service IN " + in + " AND target_service IN " + in
+}
+
+// chDateWindow 根据分钟窗口生成 CH date 分区谓词（数据 P1-4/P1-5 修复），
+// 避免时间窗口查询退化为全分区扫描。与分钟窗口对齐：
+// 5 MINUTE → today()；24H(1440min) → today()-1；48H → today()-2。
+func chDateWindow(minutes int) string {
+	return fmt.Sprintf("date >= today() - %d", minutes/1440)
+}
+
 // chQuote 对拼入 ClickHouse SQL 的字符串字面量做安全转义，防止 SQL 注入。
 // ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ''，反斜杠转义为 \\。
 // 所有由用户/外部输入拼入 SQL 的值都必须经过本函数后再嵌入。
@@ -329,7 +370,9 @@ func parseRows(body []byte) ([]map[string]interface{}, error) {
 // service_metadata 仅提供 owner/team/tier/description 富化，缺失字段走默认值。
 func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	_ = tid // CH 查询暂不用 tenant 过滤（trace_spans 无 tenant_id 列）
+	// 数据(P0-1)：trace_spans 有 tenant_id 列，必须按租户过滤（原注释"无 tenant_id 列"有误）
+	tenantClause := " AND tenant_id=" + chQuote(tid)
+	scopeClause := scopeServicesClause(r)    // 安全(P1-2)：scope.services 非空时按服务范围过滤
 	clusterClause := extractClusterClause(r) // A-3 修复：服务列表按集群过滤
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -338,7 +381,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	// 1. 从 ClickHouse 拿动态服务列表（近 7 天有 trace 的服务）
 	chSQL := `SELECT DISTINCT service_name
               FROM observability.trace_spans
-              WHERE date >= today()-7` + clusterClause + `
+              WHERE date >= today()-7` + tenantClause + clusterClause + scopeClause + `
                 AND service_name != ''
               ORDER BY service_name`
 	body, err := h.queryClickHouse(ctx, chSQL)
@@ -367,7 +410,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	metricsSQL := `SELECT service_name AS service, count() AS calls,
 	                     countIf(is_error=1) AS errs, avg(duration_ns)/1000000 AS avg_ms
 	              FROM observability.trace_spans
-	              WHERE date >= today()-7` + clusterClause + `
+	              WHERE date >= today()-7` + tenantClause + clusterClause + scopeClause + `
 	              GROUP BY service_name`
 	metricsBody, err := h.queryClickHouse(ctx, metricsSQL)
 	if err != nil {
@@ -511,8 +554,8 @@ func (h *Handler) ServiceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT toStartOfMinute(start_time) as t, count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
-		chQuote(tid), clusterClause, chQuote(name),
+		"SELECT toStartOfMinute(start_time) as t, count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
+		chQuote(tid), clusterClause, scopeServicesClause(r), chQuote(name),
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -575,8 +618,8 @@ func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s %s GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d",
-		chQuote(tid), clusterClause, searchClause, serviceClause, limit, offset,
+		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s%s %s GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d",
+		chQuote(tid), clusterClause, scopeServicesClause(r), searchClause, serviceClause, limit, offset,
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -794,9 +837,9 @@ func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 			"quantile(0.50)(duration_ns)/1000000 as p50_ms, "+
 			"quantile(0.95)(duration_ns)/1000000 as p95_ms, "+
 			"quantile(0.99)(duration_ns)/1000000 as p99_ms "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s%s AND date >= today()-1 "+
+			"FROM observability.trace_spans WHERE tenant_id=%s%s%s%s AND date >= today()-1 "+
 			"GROUP BY t ORDER BY t",
-		chQuote(tid), clusterClause, serviceClause,
+		chQuote(tid), clusterClause, scopeServicesClause(r), serviceClause,
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -832,8 +875,8 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	sql := fmt.Sprintf(
-		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name != '' AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 50",
-		chQuote(tid), clusterClause,
+		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s%s AND service_name != '' AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 50",
+		chQuote(tid), clusterClause, scopeServicesClause(r),
 	)
 	body, err := h.queryClickHouse(ctx, sql)
 	if err != nil {
@@ -867,8 +910,8 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// services 数 = 仅 trace_spans 中出现的服务（与 ListServices 同口径，真实服务数）；
 	// topology_services = 含 service_topology 目录中无 trace 服务的总数（前端展示用）。
 	topologySQL := fmt.Sprintf(
-		"SELECT DISTINCT source_service AS s FROM observability.service_topology WHERE tenant_id=%s%s AND s != '' UNION DISTINCT SELECT DISTINCT target_service AS s FROM observability.service_topology WHERE tenant_id=%s%s AND s != ''",
-		chQuote(tid), clusterClause, chQuote(tid), clusterClause,
+		"SELECT DISTINCT source_service AS s FROM observability.service_topology WHERE tenant_id=%s%s%s AND s != '' UNION DISTINCT SELECT DISTINCT target_service AS s FROM observability.service_topology WHERE tenant_id=%s%s%s AND s != ''",
+		chQuote(tid), clusterClause, scopeEdgeClause(r), chQuote(tid), clusterClause, scopeEdgeClause(r),
 	)
 	topologyServices := 0
 	if tb, err := h.queryClickHouse(ctx, topologySQL); err == nil {
@@ -893,8 +936,8 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// source!=target 去重后的边数，自环不计入）。
 	edgeCount := int64(0)
 	edgeSQL := fmt.Sprintf(
-		"SELECT count() AS cnt FROM (SELECT source_service, target_service FROM observability.service_topology WHERE tenant_id=%s%s AND time_bucket >= now() - INTERVAL 1440 MINUTE AND source_service != '' AND target_service != '' AND source_service != target_service GROUP BY source_service, target_service)",
-		chQuote(tid), clusterClause,
+		"SELECT count() AS cnt FROM (SELECT source_service, target_service FROM observability.service_topology WHERE tenant_id=%s%s%s AND date >= today()-1 AND time_bucket >= now() - INTERVAL 1440 MINUTE AND source_service != '' AND target_service != '' AND source_service != target_service GROUP BY source_service, target_service)",
+		chQuote(tid), clusterClause, scopeEdgeClause(r),
 	)
 	if eb, err := h.queryClickHouse(ctx, edgeSQL); err == nil {
 		if er, perr := parseRows(eb); perr == nil && len(er) > 0 {
@@ -910,7 +953,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// P95 延迟（给聚合列加别名，避免 ClickHouse 将 / 规范化为 divide() 导致 key 匹配失败）
-	p95SQL := fmt.Sprintf("SELECT round(quantile(0.95)(duration_ns)/1000000, 2) AS p95_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1", chQuote(tid), clusterClause)
+	p95SQL := fmt.Sprintf("SELECT round(quantile(0.95)(duration_ns)/1000000, 2) AS p95_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s AND date >= today()-1", chQuote(tid), clusterClause, scopeServicesClause(r))
 	if pb, err := h.queryClickHouse(ctx, p95SQL); err == nil {
 		if pr, perr := parseRows(pb); perr == nil && len(pr) > 0 {
 			if v, ferr := toFloat64(pr[0]["p95_ms"]); ferr == nil {
@@ -922,8 +965,8 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// 近 24h 调用/错误趋势（按小时）
 	trendSQL := fmt.Sprintf(
 		"SELECT toString(toStartOfHour(start_time)) AS t, count() AS calls, countIf(is_error=1) AS errors "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s AND date >= today()-1 "+
-			"GROUP BY t ORDER BY t LIMIT 24", chQuote(tid), clusterClause)
+			"FROM observability.trace_spans WHERE tenant_id=%s%s%s AND date >= today()-1 "+
+			"GROUP BY t ORDER BY t LIMIT 24", chQuote(tid), clusterClause, scopeServicesClause(r))
 	if tb, err := h.queryClickHouse(ctx, trendSQL); err == nil {
 		if tr, perr := parseRows(tb); perr == nil {
 			for _, row := range tr {
@@ -940,7 +983,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// TOP 错误服务分布
 	teSQL := fmt.Sprintf(
 		"SELECT service_name AS s, countIf(is_error=1) AS errors FROM observability.trace_spans "+
-			"WHERE tenant_id=%s%s AND date >= today()-1 AND is_error=1 GROUP BY s ORDER BY errors DESC LIMIT 10", chQuote(tid), clusterClause)
+			"WHERE tenant_id=%s%s%s AND date >= today()-1 AND is_error=1 GROUP BY s ORDER BY errors DESC LIMIT 10", chQuote(tid), clusterClause, scopeServicesClause(r))
 	if tb, err := h.queryClickHouse(ctx, teSQL); err == nil {
 		if tr, perr := parseRows(tb); perr == nil {
 			for _, row := range tr {
@@ -1018,6 +1061,10 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	timeCond := fmt.Sprintf(" AND start_time >= now() - INTERVAL %d MINUTE", minutes)
+	// 数据(P1-4/P1-5)：时间窗口查询补 date 分区谓词，避免全分区扫描
+	dateCond := " AND " + chDateWindow(minutes)
+	aliasDateCond := fmt.Sprintf(" AND s1.%s AND s2.%s", chDateWindow(minutes), chDateWindow(minutes))
+	edgeScope := scopeEdgeClause(r) // 安全(P1-2)：scope.services 非空时边两端都要在授权范围
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -1027,9 +1074,9 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	edgeCond := fmt.Sprintf(" AND time_bucket >= now() - INTERVAL %d MINUTE", minutes)
 	edgeSQL := fmt.Sprintf(
 		"SELECT source_service, target_service, sum(call_count) AS calls, sum(error_count) AS errs, avg(avg_duration_ns) AS avg_ns "+
-			"FROM observability.service_topology WHERE tenant_id=%s%s%s "+
+			"FROM observability.service_topology WHERE tenant_id=%s%s%s%s%s "+
 			"GROUP BY source_service, target_service ORDER BY calls DESC LIMIT 200",
-		chQuote(tid), clusterClause, edgeCond,
+		chQuote(tid), clusterClause, edgeCond, dateCond, edgeScope,
 	)
 	edgeBody, err := h.queryClickHouse(ctx, edgeSQL)
 	if err != nil {
@@ -1050,9 +1097,9 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 			"SELECT s1.service_name AS source_service, s2.service_name AS target_service, count() AS calls, 0 AS errs, avg(s2.duration_ns) AS avg_ns "+
 				"FROM observability.trace_spans AS s1 "+
 				"JOIN observability.trace_spans AS s2 ON s1.trace_id = s2.trace_id AND s1.span_id = s2.parent_span_id "+
-				"WHERE s1.tenant_id=%s%s AND s1.start_time >= now() - INTERVAL %d MINUTE "+
+				"WHERE s1.tenant_id=%s%s%s%s%s AND s1.start_time >= now() - INTERVAL %d MINUTE "+
 				"GROUP BY s1.service_name, s2.service_name ORDER BY calls DESC LIMIT 200",
-			chQuote(tid), clusterClause, minutes,
+			chQuote(tid), clusterClause, scopeINClause(r, "s1."), scopeINClause(r, "s2."), aliasDateCond, minutes,
 		)
 		if fb, err := h.queryClickHouse(ctx, fallbackSQL); err == nil {
 			if fr, perr := parseRows(fb); perr == nil && len(fr) > 0 {
@@ -1074,11 +1121,11 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 				"    SELECT trace_id, service_name, duration_ns, "+
 				"           row_number() OVER (PARTITION BY trace_id ORDER BY start_time) AS rn "+
 				"    FROM observability.trace_spans "+
-				"    WHERE tenant_id=%s%s AND start_time >= now() - INTERVAL %d MINUTE "+
+				"    WHERE tenant_id=%s%s%s%s AND start_time >= now() - INTERVAL %d MINUTE "+
 				"  ) "+
 				") WHERE source_service != '' AND source_service != target_service "+
 				"GROUP BY source_service, target_service ORDER BY calls DESC LIMIT 200",
-			chQuote(tid), clusterClause, minutes,
+			chQuote(tid), clusterClause, scopeServicesClause(r), dateCond, minutes,
 		)
 		if fb, err := h.queryClickHouse(ctx, seqSQL); err == nil {
 			if fr, perr := parseRows(fb); perr == nil && len(fr) > 0 {
@@ -1097,8 +1144,8 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	// 节点聚合（真实 trace）：按 service_name 聚合调用量、错误、平均延迟
 	nodeSQL := fmt.Sprintf(
 		"SELECT service_name AS service, count() AS calls, countIf(is_error=1) AS errs, avg(duration_ns) AS avg_ns "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s%s GROUP BY service_name ORDER BY calls DESC LIMIT 200",
-		chQuote(tid), clusterClause, timeCond,
+			"FROM observability.trace_spans WHERE tenant_id=%s%s%s%s%s GROUP BY service_name ORDER BY calls DESC LIMIT 200",
+		chQuote(tid), clusterClause, timeCond, dateCond, scopeServicesClause(r),
 	)
 	nodeBody, err := h.queryClickHouse(ctx, nodeSQL)
 	if err != nil {
@@ -1513,8 +1560,15 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 			"(body NOT LIKE '%/health%' AND body NOT LIKE '%/ready%' AND body NOT LIKE '%/v1/query%' AND body NOT LIKE '%metrics%')")
 	}
 
+	// 安全(P1-2)：scope.services 非空时追加服务范围过滤
+	if sc := scopeServicesClause(r); sc != "" {
+		conditions = append(conditions, strings.TrimPrefix(sc, " AND "))
+	}
+
 	// Time filter: last N minutes（用 timestamp 精确过滤，而非天粒度 date）
 	conditions = append(conditions, fmt.Sprintf("timestamp >= now() - INTERVAL %d MINUTE", minutes))
+	// 数据(P1-4)：补 date 分区谓词，避免全分区扫描（与分钟窗口对齐）
+	conditions = append(conditions, chDateWindow(minutes))
 
 	whereClause := strings.Join(conditions, " AND ")
 
@@ -1581,7 +1635,13 @@ func (h *Handler) LogAggregate(w http.ResponseWriter, r *http.Request) {
 	if queryText != "" {
 		conditions = append(conditions, fmt.Sprintf("body LIKE %s", chLike(queryText)))
 	}
+	// 安全(P1-2)：scope.services 非空时追加服务范围过滤
+	if sc := scopeServicesClause(r); sc != "" {
+		conditions = append(conditions, strings.TrimPrefix(sc, " AND "))
+	}
 	conditions = append(conditions, fmt.Sprintf("timestamp >= now() - INTERVAL %d MINUTE", minutes))
+	// 数据(P1-4)：补 date 分区谓词，避免全分区扫描（与分钟窗口对齐）
+	conditions = append(conditions, chDateWindow(minutes))
 	whereClause := strings.Join(conditions, " AND ")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)

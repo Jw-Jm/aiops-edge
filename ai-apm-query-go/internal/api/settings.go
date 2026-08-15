@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -329,6 +331,47 @@ func (h *Handler) GetInternalLLMSettings(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// validateLLMBaseURL 校验 LLM base_url（安全 P0-4，防 SSRF / API key 窃取）：
+// 必须 https；主机名不得为 localhost、含 "metadata" 的主机名、私网/回环/链路本地
+// IP（含 10.x/192.168.x/172.16-31.x/127.x/169.254.x 云 metadata 169.254.169.254）。
+// 域名解析结果含内网 IP 同样拒绝（防 DNS 别名指向内网）。返回空串=允许。
+func validateLLMBaseURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return "URL 无效"
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return "必须使用 https"
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.Contains(host, "metadata") {
+		return "不允许指向本地/内网/metadata 地址"
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return "不允许指向本地/内网/metadata 地址"
+		}
+		return ""
+	}
+	// 域名：解析结果含内网 IP 同样拒绝（防 DNS 别名指向内网）
+	if addrs, err := net.LookupHost(host); err == nil {
+		for _, a := range addrs {
+			if ip := net.ParseIP(a); ip != nil && isBlockedIP(ip) {
+				return "不允许指向本地/内网/metadata 地址"
+			}
+		}
+	}
+	return ""
+}
+
+// isBlockedIP 判断 IP 是否属于禁止访问的私网/回环/链路本地地址。
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
 // SaveLLMSettings handles POST /api/v1/settings/llm
 func (h *Handler) SaveLLMSettings(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -363,6 +406,12 @@ func (h *Handler) SaveLLMSettings(w http.ResponseWriter, r *http.Request) {
 		settings.LLM.Model = llm.Model
 	}
 	if llm.BaseURL != "" {
+		// 安全(P0-4)：base_url 必须 https 且非私网/metadata 地址，防止 SSRF 窃取已保存 key
+		if msg := validateLLMBaseURL(llm.BaseURL); msg != "" {
+			settingsMu.Unlock()
+			respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "base_url 校验失败: " + msg})
+			return
+		}
 		settings.LLM.BaseURL = llm.BaseURL
 	}
 	if err := saveSettings(settings); err != nil {
@@ -427,6 +476,13 @@ func (h *Handler) TestLLMConnection(w http.ResponseWriter, r *http.Request) {
 		testProviderName = settings.LLM.Provider
 	}
 	settingsMu.RUnlock()
+
+	// 安全(P0-4)：base_url 非空时必须 https 且主机名非私网/metadata 地址，
+	// 防止测试端点利用已保存的 API key 发起 SSRF 或把内网响应回传给攻击者
+	if msg := validateLLMBaseURL(baseURL); msg != "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "base_url 校验失败: " + msg})
+		return
+	}
 
 	if apiKey == "" {
 		respondJSON(w, http.StatusOK, map[string]interface{}{

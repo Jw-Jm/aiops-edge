@@ -7,7 +7,10 @@ metadata:
   labels:
     app: ai-orchestrator
 spec:
-  replicas: {{ .Values.replicaCount }}
+  # 有状态单写组件（挂 RWO PVC orchestrator-data，含 ChromaDB/sqlite/checkpoint）：多副本会因
+  # RWO 冲突 CrashLoopBackOff，固定 1 副本；生产可用 values-prod.yaml 的 orchestratorReplicas 覆盖
+  # （多副本需先外部化存储）。
+  replicas: {{ .Values.orchestratorReplicas | default .Values.replicaCount }}
   selector:
     matchLabels:
       app: ai-orchestrator
@@ -18,7 +21,7 @@ spec:
     spec:
       containers:
         - name: ai-orchestrator
-          image: {{ .Values.aiOrchestrator.image }}
+          image: {{ tpl .Values.aiOrchestrator.image . }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -44,6 +47,9 @@ spec:
               value: {{ .Values.aiOrchestrator.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
             - name: AIOPS_DATA_DIR

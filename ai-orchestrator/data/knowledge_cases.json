@@ -1,254 +1,485 @@
 [
-  {
-    "service": "kubernetes",
-    "symptom": "Kubernetes 节点状态显示 NotReady，kubelet 无法上报节点状态，Pod 无法调度",
-    "root_cause": "kubelet 异常或网络组件 (CNI) 故障导致节点心跳丢失，或 /var/lib/kubelet 磁盘满、docker/containerd 未运行",
-    "plan": "1. 检查节点 kubelet 服务状态: systemctl status kubelet；2. 查看 kubelet 日志: journalctl -u kubelet -f 定位报错；3. 确认容器运行时 (containerd/docker) 存活；4. 检查磁盘空间: df -h /var/lib/kubelet，清理日志与镜像；5. 检查 CNI 网络插件 (flannel/calico) pod 是否正常；6. 修复后 kubectl uncordon 节点重新调度"
-  },
-  {
-    "service": "kubernetes",
-    "symptom": "Pod 状态 CrashLoopBackOff，容器反复崩溃重启，无法进入 Running",
-    "root_cause": "容器启动命令错误、依赖缺失、OOM 内存超限、健康检查探针配置失败、镜像内进程无法启动",
-    "plan": "1. kubectl describe pod 查看 Events 和退出码；2. kubectl logs 查看容器实际报错；3. 检查 exit code：137=OOM、1=启动失败；4. 调整 resources.limits 或修复启动命令/参数；5. 检查 livenessProbe/readinessProbe 探针路径与端口；6. 验证镜像可独立启动后重新部署"
-  },
-  {
-    "service": "kubernetes",
-    "symptom": "Pod 状态 ImagePullBackOff/ErrImagePull，镜像拉取失败，Pod 无法启动",
-    "root_cause": "镜像名/标签错误、镜像不存在、私有仓库未配置 imagePullSecret、拉取超时、registry 不可达",
-    "plan": "1. kubectl describe pod 查看拉取报错详情；2. 确认镜像 tag 存在: docker pull 验证；3. 私有仓库添加 imagePullSecrets；4. 检查镜像仓库网络与认证；5. 用正确镜像地址重新部署；6. 本地环境可改用镜像仓库镜像源规避外网超时"
-  },
-  {
-    "service": "kubernetes",
-    "symptom": "Kubernetes Node 端口或 Service 无法访问，ClusterIP 服务不通，Pod 间通信异常",
-    "root_cause": "CNI 插件故障、kube-proxy 未运行或 iptables 规则错误、Service selector 标签不匹配、防火墙拦截",
-    "plan": "1. 检查 kube-proxy pod 状态: kubectl get pods -n kube-system；2. 检查 Service selector 与 Pod 标签匹配: kubectl get svc -o yaml；3. 检查 CNI (calico/flannel) 组件；4. 检查节点防火墙规则 (iptables/firewalld)；5. 重启 kube-proxy 重建规则；6. 验证 Endpoints 是否有后端 Pod: kubectl get endpoints"
-  },
-  {
-    "service": "kubernetes",
-    "symptom": "Pod 一直 Pending 无法调度，提示 0/1 nodes are available，资源不足",
-    "root_cause": "节点 CPU/内存不足、节点亲和/污点 (taint/toleration) 不匹配、持久卷 PVC 未绑定、资源配额限制",
-    "plan": "1. kubectl describe pod 查看调度失败原因；2. 检查节点资源: kubectl top nodes，释放或扩容；3. 检查 nodeSelector/affinity 与 taint: kubectl describe node；4. 检查 PVC 是否 Bound；5. 调整 resources.requests 或加 toleration；6. 检查 ResourceQuota/LimitRange"
-  },
-  {
-    "service": "kubernetes",
-    "symptom": "Kubernetes 证书过期 (kubelet/etcd/CA)，kubectl 报 x509: certificate has expired or is not yet valid",
-    "root_cause": "集群证书默认 1 年有效期，到期后控制面组件通信失败",
-    "plan": "1. 检查证书过期时间: kubeadm certs check-expiration；2. kubeadm certs renew all 续期全部证书；3. 更新 kubeconfig: kubeadm init phase kubeconfig；4. 重启 kubelet 与静态 Pod 使新证书生效；5. 生产建议配置自动续期 (kubelet 证书轮换)"
-  },
-  {
-    "service": "kylin-v10",
-    "symptom": "银河麒麟 Kylin V10 开机黑屏、卡在启动界面或无限重启，无法进入桌面/命令行",
-    "root_cause": "图形驱动不兼容、系统引导损坏、内核参数错误、磁盘空间满或系统文件损坏",
-    "plan": "1. 开机按 Esc/Shift 进入 GRUB，选择恢复模式或编辑内核参数 (nomodeset)；2. 检查磁盘空间: df -h，清理 /var/log 等；3. 修复引导: grub2-mkconfig -o /boot/grub2/grub.cfg；4. 重装或回退显卡驱动；5. 检查 /var/log/messages 定位崩溃点；6. 必要时进入单用户模式修复损坏文件"
-  },
-  {
-    "service": "kylin-v10",
-    "symptom": "银河麒麟 Kylin V10 软件源无法使用、yum/dnf 安装软件报错或包依赖冲突",
-    "root_cause": "软件源配置错误、官方源不可达、依赖关系破坏、epel/麒麟源未正确配置",
-    "plan": "1. 检查 /etc/yum.repos.d/ 源配置，改回官方或国内镜像源；2. yum clean all && yum makecache 重建缓存；3. 用 yum install 指定版本解决依赖；4. 缺依赖用 yum install 下载缺失包；5. 验证源连通性: yum repolist"
-  },
-  {
-    "service": "kylin-v10",
-    "symptom": "银河麒麟 Kylin V10 网络无法上网或网卡未激活，ip addr 无 IP 地址",
-    "root_cause": "NetworkManager/网卡服务未启用、网卡配置错误、网络防护软件拦截、驱动未加载",
-    "plan": "1. nmcli device status 检查网卡状态；2. nmcli con up 激活连接；3. 检查网卡配置文件 (ifcfg-*) 与 ONBOOT=yes；4. 关闭安全中心网络防护或放行规则；5. 检查驱动: lsmod | grep 网卡；6. 重启 network/NetworkManager 服务"
-  },
-  {
-    "service": "kylin-v10",
-    "symptom": "银河麒麟 Kylin V10 授权激活失败、提示许可证过期或无法激活",
-    "root_cause": "激活码错误、服务器不可达、系统时间异常、未联网或激活服务问题",
-    "plan": "1. 检查系统时间并同步 (date/nptdate)；2. 确认能访问激活服务器；3. 重新输入正确的激活码/授权文件；4. 检查授权工具状态: kylin-auth 或系统授权中心；5. 联系厂商获取有效授权；6. 重启授权服务生效"
-  },
-  {
-    "service": "kylin-v10",
-    "symptom": "银河麒麟 Kylin V10 桌面版 V10 SP1 登录域控或域账户失败，无法认证",
-    "root_cause": "域加入配置错误、Kerberos/DNS 配置问题、时间不同步、域控不可达",
-    "plan": "1. 检查与域控的 DNS 解析和网络连通；2. 校准系统时间避免 Kerberos 票据失败；3. 检查 /etc/krb5.conf 和 sssd/winbind 配置；4. 重新加入域: realm join 或 adjoin；5. 检查域控防火墙端口 (88/389/445)"
-  },
-  {
-    "service": "linux-kernel",
-    "symptom": "Linux 内核 Kernel Panic 系统崩溃，控制台显示 Kernel panic - not syncing，系统重启或挂死",
-    "root_cause": "硬件故障 (内存/CPU)、驱动缺陷、文件系统损坏、内核缺陷或关键进程 OOM",
-    "plan": "1. 记录 panic 完整日志 (dmesg/journalctl -k)；2. 检查硬件: memtest 内存、检查硬盘 SMART；3. 定位 Oops/Panic 中的函数栈 (stack trace)；4. 升级或回退内核版本；5. 更新/回退可疑驱动；6. 配置 kdump/crash 收集完整 coredump 分析；7. 检查 root 分区是否写满"
-  },
-  {
-    "service": "linux-kernel",
-    "symptom": "Linux 内核 Oops 非致命内核错误，系统仍运行但可能不稳定，日志出现 BUG: unable to handle kernel paging request",
-    "root_cause": "内核模块/驱动访问非法内存地址、内存损坏、驱动与内核版本不兼容",
-    "plan": "1. 捕获完整 oops 日志 (dmesg)；2. 分析 stack trace 定位出问题的模块；3. 更新或禁用可疑内核模块；4. 检查内存 (memtest)；5. 升级内核或驱动版本；6. 若可稳定复现，收集 coredump 提交内核分析"
-  },
-  {
-    "service": "linux-kernel",
-    "symptom": "Linux 系统出现 OOM (Out of Memory)，内核杀进程 (OOM Killer)，应用被 kill，日志出现 Out of memory: Kill process",
-    "root_cause": "物理内存不足、进程内存泄漏、cgroup 内存限制触发、swap 配置不足",
-    "plan": "1. 查看 /var/log/messages 或 dmesg 的 OOM 记录；2. free -h 检查内存与 swap；3. 定位内存大户: top/ps aux --sort=-%mem；4. 排查应用内存泄漏并修复；5. 增加 swap 或内存；6. 优化 cgroup 内存 limit；7. 对关键进程设置 OOM_Score 保护"
-  },
-  {
-    "service": "linux-kernel",
-    "symptom": "Linux 内核死锁 (deadlock) 或软锁 (soft lockup)，系统卡死无响应，日志出现 soft lockup - CPU stuck",
-    "root_cause": "内核锁竞争死锁、驱动持锁卡住、CPU 长时间中断屏蔽、有缺陷的驱动阻塞",
-    "plan": "1. 记录 soft lockup 日志中的 CPU 与内核栈；2. 定位持锁的驱动/内核线程；3. 更新或禁用该驱动；4. 检查是否中断风暴 (irq)；5. 升级内核修复锁 bug；6. 配置 watchdog 自动重启恢复 (hard lockup)"
-  },
-  {
-    "service": "kubevirt",
-    "symptom": "KubeVirt 虚拟机 (VMI) 一直处于 Pending 无法调度，创建失败或卡住",
-    "root_cause": "节点不支持虚拟化 (KVM 未开启)、virt-launcher 资源不足、节点污点、CRD/virt-controller 异常",
-    "plan": "1. 检查节点 KVM 支持: grep -E '(vmx|svm)' /proc/cpuinfo，无则启用嵌套虚拟化；2. kubectl describe vmi 查看调度失败原因；3. 检查 virt-controller/virt-handler pod 状态；4. 检查 KubeVirt CRD 是否注册；5. 添加 toleration 或选择支持虚拟化的节点；6. 检查 /dev/kvm 是否存在"
-  },
-  {
-    "service": "kubevirt",
-    "symptom": "KubeVirt 虚拟机热迁移 (Live Migration) 失败，VMI 状态 migrationState 显示 Failed",
-    "root_cause": "源/目的节点网络不通、存储不共享或网络带宽不足、迁移超时、节点资源不足、虚拟机使用非迁移兼容设备",
-    "plan": "1. kubectl get vmi -o yaml 查看 migrationState 报错；2. 检查源/目的节点网络连通与迁移端口；3. 确认存储为共享存储 (block/RWX) 并支持块迁移；4. 调整 migrationConfiguration 带宽/超时 (bandwidthPerMigration, completionTimeoutPerGiB)；5. 检查目的节点 CPU/内存/PCI 资源；6. 查看 virt-handler 日志定位具体失败原因"
-  },
-  {
-    "service": "kubevirt",
-    "symptom": "KubeVirt 虚拟机创建后 Paused 或 VMI 无法启动，状态 Unknown，virt-launcher 异常",
-    "root_cause": "qemu/libvirt 启动失败、磁盘卷未就绪、virt-launcher 资源限制、存储 PVC 未绑定、安全上下文问题",
-    "plan": "1. kubectl describe vmi 和 virt-launcher pod 日志；2. 检查 PVC 是否 Bound 且存储可访问；3. 查看 virt-handler 日志定位 qemu 启动错误；4. 检查节点资源与 /dev/kvm 权限；5. 调整 virt-launcher resources 配额；6. 重启 virt-handler/virt-controller"
-  },
-  {
-    "service": "kubevirt",
-    "symptom": "KubeVirt 虚拟机快照失败，无法创建或恢复快照，报存储不支持快照",
-    "root_cause": "后端存储不支持快照、未启用 qemu-guest-agent、快照 API 版本不兼容、PVC 存储类无快照能力",
-    "plan": "1. 确认存储后端支持快照 (CSI snapshot) ；2. 虚拟机内安装并启用 qemu-guest-agent；3. 检查存储类 storageclass 是否启用 snapshot；4. 查看 virt-controller 快照日志；5. 使用支持的存储类重建 PVC；6. 升级 KubeVirt 到支持快照的版本"
-  },
-  {
-    "service": "ceph",
-    "symptom": "Ceph 集群 OSD 状态 down，数据处于 degraded，health 变为 WARN/ERR，读写变慢",
-    "root_cause": "磁盘坏道/故障、OSD 进程崩溃、网络故障、monitor 无法联系 OSD、磁盘空间满",
-    "plan": "1. ceph health detail 确认 OSD 故障；2. ceph osd tree 定位 down 的 OSD 及节点；3. 检查 OSD 磁盘 SMART 与空间: df -h；4. 重启 OSD 服务: systemctl restart ceph-osd@N；5. 若磁盘损坏则更换磁盘并重做 OSD: ceph orch osd rm；6. 等待 recovery 完成后确认 health OK"
-  },
-  {
-    "service": "ceph",
-    "symptom": "Ceph PG 状态 active+degraded 或 active+clean 无法达成，PG 长时间不恢复 (stuck inactive/peered)",
-    "root_cause": "OSD 故障导致副本不足、PG 数据损坏、monitor 时钟漂移、副本数配置与实际不符、网络分区",
-    "plan": "1. ceph health detail 查看 stuck PG；2. ceph pg dump 分析 PG 状态；3. 检查 OSD 在线数与副本数 (osd_pool_default_size)；4. 修复损坏 PG: ceph pg repair 或 ceph-objectstore-tool 修复；5. 检查节点时钟同步 (NTP)；6. 确认网络无分区，等待或手动调度 PG"
-  },
-  {
-    "service": "ceph",
-    "symptom": "Ceph 出现 slow ops / slow requests，客户端 IO 延迟高，osd 卡在 op 处理",
-    "root_cause": "磁盘性能瓶颈、网络拥塞、OSD 过载 (recovery 占满 IO)、monitor 慢、内存不足",
-    "plan": "1. ceph daemon osd.N ops 查看慢操作；2. ceph -s 观察 recovery/backfill 是否占满带宽；3. 限制恢复速度: ceph config set global osd_max_backfills 1；4. 检查磁盘 IO (iostat) 与网络；5. 调整 osd 内存/日志配置；6. 定位具体慢 osd 并处理坏盘"
-  },
-  {
-    "service": "ceph",
-    "symptom": "Ceph 集群 mon 状态 quorum 异常，monitor 无法形成多数派 (no quorum)，客户端无法连接",
-    "root_cause": "monitor 进程崩溃、mon 数据损坏、时钟漂移、网络隔离导致多数派丢失、磁盘满",
-    "plan": "1. ceph mon stat 检查 quorum；2. 检查 mon 服务与日志: journalctl -u ceph-mon；3. 检查节点时钟同步 (chrony/ntp)；4. 修复损坏 mon: ceph-mon --inject 或重建 mon；5. 确认多数派节点网络连通；6. 检查 mon 磁盘空间，清理或扩容"
-  },
-  {
-    "service": "mysql",
-    "symptom": "MySQL 主从同步延迟大或中断，Slave_IO_Running 或 Slave_SQL_Running 为 NO，从库数据落后",
-    "root_cause": "主从 server-id 冲突、binlog 位置错误、大事务/慢SQL导致同步滞后、网络延迟、主从版本不一致",
-    "plan": "1. SHOW SLAVE STATUS\\G 检查 Slave_IO_Running/Slave_SQL_Running/Seconds_Behind_Master；2. 主从 server-id 唯一性检查；3. 查看主库 binlog 写入速度与大事务: SHOW GLOBAL STATUS LIKE 'Binlog_bytes_written'；4. 排查慢查询与大事务并优化；5. 重建主从复制: CHANGE MASTER TO 指向正确 binlog 位置；6. 增加带宽或调整同步参数 (slave_parallel_workers)"
-  },
-  {
-    "service": "mysql",
-    "symptom": "MySQL 连接数超限报 Too many connections，应用无法连接数据库",
-    "root_cause": "max_connections 默认值 (151) 无法满足高并发、连接泄漏、长事务占用连接、应用连接池配置过大",
-    "plan": "1. 查看当前连接数: SHOW STATUS LIKE 'Threads_connected'；2. 临时调大: SET GLOBAL max_connections=10000；3. 永久修改 my.cnf max_connections 并调大 thread_cache_size；4. 排查并关闭空闲/泄漏连接；5. 优化应用连接池 (HikariCP/druid) 上限；6. 定位持有连接的长事务: SHOW PROCESSLIST"
-  },
-  {
-    "service": "mysql",
-    "symptom": "MySQL 查询慢，慢查询日志出现大量慢 SQL，CPU 飙高或锁等待",
-    "root_cause": "缺少索引/索引失效、SQL 未命中索引全表扫描、锁等待、缓冲池配置不足、统计信息过期",
-    "plan": "1. 开启慢查询日志 (slow_query_log, long_query_time=1)；2. EXPLAIN 分析慢 SQL 是否走索引；3. 优化/新增索引，避免函数包裹索引列；4. 检查锁等待: SHOW ENGINE INNODB STATUS；5. 调大 innodb_buffer_pool_size；6. ANALYZE TABLE 更新统计信息；7. 对高并发热 SQL 做缓存或读写分离"
-  },
-  {
-    "service": "redis",
-    "symptom": "Redis 内存满导致写入失败报 OOM command not allowed when used memory，或触发淘汰策略数据丢失",
-    "root_cause": "maxmemory 设置过小、数据未设置过期时间累积、内存碎片、Key 大量过期导致阻塞",
-    "plan": "1. INFO memory 查看 used_memory 与 maxmemory；2. 分析大 Key/热点 Key: redis-cli --bigkeys；3. 合理设置 maxmemory 与淘汰策略 (allkeys-lru)；4. 优化 Key 设计，设置过期时间；5. 清理内存碎片: MEMORY PURGE；6. 扩容或启用集群分片；7. 排查大 Key 过期导致的阻塞 (lazyfree-lazy-expire yes)"
-  },
-  {
-    "service": "redis",
-    "symptom": "Redis 连接数满或响应变慢，命令超时，redis-cli ping 延迟高",
-    "root_cause": "maxclients 限制、慢命令 (KEYS/SMEMBERS 大集合)、阻塞命令、网络问题、CPU 单线程瓶颈",
-    "plan": "1. INFO clients 查看 connected_clients 与 maxclients；2. 排查慢命令: SLOWLOG GET；3. 避免在生产用 KEYS，改用 SCAN；4. 检查是否有 BLOCKING 命令或 Lua 脚本阻塞；5. 调大 timeout/tcp-keepalive 处理死连接；6. 高并发场景改用 Redis Cluster 分担单线程压力"
-  },
-  {
-    "service": "kafka",
-    "symptom": "Kafka 消息堆积严重，消费者消费速度跟不上生产，消费延迟大，磁盘将满",
-    "root_cause": "消费者处理能力不足、分区数不均导致单消费者热点、消费线程阻塞、消费组 rebalance 频繁、生产速率突增",
-    "plan": "1. 查看消费组 lag: kafka-consumer-groups --describe --group；2. 增加消费者实例或消费线程；3. 均衡分区分配避免热点；4. 排查消费端处理逻辑 (DB/IO 慢)；5. 避免频繁 rebalance: 调整 session.timeout.ms 与 max.poll.interval.ms；6. 扩大分区数提升并行度；7. 应急可临时扩大 retention 或清理历史数据"
-  },
-  {
-    "service": "kafka",
-    "symptom": "Kafka broker 挂掉或日志目录磁盘满，Shutdown broker because all log dirs failed，服务不可用",
-    "root_cause": "磁盘空间满、日志目录损坏、JVM OOM、副本不足 (min.insync.replicas 不满足)、内存/文件句柄耗尽",
-    "plan": "1. 查看 broker 日志定位挂掉原因: server.log；2. 检查磁盘空间: df -h /data/kafka；3. 清理过期日志或扩容磁盘；4. 修复损坏的日志目录: 重建或删除损坏 segment；5. 调整 JVM 堆内存与文件句柄 (ulimit)；6. 检查副本状态: kafka-topics --describe，修复 ISR"
-  },
-  {
-    "service": "elasticsearch",
-    "symptom": "Elasticsearch 集群状态 red 或 yellow，分片未分配 (unassigned)，写入/查询失败",
-    "root_cause": "节点宕机、磁盘空间不足 (watermark)、分片副本数不足、节点重启后分片无法恢复、索引损坏",
-    "plan": "1. GET _cluster/health 查看集群状态；2. GET _cat/shards?v 查看 unassigned 分片；3. 检查磁盘水位: GET _cat/allocation，清理或扩容；4. 释放副本或调整 watermark (cluster.routing.allocation.disk.watermark)；5. 手动 reroute 分片: POST _cluster/reroute；6. 修复损坏索引或重建；7. 等待节点恢复后分片自动迁移"
-  },
-  {
-    "service": "elasticsearch",
-    "symptom": "Elasticsearch 查询慢或写入拒绝，CPU/内存飙高，节点 JVM 堆使用率高",
-    "root_cause": "分片过多/过大、无缓存或缓存未命中、聚合/通配符查询开销大、堆内存不足、段数量过多",
-    "plan": "1. GET _nodes/stats 查看 CPU/堆/JVM 使用；2. 优化查询: 避免通配符、深层聚合限制 (max_buckets)；3. 控制分片大小与数量 (单分片 30-50G)；4. 调大堆内存 (jvm.options, 不超物理内存50%)；5. 定期 forcemerge 合并段减少段数；6. 添加节点横向扩容；7. 清理无用索引"
-  },
-  {
-    "service": "nginx",
-    "symptom": "Nginx 返回 500 或 502 Bad Gateway，后端服务不可达或 Nginx 自身故障",
-    "root_cause": "后端上游服务宕机/超时、Nginx 配置语法错误、磁盘满/inode 耗尽、worker 进程崩溃、proxy 缓存损坏",
-    "plan": "1. 检查后端上游服务状态 (health)；2. 查看 Nginx error.log 定位 502/500 根因；3. nginx -t 检查配置语法；4. 检查磁盘空间与 inode: df -h / df -i；5. 排查 proxy_cache 路径磁盘损坏或停用缓存；6. 调整 proxy_connect_timeout/proxy_read_timeout；7. nginx -s reload 平滑重载或重启"
-  },
-  {
-    "service": "nginx",
-    "symptom": "Nginx 并发连接数满或性能瓶颈，请求超时，worker 进程 CPU 100%",
-    "root_cause": "worker_connections 限制、worker_processes 配置过小、慢连接占用、TCP 连接未释放、后端响应慢",
-    "plan": "1. nginx -V 查看配置；2. 调大 worker_connections 与 worker_processes (=CPU核数)；3. 启用 keepalive 复用连接减少握手；4. 排查后端慢响应导致的连接占用；5. 优化 sendfile/tcp_nopush/tcp_nodelay；6. 开启 Gzip 压缩减少带宽；7. 配置限流 (limit_req) 防突发"
-  },
-  {
-    "service": "hardware",
-    "symptom": "服务器磁盘 SMART 异常或坏道，IO 性能下降，可能出现 fsync 失败或数据读写错误",
-    "root_cause": "磁盘物理坏道、接口/线缆磨损 (C7 错误)、固件问题、磁盘寿命耗尽 (Reallocated_Sector_Ct 增长)",
-    "plan": "1. 检查 SMART: smartctl -a /dev/sda 关注 Reallocated_Sector_Ct/Current_Pending_Sector；2. 少量坏道可用 badblocks 标记或 MHDD/diskgenius 修复；3. C7 错误多为线缆问题，更换数据线；4. 大量坏道/底层错误建议直接更换磁盘；5. 生产环境配置 RAID 冗余及时迁移数据；6. 定期巡检 SMART 并设置告警"
-  },
-  {
-    "service": "hardware",
-    "symptom": "服务器内存 ECC 报错或频繁崩溃/蓝屏，日志出现内存 ECC Correctable/Uncorrectable 错误",
-    "root_cause": "内存条损坏、内存插槽故障、内存与主板不兼容、散热不良导致内存过热",
-    "plan": "1. 用 dmidecode/ipmitool 查看 ECC 事件；2. 定位故障内存: 用 memtester/memtest86 压力测试；3. 将疑似故障内存换到其他插槽验证 (跟随内存移动则内存损坏)；4. 替换故障内存 (优先原厂认证 ECC 内存)；5. 检查散热与灰尘清理；6. Uncorrectable ECC 需立即更换并重启，避免数据损坏"
-  },
-  {
-    "service": "hardware",
-    "symptom": "GPU 服务器报 ECC 错误或 GPU 卡识别失败，驱动加载失败，训练/推理任务异常",
-    "root_cause": "GPU ECC 内存错误、显卡散热/供电问题、驱动与 CUDA 版本不匹配、PCIe 连接松动",
-    "plan": "1. nvidia-smi -q -d ECC 查看 ECC 错误计数；2. 检查 GPU 温度/功耗: nvidia-smi；3. 更新/回退 NVIDIA 驱动与 CUDA 到匹配版本；4. 检查 PCIe 槽位与供电；5. ECC 持续增长需 RMA 更换 GPU；6. 清理散热孔与灰尘，确保风扇正常；7. 重启后 nvidia-smi 重新识别"
-  },
-  {
-    "service": "hardware",
-    "symptom": "服务器 CPU 温度过高触发过热保护自动关机，或系统频繁死机重启",
-    "root_cause": "散热风扇故障、散热硅脂老化/导热不良、灰尘堵塞风道、环境温度过高、CPU 故障",
-    "plan": "1. 查看 CPU 温度: sensors / ipmitool sensor；2. 检查风扇转速与故障；3. 清理灰尘、更换/补涂散热硅脂；4. 检查机柜散热与空调环境温度；5. 确认 BIOS 温控策略；6. 持续过热需更换 CPU 或检查主板供电"
-  },
-  {
-    "service": "application",
-    "symptom": "Java 应用 OOM (OutOfMemoryError) 崩溃或频繁 Full GC，应用响应变慢或宕机",
-    "root_cause": "内存泄漏 (静态集合/ThreadLocal 未清理)、堆内存配置过小、对象分配过大、大并发下内存不足",
-    "plan": "1. JVM 启动参数加 -XX:+HeapDumpOnOutOfMemoryError 生成 dump；2. 用 Eclipse MAT/JProfiler/VisualVM 分析 heap dump 定位泄漏对象；3. 排查静态 Map 缓存/ThreadLocal 泄漏；4. 调大 Xmx/Xms 或优化对象生命周期；5. 优化线程池限制并发；6. 分析 GC 日志定位 Full GC 频繁原因"
-  },
-  {
-    "service": "application",
-    "symptom": "Java 应用线程阻塞或死锁，接口超时无响应，CPU 或线程数异常高",
-    "root_cause": "线程池耗尽、数据库连接池占满、死锁 (锁顺序不一致)、阻塞 IO 未超时、并发竞争",
-    "plan": "1. jstack 抓取线程栈定位 BLOCKED/DEADLOCK；2. 分析线程池核心/最大线程与队列配置；3. 检查数据库连接池 (HikariCP) 是否占满；4. 优化锁粒度，避免嵌套锁死锁；5. 为外部调用设置超时 (连接/读取)；6. 增加线程池大小或限流保护；7. 排查 CPU 高线程: top -Hp pid"
-  },
-  {
-    "service": "application",
-    "symptom": "Go 应用内存占用持续增长 (内存泄漏)，或 goroutine 泄漏导致资源耗尽，服务响应变慢",
-    "root_cause": "goroutine 泄漏 (channel/锁未释放)、无界缓存/Map 累积、连接/文件句柄未关闭、定时器未停止",
-    "plan": "1. pprof 分析: go tool pprof /debug/pprof/heap 定位内存分配热点；2. 查看 goroutine 数量: /debug/pprof/goroutine；3. 排查未关闭的 channel/锁/连接；4. 修复无界队列与缓存不清理问题；5. 设置资源上限 (maxGoroutines 限流)；6. 结合 runtime.MemStats 监控内存趋势"
-  },
-  {
-    "service": "application",
-    "symptom": "应用无法启动，端口被占用、配置错误、依赖服务未就绪或启动超时，容器 CrashLoopBackOff",
-    "root_cause": "端口冲突、配置文件缺失/错误、数据库/Redis 等依赖未就绪、启动命令错误、环境变量缺失、镜像缺文件",
-    "plan": "1. 查看应用启动日志定位具体报错；2. 检查端口占用: ss -tlnp | grep <port>；3. 核对配置文件与必填环境变量；4. 确认依赖服务 (DB/Redis) 已就绪且网络可达；5. 检查启动命令与工作目录；6. 容器场景检查 readinessProbe 超时；7. 修复后重新部署并验证健康检查通过"
-  }
+ {
+  "service": "kubernetes",
+  "symptom": "Kubernetes 节点状态显示 NotReady，kubelet 无法上报节点状态，Pod 无法调度",
+  "root_cause": "kubelet 异常或网络组件 (CNI) 故障导致节点心跳丢失，或 /var/lib/kubelet 磁盘满、docker/containerd 未运行",
+  "plan": "1. 检查节点 kubelet 服务状态: systemctl status kubelet；2. 查看 kubelet 日志: journalctl -u kubelet -f 定位报错；3. 确认容器运行时 (containerd/docker) 存活；4. 检查磁盘空间: df -h /var/lib/kubelet，清理日志与镜像；5. 检查 CNI 网络插件 (flannel/calico) pod 是否正常；6. 修复后 kubectl uncordon 节点重新调度"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "Pod 状态 CrashLoopBackOff，容器反复崩溃重启，无法进入 Running",
+  "root_cause": "容器启动命令错误、依赖缺失、OOM 内存超限、健康检查探针配置失败、镜像内进程无法启动",
+  "plan": "1. kubectl describe pod 查看 Events 和退出码；2. kubectl logs 查看容器实际报错；3. 检查 exit code：137=OOM、1=启动失败；4. 调整 resources.limits 或修复启动命令/参数；5. 检查 livenessProbe/readinessProbe 探针路径与端口；6. 验证镜像可独立启动后重新部署"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "Pod 状态 ImagePullBackOff/ErrImagePull，镜像拉取失败，Pod 无法启动",
+  "root_cause": "镜像名/标签错误、镜像不存在、私有仓库未配置 imagePullSecret、拉取超时、registry 不可达",
+  "plan": "1. kubectl describe pod 查看拉取报错详情；2. 确认镜像 tag 存在: docker pull 验证；3. 私有仓库添加 imagePullSecrets；4. 检查镜像仓库网络与认证；5. 用正确镜像地址重新部署；6. 本地环境可改用镜像仓库镜像源规避外网超时"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "Kubernetes Node 端口或 Service 无法访问，ClusterIP 服务不通，Pod 间通信异常",
+  "root_cause": "CNI 插件故障、kube-proxy 未运行或 iptables 规则错误、Service selector 标签不匹配、防火墙拦截",
+  "plan": "1. 检查 kube-proxy pod 状态: kubectl get pods -n kube-system；2. 检查 Service selector 与 Pod 标签匹配: kubectl get svc -o yaml；3. 检查 CNI (calico/flannel) 组件；4. 检查节点防火墙规则 (iptables/firewalld)；5. 重启 kube-proxy 重建规则；6. 验证 Endpoints 是否有后端 Pod: kubectl get endpoints"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "Pod 一直 Pending 无法调度，提示 0/1 nodes are available，资源不足",
+  "root_cause": "节点 CPU/内存不足、节点亲和/污点 (taint/toleration) 不匹配、持久卷 PVC 未绑定、资源配额限制",
+  "plan": "1. kubectl describe pod 查看调度失败原因；2. 检查节点资源: kubectl top nodes，释放或扩容；3. 检查 nodeSelector/affinity 与 taint: kubectl describe node；4. 检查 PVC 是否 Bound；5. 调整 resources.requests 或加 toleration；6. 检查 ResourceQuota/LimitRange"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "Kubernetes 证书过期 (kubelet/etcd/CA)，kubectl 报 x509: certificate has expired or is not yet valid",
+  "root_cause": "集群证书默认 1 年有效期，到期后控制面组件通信失败",
+  "plan": "1. 检查证书过期时间: kubeadm certs check-expiration；2. kubeadm certs renew all 续期全部证书；3. 更新 kubeconfig: kubeadm init phase kubeconfig；4. 重启 kubelet 与静态 Pod 使新证书生效；5. 生产建议配置自动续期 (kubelet 证书轮换)"
+ },
+ {
+  "service": "kylin-v10",
+  "symptom": "银河麒麟 Kylin V10 开机黑屏、卡在启动界面或无限重启，无法进入桌面/命令行",
+  "root_cause": "图形驱动不兼容、系统引导损坏、内核参数错误、磁盘空间满或系统文件损坏",
+  "plan": "1. 开机按 Esc/Shift 进入 GRUB，选择恢复模式或编辑内核参数 (nomodeset)；2. 检查磁盘空间: df -h，清理 /var/log 等；3. 修复引导: grub2-mkconfig -o /boot/grub2/grub.cfg；4. 重装或回退显卡驱动；5. 检查 /var/log/messages 定位崩溃点；6. 必要时进入单用户模式修复损坏文件"
+ },
+ {
+  "service": "kylin-v10",
+  "symptom": "银河麒麟 Kylin V10 软件源无法使用、yum/dnf 安装软件报错或包依赖冲突",
+  "root_cause": "软件源配置错误、官方源不可达、依赖关系破坏、epel/麒麟源未正确配置",
+  "plan": "1. 检查 /etc/yum.repos.d/ 源配置，改回官方或国内镜像源；2. yum clean all && yum makecache 重建缓存；3. 用 yum install 指定版本解决依赖；4. 缺依赖用 yum install 下载缺失包；5. 验证源连通性: yum repolist"
+ },
+ {
+  "service": "kylin-v10",
+  "symptom": "银河麒麟 Kylin V10 网络无法上网或网卡未激活，ip addr 无 IP 地址",
+  "root_cause": "NetworkManager/网卡服务未启用、网卡配置错误、网络防护软件拦截、驱动未加载",
+  "plan": "1. nmcli device status 检查网卡状态；2. nmcli con up 激活连接；3. 检查网卡配置文件 (ifcfg-*) 与 ONBOOT=yes；4. 关闭安全中心网络防护或放行规则；5. 检查驱动: lsmod | grep 网卡；6. 重启 network/NetworkManager 服务"
+ },
+ {
+  "service": "kylin-v10",
+  "symptom": "银河麒麟 Kylin V10 授权激活失败、提示许可证过期或无法激活",
+  "root_cause": "激活码错误、服务器不可达、系统时间异常、未联网或激活服务问题",
+  "plan": "1. 检查系统时间并同步 (date/nptdate)；2. 确认能访问激活服务器；3. 重新输入正确的激活码/授权文件；4. 检查授权工具状态: kylin-auth 或系统授权中心；5. 联系厂商获取有效授权；6. 重启授权服务生效"
+ },
+ {
+  "service": "kylin-v10",
+  "symptom": "银河麒麟 Kylin V10 桌面版 V10 SP1 登录域控或域账户失败，无法认证",
+  "root_cause": "域加入配置错误、Kerberos/DNS 配置问题、时间不同步、域控不可达",
+  "plan": "1. 检查与域控的 DNS 解析和网络连通；2. 校准系统时间避免 Kerberos 票据失败；3. 检查 /etc/krb5.conf 和 sssd/winbind 配置；4. 重新加入域: realm join 或 adjoin；5. 检查域控防火墙端口 (88/389/445)"
+ },
+ {
+  "service": "linux-kernel",
+  "symptom": "Linux 内核 Kernel Panic 系统崩溃，控制台显示 Kernel panic - not syncing，系统重启或挂死",
+  "root_cause": "硬件故障 (内存/CPU)、驱动缺陷、文件系统损坏、内核缺陷或关键进程 OOM",
+  "plan": "1. 记录 panic 完整日志 (dmesg/journalctl -k)；2. 检查硬件: memtest 内存、检查硬盘 SMART；3. 定位 Oops/Panic 中的函数栈 (stack trace)；4. 升级或回退内核版本；5. 更新/回退可疑驱动；6. 配置 kdump/crash 收集完整 coredump 分析；7. 检查 root 分区是否写满"
+ },
+ {
+  "service": "linux-kernel",
+  "symptom": "Linux 内核 Oops 非致命内核错误，系统仍运行但可能不稳定，日志出现 BUG: unable to handle kernel paging request",
+  "root_cause": "内核模块/驱动访问非法内存地址、内存损坏、驱动与内核版本不兼容",
+  "plan": "1. 捕获完整 oops 日志 (dmesg)；2. 分析 stack trace 定位出问题的模块；3. 更新或禁用可疑内核模块；4. 检查内存 (memtest)；5. 升级内核或驱动版本；6. 若可稳定复现，收集 coredump 提交内核分析"
+ },
+ {
+  "service": "linux-kernel",
+  "symptom": "Linux 系统出现 OOM (Out of Memory)，内核杀进程 (OOM Killer)，应用被 kill，日志出现 Out of memory: Kill process",
+  "root_cause": "物理内存不足、进程内存泄漏、cgroup 内存限制触发、swap 配置不足",
+  "plan": "1. 查看 /var/log/messages 或 dmesg 的 OOM 记录；2. free -h 检查内存与 swap；3. 定位内存大户: top/ps aux --sort=-%mem；4. 排查应用内存泄漏并修复；5. 增加 swap 或内存；6. 优化 cgroup 内存 limit；7. 对关键进程设置 OOM_Score 保护"
+ },
+ {
+  "service": "linux-kernel",
+  "symptom": "Linux 内核死锁 (deadlock) 或软锁 (soft lockup)，系统卡死无响应，日志出现 soft lockup - CPU stuck",
+  "root_cause": "内核锁竞争死锁、驱动持锁卡住、CPU 长时间中断屏蔽、有缺陷的驱动阻塞",
+  "plan": "1. 记录 soft lockup 日志中的 CPU 与内核栈；2. 定位持锁的驱动/内核线程；3. 更新或禁用该驱动；4. 检查是否中断风暴 (irq)；5. 升级内核修复锁 bug；6. 配置 watchdog 自动重启恢复 (hard lockup)"
+ },
+ {
+  "service": "kubevirt",
+  "symptom": "KubeVirt 虚拟机 (VMI) 一直处于 Pending 无法调度，创建失败或卡住",
+  "root_cause": "节点不支持虚拟化 (KVM 未开启)、virt-launcher 资源不足、节点污点、CRD/virt-controller 异常",
+  "plan": "1. 检查节点 KVM 支持: grep -E '(vmx|svm)' /proc/cpuinfo，无则启用嵌套虚拟化；2. kubectl describe vmi 查看调度失败原因；3. 检查 virt-controller/virt-handler pod 状态；4. 检查 KubeVirt CRD 是否注册；5. 添加 toleration 或选择支持虚拟化的节点；6. 检查 /dev/kvm 是否存在"
+ },
+ {
+  "service": "kubevirt",
+  "symptom": "KubeVirt 虚拟机热迁移 (Live Migration) 失败，VMI 状态 migrationState 显示 Failed",
+  "root_cause": "源/目的节点网络不通、存储不共享或网络带宽不足、迁移超时、节点资源不足、虚拟机使用非迁移兼容设备",
+  "plan": "1. kubectl get vmi -o yaml 查看 migrationState 报错；2. 检查源/目的节点网络连通与迁移端口；3. 确认存储为共享存储 (block/RWX) 并支持块迁移；4. 调整 migrationConfiguration 带宽/超时 (bandwidthPerMigration, completionTimeoutPerGiB)；5. 检查目的节点 CPU/内存/PCI 资源；6. 查看 virt-handler 日志定位具体失败原因"
+ },
+ {
+  "service": "kubevirt",
+  "symptom": "KubeVirt 虚拟机创建后 Paused 或 VMI 无法启动，状态 Unknown，virt-launcher 异常",
+  "root_cause": "qemu/libvirt 启动失败、磁盘卷未就绪、virt-launcher 资源限制、存储 PVC 未绑定、安全上下文问题",
+  "plan": "1. kubectl describe vmi 和 virt-launcher pod 日志；2. 检查 PVC 是否 Bound 且存储可访问；3. 查看 virt-handler 日志定位 qemu 启动错误；4. 检查节点资源与 /dev/kvm 权限；5. 调整 virt-launcher resources 配额；6. 重启 virt-handler/virt-controller"
+ },
+ {
+  "service": "kubevirt",
+  "symptom": "KubeVirt 虚拟机快照失败，无法创建或恢复快照，报存储不支持快照",
+  "root_cause": "后端存储不支持快照、未启用 qemu-guest-agent、快照 API 版本不兼容、PVC 存储类无快照能力",
+  "plan": "1. 确认存储后端支持快照 (CSI snapshot) ；2. 虚拟机内安装并启用 qemu-guest-agent；3. 检查存储类 storageclass 是否启用 snapshot；4. 查看 virt-controller 快照日志；5. 使用支持的存储类重建 PVC；6. 升级 KubeVirt 到支持快照的版本"
+ },
+ {
+  "service": "ceph",
+  "symptom": "Ceph 集群 OSD 状态 down，数据处于 degraded，health 变为 WARN/ERR，读写变慢",
+  "root_cause": "磁盘坏道/故障、OSD 进程崩溃、网络故障、monitor 无法联系 OSD、磁盘空间满",
+  "plan": "1. ceph health detail 确认 OSD 故障；2. ceph osd tree 定位 down 的 OSD 及节点；3. 检查 OSD 磁盘 SMART 与空间: df -h；4. 重启 OSD 服务: systemctl restart ceph-osd@N；5. 若磁盘损坏则更换磁盘并重做 OSD: ceph orch osd rm；6. 等待 recovery 完成后确认 health OK"
+ },
+ {
+  "service": "ceph",
+  "symptom": "Ceph PG 状态 active+degraded 或 active+clean 无法达成，PG 长时间不恢复 (stuck inactive/peered)",
+  "root_cause": "OSD 故障导致副本不足、PG 数据损坏、monitor 时钟漂移、副本数配置与实际不符、网络分区",
+  "plan": "1. ceph health detail 查看 stuck PG；2. ceph pg dump 分析 PG 状态；3. 检查 OSD 在线数与副本数 (osd_pool_default_size)；4. 修复损坏 PG: ceph pg repair 或 ceph-objectstore-tool 修复；5. 检查节点时钟同步 (NTP)；6. 确认网络无分区，等待或手动调度 PG"
+ },
+ {
+  "service": "ceph",
+  "symptom": "Ceph 出现 slow ops / slow requests，客户端 IO 延迟高，osd 卡在 op 处理",
+  "root_cause": "磁盘性能瓶颈、网络拥塞、OSD 过载 (recovery 占满 IO)、monitor 慢、内存不足",
+  "plan": "1. ceph daemon osd.N ops 查看慢操作；2. ceph -s 观察 recovery/backfill 是否占满带宽；3. 限制恢复速度: ceph config set global osd_max_backfills 1；4. 检查磁盘 IO (iostat) 与网络；5. 调整 osd 内存/日志配置；6. 定位具体慢 osd 并处理坏盘"
+ },
+ {
+  "service": "ceph",
+  "symptom": "Ceph 集群 mon 状态 quorum 异常，monitor 无法形成多数派 (no quorum)，客户端无法连接",
+  "root_cause": "monitor 进程崩溃、mon 数据损坏、时钟漂移、网络隔离导致多数派丢失、磁盘满",
+  "plan": "1. ceph mon stat 检查 quorum；2. 检查 mon 服务与日志: journalctl -u ceph-mon；3. 检查节点时钟同步 (chrony/ntp)；4. 修复损坏 mon: ceph-mon --inject 或重建 mon；5. 确认多数派节点网络连通；6. 检查 mon 磁盘空间，清理或扩容"
+ },
+ {
+  "service": "mysql",
+  "symptom": "MySQL 主从同步延迟大或中断，Slave_IO_Running 或 Slave_SQL_Running 为 NO，从库数据落后",
+  "root_cause": "主从 server-id 冲突、binlog 位置错误、大事务/慢SQL导致同步滞后、网络延迟、主从版本不一致",
+  "plan": "1. SHOW SLAVE STATUS\\G 检查 Slave_IO_Running/Slave_SQL_Running/Seconds_Behind_Master；2. 主从 server-id 唯一性检查；3. 查看主库 binlog 写入速度与大事务: SHOW GLOBAL STATUS LIKE 'Binlog_bytes_written'；4. 排查慢查询与大事务并优化；5. 重建主从复制: CHANGE MASTER TO 指向正确 binlog 位置；6. 增加带宽或调整同步参数 (slave_parallel_workers)"
+ },
+ {
+  "service": "mysql",
+  "symptom": "MySQL 连接数超限报 Too many connections，应用无法连接数据库",
+  "root_cause": "max_connections 默认值 (151) 无法满足高并发、连接泄漏、长事务占用连接、应用连接池配置过大",
+  "plan": "1. 查看当前连接数: SHOW STATUS LIKE 'Threads_connected'；2. 临时调大: SET GLOBAL max_connections=10000；3. 永久修改 my.cnf max_connections 并调大 thread_cache_size；4. 排查并关闭空闲/泄漏连接；5. 优化应用连接池 (HikariCP/druid) 上限；6. 定位持有连接的长事务: SHOW PROCESSLIST"
+ },
+ {
+  "service": "mysql",
+  "symptom": "MySQL 查询慢，慢查询日志出现大量慢 SQL，CPU 飙高或锁等待",
+  "root_cause": "缺少索引/索引失效、SQL 未命中索引全表扫描、锁等待、缓冲池配置不足、统计信息过期",
+  "plan": "1. 开启慢查询日志 (slow_query_log, long_query_time=1)；2. EXPLAIN 分析慢 SQL 是否走索引；3. 优化/新增索引，避免函数包裹索引列；4. 检查锁等待: SHOW ENGINE INNODB STATUS；5. 调大 innodb_buffer_pool_size；6. ANALYZE TABLE 更新统计信息；7. 对高并发热 SQL 做缓存或读写分离"
+ },
+ {
+  "service": "redis",
+  "symptom": "Redis 内存满导致写入失败报 OOM command not allowed when used memory，或触发淘汰策略数据丢失",
+  "root_cause": "maxmemory 设置过小、数据未设置过期时间累积、内存碎片、Key 大量过期导致阻塞",
+  "plan": "1. INFO memory 查看 used_memory 与 maxmemory；2. 分析大 Key/热点 Key: redis-cli --bigkeys；3. 合理设置 maxmemory 与淘汰策略 (allkeys-lru)；4. 优化 Key 设计，设置过期时间；5. 清理内存碎片: MEMORY PURGE；6. 扩容或启用集群分片；7. 排查大 Key 过期导致的阻塞 (lazyfree-lazy-expire yes)"
+ },
+ {
+  "service": "redis",
+  "symptom": "Redis 连接数满或响应变慢，命令超时，redis-cli ping 延迟高",
+  "root_cause": "maxclients 限制、慢命令 (KEYS/SMEMBERS 大集合)、阻塞命令、网络问题、CPU 单线程瓶颈",
+  "plan": "1. INFO clients 查看 connected_clients 与 maxclients；2. 排查慢命令: SLOWLOG GET；3. 避免在生产用 KEYS，改用 SCAN；4. 检查是否有 BLOCKING 命令或 Lua 脚本阻塞；5. 调大 timeout/tcp-keepalive 处理死连接；6. 高并发场景改用 Redis Cluster 分担单线程压力"
+ },
+ {
+  "service": "kafka",
+  "symptom": "Kafka 消息堆积严重，消费者消费速度跟不上生产，消费延迟大，磁盘将满",
+  "root_cause": "消费者处理能力不足、分区数不均导致单消费者热点、消费线程阻塞、消费组 rebalance 频繁、生产速率突增",
+  "plan": "1. 查看消费组 lag: kafka-consumer-groups --describe --group；2. 增加消费者实例或消费线程；3. 均衡分区分配避免热点；4. 排查消费端处理逻辑 (DB/IO 慢)；5. 避免频繁 rebalance: 调整 session.timeout.ms 与 max.poll.interval.ms；6. 扩大分区数提升并行度；7. 应急可临时扩大 retention 或清理历史数据"
+ },
+ {
+  "service": "kafka",
+  "symptom": "Kafka broker 挂掉或日志目录磁盘满，Shutdown broker because all log dirs failed，服务不可用",
+  "root_cause": "磁盘空间满、日志目录损坏、JVM OOM、副本不足 (min.insync.replicas 不满足)、内存/文件句柄耗尽",
+  "plan": "1. 查看 broker 日志定位挂掉原因: server.log；2. 检查磁盘空间: df -h /data/kafka；3. 清理过期日志或扩容磁盘；4. 修复损坏的日志目录: 重建或删除损坏 segment；5. 调整 JVM 堆内存与文件句柄 (ulimit)；6. 检查副本状态: kafka-topics --describe，修复 ISR"
+ },
+ {
+  "service": "elasticsearch",
+  "symptom": "Elasticsearch 集群状态 red 或 yellow，分片未分配 (unassigned)，写入/查询失败",
+  "root_cause": "节点宕机、磁盘空间不足 (watermark)、分片副本数不足、节点重启后分片无法恢复、索引损坏",
+  "plan": "1. GET _cluster/health 查看集群状态；2. GET _cat/shards?v 查看 unassigned 分片；3. 检查磁盘水位: GET _cat/allocation，清理或扩容；4. 释放副本或调整 watermark (cluster.routing.allocation.disk.watermark)；5. 手动 reroute 分片: POST _cluster/reroute；6. 修复损坏索引或重建；7. 等待节点恢复后分片自动迁移"
+ },
+ {
+  "service": "elasticsearch",
+  "symptom": "Elasticsearch 查询慢或写入拒绝，CPU/内存飙高，节点 JVM 堆使用率高",
+  "root_cause": "分片过多/过大、无缓存或缓存未命中、聚合/通配符查询开销大、堆内存不足、段数量过多",
+  "plan": "1. GET _nodes/stats 查看 CPU/堆/JVM 使用；2. 优化查询: 避免通配符、深层聚合限制 (max_buckets)；3. 控制分片大小与数量 (单分片 30-50G)；4. 调大堆内存 (jvm.options, 不超物理内存50%)；5. 定期 forcemerge 合并段减少段数；6. 添加节点横向扩容；7. 清理无用索引"
+ },
+ {
+  "service": "nginx",
+  "symptom": "Nginx 返回 500 或 502 Bad Gateway，后端服务不可达或 Nginx 自身故障",
+  "root_cause": "后端上游服务宕机/超时、Nginx 配置语法错误、磁盘满/inode 耗尽、worker 进程崩溃、proxy 缓存损坏",
+  "plan": "1. 检查后端上游服务状态 (health)；2. 查看 Nginx error.log 定位 502/500 根因；3. nginx -t 检查配置语法；4. 检查磁盘空间与 inode: df -h / df -i；5. 排查 proxy_cache 路径磁盘损坏或停用缓存；6. 调整 proxy_connect_timeout/proxy_read_timeout；7. nginx -s reload 平滑重载或重启"
+ },
+ {
+  "service": "nginx",
+  "symptom": "Nginx 并发连接数满或性能瓶颈，请求超时，worker 进程 CPU 100%",
+  "root_cause": "worker_connections 限制、worker_processes 配置过小、慢连接占用、TCP 连接未释放、后端响应慢",
+  "plan": "1. nginx -V 查看配置；2. 调大 worker_connections 与 worker_processes (=CPU核数)；3. 启用 keepalive 复用连接减少握手；4. 排查后端慢响应导致的连接占用；5. 优化 sendfile/tcp_nopush/tcp_nodelay；6. 开启 Gzip 压缩减少带宽；7. 配置限流 (limit_req) 防突发"
+ },
+ {
+  "service": "hardware",
+  "symptom": "服务器磁盘 SMART 异常或坏道，IO 性能下降，可能出现 fsync 失败或数据读写错误",
+  "root_cause": "磁盘物理坏道、接口/线缆磨损 (C7 错误)、固件问题、磁盘寿命耗尽 (Reallocated_Sector_Ct 增长)",
+  "plan": "1. 检查 SMART: smartctl -a /dev/sda 关注 Reallocated_Sector_Ct/Current_Pending_Sector；2. 少量坏道可用 badblocks 标记或 MHDD/diskgenius 修复；3. C7 错误多为线缆问题，更换数据线；4. 大量坏道/底层错误建议直接更换磁盘；5. 生产环境配置 RAID 冗余及时迁移数据；6. 定期巡检 SMART 并设置告警"
+ },
+ {
+  "service": "hardware",
+  "symptom": "服务器内存 ECC 报错或频繁崩溃/蓝屏，日志出现内存 ECC Correctable/Uncorrectable 错误",
+  "root_cause": "内存条损坏、内存插槽故障、内存与主板不兼容、散热不良导致内存过热",
+  "plan": "1. 用 dmidecode/ipmitool 查看 ECC 事件；2. 定位故障内存: 用 memtester/memtest86 压力测试；3. 将疑似故障内存换到其他插槽验证 (跟随内存移动则内存损坏)；4. 替换故障内存 (优先原厂认证 ECC 内存)；5. 检查散热与灰尘清理；6. Uncorrectable ECC 需立即更换并重启，避免数据损坏"
+ },
+ {
+  "service": "hardware",
+  "symptom": "GPU 服务器报 ECC 错误或 GPU 卡识别失败，驱动加载失败，训练/推理任务异常",
+  "root_cause": "GPU ECC 内存错误、显卡散热/供电问题、驱动与 CUDA 版本不匹配、PCIe 连接松动",
+  "plan": "1. nvidia-smi -q -d ECC 查看 ECC 错误计数；2. 检查 GPU 温度/功耗: nvidia-smi；3. 更新/回退 NVIDIA 驱动与 CUDA 到匹配版本；4. 检查 PCIe 槽位与供电；5. ECC 持续增长需 RMA 更换 GPU；6. 清理散热孔与灰尘，确保风扇正常；7. 重启后 nvidia-smi 重新识别"
+ },
+ {
+  "service": "hardware",
+  "symptom": "服务器 CPU 温度过高触发过热保护自动关机，或系统频繁死机重启",
+  "root_cause": "散热风扇故障、散热硅脂老化/导热不良、灰尘堵塞风道、环境温度过高、CPU 故障",
+  "plan": "1. 查看 CPU 温度: sensors / ipmitool sensor；2. 检查风扇转速与故障；3. 清理灰尘、更换/补涂散热硅脂；4. 检查机柜散热与空调环境温度；5. 确认 BIOS 温控策略；6. 持续过热需更换 CPU 或检查主板供电"
+ },
+ {
+  "service": "application",
+  "symptom": "Java 应用 OOM (OutOfMemoryError) 崩溃或频繁 Full GC，应用响应变慢或宕机",
+  "root_cause": "内存泄漏 (静态集合/ThreadLocal 未清理)、堆内存配置过小、对象分配过大、大并发下内存不足",
+  "plan": "1. JVM 启动参数加 -XX:+HeapDumpOnOutOfMemoryError 生成 dump；2. 用 Eclipse MAT/JProfiler/VisualVM 分析 heap dump 定位泄漏对象；3. 排查静态 Map 缓存/ThreadLocal 泄漏；4. 调大 Xmx/Xms 或优化对象生命周期；5. 优化线程池限制并发；6. 分析 GC 日志定位 Full GC 频繁原因"
+ },
+ {
+  "service": "application",
+  "symptom": "Java 应用线程阻塞或死锁，接口超时无响应，CPU 或线程数异常高",
+  "root_cause": "线程池耗尽、数据库连接池占满、死锁 (锁顺序不一致)、阻塞 IO 未超时、并发竞争",
+  "plan": "1. jstack 抓取线程栈定位 BLOCKED/DEADLOCK；2. 分析线程池核心/最大线程与队列配置；3. 检查数据库连接池 (HikariCP) 是否占满；4. 优化锁粒度，避免嵌套锁死锁；5. 为外部调用设置超时 (连接/读取)；6. 增加线程池大小或限流保护；7. 排查 CPU 高线程: top -Hp pid"
+ },
+ {
+  "service": "application",
+  "symptom": "Go 应用内存占用持续增长 (内存泄漏)，或 goroutine 泄漏导致资源耗尽，服务响应变慢",
+  "root_cause": "goroutine 泄漏 (channel/锁未释放)、无界缓存/Map 累积、连接/文件句柄未关闭、定时器未停止",
+  "plan": "1. pprof 分析: go tool pprof /debug/pprof/heap 定位内存分配热点；2. 查看 goroutine 数量: /debug/pprof/goroutine；3. 排查未关闭的 channel/锁/连接；4. 修复无界队列与缓存不清理问题；5. 设置资源上限 (maxGoroutines 限流)；6. 结合 runtime.MemStats 监控内存趋势"
+ },
+ {
+  "service": "application",
+  "symptom": "应用无法启动，端口被占用、配置错误、依赖服务未就绪或启动超时，容器 CrashLoopBackOff",
+  "root_cause": "端口冲突、配置文件缺失/错误、数据库/Redis 等依赖未就绪、启动命令错误、环境变量缺失、镜像缺文件",
+  "plan": "1. 查看应用启动日志定位具体报错；2. 检查端口占用: ss -tlnp | grep <port>；3. 核对配置文件与必填环境变量；4. 确认依赖服务 (DB/Redis) 已就绪且网络可达；5. 检查启动命令与工作目录；6. 容器场景检查 readinessProbe 超时；7. 修复后重新部署并验证健康检查通过"
+ },
+ {
+  "service": "network",
+  "symptom": "服务间调用延迟突增，P95 从 10ms 涨到 500ms 以上，调用量未明显变化，拓扑图中延迟等级变为 slow",
+  "root_cause": "网络链路拥塞、跨节点/跨集群访问经过低速网络、eBPF 观测显示某一段网络延迟异常（重传/丢包升高）、或对端服务所在节点网络带宽打满",
+  "plan": "1. 在 DeepFlow 拓扑中查看延迟分段，定位是哪一段链路（client→server）变慢；2. 查看该链路 TCP 重传率与丢包率（node_exporter tcp_retrans/segs）；3. 检查节点网卡带宽占用（node_network_transmit_bytes/rate）；4. 检查是否存在跨集群/跨 AZ 调用（看 cluster_id 标签）；5. 对带宽打满的节点限流或扩容，对跨网调用改内网路由"
+ },
+ {
+  "service": "network",
+  "symptom": "TCP 重传率持续升高，客户端大量超时，应用错误日志出现 connection reset by peer",
+  "root_cause": "网络拥塞导致丢包、MTU 不一致、防火墙/安全组丢弃、对端连接数打满触发 RST、或网卡故障",
+  "plan": "1. 用 node_exporter tcp_retrans_segs/tcp_out_segs 计算重传率，定位异常节点；2. 检查对端服务的连接数（ss -s、连接数监控），确认是否达到上限；3. 检查网络设备（SNMP）端口错包/丢包计数；4. 核对 MTU 与防火墙策略；5. 临时降级为短连接+重试策略缓解，再根治链路"
+ },
+ {
+  "service": "network",
+  "symptom": "跨集群调用偶发超时，链路追踪显示 span 之间出现长时间 gap（几十秒），但各 span 自身耗时正常",
+  "root_cause": "网络代理/网关超时、DNS 解析慢、跨集群网络不稳定（丢包重传）、或安全扫描/限流设备周期性介入",
+  "plan": "1. 对比不同集群/实例的调用延迟分布，确认是否跨集群才超时；2. 检查 DNS 解析耗时（应用侧 dns_lookup 指标）；3. 查看网关/代理（如 ingress）日志中的超时与限流记录；4. 增加客户端超时与重试，服务端加大请求队列；5. 长期：跨集群调用改异步化或就近接入"
+ },
+ {
+  "service": "network",
+  "symptom": "连接数打满，新建连接失败，报 too many open files 或 cannot assign requested address",
+  "root_cause": "连接泄漏（未关闭连接）、并发过高超过系统 fd 上限、TIME_WAIT 堆积、或服务端 backlog 队列满",
+  "plan": "1. ulimit -n 与 /proc/sys/net/core/somaxconn 检查系统上限；2. ss -s 查看 TIME_WAIT 数量，调大 net.ipv4.tcp_tw_reuse/tcp_fin_timeout；3. 检查应用是否泄漏连接（连接池未回收）；4. 调大服务端 max_connections 与队列；5. 连接池加健康检查与自动回收"
+ },
+ {
+  "service": "clickhouse",
+  "symptom": "ClickHouse 查询变慢，trace_spans 查询从毫秒级变秒级，system.query_log 显示部分查询扫描大量分区",
+  "root_cause": "查询未命中分区裁剪（date/time_bucket 条件缺失）、数据倾斜、parts 数过多需要 merge、或磁盘 IO 变慢",
+  "plan": "1. EXPLAIN 查看分区裁剪是否生效；2. 检查 system.parts 中 parts 数量与大小，触发 OPTIMIZE 合并；3. 确认查询是否带 date/time_bucket 过滤条件；4. 检查磁盘 IO（iostat）与剩余空间；5. 对高频查询建物化视图或预聚合表"
+ },
+ {
+  "service": "clickhouse",
+  "symptom": "ClickHouse 磁盘空间快速增长，trace/log 数据占满磁盘，写入开始失败",
+  "root_cause": "TTL 未生效（TTL 设置错误或 merge 未触发）、数据写入量超过预期、或旧数据未按天分区清理",
+  "plan": "1. 确认表 TTL 定义与分区策略（trace_spans/log_records 应为 30 天 TTL）；2. 手动执行 OPTIMIZE 触发 TTL 删除；3. 检查是否关闭了 TTL 或修改了存储策略；4. 清理临时/系统表（system.* 只保留必要部分）；5. 长期：降低采样率或延长/缩短 TTL 平衡成本"
+ },
+ {
+  "service": "clickhouse",
+  "symptom": "ClickHouse 写入报错 no space left on device 或 too many parts，ingest 采集任务堆积",
+  "root_cause": "磁盘满、parts 数超过 max_parts_to_insert 阈值、写入批次过大、或 merge 跟不上写入速度",
+  "plan": "1. 检查磁盘空间并清理；2. 查看 system.parts 数量，临时调大 max_parts_to_insert；3. 降低 ingest 写入批次大小或降低采样率；4. 确认 merge 线程池未被占满；5. 长期：扩容磁盘或加副本分担"
+ },
+ {
+  "service": "clickhouse",
+  "symptom": "使用 ReplacingMergeTree 的表（trace_spans）查询出现重复数据，同一 trace_id 出现多行",
+  "root_cause": "ReplacingMergeTree 的 dedupe 依赖后台 merge 完成，近期写入的数据未被合并，或 version 列设置导致旧版本未被淘汰",
+  "plan": "1. 确认表以 (trace_id, span_id) 为主键排序且 version 合理；2. 查询用 FINAL 关键字或在应用层去重；3. 手动 OPTIMIZE 触发合并观察；4. 长期：在查询层按 trace_id+span_id 去重（argMax）"
+ },
+ {
+  "service": "victoriametrics",
+  "symptom": "VictoriaMetrics 指标出现断点（gap），一段时间内查询不到数据，抓取目标 down",
+  "root_cause": "抓取配置变更、目标 pod 重启/迁移、vmagent 或 VM 自身 OOM 重启、或磁盘写入失败",
+  "plan": "1. 查 /api/v1/targets 看抓取状态与错误；2. 检查 VM 自身内存/磁盘（指标断点常伴随 OOM）；3. 检查 vmagent 抓取间隔与超时配置；4. 对重要指标加 recording rule 降采样保底；5. 确认 K8s 服务发现（kubernetes_sd）正常"
+ },
+ {
+  "service": "victoriametrics",
+  "symptom": "VictoriaMetrics 磁盘快速增长，retention 设置未生效，数据长期不清理",
+  "root_cause": "retentionPeriod 配置缺失或过短/过长、高基数指标（cardinality 爆炸）、或 downsampling 未配置",
+  "plan": "1. 检查 retentionPeriod 配置并确认生效；2. 用 /api/v1/status/tsdb 分析高基数 label 与 metric；3. 对高基数 label 做 relabel 删除或聚合；4. 配置 downsampling 降采样历史数据；5. 清理无用 job 的指标"
+ },
+ {
+  "service": "victorialogs",
+  "symptom": "VictoriaLogs 日志检索变慢或超时，日志量大时查询秒级无响应",
+  "root_cause": "查询未加时间范围导致全量扫描、日志量增长过快未配置 retention、或磁盘 IO 瓶颈",
+  "plan": "1. 查询强制加 _time 时间范围过滤；2. 检查日志 retention 配置；3. 按 stream/namespace 合理分流降低单流日志量；4. 检查磁盘 IO 与文件数（inode）；5. 对高频查询建 stream 过滤词"
+ },
+ {
+  "service": "application",
+  "symptom": "服务错误率突增但调用量持平，错误集中在 5xx，日志显示下游调用超时",
+  "root_cause": "下游依赖服务变慢/不可用（超时传导）、依赖的连接池耗尽、或下游发布故障",
+  "plan": "1. 拓扑图查看该服务下游依赖与错误率；2. 链路追踪看失败 span 的服务与耗时；3. 检查下游服务指标（RED）与部署状态；4. 加熔断/降级/快速失败保护；5. 下游恢复后观察错误率回落"
+ },
+ {
+  "service": "application",
+  "symptom": "服务 P95 延迟劣化，错误率不高但用户可感知变慢，慢调用集中在某几个端点",
+  "root_cause": "某端点存在慢查询（DB/Redis）、锁竞争、或串行调用下游导致耗时叠加",
+  "plan": "1. 链路追踪按端点聚合 P95，定位慢 span；2. 检查慢 span 是 DB 查询（db_statement）还是外部调用；3. 对慢 SQL 加索引/优化；4. 检查锁等待（Redis/DB 锁）；5. 评估并行化或缓存热点数据"
+ },
+ {
+  "service": "application",
+  "symptom": "调用量骤降（业务量断崖），但服务本身健康指标正常，无告警触发",
+  "root_cause": "上游流量被拦截（网关/负载均衡/防火墙）、DNS 变更、上游发布故障、或流量调度变更",
+  "plan": "1. 对比网关/入口的流量指标确认入口是否还有流量；2. 检查 DNS 解析与上游路由配置变更；3. 检查安全策略/限流（WAF/防火墙）；4. 对比服务拓扑中上游调用次数变化；5. 回滚相关配置变更"
+ },
+ {
+  "service": "application",
+  "symptom": "服务出现周期性错误（每隔固定间隔报错），错误率呈锯齿状波动",
+  "root_cause": "定时任务/GC/备份导致资源竞争、连接池周期性回收失败、或下游定时任务影响",
+  "plan": "1. 按时间聚合错误率看周期与业务时段关联；2. 检查应用 GC/定时任务/连接池回收配置；3. 链路追踪看周期性错误 span 的特征；4. 错峰执行定时任务；5. 观察修复后锯齿是否消失"
+ },
+ {
+  "service": "capacity",
+  "symptom": "容量预测显示 CPU 将在 48 小时内触达阈值（ETT 缩短），当前使用率持续上升",
+  "root_cause": "业务增长或异常流量导致资源使用率单调上升，当前容量不足以支撑增长趋势",
+  "plan": "1. 查看容量预测趋势与 ETT，确认是持续增长还是短期波动；2. 分析增长来源（新业务/数据量/配置不当）；3. 提前扩容节点或调整配额；4. 优化资源使用（降采样、缓存、压缩）；5. 设置容量告警阈值提前预警"
+ },
+ {
+  "service": "capacity",
+  "symptom": "磁盘使用率接近阈值（>85%），但日志/数据仍在增长，ETT 已触发",
+  "root_cause": "日志/指标/数据保留期过长、或增长速率超预期",
+  "plan": "1. 确认各数据源磁盘使用分布；2. 检查 TTL/retention 是否生效；3. 清理历史数据或归档；4. 评估磁盘扩容或压缩；5. 设置磁盘水位告警"
+ },
+ {
+  "service": "capacity",
+  "symptom": "内存使用率持续高位（>90%）但 CPU 正常，服务开始出现 OOMKilled",
+  "root_cause": "内存泄漏、缓存/连接池配置过大、或 Pod 内存 limit 设置不合理",
+  "plan": "1. 检查内存使用趋势与 OOM 事件；2. 用 heap dump/pprof 定位泄漏对象；3. 检查缓存与连接池配置上限；4. 调整内存 limit 或扩内存；5. 加内存监控告警"
+ },
+ {
+  "service": "snmp",
+  "symptom": "交换机端口错包/丢包计数持续增长，通过该端口的服务出现偶发延迟与重传",
+  "root_cause": "端口物理故障/劣化（光模块、网线）、双工不匹配、或广播风暴",
+  "plan": "1. 用 SNMP 查看端口 in/out errors、discards、CRC 错误计数；2. 检查端口双工/速率协商是否正常；3. 检查光模块光功率（DOM）；4. 重启端口或更换线缆/模块；5. 配置端口错误率告警"
+ },
+ {
+  "service": "snmp",
+  "symptom": "SNMP 设备采集失败或超时，设备列表显示不可达",
+  "root_cause": "SNMP community 变更、设备 IP 变更、防火墙拦截 161 端口、或设备 SNMP 服务未启用",
+  "plan": "1. snmpwalk 手工验证连通性与 community；2. 检查设备 IP/路由变更；3. 检查防火墙放行 UDP 161；4. 确认设备 SNMP 服务状态；5. 更新平台设备配置"
+ },
+ {
+  "service": "hardware",
+  "symptom": "服务器 IPMI 传感器显示温度过高或风扇转速异常，硬件健康状态降级",
+  "root_cause": "风扇故障、散热风道堵塞、环境温度过高、或传感器误报",
+  "plan": "1. 查看 IPMI 传感器读数（温度/风扇/电压）；2. 检查服务器物理环境（机房温度/风道）；3. 检查故障风扇并更换；4. 清灰维护；5. 配置温度告警阈值提前介入"
+ },
+ {
+  "service": "hardware",
+  "symptom": "服务器电源模块异常或冗余电源丢失，IPMI SEL 事件持续上报",
+  "root_cause": "电源模块硬件故障、电源线接触不良、或供电输入异常",
+  "plan": "1. 查看 IPMI SEL 事件日志定位故障电源；2. 检查电源指示灯与供电线路；3. 更换故障电源模块（注意冗余）；4. 验证切换是否正常；5. 配置电源事件告警"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "HPA 扩缩容频繁抖动，Pod 数量在短时间内反复增减",
+  "root_cause": "指标波动大导致扩缩容振荡、min/max 设置过窄、或 HPA 行为策略（behavior）未配置稳定窗口",
+  "plan": "1. 查看 HPA 状态与指标（kubectl describe hpa）；2. 增大 stabilizationWindowSeconds 或设置冷却时间；3. 扩大 min/max 缓冲范围；4. 检查指标采集稳定性；5. 对关键业务配置按负载预测扩缩容"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "Pod 长时间 Pending 无法调度，报 Insufficient cpu/memory 或 node selector 不匹配",
+  "root_cause": "集群资源不足、节点污点/亲和性限制、PVC 未就绪、或节点 NotReady",
+  "plan": "1. kubectl describe pod 查看调度事件；2. 检查集群节点资源余量（capacity/allocatable）；3. 检查污点容忍与 nodeSelector/亲和性；4. 确认 PVC 状态（Bound）；5. 扩容节点或调整调度策略"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "Pod 频繁重启（CrashLoopBackOff），重启次数超过 3 次触发告警",
+  "root_cause": "应用启动失败（配置/依赖）、探针失败导致重启、OOMKilled、或就绪探针配置错误",
+  "plan": "1. kubectl logs 查看崩溃前日志；2. 查看上次退出码与原因（OOMKilled=137）；3. 检查探针（liveness/readiness）配置与阈值；4. 检查资源配置（limit 过小触发 OOM）；5. 修复后观察重启计数回落"
+ },
+ {
+  "service": "kubernetes",
+  "symptom": "PVC 使用率超过 85% 触发容量告警，应用开始报磁盘写入失败",
+  "root_cause": "PVC 容量规划不足、日志/临时文件未清理、或应用数据增长超预期",
+  "plan": "1. 查看 PVC 用量与扩容支持类型（ReadWriteOnce 需重建 Pod）；2. 清理应用日志与临时文件；3. 评估 PVC 扩容（storageClass 支持扩容则直接扩）；4. 配置自动清理任务；5. 长期：分卷或换更大容量"
+ },
+ {
+  "service": "alerts",
+  "type": "knowledge",
+  "tags": "sop,alert,error_rate",
+  "title": "告警处置 SOP：服务错误率过高（trace_error_rate）",
+  "symptom": "告警处置 SOP：服务错误率过高（trace_error_rate）\n当触发'服务错误率过高'告警（阈值 5%）时，按以下步骤处置：1) 打开服务全景查看该服务错误率与调用量趋势；2) 链路追踪按该服务过滤，查看失败 span 的状态码与耗时；3) 检查服务依赖（拓扑下游）是否异常；4) 查看该服务最近日志（ERROR 级别）定位报错类型；5) 若为下游依赖故障，启动熔断/降级并联系下游负责人；6) 处置完成后观察错误率回落并确认告警恢复",
+  "root_cause": "标准处置流程",
+  "plan": "1. 确认告警对象与触发值；2. 按链路→日志→依赖顺序排查；3. 执行处置并验证恢复"
+ },
+ {
+  "service": "alerts",
+  "type": "knowledge",
+  "tags": "sop,alert,kubernetes",
+  "title": "告警处置 SOP：Deployment 不可用（unavailable_replicas）",
+  "symptom": "告警处置 SOP：Deployment 不可用（unavailable_replicas）\n当触发'Deployment 不可用'告警时：1) kubectl get deploy -A 定位不可用 Deployment；2) kubectl describe deploy 查看滚动更新状态；3) 检查 Pod 状态（CrashLoopBackOff/OOM/ImagePullBackOff）；4) 查看最近事件与镜像版本；5) 回滚或修复后确认副本恢复；6) 确认告警自动恢复（resolved）",
+  "root_cause": "标准处置流程",
+  "plan": "1. 定位不可用 Deployment；2. 检查 Pod 与事件；3. 回滚/修复；4. 验证恢复"
+ },
+ {
+  "service": "alerts",
+  "type": "knowledge",
+  "tags": "sop,alert,kubernetes",
+  "title": "告警处置 SOP：Pod 频繁重启（pod_restarts）",
+  "symptom": "告警处置 SOP：Pod 频繁重启（pod_restarts）\n当触发'Pod 频繁重启'告警（阈值 3 次）时：1) 定位重启 Pod；2) kubectl describe pod 查看重启原因（OOMKilled/探针失败/崩溃）；3) 查看退出码（137=OOM，其余看日志）；4) 检查资源 limit 与探针配置；5) 修复后观察重启计数是否停止增长；6) 确认告警恢复",
+  "root_cause": "标准处置流程",
+  "plan": "1. 定位 Pod；2. 查原因；3. 修复；4. 验证恢复"
+ },
+ {
+  "service": "change",
+  "type": "knowledge",
+  "tags": "change,risk,deploy",
+  "title": "变更风险：应用版本升级后出现错误率上升",
+  "symptom": "变更风险：应用版本升级后出现错误率上升\n发布新版本后错误率上升时：1) 立即对比新旧版本差异（配置/依赖/代码）；2) 检查新版本是否引入新的外部依赖或配置项；3) 优先回滚到上一稳定版本；4) 保留现场（日志/链路）供分析；5) 修复后在灰度环境验证再全量发布",
+  "root_cause": "发布风险控制",
+  "plan": "1. 回滚；2. 分析差异；3. 灰度验证；4. 再发布"
+ },
+ {
+  "service": "change",
+  "type": "knowledge",
+  "tags": "change,risk,config",
+  "title": "变更风险：配置变更导致服务行为异常",
+  "symptom": "变更风险：配置变更导致服务行为异常\n配置变更（环境变量/配置文件/参数）后服务异常时：1) 检查配置变更记录（审计日志/发布记录）；2) 对比变更前后配置差异；3) 回滚配置变更；4) 验证配置是否被正确加载（是否生效）；5) 配置变更建议走评审与灰度",
+  "root_cause": "配置变更风险控制",
+  "plan": "1. 定位变更；2. 回滚；3. 验证；4. 建立配置评审流程"
+ },
+ {
+  "service": "shell",
+  "type": "knowledge",
+  "tags": "shell,whitelist,command",
+  "title": "安全命令白名单：平台可安全执行的排查命令",
+  "symptom": "安全命令白名单：平台可安全执行的排查命令\n以下命令为只读/低风险排查命令，可授权 AI 自动执行：kubectl get/describe（资源查看）、kubectl logs（日志查看）、kubectl top（资源占用）、kubectl get events（事件）、ss/netstat（连接查看）、df/free/top（系统资源）、curl 健康检查、ping/traceroute（连通性）。写操作命令（删除/重启/修改）必须人工审批",
+  "root_cause": "命令风险分级",
+  "plan": "1. 只读命令可自动执行；2. 写命令必须审批；3. 命令输出应脱敏"
+ },
+ {
+  "service": "slo",
+  "type": "knowledge",
+  "tags": "slo,best-practice",
+  "title": "SLO 最佳实践：目标设定与烧毁率解读",
+  "symptom": "SLO 最佳实践：目标设定与烧毁率解读\n1) 可用性目标建议 99.9% 起步，关键链路 99.99%；2) 延迟 SLO 建议使用 P95/P99，而非均值；3) 烧毁率 > 1 表示错误预算消耗速度超预期，应立即处理；4) SLO 应覆盖核心用户链路，非全量服务；5) 每月复盘 SLO 达成情况并调整目标",
+  "root_cause": "SLO 配置最佳实践",
+  "plan": "1. 按服务重要性分级设定 SLO；2. 关联烧毁率告警；3. 定期复盘"
+ },
+ {
+  "service": "application",
+  "symptom": "订单服务（checkout）错误率 100%，调用量骤降，下游 payments 服务同样异常",
+  "root_cause": "业务链路故障传导：checkout 依赖 payments，payments 故障（或故障注入）导致 checkout 全部失败；Redis 频繁重启加剧会话/缓存依赖失败",
+  "plan": "1. 拓扑确认 checkout→payments 依赖链；2. 检查 payments 错误率与日志；3. 检查 Redis 重启原因（OOM/探针）；4. 对 checkout 加熔断避免全量失败；5. 恢复 payments/Redis 后验证链路恢复"
+ },
+ {
+  "service": "application",
+  "symptom": "登录/会话服务出现周期性 401/超时，用户间歇性无法登录",
+  "root_cause": "会话存储（Redis）不稳定或重启导致会话丢失、或认证服务依赖的下游超时",
+  "plan": "1. 检查 Redis 稳定性（重启次数/内存）；2. 查看认证服务错误日志与链路；3. 检查会话过期配置与 TTL；4. 修复 Redis 后观察登录成功率恢复"
+ }
 ]

@@ -8,6 +8,10 @@
 replicaCount: 1
 # 有状态单写组件（mysql/clickhouse）副本数，固定 1（共享 RWO PVC 不可扩副本）。
 statefulReplicaCount: 1
+# 全局镜像 tag：自研服务镜像唯一版本来源，与 build-images.sh 的 IMAGE_TAG 及 Chart.yaml 的 appVersion 对齐。
+# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改此处 ③ 用 IMAGE_TAG=vX.Y.Z 重新构建镜像，保证"代码/版本/部署"一致。
+global:
+  imageTag: "v1.0.0"
 namespace:
   observability: observability
   deepflow: deepflow
@@ -123,12 +127,14 @@ nodeExporter:
 # ipmi-exporter — 每节点本地采集 IPMI 传感器（/dev/ipmi0，不走带外网）
 ipmiExporter:
   enabled: true
-  image: "ipmi-exporter:latest"
+  image: "ipmi-exporter:{{ .Values.global.imageTag }}"
   imagePullPolicy: "IfNotPresent"
   collectInterval: "120"
 
 # VM 内置 scrape（组件最小化）：抓取 node-exporter/ingest/orchestrator 指标进 VictoriaMetrics
-# （query-api /metrics 为鉴权端点不作为目标）
+# （query-api /metrics 为鉴权端点不作为目标）。
+# 平台自监控：待 query-api 暴露免鉴权 /metrics 后，在 scrape-config.yaml 增加 query-api job 接入
+# （需代码侧改动，超出部署侧范围，本轮不做）。
 ingestPort: 8080
 orchestratorPort: 8080
 
@@ -137,13 +143,13 @@ orchestratorPort: 8080
 nodeExporterTarget: ""
 
 # ---------------------------------------------------------------------------
-# 自研服务（镜像 tag 版本化，默认 v1.0.0，与 build-images.sh 的 IMAGE_TAG 对齐。
-# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改此处镜像 tag ③ 重新 build-images.sh，
-# 保证"代码/版本/部署"一致可追溯）
+# 自研服务：镜像 tag 统一引用 global.imageTag（唯一版本来源，见文件顶部），
+# 与 build-images.sh 的 IMAGE_TAG 及 Chart.yaml 的 appVersion 对齐。
+# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改 global.imageTag ③ 用 IMAGE_TAG=vX.Y.Z 构建。
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true
-  image: "observability-frontend:v3.4.10"
+  image: "observability-frontend:{{ .Values.global.imageTag }}"
   nodePort: 30253
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
@@ -151,7 +157,7 @@ frontend:
 
 queryApi:
   enabled: true
-  image: "query-api:v1.3.16"
+  image: "query-api:{{ .Values.global.imageTag }}"
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -166,7 +172,7 @@ queryApi:
 
 ingest:
   enabled: true
-  image: "ingest-pipeline:v1.0.6"
+  image: "ingest-pipeline:{{ .Values.global.imageTag }}"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
@@ -183,7 +189,7 @@ ingest:
 
 aiOrchestrator:
   enabled: true
-  image: "ai-orchestrator:v1.1.22"
+  image: "ai-orchestrator:{{ .Values.global.imageTag }}"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   minioEndpoint: "minio.observability.svc.cluster.local:9000"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"

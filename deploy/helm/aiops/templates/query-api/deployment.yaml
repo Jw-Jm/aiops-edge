@@ -19,7 +19,7 @@ spec:
       serviceAccountName: query-api
       containers:
         - name: query-api
-          image: {{ .Values.queryApi.image }}
+          image: {{ tpl .Values.queryApi.image . }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -30,6 +30,9 @@ spec:
               value: {{ .Values.queryApi.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
             - name: VICTORIA_METRICS_URL
               value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
             - name: VICTORIA_LOGS_URL

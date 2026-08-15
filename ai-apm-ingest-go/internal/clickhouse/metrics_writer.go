@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -54,7 +55,7 @@ func NewMetricsWriter(host string, port int, walDir string) *MetricsWriter {
 		maxRetryBatches: 500,
 	}
 	if walDir != "" {
-		wal, err := NewWAL(walDir)
+		wal, err := NewWALFile(walDir, walEdgeFile)
 		if err != nil {
 			log.Printf("MetricsWriter WAL init failed (memory retry): %v", err)
 		} else {
@@ -62,6 +63,10 @@ func NewMetricsWriter(host string, port int, walDir string) *MetricsWriter {
 			if entries, err := wal.ReadAll(); err == nil && len(entries) > 0 {
 				log.Printf("MetricsWriter WAL: recovering %d pending records", len(entries))
 				for _, e := range entries {
+					// 分文件后仅含 edge 条目，防御性跳过其他 kind
+					if e.Kind != "edge" {
+						continue
+					}
 					if rows, derr := decodeRows(e.Value); derr == nil {
 						w.retryPending[fmt.Sprintf("%s-%d", e.Kind, e.Seq)] = rows
 					}
@@ -222,18 +227,38 @@ func (w *MetricsWriter) flushRetry() {
 		pending[k] = v
 	}
 	w.mu.Unlock()
-	for key, rows := range pending {
+	// 按 seq 升序重试，配合 WAL 连续确认水位，避免高 seq 先确认导致 compact 误删低 seq 未确认条目
+	keys := make([]string, 0, len(pending))
+	for k := range pending {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return retryKeySeq(keys[i]) < retryKeySeq(keys[j]) })
+	for _, key := range keys {
 		kind := key[:strings.Index(key, "-")]
 		if kind != "edge" {
 			// metric 维度已停写（metric_service_red 死表），忽略旧 WAL/内存 metric 项
 			continue
 		}
+		rows := pending[key]
 		if err := w.insertEdges(rows); err != nil {
 			continue
 		}
 		w.confirm(kind, key, rows)
 		w.countWritten(kind, rows)
 	}
+}
+
+// retryKeySeq 从 retryPending 的 key（edge-123 / edge-mem-123）中解析数值序号，用于升序重试排序。
+func retryKeySeq(key string) uint64 {
+	idx := strings.LastIndex(key, "-")
+	if idx < 0 {
+		return 0
+	}
+	var seq uint64
+	if _, err := fmt.Sscanf(key[idx+1:], "%d", &seq); err == nil {
+		return seq
+	}
+	return 0
 }
 
 func (w *MetricsWriter) confirm(kind, key string, rows []byte) {

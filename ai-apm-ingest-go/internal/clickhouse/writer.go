@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -76,15 +77,18 @@ func NewWriter(host string, port int, walDir string) *Writer {
 		maxRetryBytes:    512 << 20, // 512MB 重试队列上限
 	}
 	if walDir != "" {
-		wal, err := NewWAL(walDir)
+		wal, err := NewWALFile(walDir, walSpanFile)
 		if err != nil {
 			log.Printf("WAL init failed (falling back to memory retry): %v", err)
 		} else {
 			w.wal = wal
-			// 启动恢复：重放 WAL 中未确认的记录
+			// 启动恢复：重放 WAL 中未确认的记录（分文件后仅含 span 条目，防御性校验 kind）
 			if entries, err := wal.ReadAll(); err == nil && len(entries) > 0 {
 				log.Printf("WAL: recovering %d pending records", len(entries))
 				for _, e := range entries {
+					if e.Kind != "span" {
+						continue
+					}
 					rows, derr := decodeRows(e.Value)
 					if derr == nil {
 						w.addRetry(e.Seq, rows)
@@ -308,7 +312,8 @@ func (w *Writer) countWritten(rows []byte) {
 	w.OnWritten(n)
 }
 
-// flushRetry 重试所有未成功的批次。
+// flushRetry 重试所有未成功的批次，按 seq 升序处理。
+// 升序保证低 seq 先确认，配合 WAL 连续确认水位，避免高 seq 先确认导致 compact 误删低 seq 未确认条目。
 func (w *Writer) flushRetry() {
 	w.mu.Lock()
 	pending := make(map[uint64][]byte, len(w.retryPending))
@@ -316,7 +321,13 @@ func (w *Writer) flushRetry() {
 		pending[k] = v
 	}
 	w.mu.Unlock()
-	for seq, rows := range pending {
+	seqs := make([]uint64, 0, len(pending))
+	for seq := range pending {
+		seqs = append(seqs, seq)
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	for _, seq := range seqs {
+		rows := pending[seq]
 		if err := w.insertBatch(rows); err != nil {
 			log.Printf("ClickHouse retry failed (kept for next retry): %v", err)
 			continue

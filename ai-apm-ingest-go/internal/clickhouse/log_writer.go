@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +16,7 @@ import (
 )
 
 // LogWriter batches log records and writes to ClickHouse via HTTP.
-// 生产约束：写入失败不静默丢弃，保留到内存重试队列周期性重试；
+// 生产约束：写入失败不静默丢弃，先落 WAL 再入重试队列周期性重试（无 WAL 时退化为内存重试）；
 // 重试队列带容量上限（超限丢弃最旧，避免 ClickHouse 不可用时 OOM）。
 type LogWriter struct {
 	endpoint   string
@@ -29,13 +30,17 @@ type LogWriter struct {
 
 	// 内存缓冲上限（条数），超限丢弃最旧，形成背压防 OOM
 	maxBufferRecords int
-	// 待重试的序列化批次（序列化后的 TabSeparated bytes）
-	retryPending  [][]byte
+	// WAL 持久化（独立 ingest-wal-log.log，不与 span/edge 共享）
+	wal *WAL
+	// 待重试的序列化批次（seq -> 序列化后的 TabSeparated bytes）
+	retryPending  map[uint64][]byte
+	memSeq        uint64 // 无 WAL 时用内存递增序号作为 key，避免互相覆盖丢数据
 	maxRetryBatches int
+	retryBytes    int64
 }
 
-// NewLogWriter creates a new LogWriter
-func NewLogWriter(host string, port int) *LogWriter {
+// NewLogWriter creates a new LogWriter. walDir 为 WAL 持久化目录（生产挂载 PVC；空则退化为内存重试）。
+func NewLogWriter(host string, port int, walDir string) *LogWriter {
 	w := &LogWriter{
 		endpoint:         chEndpoint(host, port),
 		batchSize:        1024,
@@ -44,8 +49,25 @@ func NewLogWriter(host string, port int) *LogWriter {
 		stopCh:           make(chan struct{}),
 		doneCh:           make(chan struct{}),
 		maxBufferRecords: 10240,
-		retryPending:     make([][]byte, 0, 64),
+		retryPending:     make(map[uint64][]byte),
 		maxRetryBatches:  500,
+	}
+	if walDir != "" {
+		wal, err := NewWALFile(walDir, walLogFile)
+		if err != nil {
+			log.Printf("LogWriter WAL init failed (falling back to memory retry): %v", err)
+		} else {
+			w.wal = wal
+			// 启动恢复：重放 WAL 中未确认的记录
+			if entries, err := wal.ReadAll(); err == nil && len(entries) > 0 {
+				log.Printf("LogWriter WAL: recovering %d pending records", len(entries))
+				for _, e := range entries {
+					if rows, derr := decodeRows(e.Value); derr == nil {
+						w.addRetry(e.Seq, rows)
+					}
+				}
+			}
+		}
 	}
 	go w.flushLoop()
 	return w
@@ -79,6 +101,9 @@ func (w *LogWriter) flushLoop() {
 		case <-w.stopCh:
 			w.flush()
 			w.flushRetry()
+			if w.wal != nil {
+				w.wal.Close()
+			}
 			close(w.doneCh)
 			return
 		case <-ticker.C:
@@ -99,56 +124,139 @@ func (w *LogWriter) flush() {
 	w.mu.Unlock()
 
 	rows := w.serializeRecords(batch)
-	if err := w.insertBatchBytes(rows); err != nil {
-		// 不丢弃：保留到重试队列
-		log.Printf("ClickHouse log write failed (will retry): %v", err)
-		w.addRetry(rows)
+	w.writeWithRetry(rows)
+}
+
+// writeWithRetry 写入数据，失败时保留到 retryPending 并周期性重试。
+// 与 span/edge 一致：先写 WAL 再写 ClickHouse，崩溃不丢日志。
+func (w *LogWriter) writeWithRetry(rows []byte) {
+	if w.wal != nil {
+		if seq, err := w.wal.Append("log", rows); err == nil {
+			w.addRetry(seq, rows)
+		} else {
+			log.Printf("WAL append error (data kept in memory): %v", err)
+			w.addRetryMem(rows)
+		}
 	} else {
-		log.Printf("ClickHouse: wrote %d log records", len(batch))
+		w.addRetryMem(rows)
+	}
+
+	if err := w.insertBatchBytes(rows); err != nil {
+		log.Printf("ClickHouse log write failed (will retry): %v", err)
+	} else {
+		w.confirm(rows)
+		log.Printf("ClickHouse: wrote %d log records", bytes.Count(rows, []byte{'\n'}))
 	}
 }
 
-// addRetry 将序列化批次加入重试队列，超上限时丢弃最旧（防 OOM）。
-func (w *LogWriter) addRetry(rows []byte) {
+// addRetry 将一批加入重试队列，并做容量保护：超过 maxRetryBatches 时丢弃最旧批次
+// （并 Ack 对应 WAL seq，释放内存与磁盘），避免 ClickHouse 长时间不可用时 OOM / 磁盘打满。
+func (w *LogWriter) addRetry(seq uint64, rows []byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.retryPending = append(w.retryPending, rows)
-	if len(w.retryPending) > w.maxRetryBatches {
-		drop := w.retryPending[0]
-		w.retryPending = w.retryPending[1:]
-		log.Printf("LOGWRITER: retry queue full (%d), dropping oldest retry batch (%d bytes)", w.maxRetryBatches, len(drop))
+	w.retryPending[seq] = rows
+	w.retryBytes += int64(len(rows))
+	for len(w.retryPending) > w.maxRetryBatches {
+		if !w.dropOldestRetryLocked() {
+			break
+		}
 	}
 }
 
-// flushRetry 重试所有未成功的日志批次。
+// addRetryMem 无 WAL 时使用内存递增序号作为重试队列 key，避免所有批次用 key=0 互相覆盖丢数据。
+func (w *LogWriter) addRetryMem(rows []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.memSeq++
+	w.retryPending[w.memSeq] = rows
+	w.retryBytes += int64(len(rows))
+	for len(w.retryPending) > w.maxRetryBatches {
+		if !w.dropOldestRetryLocked() {
+			break
+		}
+	}
+}
+
+// dropOldestRetryLocked 丢弃重试队列中最旧的一批（最小 seq），并 Ack 对应 WAL seq。
+// 返回是否丢弃成功。调用方需持有锁。
+func (w *LogWriter) dropOldestRetryLocked() bool {
+	if len(w.retryPending) == 0 {
+		return false
+	}
+	var oldestSeq uint64
+	first := true
+	for seq := range w.retryPending {
+		if first || seq < oldestSeq {
+			oldestSeq = seq
+		}
+		first = false
+	}
+	rows, ok := w.retryPending[oldestSeq]
+	if !ok {
+		return false
+	}
+	delete(w.retryPending, oldestSeq)
+	w.retryBytes -= int64(len(rows))
+	if w.wal != nil && oldestSeq > 0 {
+		w.wal.Ack(oldestSeq)
+	}
+	log.Printf("LOGWRITER: dropping oldest retry batch seq=%d (%d bytes) to bound memory/disk", oldestSeq, len(rows))
+	return true
+}
+
+// flushRetry 重试所有未成功的日志批次，按 seq 升序处理。
+// 升序保证低 seq 先确认，配合 WAL 连续确认水位，避免高 seq 先确认导致 compact 误删低 seq 未确认条目。
 func (w *LogWriter) flushRetry() {
 	w.mu.Lock()
-	if len(w.retryPending) == 0 {
-		w.mu.Unlock()
-		return
+	pending := make(map[uint64][]byte, len(w.retryPending))
+	for k, v := range w.retryPending {
+		pending[k] = v
 	}
-	pending := make([][]byte, len(w.retryPending))
-	copy(pending, w.retryPending)
-	w.retryPending = w.retryPending[:0]
 	w.mu.Unlock()
 
-	var failed [][]byte
-	for _, rows := range pending {
+	seqs := make([]uint64, 0, len(pending))
+	for seq := range pending {
+		seqs = append(seqs, seq)
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	for _, seq := range seqs {
+		rows := pending[seq]
 		if err := w.insertBatchBytes(rows); err != nil {
 			log.Printf("ClickHouse log retry failed (kept for next retry): %v", err)
-			failed = append(failed, rows)
 			continue
 		}
+		w.confirmSeq(seq, rows)
 	}
-	if len(failed) > 0 {
-		w.mu.Lock()
-		for _, rows := range failed {
-			w.retryPending = append(w.retryPending, rows)
-			if len(w.retryPending) > w.maxRetryBatches {
-				w.retryPending = w.retryPending[1:]
-			}
+}
+
+func (w *LogWriter) confirmSeq(seq uint64, rows []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if v, ok := w.retryPending[seq]; ok && string(v) == string(rows) {
+		delete(w.retryPending, seq)
+		w.retryBytes -= int64(len(v))
+		if w.wal != nil && seq > 0 {
+			w.wal.Ack(seq)
 		}
-		w.mu.Unlock()
+	}
+}
+
+// confirm 从 retryPending 中移除已成功写入的数据（按内容精确匹配）。
+// writeWithRetry 同步写入成功时数据刚通过 wal.Append 拿到 seq，按内容确认即可，
+// 避免"内容匹配"在相同内容被以不同 seq 追加时误删/残留。
+func (w *LogWriter) confirm(rows []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := string(rows)
+	for seq, v := range w.retryPending {
+		if string(v) == key {
+			delete(w.retryPending, seq)
+			w.retryBytes -= int64(len(v))
+			if w.wal != nil && seq > 0 {
+				w.wal.Ack(seq)
+			}
+			return
+		}
 	}
 }
 

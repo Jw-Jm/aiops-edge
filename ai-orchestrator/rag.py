@@ -178,10 +178,10 @@ class RAGStore:
                 "type": typ,  # case=故障案例 | knowledge=知识条目
                 "title": title,  # 列表接口展示标题（symptom 前 80 字符）
             }
-            if typ == "knowledge":
-                # 知识条目：tags/source 存入 metadata，搜索命中后供展示
-                meta["tags"] = case.get("tags", "")
-                meta["source"] = case.get("source", "manual")
+            # tags/source 统一存入 metadata（case 与 knowledge 都存，缺省空串/manual），
+            # 保证 search/list_all 返回 tags 时故障案例也能拿到
+            meta["tags"] = case.get("tags", "")
+            meta["source"] = case.get("source", "manual")
             self.collection.add(
                 ids=[case["case_id"]],
                 documents=[document],
@@ -367,6 +367,47 @@ class RAGStore:
             "source": source,
             "title": title,
         })
+
+
+# ═══════════════════════════════════════════════════════════════
+#  自动打标签：按关键词推断案例所属领域标签（供入库时自动补 tags）
+# ═══════════════════════════════════════════════════════════════
+_TAG_KEYWORDS = [
+    # (标签, 关键词列表) — 命中任一关键词即打该标签（大小写不敏感）
+    ("network/deepflow", ["网络", "延迟", "重传", "丢包", "带宽", "deepflow", "network"]),
+    ("clickhouse", ["clickhouse", "分区", "慢查询"]),
+    ("victoriametrics/victorialogs", ["指标", "存储", "抓取", "日志检索",
+                                      "victoriametrics", "victorialogs", "vmagent", "vminsert", "vmselect"]),
+    ("database/mysql", ["mysql", "连接池", "慢sql", "锁", "数据库", "database"]),
+    ("redis", ["redis", "缓存", "连接"]),
+    ("kafka", ["kafka", "topic", "消费者", "consumer"]),
+    ("elasticsearch", ["elasticsearch", "es集群", "索引", "分片", "shard"]),
+    ("nginx", ["nginx", "网关", "反向代理", "upstream", "502", "504"]),
+    ("capacity", ["容量", "磁盘", "内存", "cpu", "ett", "预测", "扩容", "空间不足"]),
+    ("hardware/ipmi", ["温度", "风扇", "电源", "硬件", "ipmi", "sensor"]),
+    ("snmp", ["交换机", "端口", "网络设备", "snmp"]),
+    ("k8s", ["kubernetes", "k8s", "pod", "节点", "deployment", "hpa", "pvc",
+             "kubelet", "container", "namespace", "notready"]),
+    ("app", ["应用", "服务", "错误率", "延迟", "超时", "error_rate", "p99", "接口", "api"]),
+]
+
+
+def infer_case_tags(service: str, symptom: str, plan: str) -> str:
+    """按关键词推断案例所属领域标签，返回逗号分隔字符串；无法识别返回空串。
+
+    扫描 service + symptom + plan 拼接文本（转小写）对映射表做包含匹配，
+    多个领域命中时返回多个标签，供 rag.add_case 的 meta.tags 使用。
+    """
+    if not (service or symptom or plan):
+        return ""
+    hay = " ".join([service or "", symptom or "", plan or ""]).lower()
+    found = []
+    for tag, kws in _TAG_KEYWORDS:
+        for kw in kws:
+            if kw.lower() in hay:
+                found.append(tag)
+                break
+    return ",".join(found)
 
 
 rag = RAGStore()

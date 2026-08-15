@@ -8,9 +8,16 @@
 #       query-api 因缺失 JWT_SECRET / LLM_ENCRYPTION_KEY 会拒绝启动（安全兜底）。
 # =============================================================================
 
-# 无状态服务（frontend/query-api/ingest/orchestrator）副本数。
-# 注意：有状态单写组件（mysql/clickhouse）固定用 statefulReplicaCount=1，不受此值影响。
+# 无状态服务（frontend/query-api）副本数。
+# 注意：ingest（挂 RWO WAL PVC）与 ai-orchestrator（挂 RWO 数据 PVC，含 ChromaDB/sqlite/checkpoint）
+#       为有状态单写组件，多副本必然因 RWO PVC 冲突 CrashLoopBackOff，当前固定 1 副本
+#       （见下方 orchestratorReplicas / ingestReplicas 覆盖项；若需多副本必须先外部化存储）。
+# 有状态中间件（mysql/clickhouse）固定用 statefulReplicaCount=1，不受此值影响。
 replicaCount: 2
+
+# 有状态单写组件固定 1 副本（RWO PVC 不可多副本；多副本需先外部化存储再调大）。
+orchestratorReplicas: 1
+ingestReplicas: 1
 
 # 存储类：正式环境指定真实 SC（如云盘/企业 NFS），覆盖默认 ""
 clickhouse:

@@ -16,6 +16,29 @@ async def diagnose_task(ctx, task_id: str, source: str, service: str, context: s
         # execute_sync_full 已改为 async (节点 async def); arq worker 在 async 上下文，直接 await
         result = await brain.execute_sync_full("diagnosis", service, context, task_id)
 
+        # P0-2: 非交互 full 图初始 approved=False，DAG 在 wait_approval 处中断等待人工审批。
+        # 中断态无 final_response，不能误标 done；回填 plan/script/risk 供审批面板展示。
+        if result.get("__interrupt__"):
+            await redis.hset(f"ops:task:{task_id}", mapping={
+                "status": "waiting",
+                "plan": result.get("plan", "")[:2000],
+                "script": result.get("script", "")[:1000],
+                "risk_score": str(result.get("risk_score", 0)),
+                "risk_reason": result.get("risk_reason", "")[:500],
+            })
+            try:
+                from store import _task_store
+                if task_id in _task_store:
+                    t = _task_store[task_id]
+                    t["status"] = "waiting"
+                    t["plan"] = result.get("plan", "")[:2000]
+                    t["script"] = result.get("script", "")[:1000]
+                    t["risk_score"] = result.get("risk_score", 0)
+                    t["risk_reason"] = result.get("risk_reason", "")[:500]
+            except Exception:
+                pass
+            return
+
         mapping = {
             "status": "done",
             "diagnosis": result.get("final_response", "")[:5000],

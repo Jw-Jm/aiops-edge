@@ -65,10 +65,30 @@ def _is_ws_authorized(ws: WebSocket) -> bool:
     return got == expected
 
 
+def _is_ws_privileged(ws: WebSocket) -> bool:
+    """角色校验：WebShell 可执行写命令，仅 admin 或审批人可连接。
+
+    纵深防御（P0-1）：与 main.py _require_approver 同源逻辑——X-Internal-Role=admin
+    或 X-Internal-Approver=1 才放行；经 query 参数或 header 注入（websocket 无法
+    自定义 header，代理两种注入方式均兼容）。
+    """
+    q = ws.query_params
+    h = ws.headers
+    role = q.get("X-Internal-Role") or q.get("role") or h.get("X-Internal-Role") or ""
+    approver = q.get("X-Internal-Approver") or q.get("approver") or h.get("X-Internal-Approver") or "0"
+    return role == "admin" or approver == "1"
+
+
 async def shell_ws(ws: WebSocket):
     if not _is_ws_authorized(ws):
         await ws.accept()
         await ws.send_text("❌ 未授权：缺少有效的内部令牌。\n")
+        await ws.close(code=1008)
+        return
+    # P0-1: WebShell 可执行写命令，仅 admin / 审批人可连接（纵深防御）
+    if not _is_ws_privileged(ws):
+        await ws.accept()
+        await ws.send_text("❌ 权限不足：WebShell 仅限管理员或审批人使用。\n")
         await ws.close(code=1008)
         return
     if not await _acquire_session():

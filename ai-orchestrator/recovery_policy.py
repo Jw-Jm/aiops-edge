@@ -78,18 +78,35 @@ def set_policy(policy: dict) -> bool:
 
 
 def check_allowed(command: str) -> tuple:
-    """检查恢复命令是否在白名单内。返回 (是否允许, 原因)。"""
+    """检查恢复命令是否在白名单内。返回 (是否允许, 原因)。
+
+    安全修复(P0-5): 此前仅 startswith 前缀匹配 allow 列表 + deny 子串，攻击者可构造
+    `kubectl rollout restart deploy/x; cat /etc/shadow` 这类"白名单前缀 + 拼接"绕过。
+    现在复用 shell_policy 完整校验：① check_shell_metachars；② is_whitelisted_for_execute；
+    ③ 保留 deny 列表；全部通过才算 allowed。保持函数签名不变。
+    """
     if not command or not command.strip():
         return False, "命令为空"
     cmd = command.strip()
     policy = get_policy()
     allow = policy.get("allow", [])
     deny = policy.get("deny", [])
-    # 先查拒绝列表（更强）
+    # ③ 先查拒绝列表（更强）
     for d in deny:
         if d.lower() in cmd.lower():
             return False, f"命中禁止列表: {d}"
-    # 再查允许列表（前缀匹配：命令须以 allow 项开头，避免"中间子串"误放行）
+    # ①② 复用 shell_policy 完整校验：元字符拦截 + 执行白名单（含危险参数黑名单）
+    try:
+        from shell_policy import ShellPolicy
+        sp = ShellPolicy()
+        if mc := sp.check_shell_metachars(cmd):
+            return False, f"命令含禁止的 shell 元字符: {mc}"
+        ok, category = sp.is_whitelisted_for_execute(cmd)
+        if not ok:
+            return False, f"命令不在可执行白名单内: {category}"
+    except Exception as e:
+        return False, f"安全策略校验失败: {e}"
+    # 再查恢复白名单 allow 前缀（须命中恢复白名单，且已通过上述完整校验）
     for a in allow:
         if cmd.lower().startswith(a.lower()):
             return True, f"命中白名单: {a}"

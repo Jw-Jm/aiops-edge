@@ -14,7 +14,7 @@ import (
 // 使用追加式日志文件，写入成功后再进行 offset 推进与 compact。
 type walEntry struct {
 	Seq   uint64 `json:"seq"`
-	Kind  string `json:"kind"` // span / metric / edge
+	Kind  string `json:"kind"` // span / edge / log
 	Value string `json:"value"`
 }
 
@@ -26,29 +26,45 @@ type WAL struct {
 	file     *os.File
 	writer   *bufio.Writer
 	seq      uint64
-	ackSeq   uint64 // 已成功写入 ClickHouse 的最大 seq
-	dir      string
-	maxBytes int64
+	// 已确认但高于连续水位、仍保留在文件中的 seq（乱序确认：seq=7 已确认而 5/6 未确认）
+	acked            map[uint64]struct{}
+	consecutiveAckSeq uint64 // 已连续确认的高水位：<= 它的 seq 均已确认，可安全删除
+	dir              string
+	maxBytes         int64
 }
 
-// NewWAL 创建/打开一个 WAL 文件。dir 为持久化目录（生产应挂载 PVC）。
+// 各 kind 使用独立 WAL 文件，避免 span/edge/log 共享 seq 与确认水位，崩溃恢复时互相污染。
+const (
+	walSpanFile = "ingest-wal-span.log"
+	walEdgeFile = "ingest-wal-edge.log"
+	walLogFile  = "ingest-wal-log.log"
+)
+
+// NewWAL 创建/打开默认 WAL 文件（旧 ingest-wal.log，仅向后兼容；新代码请使用 NewWALFile）。
 func NewWAL(dir string) (*WAL, error) {
+	return NewWALFile(dir, "ingest-wal.log")
+}
+
+// NewWALFile 创建/打开指定文件名的 WAL 文件。dir 为持久化目录（生产应挂载 PVC）。
+// 不同 kind（span/edge/log）必须使用不同文件，避免各自独立的 seq/ack 水位互相污染。
+func NewWALFile(dir, fileName string) (*WAL, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, "ingest-wal.log")
+	path := filepath.Join(dir, fileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, err
 	}
 	w := &WAL{
-		path:   path,
-		file:   f,
-		writer: bufio.NewWriterSize(f, 64*1024),
-		dir:    dir,
+		path:     path,
+		file:     f,
+		writer:   bufio.NewWriterSize(f, 64*1024),
+		dir:      dir,
+		acked:    make(map[uint64]struct{}),
 		maxBytes: 1 << 30, // 1GB 上限，防止磁盘打满
 	}
-	// 启动时恢复已确认的最大 seq，并清空陈旧内容（避免重复追加已确认数据）
+	// 启动时恢复已写入的最大 seq，并清空陈旧内容（避免重复追加已确认数据）
 	w.recoverSeq()
 	return w, nil
 }
@@ -88,11 +104,21 @@ func (w *WAL) Append(kind string, value []byte) (uint64, error) {
 	return w.seq, nil
 }
 
-// Ack 确认某条已成功写入 ClickHouse，推进 ackSeq 并触发一次异步 compact。
+// Ack 确认某条已成功写入 ClickHouse。ack 允许乱序：只推进"连续确认高水位"，
+// Compact 仅删除 <= 连续水位的条目，未确认的低 seq 不会因高 seq 先确认而被误删。
 func (w *WAL) Ack(seq uint64) {
 	w.mu.Lock()
-	if seq > w.ackSeq {
-		w.ackSeq = seq
+	if seq > w.consecutiveAckSeq {
+		w.acked[seq] = struct{}{}
+	}
+	// 推进连续确认高水位：seq=5、7 已确认而 6 未确认时，水位停在 4。
+	for {
+		next := w.consecutiveAckSeq + 1
+		if _, ok := w.acked[next]; !ok {
+			break
+		}
+		delete(w.acked, next)
+		w.consecutiveAckSeq = next
 	}
 	needCompact := false
 	if st, err := w.file.Stat(); err == nil && st.Size() > w.maxBytes {
@@ -112,11 +138,12 @@ func (w *WAL) Sync() {
 	_ = w.file.Sync()
 }
 
-// Compact 重写 WAL，仅保留 ackSeq 之后未确认的记录。
+// Compact 重写 WAL，仅保留"连续确认高水位"之后的记录。
+// 乱序确认（如 seq=7 已确认、5/6 未确认）时保留 5/6，避免丢未确认数据。
 func (w *WAL) Compact() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.ackSeq == 0 || w.seq <= w.ackSeq {
+	if w.consecutiveAckSeq == 0 || w.seq <= w.consecutiveAckSeq {
 		// 全部确认，直接清空文件
 		if err := w.file.Truncate(0); err != nil {
 			log.Printf("WAL compact truncate error: %v", err)
@@ -127,7 +154,7 @@ func (w *WAL) Compact() {
 		return
 	}
 	// 读取剩余未确认记录重写
-	remaining, err := w.readRemainingLocked(w.ackSeq)
+	remaining, err := w.readRemainingLocked(w.consecutiveAckSeq)
 	if err != nil {
 		log.Printf("WAL compact read error: %v", err)
 		return
@@ -159,7 +186,7 @@ func (w *WAL) Compact() {
 	w.writer = bufio.NewWriterSize(nf, 64*1024)
 }
 
-// readRemainingLocked 读取 ackSeq 之后的所有记录（未确认，需保留）。
+// readRemainingLocked 读取连续确认高水位之后的所有记录（未确认或乱序确认、仍需保留）。
 func (w *WAL) readRemainingLocked(afterSeq uint64) ([]walEntry, error) {
 	f, err := os.Open(w.path)
 	if err != nil {

@@ -101,11 +101,11 @@ func logMetricQuery(service, metric, keyword string) string {
 	}
 	if metric == "log_error_rate" {
 		return fmt.Sprintf(
-			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE timestamp >= now() - INTERVAL 5 MINUTE%s",
+			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE date >= today() AND timestamp >= now() - INTERVAL 5 MINUTE%s",
 			svcClause)
 	}
 	return fmt.Sprintf(
-		"SELECT count() FROM observability.log_records WHERE body LIKE %s AND timestamp >= now() - INTERVAL 5 MINUTE%s",
+		"SELECT count() FROM observability.log_records WHERE date >= today() AND body LIKE %s AND timestamp >= now() - INTERVAL 5 MINUTE%s",
 		chLike(keyword), svcClause)
 }
 
@@ -120,11 +120,11 @@ func traceMetricQuery(service, metric string) string {
 	}
 	if metric == "trace_latency" {
 		return fmt.Sprintf(
-			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 5 MINUTE%s",
+			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE date >= today() AND start_time >= now() - INTERVAL 5 MINUTE%s",
 			svcClause)
 	}
 	return fmt.Sprintf(
-		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE start_time >= now() - INTERVAL 5 MINUTE%s",
+		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE date >= today() AND start_time >= now() - INTERVAL 5 MINUTE%s",
 		svcClause)
 }
 
@@ -294,7 +294,7 @@ func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEv
 	if offset <= 0 {
 		offset = 0
 	}
-	sql := "SELECT id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, cluster_id FROM observability.alert_events" + where + " ORDER BY last_timestamp DESC LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
+	sql := "SELECT id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, cluster_id FROM observability.alert_events FINAL" + where + " ORDER BY last_timestamp DESC LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	body, err := h.queryClickHouse(ctx, sql)

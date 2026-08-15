@@ -14,7 +14,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 REGISTRY="${IMAGE_REGISTRY:-}"
 # 镜像 tag 与 Chart.yaml 的 appVersion 对齐（默认 v1.0.0）。
-# 升级版本时：先改 Chart.yaml 的 appVersion，再用 IMAGE_TAG=vX.Y.Z 构建，保证"代码/版本/部署"一致。
+# 重要：TAG 必须与 values.yaml 的 global.imageTag 一致——CI 中应注入相同的 IMAGE_TAG，
+#       否则 build 出的 tag 与 Helm 期望不一致，本地已有旧镜像时会静默部署旧版本（P0-1 事故根因）。
+# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改 values.yaml 的 global.imageTag ③ 用 IMAGE_TAG=vX.Y.Z 构建。
 TAG="${IMAGE_TAG:-v1.0.0}"
 PLATFORM="${BUILD_PLATFORM:-}"
 

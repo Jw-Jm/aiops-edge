@@ -18,9 +18,11 @@ spec:
       labels:
         app: clickhouse
     spec:
-      # init 容器放开 default 用户网络为 ::/0（镜像默认 default-user.xml 仅限本机，
-      # 导致 pod 内跨主机访问 403）。仅放开网络、不设密码（凭集群网络隔离保护；
-      # 如需密码认证，可在此加 password_sha256_hex，与 entrypoint 不冲突）。
+      # init 容器：放开 default 用户网络为 ::/0 并真正启用密码认证。
+      # 镜像默认 default-user.xml 仅限本机（pod 内跨主机访问 403），此处生成 users.d 配置覆盖网络+密码：
+      #  - networks 放开 ::/0（凭集群网络隔离保护，但认证由下方密码兜底）
+      #  - password_sha256_hex 由 Secret 的 CLICKHOUSE_PASSWORD 实时计算，与 query-api/ingest/orchestrator
+      #    注入的 CLICKHOUSE_PASSWORD 保持一致（P0-2：落地 ClickHouse 认证，消除死密钥）。
       initContainers:
         - name: gen-ch-network
           image: {{ .Values.clickhouse.image }}
@@ -29,10 +31,18 @@ spec:
             - |
               set -e
               mkdir -p /etc/clickhouse-server/users.d
-              cat > /etc/clickhouse-server/users.d/allow-remote.xml <<'EOF'
+              HASH=$(printf '%s' "$CLICKHOUSE_PASSWORD" | sha256sum | awk '{print $1}')
+              # P0-2 修复: 镜像默认 users.xml 的 default 用户已声明认证字段(空 password),
+              # 直接新增 password_sha256_hex 会触发 ClickHouse "More than one field ... used to
+              # specify authentication info for user default"(exit 36, 部署崩溃)。
+              # 因此先 remove 掉默认认证字段, 再写 sha256 密码, 并放开网络。
+              cat > /etc/clickhouse-server/users.d/default-password.xml <<EOF
               <clickhouse>
                 <users>
                   <default>
+                    <password remove="1"/>
+                    <no_password remove="1"/>
+                    <password_sha256_hex>${HASH}</password_sha256_hex>
                     <networks>
                       <ip>::/0</ip>
                     </networks>
@@ -40,12 +50,24 @@ spec:
                 </users>
               </clickhouse>
               EOF
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
           volumeMounts:
             - name: users-d
               mountPath: /etc/clickhouse-server/users.d
       containers:
         - name: clickhouse
           image: {{ .Values.clickhouse.image }}
+          env:
+            # 探针专用: 用 CH_PROBE_PASSWORD 而非 CLICKHOUSE_PASSWORD —— 官方 entrypoint
+            # 会读取 CLICKHOUSE_PASSWORD 并尝试"create new user", 与 init 生成的
+            # users.d 密码配置冲突导致崩溃; 换名后 entrypoint 不干预, 密码认证
+            # 完全由 init 容器的 users.d/default-password.xml 负责。
+            - name: CH_PROBE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
           ports:
             - containerPort: 8123
               name: http
@@ -53,12 +75,12 @@ spec:
               name: native
           readinessProbe:
             exec:
-              command: ["clickhouse-client", "--host", "127.0.0.1", "--query", "SELECT 1"]
+              command: ["clickhouse-client", "--host", "127.0.0.1", "--password", "$(CH_PROBE_PASSWORD)", "--query", "SELECT 1"]
             initialDelaySeconds: 20
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["clickhouse-client", "--host", "127.0.0.1", "--query", "SELECT 1"]
+              command: ["clickhouse-client", "--host", "127.0.0.1", "--password", "$(CH_PROBE_PASSWORD)", "--query", "SELECT 1"]
             initialDelaySeconds: 30
             periodSeconds: 15
           resources:

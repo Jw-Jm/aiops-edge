@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import json
-from fastapi import APIRouter, HTTPException
+import os
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from flow_engine.store import FlowStore
 from flow_engine.usecase import WorkflowService
@@ -27,6 +28,31 @@ def get_flow_service() -> WorkflowService:
         register_aiops_nodes()
         _service = WorkflowService(FlowStore())
     return _service
+
+
+def _require_internal_token(request: Request):
+    """校验请求来自可信的 query-api 代理（已完成 JWT 鉴权并注入内部 token），
+    防止绕过代理直连本服务伪造 X-Internal-Role/Approver。与 main.py _require_approver 同源。"""
+    expected = os.environ.get("INTERNAL_TOKEN", "")
+    got = request.headers.get("X-Internal-Token", "")
+    if not expected or got != expected:
+        raise HTTPException(403, "请求来源不可信（内部 token 校验失败）")
+
+
+def _require_admin(request: Request):
+    """工作流 CRUD 仅限 admin（P0-3）。"""
+    _require_internal_token(request)
+    if request.headers.get("X-Internal-Role", "") != "admin":
+        raise HTTPException(403, "仅管理员可操作")
+
+
+def _require_approver(request: Request):
+    """审批通过（resume approved=True）需 admin 或审批人（P0-3）。"""
+    _require_internal_token(request)
+    role = request.headers.get("X-Internal-Role", "")
+    is_approver = request.headers.get("X-Internal-Approver", "0") == "1"
+    if role != "admin" and not is_approver:
+        raise HTTPException(403, "仅管理员或审批人可操作")
 
 
 class FlowCreate(BaseModel):
@@ -74,7 +100,8 @@ def get_flow(flow_id: str):
 
 
 @router.post("", status_code=201)
-def create_flow(req: FlowCreate):
+def create_flow(req: FlowCreate, request: Request):
+    _require_admin(request)  # P0-3: 工作流定义变更仅限 admin
     svc = get_flow_service()
     try:
         return svc.create_flow(req.name, req.description, req.graph)
@@ -83,7 +110,8 @@ def create_flow(req: FlowCreate):
 
 
 @router.put("/{flow_id}")
-def update_flow(flow_id: str, req: FlowUpdate):
+def update_flow(flow_id: str, req: FlowUpdate, request: Request):
+    _require_admin(request)  # P0-3: 工作流定义变更仅限 admin
     svc = get_flow_service()
     try:
         return svc.update_flow(flow_id, req.model_dump(exclude_none=True))
@@ -94,7 +122,8 @@ def update_flow(flow_id: str, req: FlowUpdate):
 
 
 @router.delete("/{flow_id}")
-def delete_flow(flow_id: str):
+def delete_flow(flow_id: str, request: Request):
+    _require_admin(request)  # P0-3: 工作流定义变更仅限 admin
     svc = get_flow_service()
     if not svc.delete_flow(flow_id):
         raise HTTPException(404, "flow not found")
@@ -102,7 +131,8 @@ def delete_flow(flow_id: str):
 
 
 @router.post("/{flow_id}/toggle")
-def toggle_flow(flow_id: str):
+def toggle_flow(flow_id: str, request: Request):
+    _require_admin(request)  # P0-3: 启停也属工作流定义变更，仅限 admin
     svc = get_flow_service()
     if not svc.toggle_flow(flow_id):
         raise HTTPException(404, "flow not found")
@@ -143,7 +173,11 @@ def get_run(flow_id: str, run_id: str):
 
 
 @router.post("/{flow_id}/runs/{run_id}/resume")
-def resume_run(flow_id: str, run_id: str, req: ResumeRequest):
+def resume_run(flow_id: str, run_id: str, req: ResumeRequest, request: Request):
+    # P0-3: 自研引擎 resume 的 approved 若为 True（放行执行），必须由 admin/审批人
+    # 显式发起，禁止普通用户自决审批绕过审批节点直接执行工作流。
+    if req.approved:
+        _require_approver(request)
     svc = get_flow_service()
     try:
         result = svc.resume_run(run_id, req.approved)

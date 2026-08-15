@@ -13,33 +13,38 @@ import (
 )
 
 var (
-	dbOnce sync.Once
-	db     *sql.DB
+	dbMu sync.Mutex
+	db   *sql.DB
 )
 
 // GetDB 返回全局 MySQL 连接池；不可达时返回 nil。
+// 修复(数据 P1-6)：去掉 sync.Once 的"启动失败永久降级"语义——首次 Ping 失败后 db 保持 nil，
+// 后续每次调用都会重新初始化（加锁防并发）。MySQL 晚于 query-api 启动也能自愈。
 func GetDB() *sql.DB {
-	dbOnce.Do(func() {
-		host := env("MYSQL_HOST", "127.0.0.1")
-		port := env("MYSQL_PORT", "3306")
-		user := env("MYSQL_USER", "root")
-		pw := env("MYSQL_PASSWORD", "")
-		database := env("MYSQL_DB", "aiops")
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=true",
-			user, pw, host, port, database)
-		conn, err := sql.Open("mysql", dsn)
-		if err != nil {
-			return
-		}
-		conn.SetMaxOpenConns(10)
-		conn.SetMaxIdleConns(5)
-		conn.SetConnMaxLifetime(0)
-		if err := conn.Ping(); err != nil {
-			conn.Close()
-			return
-		}
-		db = conn
-	})
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if db != nil {
+		return db
+	}
+	host := env("MYSQL_HOST", "127.0.0.1")
+	port := env("MYSQL_PORT", "3306")
+	user := env("MYSQL_USER", "root")
+	pw := env("MYSQL_PASSWORD", "")
+	database := env("MYSQL_DB", "aiops")
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=true",
+		user, pw, host, port, database)
+	conn, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil
+	}
+	conn.SetMaxOpenConns(10)
+	conn.SetMaxIdleConns(5)
+	conn.SetConnMaxLifetime(0)
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return nil
+	}
+	db = conn
 	return db
 }
 

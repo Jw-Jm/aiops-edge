@@ -4,7 +4,18 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
+)
+
+var (
+	// 记录每条规则最近触发时间（cooldown 冷却）与连续 breach 次数（dampening）。
+	// 修复(数据 P1-7)：此前是 evaluateAlerts 的局部变量，每轮评估重置导致
+	// cooldown/dampening 永久失效（冷却期从不为真、streak 永远为 1）；
+	// 提升为包级持久（进程内），跨评估轮生效。
+	lastRuleTrigger = map[string]time.Time{}
+	ruleStreak      = map[string]int{}
+	ruleStateMu     sync.Mutex
 )
 
 func (h *Handler) StartAlertEvaluation() {
@@ -25,10 +36,6 @@ func (h *Handler) evaluateAlerts() {
 	rules := make([]AlertRule, len(alertRules))
 	copy(rules, alertRules)
 	alertRulesMu.RUnlock()
-
-	// 记录每条规则最近触发时间（cooldown 冷却）与连续 breach 次数（dampening）
-	lastRuleTrigger := make(map[string]time.Time)
-	ruleStreak := make(map[string]int)
 
 	for _, rule := range rules {
 		if !rule.Enabled {
@@ -102,17 +109,23 @@ func (h *Handler) evaluateAlerts() {
 			nowStr := now.Format(time.RFC3339)
 
 			// cooldown 触发冷却：冷却期内不重复告警（即使窗口外）
+			ruleStateMu.Lock()
 			if t, ok := lastRuleTrigger[rule.ID]; ok && inCooldown(rule, t, now) {
+				ruleStateMu.Unlock()
 				continue
 			}
 
 			// dampening 连续确认：连续 breach 次数未达阈值则暂不告警
 			ruleStreak[rule.ID]++
-			if !shouldAlertAfterDampening(rule, ruleStreak[rule.ID]) {
-				log.Printf("ALERT_DAMPENED: %s | %s (streak=%d/%d)", rule.Service, rule.Name, ruleStreak[rule.ID], rule.Dampening)
+			streak := ruleStreak[rule.ID]
+			ruleStateMu.Unlock()
+			if !shouldAlertAfterDampening(rule, streak) {
+				log.Printf("ALERT_DAMPENED: %s | %s (streak=%d/%d)", rule.Service, rule.Name, streak, rule.Dampening)
 				continue
 			}
+			ruleStateMu.Lock()
 			lastRuleTrigger[rule.ID] = now
+			ruleStateMu.Unlock()
 
 			alertEventsMu.Lock()
 			// 时间窗口聚合 + dedupe：窗口内已有同 (service, rule_id, signature) 事件则只更新计数/时间，不新增（降噪）
@@ -185,7 +198,9 @@ func (h *Handler) evaluateAlerts() {
 			saveAlertEvents()
 		} else {
 			// 未 breach：重置连续计数（dampening）
+			ruleStateMu.Lock()
 			ruleStreak[rule.ID] = 0
+			ruleStateMu.Unlock()
 			// 修复(误报)：指标已恢复正常，但之前触发过且仍为 firing 的事件应自动标记为 resolved，
 			// 否则误报/已恢复的事件会一直停留在 firing 状态，前端持续展示"异常"。
 			// 注意：saveAlertEvents 内部会再取 alertEventsMu.RLock，因此必须先在锁内

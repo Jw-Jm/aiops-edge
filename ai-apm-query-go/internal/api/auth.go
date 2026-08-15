@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -147,6 +148,61 @@ func currentScope(r *http.Request) *Scope {
 	return parseScope(scope)
 }
 
+// ── 登录暴力破解防护（安全 P1-1）──
+// loginAttempts 按 username+IP 维度记录登录尝试次数：60s 窗口内最多 10 次，
+// 超限返回 429。纯内存实现，不引入外部依赖。
+var (
+	loginAttempts   = map[string]loginAttempt{}
+	loginAttemptsMu sync.Mutex
+)
+
+type loginAttempt struct {
+	count  int64
+	window int64 // unix 秒（窗口起点）
+}
+
+const (
+	loginAttemptLimit  = 10
+	loginAttemptWindow = 60 // 秒
+)
+
+// clientIP 提取客户端 IP（透传 X-Forwarded-For 首个 IP；未设置用 RemoteAddr）。
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.Index(xff, ","); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// allowLoginAttempt 记录一次登录尝试并判断是否超限（超限返回 false）。
+// 窗口过期即重置计数；map 超阈值时惰性清理过期条目，防无限增长。
+func allowLoginAttempt(key string) bool {
+	now := time.Now().Unix()
+	loginAttemptsMu.Lock()
+	defer loginAttemptsMu.Unlock()
+	if len(loginAttempts) > 10000 {
+		for k, a := range loginAttempts {
+			if now-a.window >= loginAttemptWindow {
+				delete(loginAttempts, k)
+			}
+		}
+	}
+	a, ok := loginAttempts[key]
+	if !ok || now-a.window >= loginAttemptWindow {
+		a = loginAttempt{count: 0, window: now}
+	}
+	a.count++
+	loginAttempts[key] = a
+	return a.count <= loginAttemptLimit
+}
+
 // Login 登录：查 MySQL users 表 + bcrypt 校验；MySQL 不可达返回 503（禁止任何弱口令降级放行）。
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -158,6 +214,12 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Username, Password string
 	}
 	json.Unmarshal(body, &creds)
+
+	// 暴力破解防护（安全 P1-1）：按 username+IP 每 60s 最多 10 次尝试，超限 429
+	if !allowLoginAttempt(creds.Username + "|" + clientIP(r)) {
+		respondJSON(w, 429, map[string]interface{}{"error": "尝试过于频繁, 请稍后再试"})
+		return
+	}
 
 	// 1. MySQL 优先：查用户 + bcrypt 校验
 	if db := store.GetDB(); db != nil {

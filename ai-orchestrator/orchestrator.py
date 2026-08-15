@@ -1559,7 +1559,9 @@ class BrainOrchestrator:
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
             "similar_cases": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
-            "approved": True, "human_approved": False, "execute_output": "",
+            # P0-2: 初始 approved=False——非交互 full 图必须走人工审批
+            # (approved 由 approve/resume 显式置位；chat 图无 wait_approval 节点不受影响)
+            "approved": False, "human_approved": False, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
@@ -1591,7 +1593,9 @@ class BrainOrchestrator:
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
             "similar_cases": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
-            "approved": True, "human_approved": False, "execute_output": "",
+            # P0-2: 初始 approved=False——非交互 full 图必须走人工审批
+            # (approved 由 approve/resume 显式置位；chat 图无 wait_approval 节点不受影响)
+            "approved": False, "human_approved": False, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
