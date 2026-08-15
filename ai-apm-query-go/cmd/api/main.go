@@ -179,6 +179,9 @@ func main() {
 	mux.HandleFunc("/api/v1/settings/k8s", handler.GetK8sSettings)
 	// DeepFlow integration
 	mux.HandleFunc("/api/v1/deepflow/status", handler.DeepFlowStatus)
+	// Grafana 代理（工作流 F1）：dashboard 搜索/浏览端点，配置来自 GRAFANA_ROOT_URL/
+	// GRAFANA_API_TOKEN/GRAFANA_TLS_INSECURE env；经 AuthMiddleware 统一 JWT 鉴权。
+	api.RegisterGrafanaRoutes(mux, api.NewGrafanaHandler(api.GrafanaConfigFromEnv()))
 	// AI proxy
 	mux.HandleFunc("/api/v1/ai/chat", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/sessions/", handler.ProxyAI)
