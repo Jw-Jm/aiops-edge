@@ -1273,9 +1273,17 @@ async def node_coordinator(state):
     if (not _llm_key_ready()) or is_mock_enabled():
         raw = json.dumps(mock_coordinator_plan(), ensure_ascii=False)
     else:
-        raw = await _llm_async(cfg, "你是任务协调器。把用户请求拆解为可并行执行的子任务，"
-                         "输出 JSON 数组，每项含 task_id/task_type/target_service/query。"
-                         "task_type 限 diagnosis/inspection/ops/query。只输出 JSON。",
+        # B5: coordinator system prompt 注入 specialist persona 目录 (LLM 自主路由)
+        try:
+            from persona_registry import load_personas, build_catalog, PERSONAS_BUILTIN_DIR, USER_PERSONAS_DIR
+            from dual_agent import coordinator_system_prompt
+            _catalog = build_catalog(load_personas(PERSONAS_BUILTIN_DIR, USER_PERSONAS_DIR))
+            _sys = coordinator_system_prompt(_catalog)
+        except Exception:
+            _sys = "你是任务协调器。把用户请求拆解为可并行执行的子任务，" \
+                   "输出 JSON 数组，每项含 task_id/task_type/target_service/query。" \
+                   "task_type 限 diagnosis/inspection/ops/query。只输出 JSON。"
+        raw = await _llm_async(cfg, _sys,
                    f"用户请求:「{user_msg}」\n上下文:\n{context}", "Coordinator")
     subtasks = parse_subtasks(raw)
     if not subtasks:

@@ -23,6 +23,7 @@ from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
 from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check, _llm_async
 from flow_api import router as flow_router
+import agent_tool  # B4: 后台 persona worker 终态通知队列 (drain_notifications)
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
 # 注意：mock 模式下 NL2SQL/RCA 深度/AI 诊断返回的是模拟内容，生产环境必须关闭。
@@ -70,6 +71,49 @@ async def lifespan(app: FastAPI):
     try:
         import threading
         threading.Thread(target=_seed_knowledge_bg, daemon=True).start()
+    except Exception:
+        pass
+    # B2/B3: 加载 persona 注册表（builtin + 用户目录），注入 agent_tool 并注册 spawn_worker 工具
+    try:
+        from persona_registry import load_personas, PERSONAS_BUILTIN_DIR, USER_PERSONAS_DIR
+        from agent_tool import set_personas, register_spawn_worker_tool
+        PERSONAS = load_personas(PERSONAS_BUILTIN_DIR, USER_PERSONAS_DIR)
+        set_personas(PERSONAS)
+        register_spawn_worker_tool()
+        print(f"[startup] personas loaded: {len(PERSONAS)}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] persona 加载失败(不阻塞): {e}", flush=True)
+    # C3: K8s chat 工具注册 + preflight token 密钥注入
+    try:
+        from k8s_actions import register_k8s_tools, set_secret
+        from skill_registry import ToolRegistry
+        register_k8s_tools(ToolRegistry)
+        set_secret(os.environ.get("INTERNAL_TOKEN", ""))
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] k8s tools register error: {e}", flush=True)
+    # A2: workflow cron 触发器调度（独立 BackgroundScheduler，30s 对齐 job）
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _BgSched
+        from flow_engine.trigger_scheduler import CronTriggerManager
+        from flow_api import get_flow_service as _get_flow_service
+        _flow_wsvc = _get_flow_service()
+        _flow_sched = _BgSched(daemon=True)
+        _flow_cron_mgr = CronTriggerManager(
+            _flow_sched,
+            lambda: [f for f in _flow_wsvc.list_flows() if f.get("enabled")],
+            _flow_wsvc.run_flow)
+        _flow_cron_mgr.sync()
+        _flow_sched.add_job(_flow_cron_mgr.sync, 'interval', seconds=30,
+                            id='flow_cron_sync', replace_existing=True)
+        _flow_sched.start()
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] flow cron scheduler error: {e}", flush=True)
+    # E2: 内置运维 playbook 向量化加载（幂等，后台线程，失败不阻塞）
+    try:
+        import threading as _th
+        from playbook_loader import load_playbooks as _load_playbooks
+        from rag import rag as _rag_store
+        _th.Thread(target=lambda: _load_playbooks(_rag_store), daemon=True).start()
     except Exception:
         pass
 
@@ -300,6 +344,12 @@ async def ai_chat(req: ChatRequest, request: Request):
                             break
                     except Exception:
                         pass
+                # B4: 轮询后台 persona worker 终态，投递 task_notification frame
+                try:
+                    for _ntf in agent_tool.drain_notifications():
+                        yield _format_sse(_ntf)
+                except Exception:
+                    pass
                 try:
                     event = await _asyncio.get_event_loop().run_in_executor(None, event_queue.get, True, 0.1)
                 except queue.Empty:
@@ -410,6 +460,62 @@ async def ai_skill_execute(key: str, body: dict = None):
         return SkillRegistry.execute_skill(key, params)
     except KeyError:
         raise HTTPException(404, "skill not found")
+
+# ═══════════════════════════════════════════════════════════════
+#  Marketplace（D5）— 安装 / 已安装列表 / 卸载（均 admin）
+# ═══════════════════════════════════════════════════════════════
+
+
+def _require_admin(request: Request):
+    """仅 admin 可操作（内部 token + X-Internal-Role=admin）。"""
+    expected = os.environ.get("INTERNAL_TOKEN", "")
+    got = request.headers.get("X-Internal-Token", "")
+    if not expected or got != expected:
+        raise HTTPException(403, "请求来源不可信（内部 token 校验失败）")
+    if request.headers.get("X-Internal-Role", "") != "admin":
+        raise HTTPException(403, "仅管理员可操作")
+
+
+@app.post("/api/v1/ai/marketplace/install")
+async def marketplace_install(request: Request, body: dict = None):
+    _require_admin(request)
+    import marketplace
+    src = (body or {}).get("source", "")
+    try:
+        result = marketplace.install(src, as_admin=True)
+        try:
+            _audit_log("marketplace", "install", _audit_operator(request),
+                       result["pack_id"], src, "ok")
+        except Exception:
+            pass
+        return result
+    except PermissionError:
+        raise HTTPException(403, "仅管理员可安装")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/v1/ai/marketplace/installed")
+async def marketplace_installed(request: Request):
+    _require_admin(request)
+    import marketplace
+    return {"installed": marketplace.list_installed()}
+
+
+@app.delete("/api/v1/ai/marketplace/installed/{pack_id}")
+async def marketplace_uninstall(request: Request, pack_id: str):
+    _require_admin(request)
+    import marketplace
+    try:
+        result = marketplace.uninstall(pack_id)
+        try:
+            _audit_log("marketplace", "uninstall", _audit_operator(request),
+                       pack_id, "", "ok")
+        except Exception:
+            pass
+        return result
+    except ValueError as e:
+        raise HTTPException(404, str(e))
 
 @app.get("/api/v1/ai/agents")
 async def ai_agents():
@@ -888,6 +994,50 @@ async def ops_webhook(request: Request):
     }
     _task_store[tid] = task
 
+    # === Mount A3: 告警触发 workflow（后台派发，不阻塞 webhook 返回）===
+    try:
+        import threading as _t
+        import logging as _logging
+        from flow_api import get_flow_service as _get_flow_service
+        from flow_engine.flow_alert_dispatch import dispatch_alert
+
+        def _dispatch_alert_bg():
+            try:
+                wsvc = _get_flow_service()
+                fired = dispatch_alert(
+                    lambda: [f for f in wsvc.list_flows() if f.get("enabled")],
+                    wsvc.run_flow, source, severity, body)
+                if fired:
+                    _logging.getLogger("flow_dispatch").info("告警触发 workflow: %s", fired)
+            except Exception:
+                _logging.getLogger("flow_dispatch").exception("告警→workflow 派发失败(不影响告警入库)")
+
+        _t.Thread(target=_dispatch_alert_bg, daemon=True).start()
+    except Exception:
+        pass
+
+    # === Mount B6: 告警自动调查 (incident-investigator，daemon 线程异步执行，不阻塞告警入库) ===
+    try:
+        import logging as _logging
+        import threading as _t
+        from investigator import maybe_investigate
+
+        _inv_log = _logging.getLogger("investigator")
+
+        def _investigate_bg():
+            try:
+                maybe_investigate(
+                    source, severity,
+                    {"service": service, "summary": context, "context": context},
+                    run_worker=None)
+            except Exception:
+                _inv_log.exception("告警自动调查失败(不影响告警入库)")
+
+        _t.Thread(target=_investigate_bg, daemon=True,
+                  name=f"investigate-{tid}").start()
+    except Exception:
+        pass
+
     # 不再自动触发 LLM 诊断：只登记任务，等待人工在任务工作台手动触发
     # (避免每次告警都自动调用 LLM，造成大量开销；也避免 vmalert 15s 重复 webhook 反复诊断)
     return {"task_id": tid, "status": "queued", "message": "task queued, trigger diagnosis manually"}
@@ -1082,6 +1232,60 @@ def reject_task(tid: str, request: Request):
     except: pass
     _task_store.persist(tid)  # 拒绝结果落 MySQL
     return {"task": task}
+
+
+# ═══════════════════════════════════════════════════════════════
+#  K8s 结构化动作: preflight / execute (工作流 C)
+# ═══════════════════════════════════════════════════════════════
+
+class K8sActionBody(BaseModel):
+    action: str
+    kind: str = ""
+    namespace: str = ""
+    name: str = ""
+    extra: dict = None
+    preflight_token: str = ""
+    expected_resource_version: str = ""
+    approval_task_id: str = ""
+
+
+@app.post("/api/v1/ops/k8s/preflight")
+def k8s_preflight(body: K8sActionBody, request: Request):
+    """预检: 白名单校验 + 资源存在性 + resourceVersion + preflight token (TTL 5min)。"""
+    _require_approver(request)
+    import k8s_actions
+    result = k8s_actions.preflight(body.action, kind=body.kind, namespace=body.namespace,
+                                   name=body.name, **(body.extra or {}))
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "预检失败"))
+    try:
+        _audit_log(f"k8s:{body.action}", "k8s_preflight", _audit_operator(request),
+                   f"{body.kind}/{body.name}", result.get("command", ""), "ok",
+                   {"source": "k8s_actions"})
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/api/v1/ops/k8s/execute")
+def k8s_execute(body: K8sActionBody, request: Request):
+    """执行: 审批(destructive) → preflight token → 乐观锁 → 执行 + 审计。"""
+    _require_approver(request)
+    import k8s_actions
+    try:
+        result = k8s_actions.execute_guarded(
+            body.action, kind=body.kind, namespace=body.namespace, name=body.name,
+            preflight_token=body.preflight_token,
+            expected_resource_version=body.expected_resource_version,
+            approval_task_id=body.approval_task_id,
+            extra=body.extra or {},
+            audit=lambda action, kind, name, out: _audit_log(
+                f"k8s:{action}", "k8s_execute", _audit_operator(request),
+                f"{kind}/{name}", body.action, "ok",
+                {"output": str(out)[:500], "source": "k8s_actions"}))
+    except k8s_actions.K8sActionError as e:
+        raise HTTPException(e.status_code, str(e))
+    return {"ok": True, "output": result["output"]}
 
 
 @app.get("/api/v1/ops/recovery/policy")
@@ -1807,6 +2011,51 @@ async def list_knowledge(q: str = "", page: int = 1, size: int = 50, type: str =
         items = rag.list_all(type_filter=type, q=q, limit=size, offset=(page - 1) * size)
         total = len(rag.list_all(type_filter=type, q=q, limit=100000))
     return {"items": items, "total": total}
+
+
+# ═══════════════════════════════════════════════════════════════
+#  内置运维 playbook 浏览（工作流 E4）— 列表(按分类) / 原文
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/ai/knowledge/playbooks")
+async def knowledge_playbooks(category: str = "", q: str = ""):
+    """playbook 列表: 按分类目录扫描。q 非空时走向量检索(ops_playbooks)。"""
+    if q:
+        from playbook_loader import query_knowledge
+        try:
+            return query_knowledge(q, path_prefix=category or None)
+        except Exception:
+            return {"items": []}
+    import os
+    from playbook_loader import _default_playbooks_dir
+    base = _default_playbooks_dir()
+    items = []
+    if os.path.isdir(base):
+        for root, _, files in os.walk(base):
+            for fn in sorted(files):
+                if not fn.endswith(".md"):
+                    continue
+                rel = os.path.relpath(os.path.join(root, fn), base)
+                cat = rel.split(os.sep)[0]
+                if category and cat != category:
+                    continue
+                items.append({"path": rel, "category": cat, "title": fn[:-3]})
+    return {"playbooks": items}
+
+
+@app.get("/api/v1/ai/knowledge/playbooks/{path:path}")
+async def knowledge_playbook_detail(path: str):
+    """playbook 原文（路径逃逸校验）。"""
+    import os
+    from playbook_loader import _default_playbooks_dir
+    base = os.path.realpath(_default_playbooks_dir())
+    target = os.path.realpath(os.path.join(base, path))
+    if not (target.startswith(base + os.sep) or target == base):
+        raise HTTPException(400, "非法路径")
+    if not os.path.isfile(target) or not target.endswith(".md"):
+        raise HTTPException(404, "playbook not found")
+    with open(target, encoding="utf-8") as f:
+        return {"path": path, "content": f.read()}
 
 
 @app.post("/api/v1/ai/knowledge")

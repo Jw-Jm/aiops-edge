@@ -5,6 +5,8 @@ import subprocess
 import urllib.request
 import urllib.error
 
+from skill_registry import ToolRegistry
+
 QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
@@ -186,3 +188,33 @@ def get_infrastructure() -> str:
     for n in nodes:
         report += f"  - {n.get('name','?')}: {n.get('status','?')} CPU={n.get('cpu','?')} MEM={n.get('memory','?')}\n"
     return report
+
+# ═══════════════════════════════════════════════════════════════
+#  Mount E3: query_knowledge 内置运维知识库工具 (cls=safe, category=knowledge)
+# ═══════════════════════════════════════════════════════════════
+def _query_knowledge(query: str = "", path_prefix: str = "", tags: str = "",
+                     max_results: int = 5) -> str:
+    """查询内置运维知识库(playbook 处置手册 + 历史案例), 返回诊断建议/处置步骤。"""
+    from playbook_loader import query_knowledge
+    result = query_knowledge(
+        query,
+        path_prefix=path_prefix.strip() or None,
+        tags=[t.strip() for t in tags.split(",") if t.strip()] if tags else None,
+        max_results=int(max_results or 5),
+    )
+    return json.dumps(result, ensure_ascii=False)[:6000]
+
+
+if not ToolRegistry.get("query_knowledge"):
+    ToolRegistry.register(
+        name="query_knowledge",
+        description="查询内置运维知识库(playbook 处置手册 + 历史案例), 返回按相关度排序的诊断建议与处置步骤",
+        category="knowledge",
+        cls_="safe",
+        params={
+            "query": {"type": "string", "required": True, "default": "", "desc": "检索关键词"},
+            "path_prefix": {"type": "string", "required": False, "default": "", "desc": "playbook 分类前缀(diagnostics/alerts/concepts/reference)"},
+            "tags": {"type": "string", "required": False, "default": "", "desc": "标签过滤(逗号分隔)"},
+            "max_results": {"type": "int", "required": False, "default": 5, "desc": "返回条数"},
+        },
+    )(_query_knowledge)
