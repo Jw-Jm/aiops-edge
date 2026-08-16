@@ -237,8 +237,8 @@ func main() {
 	})
 	// Ops tasks (AIOps Agent)
 	mux.HandleFunc("/api/v1/ops/", handler.ProxyAI)
-	// Prometheus metrics
-	mux.HandleFunc("/metrics", handler.ProxyAI)
+	// Prometheus metrics（自监控：query-api 自身指标，免鉴权供 VM 抓取）
+	mux.HandleFunc("/metrics", handler.PrometheusMetrics)
 	// Alerts
 	mux.HandleFunc("/api/v1/alerts/rules", handler.AlertRules)
 	mux.HandleFunc("/api/v1/alerts/rules/", handler.AlertRuleByID)

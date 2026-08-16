@@ -31,6 +31,7 @@ class AgentState(TypedDict):
     service: str
     user_message: str
     llm_config: Optional[dict]
+    history_context: str  # 多轮上下文：上一轮用户问题 + 回答摘要（stream_sync 读 checkpoint 注入）
 
     # collected
     services_data: str
@@ -1018,7 +1019,11 @@ async def node_crewai(state: AgentState) -> dict:
         )
 
     # P1-5: 诊断类节点 LLM 超时放宽到 120s；超时占位符不进入报告——降级为确定性诊断段落
-    result = await _llm_async(cfg, system_prompt, f"用户问题:「{user_msg}」\n已采集数据:\n{context}", expert.role if expert else "巡检专家", timeout=120)
+    history = state.get("history_context", "")
+    history_block = f"【历史对话上下文】\n{history}\n\n" if history else ""
+    result = await _llm_async(cfg, system_prompt,
+                              f"{history_block}用户问题:「{user_msg}」\n已采集数据:\n{context}",
+                              expert.role if expert else "巡检专家", timeout=120)
     if _is_llm_failure(result):
         result = _deterministic_diagnosis(state)
     return {"crewai_result": result, "messages": [f"[{_now()}] CrewAI ({expert.role if expert else '巡检'}) 分析完成"]}
@@ -1667,8 +1672,19 @@ class BrainOrchestrator:
         """
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
         if not service: service = await asyncio.to_thread(self._detect_service, message)
+        # 多轮上下文：读上一轮 checkpoint（user_message + final_response 摘要）注入本轮
+        history_context = ""
+        try:
+            prev = await asyncio.to_thread(self.get_session_state, thread_id)
+            if prev and prev.get("user_message") and prev.get("user_message") != message:
+                prev_q = str(prev.get("user_message", ""))[:200]
+                prev_a = str(prev.get("final_response", ""))[:500]
+                history_context = f"上一轮问题: {prev_q}\n上一轮回答要点: {prev_a}"
+        except Exception:
+            history_context = ""
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
+            "history_context": history_context,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
             "llm_config": self.llm_config,
             "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "",

@@ -2,11 +2,15 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 // TestLogTypeQuery 验证 log 类型规则构造 CH 日志查询
@@ -244,5 +248,106 @@ func TestEvaluateRuleAnomalyEmptyMethod(t *testing.T) {
 	_, breached := h.evaluateRuleAnomaly(rule)
 	if !breached {
 		t.Fatalf("empty method should default to zscore and flag spike")
+	}
+}
+
+// TestEvaluateRuleSelEventDBUnavailable 验证 sel_event 规则在 MySQL 不可达（查询报错）时
+// evaluateRule 返回 error（评估循环记日志跳过），不 panic。
+func TestEvaluateRuleSelEventDBUnavailable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	prev := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(prev) })
+
+	// 查询返回错误 → 模拟 DB 不可达/查询失败
+	mock.ExpectQuery("SELECT count").WithArgs("node-01").WillReturnError(errors.New("mysql down"))
+
+	h := &Handler{}
+	rule := AlertRule{Name: "sel", Type: "sel_event", Service: "node-01", Threshold: 5, Duration: 5}
+	if _, err := h.evaluateRule(rule); err == nil {
+		t.Fatal("sel_event evaluateRule should return error when DB unavailable")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestEvaluateRuleSelEventCount 验证 sel_event 规则查询 ipmi_sel_events 返回最近窗口事件数。
+func TestEvaluateRuleSelEventCount(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	prev := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(prev) })
+
+	mock.ExpectQuery("SELECT count").
+		WithArgs("node-01").
+		WillReturnRows(sqlmock.NewRows([]string{"count(*)"}).AddRow(3))
+
+	h := &Handler{}
+	rule := AlertRule{Name: "sel2", Type: "sel_event", Service: "node-01", Threshold: 5, Duration: 10}
+	v, err := h.evaluateRule(rule)
+	if err != nil {
+		t.Fatalf("evaluateRule: %v", err)
+	}
+	if v != 3 {
+		t.Fatalf("count = %v, want 3", v)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// mockVMInstant 模拟 VM /api/v1/query 返回即时向量（单个样本）。
+func mockVMInstant(t *testing.T, value string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "success",
+			"data": map[string]interface{}{
+				"resultType": "vector",
+				"result": []map[string]interface{}{
+					{"metric": map[string]interface{}{}, "value": []interface{}{float64(1710000000), value}},
+				},
+			},
+		})
+	}))
+}
+
+// TestEvaluateRuleMiddlewareMetric 验证 middleware_metric 规则走 VM instant query 取值。
+func TestEvaluateRuleMiddlewareMetric(t *testing.T) {
+	srv := mockVMInstant(t, "42.5")
+	defer srv.Close()
+
+	h := &Handler{vmURL: srv.URL, client: &http.Client{}}
+	rule := AlertRule{Name: "mw", Type: "middleware_metric", Service: "mysql-01",
+		Metric: "mysql_global_status_threads_connected", Threshold: 100, Duration: 5}
+	v, err := h.evaluateRule(rule)
+	if err != nil {
+		t.Fatalf("evaluateRule: %v", err)
+	}
+	if v != 42.5 {
+		t.Fatalf("value = %v, want 42.5", v)
+	}
+}
+
+// TestCreateMiddlewareMetricRuleRequiresMetric 验证 middleware_metric 规则 metric 为空时创建返回 400。
+func TestCreateMiddlewareMetricRuleRequiresMetric(t *testing.T) {
+	h := &Handler{client: &http.Client{}}
+	adminToken := generateJWT("admin", "admin", "")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts/rules",
+		strings.NewReader(`{"name":"mw-threads","type":"middleware_metric","service":"mysql-01","threshold":50,"duration":5}`))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	h.createAlertRule(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty metric, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

@@ -309,6 +309,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		// 以及敏感子路径（/internal、/providers、/test、/models、/history、rollback）
 		// 一律走 isInternalRequest 或 JWT 鉴权，防止未授权写入 LLM API key。
 		if path == "/health" || path == "/api/v1/health" ||
+			path == "/metrics" || // 自监控：query-api 自身 Prometheus 指标，供 VM 免鉴权抓取
 			path == "/api/v1/auth/login" || path == "/api/v1/login" ||
 			(path == "/api/v1/settings/llm" && r.Method == http.MethodGet) ||
 			// WebShell WebSocket：无自定义 header，token 经 ?token= query 传递，由 ProxyShellWS

@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
-	"math/rand"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,7 +22,20 @@ const (
 	defaultSyncInterval = 60 * time.Second
 	minSyncInterval     = 5 * time.Second
 	maxSyncInterval     = 3600 * time.Second
+	// watermarkFileName 是 DeepFlow 增量同步水位的本地持久化文件名（存 RFC3339 时间戳）。
+	// 文件不存在视为首次启动；重启后从此水位继续增量同步，避免丢窗口/重拉全量。
+	watermarkFileName = "deepflow_last_sync"
 )
+
+// deepflowWatermarkPath 返回水位文件路径：优先 ${INGEST_WAL_DIR}（生产挂载 PVC），
+// 未设置时回退 /wal。
+func deepflowWatermarkPath() string {
+	dir := os.Getenv("INGEST_WAL_DIR")
+	if dir == "" {
+		dir = "/wal"
+	}
+	return filepath.Join(dir, watermarkFileName)
+}
 
 // parseSyncInterval 从 env DEEPFLOW_SYNC_INTERVAL 解析同步间隔；
 // 支持纯数字（秒）或 Go duration（如 "30s"）；非法/越界回退默认 60s。
@@ -90,12 +104,14 @@ type DeepFlowSyncer struct {
 	// 增量拉取状态（线程安全）
 	lastSyncMu   sync.Mutex
 	lastSyncTime time.Time
+	// 水位持久化文件路径；不可写时为 ""（降级为纯内存态，仅 log 告警）
+	watermarkPath string
 }
 
 // NewDeepFlowSyncer 创建 DeepFlow 同步器。edgeWriter 写拓扑边，spanWriter 写 span，logWriter 写日志。
 // redMetric 可选：若提供，则把同步到的真实服务流量累加为 VM 服务 RED 指标（cluster 为所属环境）。
 func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter interface{ AddEdge(*model.TopologyEdge) }, spanWriter interface{ Add(*model.Span) }, logWriter interface{ Add(*model.LogRecord) }, redMetric interface{ AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64) }) *DeepFlowSyncer {
-	return &DeepFlowSyncer{
+	s := &DeepFlowSyncer{
 		dfEndpoint: fmt.Sprintf("http://%s:%d", dfCHHost, dfCHPort),
 		dfClient:   &http.Client{Timeout: 30 * time.Second},
 		edgeWriter: edgeWriter,
@@ -106,6 +122,61 @@ func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter
 		tenantID:   "default",
 		interval:   parseSyncInterval(os.Getenv("DEEPFLOW_SYNC_INTERVAL")),
 		sampleRate: parseSampleRate(os.Getenv("DEEPFLOW_SPAN_SAMPLE_RATE")),
+	}
+	// 启动时恢复持久化的增量同步水位（重启不丢窗口）。持久化目录不可写则
+	// 降级为内存态并告警（水位仅本次进程有效，不阻断同步）。
+	s.watermarkPath = deepflowWatermarkPath()
+	if err := os.MkdirAll(filepath.Dir(s.watermarkPath), 0o755); err != nil {
+		log.Printf("DeepFlowSyncer: watermark dir %s not writable, watermark persistence degraded to in-memory: %v", filepath.Dir(s.watermarkPath), err)
+		s.watermarkPath = ""
+		return s
+	}
+	s.loadLastSync()
+	return s
+}
+
+// loadLastSync 启动时从水位文件恢复上次成功同步时间（RFC3339，UTC）。
+// 文件不存在或内容解析失败时保持零值——与现有首次启动行为完全一致
+// （下次 Sync 仍从默认最近窗口开始）。读写在 lastSyncMu 保护下进行。
+func (s *DeepFlowSyncer) loadLastSync() {
+	if s.watermarkPath == "" {
+		return
+	}
+	data, err := os.ReadFile(s.watermarkPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("DeepFlowSyncer: read watermark %s failed, fallback to first-run: %v", s.watermarkPath, err)
+		}
+		return
+	}
+	ts, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil {
+		log.Printf("DeepFlowSyncer: parse watermark %s failed (%q), fallback to first-run: %v", s.watermarkPath, strings.TrimSpace(string(data)), err)
+		return
+	}
+	s.lastSyncMu.Lock()
+	s.lastSyncTime = ts.UTC()
+	s.lastSyncMu.Unlock()
+	log.Printf("DeepFlowSyncer: restored last sync watermark %s from %s", s.lastSyncTime.Format(time.RFC3339), s.watermarkPath)
+}
+
+// persistLastSync 把同步水位原子写入本地文件（临时文件 + rename，避免写一半）。
+// 写失败仅 log 告警、不阻断同步（继续走内存水位，下次成功时重试落盘）。
+// 调用方需持有 lastSyncMu。
+func (s *DeepFlowSyncer) persistLastSync(t time.Time) {
+	if s.watermarkPath == "" {
+		return
+	}
+	tmp := s.watermarkPath + ".tmp"
+	data := []byte(t.UTC().Format(time.RFC3339) + "\n")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		log.Printf("DeepFlowSyncer: persist watermark %s failed (keeping in-memory): %v", s.watermarkPath, err)
+		return
+	}
+	if err := os.Rename(tmp, s.watermarkPath); err != nil {
+		log.Printf("DeepFlowSyncer: persist watermark rename %s failed (keeping in-memory): %v", s.watermarkPath, err)
+		_ = os.Remove(tmp)
+		return
 	}
 }
 
@@ -246,6 +317,7 @@ func (s *DeepFlowSyncer) Sync() error {
 	if now.After(s.lastSyncTime) {
 		s.lastSyncTime = now
 	}
+	s.persistLastSync(s.lastSyncTime)
 	s.lastSyncMu.Unlock()
 	return nil
 }

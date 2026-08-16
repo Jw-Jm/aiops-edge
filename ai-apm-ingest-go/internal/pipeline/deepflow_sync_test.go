@@ -3,6 +3,8 @@ package pipeline
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +12,48 @@ import (
 
 	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
 )
+
+// TestWatermarkPersistLoadRoundTrip 验证水位持久化往返：persist 后可被新构造的
+// syncer（模拟重启）恢复为同一时间戳。
+func TestWatermarkPersistLoadRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("INGEST_WAL_DIR", tmp)
+
+	want := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	s1 := NewDeepFlowSyncer("127.0.0.1", 8123, "cluster-x", nil, nil, nil, nil)
+	if s1.watermarkPath == "" {
+		t.Fatalf("watermarkPath empty, want persistence under %s", tmp)
+	}
+	s1.persistLastSync(want)
+
+	s2 := NewDeepFlowSyncer("127.0.0.1", 8123, "cluster-x", nil, nil, nil, nil)
+	if !s2.lastSyncTime.Equal(want) {
+		t.Fatalf("restored lastSyncTime = %v, want %v", s2.lastSyncTime, want)
+	}
+}
+
+// TestLoadLastSyncBadFileKeepsZero 坏文件（非法时间戳）应保持零值，等同首次启动。
+func TestLoadLastSyncBadFileKeepsZero(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("INGEST_WAL_DIR", tmp)
+	if err := os.WriteFile(filepath.Join(tmp, watermarkFileName), []byte("not-a-timestamp"), 0o644); err != nil {
+		t.Fatalf("write bad watermark: %v", err)
+	}
+	s := NewDeepFlowSyncer("127.0.0.1", 8123, "cluster-x", nil, nil, nil, nil)
+	if !s.lastSyncTime.IsZero() {
+		t.Fatalf("bad watermark should keep zero lastSyncTime, got %v", s.lastSyncTime)
+	}
+}
+
+// TestLoadLastSyncMissingFileKeepsZero 首次启动（无水位文件）行为与现状一致：零值。
+func TestLoadLastSyncMissingFileKeepsZero(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("INGEST_WAL_DIR", tmp)
+	s := NewDeepFlowSyncer("127.0.0.1", 8123, "cluster-x", nil, nil, nil, nil)
+	if !s.lastSyncTime.IsZero() {
+		t.Fatalf("missing watermark should keep zero lastSyncTime, got %v", s.lastSyncTime)
+	}
+}
 
 func TestParseSyncInterval_Default(t *testing.T) {
 	if got := parseSyncInterval(""); got != 60*time.Second {

@@ -26,8 +26,8 @@ type AlertRule struct {
 	ID          string  `json:"id"`
 	Name        string  `json:"name"`
 	Service     string  `json:"service"`
-	Type        string  `json:"type"`      // "threshold", "mutation", "anomaly", "forecast", "burn_rate", "metric_raw"
-	Metric      string  `json:"metric"`     // "error_rate", "latency_p99", "call_count", 或 metric_raw 的 PromQL
+	Type        string  `json:"type"`      // "threshold", "mutation", "anomaly", "forecast", "burn_rate", "metric_raw", "sel_event", "middleware_metric"
+	Metric      string  `json:"metric"`     // "error_rate", "latency_p99", "call_count", 或 metric_raw/middleware_metric 的 PromQL
 	Condition   string  `json:"condition"`  // ">", "<", ">=", "<="
 	Threshold   float64 `json:"threshold"`
 	Duration    int     `json:"duration"` // minutes
@@ -1038,6 +1038,17 @@ func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// sel_event 规则：service 存 IPMI 节点名，必须非空（节点维度硬件事件告警）
+	if rule.Type == "sel_event" && rule.Service == "" {
+		respondError(w, http.StatusBadRequest, "sel_event 规则需指定节点名（service）")
+		return
+	}
+	// middleware_metric 规则：metric 存中间件深度指标 PromQL 查询，必须非空
+	if rule.Type == "middleware_metric" && rule.Metric == "" {
+		respondError(w, http.StatusBadRequest, "middleware_metric 规则需指定 metric（PromQL 查询）")
+		return
+	}
+
 	rule.ID = generateID()
 
 	alertRulesMu.Lock()
@@ -1351,6 +1362,25 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 		return h.evalK8sOOMCount(), nil
 	}
 
+	// sel_event 类型：统计节点（rule.Service 存节点名）最近 duration 分钟新增的 IPMI SEL 事件数，
+	// 超过阈值（threshold，事件数）即 breach。查 MySQL aiops.ipmi_sel_events（按 event_time 过滤）。
+	// 查不到表 / DB 不可达返回错误，由评估循环（evaluateAlerts）记日志跳过该规则。
+	if rule.Type == "sel_event" {
+		db := store.GetDB()
+		if db == nil {
+			return 0, fmt.Errorf("mysql unavailable for sel_event rule")
+		}
+		var count int
+		err := db.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT count(*) FROM ipmi_sel_events WHERE node_name = ? AND event_time >= NOW() - INTERVAL %d MINUTE", duration),
+			rule.Service,
+		).Scan(&count)
+		if err != nil {
+			return 0, err
+		}
+		return float64(count), nil
+	}
+
 	// log 类型：CH 日志查询（log_error_rate / log_keyword）
 	if rule.Type == "log" {
 		sql := logMetricQuery(rule.Service, rule.Metric, rule.Keyword)
@@ -1369,6 +1399,12 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 			return 0, err
 		}
 		return v, nil
+	}
+
+	// middleware_metric 类型：metric 字段为中间件深度指标 PromQL（mysql/redis/kafka 等），
+	// 复用 metric_raw 的 VM instant query 路径取即时值（type 仅做命名区分）。
+	if rule.Type == "middleware_metric" {
+		return h.vmInstantQuery(rule.Metric)
 	}
 
 	// metric_raw / anomaly / forecast / burn_rate 类型：metric 字段作为 VM PromQL 原始指标

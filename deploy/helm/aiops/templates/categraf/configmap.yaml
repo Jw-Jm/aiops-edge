@@ -69,4 +69,14 @@ data:
 
   system.toml: |
     [[instances]]
+
+  # mysql 插件：平台 MySQL 深度指标（连接数/慢查询/复制延迟/命中率）。
+  # 密码占位符 __MYSQL_PASSWORD__ 由 DaemonSet 启动脚本 sed 替换（env 注入，不进 ConfigMap 明文）。
+  mysql.toml: |
+    [[instances]]
+    servers = ["root:__MYSQL_PASSWORD__@tcp(mysql:3306)/"]
+    interval = 60
+    gather_slave_status = true
+    gather_replica_status = true
+    gather_slowlog = true
 {{- end }}

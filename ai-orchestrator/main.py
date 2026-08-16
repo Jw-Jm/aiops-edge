@@ -2749,6 +2749,54 @@ async def create_change_event(req: ChangeEventRequest, request: Request):
     return {"ok": True, "id": new_id}
 
 
+@app.post("/api/v1/ops/changes/webhook")
+async def create_change_webhook(body: dict = None, request: Request = None):
+    """变更事件发布流水线 webhook 入口（CI/CD 自动上报）。
+
+    兼容常见发布事件格式，归一化后复用 change_events 写入：
+      {service|app|application, change_type|type|event, operator|user|author,
+       content|description|summary|message, related_trace_ids?, cluster_id?}
+    无鉴权（信任 query-api 代理 JWT；生产建议 ingress 层限制来源网段）。
+    """
+    b = body or {}
+    service = str(b.get("service") or b.get("app") or b.get("application") or "").strip()
+    change_type = str(b.get("change_type") or b.get("type") or b.get("event") or "deploy").strip()
+    operator = str(b.get("operator") or b.get("user") or b.get("author") or "").strip()
+    content = str(b.get("content") or b.get("description") or b.get("summary") or b.get("message") or "").strip()
+    if not service:
+        raise HTTPException(400, "service (or app/application) required")
+    if not content:
+        raise HTTPException(400, "content (or description/summary/message) required")
+    cluster_id = str(b.get("cluster_id") or "default").strip() or "default"
+    trace_ids = str(b.get("related_trace_ids") or "").strip()
+    from db import db_available, get_conn
+    if not db_available():
+        raise HTTPException(503, "MySQL unavailable, cannot record change event")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO change_events (cluster_id, service, change_type, operator, content, related_trace_ids) "
+                "VALUES (%s,%s,%s,%s,%s,%s)",
+                (cluster_id, service, change_type, operator or "pipeline", content, trace_ids or None))
+            new_id = cur.lastrowid
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise HTTPException(500, f"insert change_event failed: {e}")
+    finally:
+        conn.close()
+    try:
+        _audit_log(f"change:{new_id}", "change_event_webhook", operator or "pipeline", service,
+                   content[:300], "ok", {"change_type": change_type, "cluster_id": cluster_id})
+    except Exception:
+        pass
+    return {"ok": True, "id": new_id}
+
+
 @app.get("/api/v1/ops/changes")
 async def list_change_events(service: str = "", cluster_id: str = "", limit: int = 50):
     """变更时间线列表（按 created_at 倒序）。"""

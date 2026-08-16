@@ -38,4 +38,10 @@ data:
           - targets: ['ai-orchestrator:{{ .Values.orchestratorPort }}']
             labels:
               job: orchestrator
+      # 自监控（方案 9.3）：query-api 自身指标（免鉴权 /metrics，见 metrics.go）
+      - job_name: query-api
+        static_configs:
+          - targets: ['query-api:8080']
+            labels:
+              job: query-api
 {{- end }}

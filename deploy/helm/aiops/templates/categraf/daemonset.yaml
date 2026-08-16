@@ -48,6 +48,10 @@ spec:
             # 集群 ID（与 ingest.clusterId 对齐，多集群纳管时区分配置）
             - name: CLUSTER_ID
               value: {{ .Values.categraf.clusterId | quote }}
+            # mysql 插件采集凭据（sed 替换 ConfigMap 占位符 __MYSQL_PASSWORD__，不进明文）
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
           # cp -rL 解引用 ConfigMap symlink → 真实目录，categraf 才能识别 input.* 插件目录
           command: ["/bin/sh", "-c"]
           args:
@@ -55,6 +59,12 @@ spec:
               set -e
               rm -rf /etc/categraf/conf/*
               cp -rL /etc/categraf/conf-cm/. /etc/categraf/conf/
+              # 注入 mysql 密码（替换占位符；无密码则删除该插件配置避免连接报错刷日志）
+              if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
+                sed -i "s/__MYSQL_PASSWORD__/${MYSQL_ROOT_PASSWORD}/g" /etc/categraf/conf/input.mysql/mysql.toml
+              else
+                rm -f /etc/categraf/conf/input.mysql/mysql.toml
+              fi
               exec /usr/bin/categraf -configs /etc/categraf/conf
           # 无 HTTP 探针：readiness 用 exec pgrep 检查 categraf 进程（-x 精确匹配避免自匹配）
           readinessProbe:
@@ -100,6 +110,8 @@ spec:
                 path: input.net/net.toml
               - key: system.toml
                 path: input.system/system.toml
+              - key: mysql.toml
+                path: input.mysql/mysql.toml
         - name: run
           emptyDir: {}
         - name: proc
