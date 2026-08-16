@@ -39,6 +39,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from typing import Optional
 
 # ─────────────────────────────────────────────────────────────
 #  常量
@@ -100,8 +101,8 @@ def _hex(s: str, n: int) -> str:
 #  ClickHouse HTTP 访问（直写，参照 kg_graph._ch_query 风格）
 # ─────────────────────────────────────────────────────────────
 
-def _ch_request(sql: str, method: str = "POST", data: bytes | None = None,
-                default_format: str | None = None) -> str:
+def _ch_request(sql: str, method: str = "POST", data=None,
+                default_format: Optional[str] = None) -> str:
     """执行 ClickHouse HTTP 请求；失败抛异常由调用方容错。"""
     url = (f"http://{_CH_HOST}:{_CH_PORT}/?query=" + urllib.parse.quote(sql))
     if default_format:
@@ -195,7 +196,7 @@ def mysql_available() -> bool:
 # ─────────────────────────────────────────────────────────────
 
 def _span_row(cluster_id, trace_id, span_id, parent_span_id, service_name,
-              operation, http_method, start_ns, duration_ns, is_error,
+              operation, http_method, start_time_str, duration_ns, is_error,
               base_date, base_minute):
     status_code = 500 if is_error else 0
     http_status = 500 if is_error else 200
@@ -209,7 +210,7 @@ def _span_row(cluster_id, trace_id, span_id, parent_span_id, service_name,
         "operation_name": f"HTTP {http_method} {operation}",
         "span_kind": "SERVER",
         "status_code": status_code,
-        "start_time": start_ns,
+        "start_time": start_time_str,
         "duration_ns": duration_ns,
         "attributes": {"http.url": operation, "peer": service_name},
         "http_method": http_method,
@@ -245,13 +246,12 @@ def generate_spans(cluster_id: str, n_traces: int) -> list:
         # 每条 trace 内按 2ms 递增，保证瀑布图有序
         for hop, svc in enumerate(chain):
             span_id = _hex(f"{cluster_id}:{i}:{hop}:{svc}", 16)
-            http_method, operation = _OPERATIONS.get((svc, chain[hop + 1]) if hop + 1 < len(chain) else ("", ""),
-                                                     _DEFAULT_OP)
-            # 入站操作以本服务为被调方
-            in_method, in_op = _OPERATIONS.get(
-                (chain[hop - 1], svc) if hop > 0 else ("", ""), _DEFAULT_OP)
-            method = in_method if hop > 0 else http_method
-            op = in_op if hop > 0 else operation
+            # SERVER span 语义：root 服务承载入口操作，下游服务承载其入边调用操作
+            if hop == 0:
+                method, operation = _DEFAULT_OP
+            else:
+                method, operation = _OPERATIONS.get(
+                    (chain[hop - 1], svc), _DEFAULT_OP)
             # 可预测的 start_time：基分 + i 秒 + hop*2ms
             ts = base + i * 5 + hop * 0.002
             start_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) + \
@@ -259,7 +259,7 @@ def generate_spans(cluster_id: str, n_traces: int) -> list:
             dur = 2_000_000 + (i % 7) * 1_000_000 + hop * 500_000
             is_err = 1 if i % 50 == 0 and hop == len(chain) - 1 else 0
             rows.append(_span_row(
-                cluster_id, trace_id, span_id, prev_span, svc, op, method,
+                cluster_id, trace_id, span_id, prev_span, svc, operation, method,
                 start_str, dur, is_err, base_date, base_minute))
             prev_span = span_id
     return rows
@@ -414,9 +414,9 @@ def build_graph(cluster_id: str) -> dict:
 def verify_cluster(cluster_id: str) -> dict:
     """输出单个集群的验证摘要。"""
     short = _short(cluster_id)
-    # trace 条数
+    # trace 条数（按 trace_id 去重）
     rows = _ch_query(
-        f"SELECT count() AS c FROM observability.trace_spans "
+        f"SELECT count(DISTINCT trace_id) AS c FROM observability.trace_spans "
         f"WHERE cluster_id = '{cluster_id}' AND trace_id LIKE 'mock-{short}-%'")
     n_traces = int(rows[0]["c"]) if rows else 0
     # 服务节点数 / DEPENDS_ON 边数（props_json 含 cluster_id）
@@ -429,12 +429,14 @@ def verify_cluster(cluster_id: str) -> dict:
                     "SELECT count(*) AS c FROM topology_nodes "
                     "WHERE type='service' AND props_json LIKE %s",
                     (f'%"{cluster_id}"%',))
-                n_nodes = cur.fetchone()["c"]
+                row = cur.fetchone()
+                n_nodes = int(row["c"]) if row else 0
                 cur.execute(
                     "SELECT count(*) AS c FROM topology_relations "
                     "WHERE type='DEPENDS_ON' AND props_json LIKE %s",
                     (f'%"{cluster_id}"%',))
-                n_edges = cur.fetchone()["c"]
+                row = cur.fetchone()
+                n_edges = int(row["c"]) if row else 0
         finally:
             conn.close()
     return {
