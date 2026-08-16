@@ -65,6 +65,6 @@ export MYSQL_USER="${MYSQL_USER:-root}"
 [ -n "$MYSQL_PASS" ] && export MYSQL_PASSWORD="$MYSQL_PASS"
 export MYSQL_DB="${MYSQL_DB:-aiops}"
 
-echo ">>> 运行 multicluster_demo.py $*（cwd=$ORCH_DIR）"
+echo ">>> 运行 multicluster_demo.py $*（cwd=${ORCH_DIR}）"
 cd "$ORCH_DIR"
 exec python3 multicluster_demo.py "$@"
