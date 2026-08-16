@@ -202,6 +202,96 @@ MinIO 原生支持 **Erasure Coding 分布式**：
 - **多可用区**：节点分布多个 AZ（需多 AZ 存储类）
 - **PodDisruptionBudget (PDB)**：多副本服务保证最少可用（单副本意义有限）
 
+### 5.7 无状态服务 HA（query-api / frontend）— 偏差 B10 落地
+
+> 有状态单写组件（ingest / ai-orchestrator / CH / MySQL 等）因 RWO PVC 约束维持单副本，
+> **HA 重点放在无状态服务**：query-api（多副本 + PDB + HPA）与 frontend（多副本 + PDB）。
+
+**1) 多副本**：`values-prod.yaml` 已设 `replicaCount: 2`，覆盖 query-api / frontend。
+```yaml
+replicaCount: 2
+```
+> 注意：ingest / ai-orchestrator 因挂 RWO PVC 固定 1 副本（多副本需先外部化存储，见 §5.3/§5.4）。
+
+**2) PodDisruptionBudget（PDB）**：新增 `templates/query-api/pdb.yaml` 与 `templates/frontend/pdb.yaml`：
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: query-api
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: query-api
+```
+（frontend 同款，`app: frontend`。有状态组件在单副本下 PDB 无意义，不配置。）
+
+**3) HorizontalPodAutoscaler（HPA）**：新增 `templates/query-api/hpa.yaml`（可选，frontend 同款）：
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: query-api
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: query-api
+  minReplicas: {{ .Values.hpa.queryApi.min | default 2 }}
+  maxReplicas: {{ .Values.hpa.queryApi.max | default 6 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+```
+**4) 验证**：`helm template` 渲染出 PDB/HPA 资源；`kubectl get pdb,hpa -n observability` 确认生效。
+
+---
+
+### 5.8 密钥外部化（External Secrets / KMS）— 偏差 B11 落地
+
+> 现状：`secrets.yaml` 用 Helm `required` 守卫强校验，密钥明文存在于 `aiops-secrets` Secret。
+> 生产建议接入外部密钥管理，避免密钥进 Git / values 文件。
+
+**方案 A：External Secrets Operator（ESO，推荐）**
+1. 部署 ESO + provider（AWS Secrets Manager / Vault / GCP Secret Manager 等）
+2. 新增 `templates/external-secret.yaml`（示例 AWS）：
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: aiops-secrets
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aiops-store
+    kind: SecretStore
+  target:
+    name: aiops-secrets
+  data:
+    - secretKey: JWT_SECRET
+      remoteRef: { key: aiops-prod, property: jwtSecret }
+    - secretKey: LLM_ENCRYPTION_KEY
+      remoteRef: { key: aiops-prod, property: llmEncryptionKey }
+    # ... INTERNAL_TOKEN / INGEST_API_KEY / CLICKHOUSE_PASSWORD / MYSQL_ROOT_PASSWORD 同理
+```
+3. 将 Chart 的 `secrets.yaml` 模板改为 `enabled: false`（或加 `externalSecrets.enabled` 开关跳过渲染），由 ESO 管理同名 Secret。
+4. 密钥轮换：ESO 按 `refreshInterval` 自动同步；轮换后需滚动重启 query-api / ingest / orchestrator 加载新值。
+
+**方案 B：HashiCorp Vault**：ESO 的 SecretStore 指向 Vault（`auth` 用 Kubernetes 服务账号），密钥统一从 Vault 读取，审计/轮换/撤销由 Vault 管理。
+
+**安全基线补充**（追加到 §6 清单）：
+- [ ] 无状态服务已配 PDB；生产规模下配置 HPA
+- [ ] 密钥已外部化（ESO/Vault），不落 Git / values 文件
+- [ ] 密钥轮换流程已演练（改 KMS → ESO 同步 → 滚动重启验证）
+
 ---
 
 ## 6. 生产安全基线清单
