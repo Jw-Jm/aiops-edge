@@ -77,3 +77,6 @@ gui-test-screenshots/
 
 # deepwork 进度文件
 .slim/deepwork/
+
+# 离线依赖缓存（本地构建复用，不入库）
+deploy/offline/

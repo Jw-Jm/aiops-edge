@@ -226,3 +226,21 @@ aiOrchestrator:
 # deepflow 子 chart（完整装；enabled=false 则不装）
 deepflow:
   enabled: true
+
+# ---------------------------------------------------------------------------
+# event-collector（P1-4）— K8s 事件 watch + IPMI SEL 明细统一落 CH。
+# DaemonSet：SEL 按节点本地采集；K8s 事件为集群级资源，多副本 watch 重复由
+# CH ReplacingMergeTree 去重兜底（单节点环境无影响）。
+# ---------------------------------------------------------------------------
+eventCollector:
+  enabled: true
+  image: "event-collector:{{ .Values.global.imageTag }}"
+  clusterId: "default"
+  k8sWatchEnabled: "true"
+  selCollectEnabled: "true"
+  selIntervalSeconds: 120
+  clickhouseHost: "clickhouse"
+  clickhousePort: 8123
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "200m", memory: "256Mi" }

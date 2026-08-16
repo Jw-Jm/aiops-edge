@@ -1,0 +1,33 @@
+{{- if .Values.eventCollector.enabled }}
+# event-collector 需要读取集群事件（watch Events）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: event-collector
+  namespace: {{ .Values.namespace.observability }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: event-collector
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: event-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: event-collector
+subjects:
+  - kind: ServiceAccount
+    name: event-collector
+    namespace: {{ .Values.namespace.observability }}
+{{- end }}
