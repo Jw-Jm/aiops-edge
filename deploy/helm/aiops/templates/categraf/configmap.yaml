@@ -44,10 +44,10 @@ data:
     dial_timeout = 2500
     max_idle_conns_per_host = 100
 
-  # node_exporter 插件（替代原 node-exporter DaemonSet）：node_* 标准指标 100% 兼容
-  exporter.toml: |
-    [[instances]]
-    collectors = ["cpu", "meminfo", "vmstat", "netdev", "filesystem", "loadavg", "uname", "time"]
+  # 说明：node_exporter 插件（node_* 兼容指标）在官方 flashcatcloud/categraf:v0.5.17
+  # 镜像中未编译（--inputs 强制也无法启动）。主机指标由原生 cpu/mem/disk/net/system 插件
+  # 覆盖（cpu_usage_active / mem_* / disk_* / net_* / system_* 系列），能力不减，
+  # 仅缺 node_* 命名的社区 Grafana 大盘兼容性。
 
   cpu.toml: |
     [[instances]]
@@ -74,9 +74,11 @@ data:
   # 密码占位符 __MYSQL_PASSWORD__ 由 DaemonSet 启动脚本 sed 替换（env 注入，不进 ConfigMap 明文）。
   mysql.toml: |
     [[instances]]
-    servers = ["root:__MYSQL_PASSWORD__@tcp(mysql:3306)/"]
+    address = "mysql:3306"
+    username = "root"
+    password = "__MYSQL_PASSWORD__"
+    timeout_seconds = 3
     interval = 60
-    gather_slave_status = true
     gather_replica_status = true
-    gather_slowlog = true
+    labels = { instance = "mysql:3306" }
 {{- end }}

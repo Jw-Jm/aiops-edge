@@ -98,8 +98,6 @@ spec:
             items:
               - key: config.toml
                 path: config.toml
-              - key: exporter.toml
-                path: input.node_exporter/exporter.toml
               - key: cpu.toml
                 path: input.cpu/cpu.toml
               - key: mem.toml
