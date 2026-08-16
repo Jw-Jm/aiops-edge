@@ -1,0 +1,79 @@
+{{- if .Values.categraf.enabled }}
+# =============================================================================
+# categraf 最小可用配置（P1-7）— 每节点主机指标采集
+# 覆盖：基础主机插件（node_exporter + cpu/mem/disk/net/system）→ remote write → VictoriaMetrics。
+# 挂载方式：DaemonSet 将本 ConfigMap 的 items 按 path 映射成 conf/ 下的 input.* 目录结构
+#           （ConfigMap 键不允许含 /，故 data 用平铺键 + volume items.path 做子目录）。
+# 生产按需增开 ipmi / snmp / mysql / redis 等插件（配置下发见平台设计
+#           docs/AIOPS_FULLSTACK_DESIGN.md 4.2：平台生成 TOML → providers=http 远程下发）。
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: categraf-conf
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app.kubernetes.io/name: categraf
+    component: categraf
+data:
+  # 主配置：global + writers（指标出口）
+  config.toml: |
+    # categraf 主配置 — global / writer_opt / writers
+    [global]
+    # 机器标识：$HOSTNAME 由 DaemonSet 注入 spec.nodeName（每节点唯一）
+    hostname = "$HOSTNAME"
+    # 全局采集间隔（秒）
+    interval = {{ .Values.categraf.interval | default 15 }}
+    # 全局标签：注入集群维度，便于跨集群区分（对应 ingest.clusterId）
+    [global.labels]
+    cluster_id = "{{ .Values.categraf.clusterId }}"
+    tenant_id = "default"
+
+    # 数据发送缓冲
+    [writer_opt]
+    batch = 2000
+    chan_size = 10000
+
+    # 指标出口：remote write → VictoriaMetrics（与 queryApi.victoriaMetricsUrl 同址）
+    [[writers]]
+    url = "http://victoria-metrics:8428/api/v1/write"
+    timeout = 5000
+    dial_timeout = 2500
+    max_idle_conns_per_host = 100
+
+  # node_exporter 插件（替代原 node-exporter DaemonSet）
+  exporter.toml: |
+    # node_exporter 插件：OS 部件指标（CPU/内存/磁盘/网卡/文件系统等）
+    # 生产按需增开 ipmi/snmp/mysql/redis 插件（配置下发见平台设计 4.2）
+    # # collect interval
+    # interval = 15
+    collectors=[]
+
+  cpu.toml: |
+    # # collect interval
+    # interval = 15
+    # # whether collect per cpu
+    # collect_per_cpu = false
+
+  mem.toml: |
+    # # collect interval
+    # interval = 15
+    collect_platform_fields = true
+
+  disk.toml: |
+    # # collect interval
+    # interval = 15
+    # 忽略 K8s/容器相关挂载点与临时文件系统，避免重复/膨胀
+    ignore_fs = ["tmpfs", "devtmpfs", "devfs", "iso9660", "overlay", "aufs", "squashfs", "nsfs", "CDFS", "fuse.juicefs"]
+    ignore_mount_points = ["/boot", "/var/lib/kubelet/pods"]
+
+  net.toml: |
+    # # collect interval
+    # interval = 15
+    # # whether collect protocol stats on Linux
+    # collect_protocol_stats = false
+
+  system.toml: |
+    # # collect interval
+    # interval = 15
+{{- end }}

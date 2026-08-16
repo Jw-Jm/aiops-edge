@@ -379,10 +379,49 @@ export const listSnmpInterfaces = (id: number) => api.get(`/snmp/devices/${id}/i
 export const collectSnmpDevice = (id: number) => api.post(`/snmp/devices/${id}/collect`)
 
 // ===== IPMI 硬件 + 部件可用性 =====
-export interface IpmiSensor { node_name: string; sensor_name: string; sensor_type: string; reading: string; status: string }
-export interface NodeHealthRow { node_name: string; component: string; status: string; updated_at: string }
+export interface IpmiSensor { id?: number; node_name: string; sensor_name: string; sensor_type: string; reading: string; status: string }
+export interface NodeHealthRow { node_name: string; component: string; status: string; detail?: string; updated_at?: string }
+// SEL 系统事件日志（后端返回字段做兼容兜底：node/type/message 与 node_name/sensor/event_desc 并存）
+export interface IpmiEvent {
+  id?: number | string
+  node_name?: string; node?: string
+  event_id?: string
+  event_time?: string; time?: string; created_at?: string
+  sensor?: string; event_type?: string; type?: string
+  event_desc?: string; message?: string
+  severity?: string
+}
 export const listIpmiSensors = (params?: Record<string, unknown>) => api.get('/ipmi/sensors', { params })
 export const listNodeHealth = (params?: Record<string, unknown>) => api.get('/node/health', { params })
+export const listIpmiEvents = (params?: Record<string, unknown>) => api.get('/ipmi/events', { params })
+
+// ===== 变更管理（变更时间线）=====
+export interface ChangeItem {
+  id?: number | string
+  cluster_id?: string | number
+  service?: string
+  change_type?: string
+  operator?: string
+  content?: string
+  created_at?: string; time?: string
+}
+export const getChanges = (params?: Record<string, unknown>) => api.get('/ops/changes', { params })
+export const postChange = (data: Record<string, unknown>) => api.post('/ops/changes', data)
+
+// ===== 知识图谱（骨架：后端 P2-1/P2-2 并行开发，失败时返回空图）=====
+export interface KgNode { id?: string; name: string; type?: string }
+export interface KgEdge { source: string; target: string; type?: string; value?: number }
+export interface KgGraph {
+  nodes?: KgNode[]
+  edges?: KgEdge[]
+  links?: KgEdge[]
+  cluster_id?: string
+  unavailable?: boolean  // 后端 API 未就绪标记（client 容错写入）
+}
+export const getKgGraph = (params?: Record<string, unknown>) =>
+  api.get<KgGraph>('/kg/graph', { params }).catch(() => ({
+    data: { nodes: [], edges: [], links: [], unavailable: true } as KgGraph,
+  }))
 
 // ===== 系统健康组件（平台健康页）=====
 export interface SystemComponent {

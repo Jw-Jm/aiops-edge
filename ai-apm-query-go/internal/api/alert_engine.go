@@ -31,72 +31,138 @@ func (h *Handler) StartAlertEvaluation() {
 	log.Println("Alert evaluation loop started (every 60s)")
 }
 
+// isK8sRule 判断规则是否属于 K8s 类（评估时实时打 K8s API）。
+// 此类规则走独立并发分组（上限 2），避免并发打爆 K8s API。
+func isK8sRule(rule AlertRule) bool {
+	switch rule.Metric {
+	case "pod_restarts", "pod_pending_minutes", "node_pressure",
+		"unavailable_replicas", "pvc_usage_percent", "oom_count":
+		return true
+	}
+	return false
+}
+
+// ruleEvalResult 并行评估阶段单条规则的计算结果（纯计算，不含事件生成）。
+type ruleEvalResult struct {
+	value    float64
+	breached bool
+	err      error
+}
+
+// computeRuleBreach 并行计算一条规则的 value 与 breach 判定。
+// 只读外部数据源（VM/CH/K8s/MySQL SLO），不修改 alertEvents/ruleState 等内存状态，
+// 因此可安全并发执行；breach → 事件生成由调用方回收到单一 goroutine 顺序处理。
+func (h *Handler) computeRuleBreach(rule AlertRule) ruleEvalResult {
+	value, err := h.evaluateRule(rule)
+	if err != nil {
+		return ruleEvalResult{err: err}
+	}
+
+	// anomaly / burn_rate 有自己的统计/烧毁评估逻辑，不走外层 checkCondition（避免阈值语义冲突）。
+	// threshold / mutation / forecast / metric_raw 等用 checkCondition 判定。
+	breached := false
+	if rule.Type != "anomaly" && rule.Type != "burn_rate" {
+		breached = checkCondition(value, rule.Condition, rule.Threshold)
+	}
+
+	// Mutation detection: compare with historical window
+	if !breached && rule.Type == "mutation" {
+		historicalValue, err := h.evaluateRuleHistorical(rule)
+		if err == nil && historicalValue > 0 {
+			change := (value - historicalValue) / historicalValue * 100
+			if change > 50 || change < -50 {
+				breached = true
+				log.Printf("MUTATION: %s changed %.1f%% (current=%.1f, historical=%.1f)", rule.Name, change, value, historicalValue)
+			}
+		}
+	}
+
+	// Anomaly detection: zscore/MAD 统计检测（当前值偏离历史序列均值/中位数）
+	if !breached && rule.Type == "anomaly" {
+		if current, anom := h.evaluateRuleAnomaly(rule); anom {
+			breached = true
+			log.Printf("ANOMALY: %s current=%.2f (method=%s)", rule.Name, current, rule.AnomalyMethod)
+		}
+	}
+
+	// Forecast：基于历史窗口的偏差（简单线性外推 vs 实际）
+	if !breached && rule.Type == "forecast" {
+		if hist, err := h.evaluateRuleHistorical(rule); err == nil && hist > 0 {
+			dev := (value - hist) / hist * 100
+			limit := rule.Threshold
+			if limit <= 0 {
+				limit = 20
+			}
+			if dev > limit {
+				breached = true
+				log.Printf("FORECAST: %s dev %.1f%% (current=%.1f, window=%.1f)", rule.Name, dev, value, hist)
+			}
+		}
+	}
+
+	// Burn-rate：SLO 目标错误预算烧毁率（实际错误率 / 目标错误率）
+	if !breached && rule.Type == "burn_rate" {
+		if burn, ok := h.evaluateRuleBurnRate(rule, value); ok {
+			breached = true
+			log.Printf("BURN_RATE: %s burn=%.1f (slo=%s)", rule.Name, burn, rule.SLOID)
+		}
+	}
+
+	return ruleEvalResult{value: value, breached: breached}
+}
+
 func (h *Handler) evaluateAlerts() {
 	alertRulesMu.RLock()
 	rules := make([]AlertRule, len(alertRules))
 	copy(rules, alertRules)
 	alertRulesMu.RUnlock()
 
-	for _, rule := range rules {
+	// ── 并行评估阶段（P3-1a）──
+	// 按规则类型分组：非 K8s 规则（threshold/anomaly/forecast/burn_rate/log/trace 类）
+	// 并发评估（上限 8，避免打爆 VM/CH）；K8s 类规则（打实时 K8s API）独立分组、
+	// 并发上限 2，避免打爆 K8s API。本阶段只做只读计算，不改任何内存状态。
+	// 评估结果按规则原始顺序收集到 results，供下一阶段顺序处理。
+	const (
+		nonK8sMaxConcurrent = 8
+		k8sMaxConcurrent    = 2
+	)
+	results := make([]ruleEvalResult, len(rules))
+	nonK8sSem := make(chan struct{}, nonK8sMaxConcurrent)
+	k8sSem := make(chan struct{}, k8sMaxConcurrent)
+	var wg sync.WaitGroup
+	for i, rule := range rules {
 		if !rule.Enabled {
 			continue
 		}
+		wg.Add(1)
+		go func(idx int, r AlertRule) {
+			defer wg.Done()
+			if isK8sRule(r) {
+				k8sSem <- struct{}{}
+				defer func() { <-k8sSem }()
+			} else {
+				nonK8sSem <- struct{}{}
+				defer func() { <-nonK8sSem }()
+			}
+			results[idx] = h.computeRuleBreach(r)
+		}(i, rule)
+	}
+	wg.Wait()
 
-		value, err := h.evaluateRule(rule)
-		if err != nil {
-			log.Printf("evaluate rule %s (%s): %v", rule.ID, rule.Name, err)
+	// ── 串行处理阶段 ──
+	// 按规则原始顺序处理 breach → 事件生成（单一 goroutine 顺序执行，保证事件时序稳定）。
+	// 事件生成涉及 alertEventsMu/ruleStateMu 与 CH 持久化，绝不能并发。
+	for i, rule := range rules {
+		if !rule.Enabled {
 			continue
 		}
-
-		// anomaly / burn_rate 有自己的统计/烧毁评估逻辑，不走外层 checkCondition（避免阈值语义冲突）。
-		// threshold / mutation / forecast / metric_raw 等用 checkCondition 判定。
-		breached := false
-		if rule.Type != "anomaly" && rule.Type != "burn_rate" {
-			breached = checkCondition(value, rule.Condition, rule.Threshold)
+		res := results[i]
+		if res.err != nil {
+			log.Printf("evaluate rule %s (%s): %v", rule.ID, rule.Name, res.err)
+			continue
 		}
-
-		// Mutation detection: compare with historical window
-		if !breached && rule.Type == "mutation" {
-			historicalValue, err := h.evaluateRuleHistorical(rule)
-			if err == nil && historicalValue > 0 {
-				change := (value - historicalValue) / historicalValue * 100
-				if change > 50 || change < -50 {
-					breached = true
-					log.Printf("MUTATION: %s changed %.1f%% (current=%.1f, historical=%.1f)", rule.Name, change, value, historicalValue)
-				}
-			}
-		}
-
-		// Anomaly detection: zscore/MAD 统计检测（当前值偏离历史序列均值/中位数）
-		if !breached && rule.Type == "anomaly" {
-			if current, anom := h.evaluateRuleAnomaly(rule); anom {
-				breached = true
-				log.Printf("ANOMALY: %s current=%.2f (method=%s)", rule.Name, current, rule.AnomalyMethod)
-			}
-		}
-
-		// Forecast：基于历史窗口的偏差（简单线性外推 vs 实际）
-		if !breached && rule.Type == "forecast" {
-			if hist, err := h.evaluateRuleHistorical(rule); err == nil && hist > 0 {
-				dev := (value - hist) / hist * 100
-				limit := rule.Threshold
-				if limit <= 0 {
-					limit = 20
-				}
-				if dev > limit {
-					breached = true
-					log.Printf("FORECAST: %s dev %.1f%% (current=%.1f, window=%.1f)", rule.Name, dev, value, hist)
-				}
-			}
-		}
-
-		// Burn-rate：SLO 目标错误预算烧毁率（实际错误率 / 目标错误率）
-		if !breached && rule.Type == "burn_rate" {
-			if burn, ok := h.evaluateRuleBurnRate(rule, value); ok {
-				breached = true
-				log.Printf("BURN_RATE: %s burn=%.1f (slo=%s)", rule.Name, burn, rule.SLOID)
-			}
-		}
+		value := res.value
+		breached := res.breached
 
 		if breached {
 			// 告警降噪：先检查是否被静默抑制

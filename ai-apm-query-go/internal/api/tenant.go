@@ -99,6 +99,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	saveTenants()
 	tenantsMu.Unlock()
 
+	auditWrite(r, "tenant.create", t.ID, "创建租户 name="+t.Name)
 	respondJSON(w, 201, map[string]interface{}{"tenant": t})
 }
 
@@ -121,5 +122,6 @@ func (h *Handler) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 	delete(tenants, id)
 	saveTenants()
 	tenantsMu.Unlock()
+	auditWrite(r, "tenant.delete", id, "删除租户")
 	respondJSON(w, 200, map[string]interface{}{"message": "deleted", "id": id})
 }

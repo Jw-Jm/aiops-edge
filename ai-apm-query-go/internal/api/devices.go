@@ -143,6 +143,7 @@ func (h *Handler) deviceCreate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 400, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "device.create", req.Hostname, "新增设备 ip="+req.IP)
 	respondJSON(w, 200, map[string]interface{}{"ok": true, "id": id})
 }
 
@@ -154,6 +155,7 @@ func (h *Handler) deviceUpdate(w http.ResponseWriter, r *http.Request, id int64)
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "device.update", strconv.FormatInt(id, 10), "更新设备 "+req.Hostname)
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 
@@ -173,5 +175,6 @@ func (h *Handler) deviceDelete(w http.ResponseWriter, r *http.Request, id int64)
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "device.delete", existing.Hostname, "删除设备")
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }

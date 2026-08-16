@@ -30,6 +30,9 @@ chromadb:
   storageClass: "standard"
 mysql:
   storageClass: "standard"
+# 备份 PVC（backup-pvc，mysql/clickhouse 每日备份落地盘）
+backup:
+  storageClass: "standard"
 
 # LLM 接真实模型（关闭 mock）
 aiOrchestrator:

@@ -88,16 +88,69 @@ vmalert:
     limits: { cpu: "200m", memory: "256Mi" }
 
 # node-exporter — 每节点采集服务器 OS 部件（CPU/内存/磁盘/网卡）
+# 已由 categraf 替代（P1-7）：categraf 内建 node_exporter 插件，职责合并，默认关闭。
+# 如需单独启用可改回 true（注意与 categraf 造成重复采集）。
 nodeExporter:
-  enabled: true
+  enabled: false
   image: "prom/node-exporter:v1.8.2"
 
 # ipmi-exporter — 每节点本地采集 IPMI 传感器（/dev/ipmi0，不走带外网）
+# 已由 categraf 替代（P1-7）：categraf input.ipmi 插件承担 IPMI KCS 本地采集，默认关闭。
+# 如需单独启用可改回 true（注意与 categraf 造成重复采集）。
 ipmiExporter:
-  enabled: true
+  enabled: false
   image: "ipmi-exporter:{{ .Values.global.imageTag }}"
   imagePullPolicy: "IfNotPresent"
   collectInterval: "120"
+
+# ---------------------------------------------------------------------------
+# categraf（P1-7）— 每节点主机指标采集 DaemonSet（flashcat, MIT）
+# 替代 node-exporter/ipmi-exporter/自研 SNMP/中间件采集四个职责：
+#   input.node_exporter → 原 node-exporter；input.ipmi → 原 ipmi-exporter；
+#   input.snmp/input.mysql/input.redis 等按需增开（配置下发见平台设计 4.2）。
+# 指标 remote write → VictoriaMetrics（与 scrape-config 的 node-exporter job 同目的地）。
+# 默认 enabled=true；原 nodeExporter/ipmiExporter 已默认 false 避免重复采集。
+# ---------------------------------------------------------------------------
+categraf:
+  enabled: true
+  image: "flashcatcloud/categraf:v0.5.17"
+  # 所属集群 ID：与 ingest.clusterId 对齐（多集群纳管时每集群一个配置/标签维度）
+  clusterId: "default"
+  # 全局采集间隔（秒）
+  interval: 15
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits: { cpu: "500m", memory: "256Mi" }
+
+# ---------------------------------------------------------------------------
+# 备份（P0-9）— 每日定时把 MySQL/ClickHouse 数据导出到 backup-pvc
+# 默认 enabled=true：方案要求生产必须备份；无需备份的环境可置 false，
+# 或把 schedule 改为一年一次（如 "0 0 31 2 *"）实现"默认关"。
+# 两个 CronJob 共用 backup-pvc（RWO），默认 02:00 / 03:00 错峰执行，无并发冲突。
+# ---------------------------------------------------------------------------
+backup:
+  enabled: true
+  storageClass: ""
+  storage: 5Gi
+  # 轮转：备份目录内删除超过该天数（约等于保留份数）的旧文件
+  retentionDays: 7
+  # MySQL 备份容器镜像（带 mysqldump 客户端即可）
+  mysqlImage: "mysql:8"
+  mysql:
+    schedule: "0 2 * * *"   # 每日 02:00
+  clickhouse:
+    schedule: "0 3 * * *"   # 每日 03:00
+
+# ---------------------------------------------------------------------------
+# Ingress/TLS（P0-10）— 前端入口。默认关闭：演示环境走 NodePort(frontend.nodePort)。
+# 生产启用：ingress.enabled=true + 注入证书 secret + 指定 host，详见 templates/ingress.yaml 头注释。
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  host: "aiops.local"
+  className: "nginx"
+  # 非空才渲染 tls 段；Secret 需与 Ingress 同 namespace（observability），含 tls.crt/tls.key
+  tlsSecretName: ""
 
 # VM 内置 scrape（组件最小化）：抓取 node-exporter/ingest/orchestrator 指标进 VictoriaMetrics
 # （query-api /metrics 为鉴权端点不作为目标）。

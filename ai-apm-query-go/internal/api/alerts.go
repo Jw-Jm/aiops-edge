@@ -1046,6 +1046,7 @@ func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
 
 	saveAlertRules()
 
+	auditWrite(r, "alert_rule.create", rule.Name, "创建告警规则 type="+rule.Type+" metric="+rule.Metric)
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
 		"data": rule,
 	})
@@ -1082,6 +1083,7 @@ func (h *Handler) deleteAlertRule(w http.ResponseWriter, r *http.Request, id str
 
 	if found {
 		saveAlertRules()
+		auditWrite(r, "alert_rule.delete", id, "删除告警规则")
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"message": "rule deleted",
 		})

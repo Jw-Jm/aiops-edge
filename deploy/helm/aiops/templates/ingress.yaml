@@ -1,0 +1,48 @@
+{{- if .Values.ingress.enabled }}
+# =============================================================================
+# Ingress — 前端入口 + TLS（P0-10）
+# 默认关闭（ingress.enabled=false）：演示环境走 NodePort(frontend.nodePort) 直连。
+#
+# 生产启用步骤：
+#   ① 注入 TLS 证书 Secret（与 Ingress 同 namespace，即 observability，含 tls.crt/tls.key）。
+#      示例: kubectl -n observability create secret tls aiops-tls \
+#              --cert=tls.crt --key=tls.key
+#   ② values 设置（values.yaml / values-prod.yaml 或 --set）:
+#        ingress:
+#          enabled: true
+#          host: "aiops.example.com"
+#          tlsSecretName: "aiops-tls"   # 留空则不渲染 tls 段（走 http）
+#   ③ 确认集群已装 nginx ingress controller（ingressClassName 默认 nginx，
+#      可用 values.ingress.className 覆盖）。
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: frontend
+  annotations:
+    # nginx ingress controller 调优（可选，按需调整）
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: {{ .Values.ingress.className | default "nginx" }}
+  {{- if .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+{{- end }}

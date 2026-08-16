@@ -1,0 +1,98 @@
+{{- if .Values.categraf.enabled }}
+# =============================================================================
+# categraf DaemonSet — 每节点主机指标采集（P1-7，替代 node-exporter/ipmi-exporter）
+# 权限写法参照 ipmi-exporter DaemonSet：privileged（IPMI KCS / freeipmi 需要）+
+# hostPID（进程/主机视角采集，IPMI 本地读 /dev/ipmi0 需要）。
+# conf 目录由 ConfigMap(categraf-conf) 挂载 /etc/categraf/conf：
+#   ConfigMap 键不允许含 "/"，故 volume items 用 path 映射出 conf/input.* 子目录结构。
+# run 目录用 emptyDir（categraf 运行时 scratch，无需持久化）。
+# 探针：无 HTTP 端点，readiness 用 exec pgrep 检查采集进程存活。
+# 生产按需增开 ipmi/snmp/mysql/redis 插件（配置下发见平台设计 4.2）。
+# =============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: categraf
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app.kubernetes.io/name: categraf
+    component: categraf
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: categraf
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: categraf
+    spec:
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: categraf
+          image: {{ .Values.categraf.image }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            # categraf config.toml 的 $HOSTNAME 模板变量来源（取宿主机名，多节点唯一）
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # 集群 ID（与 ingest.clusterId 对齐，多集群纳管时区分配置）
+            - name: CLUSTER_ID
+              value: {{ .Values.categraf.clusterId | quote }}
+          command: ["/usr/bin/categraf"]
+          args: ["-configs", "/etc/categraf/conf"]
+          # 无 HTTP 探针：readiness 用 exec pgrep 检查 categraf 进程（-x 精确匹配避免自匹配）
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep -x categraf >/dev/null || exit 1"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.categraf.resources | nindent 12 }}
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/categraf/conf
+            - name: run
+              mountPath: /var/categraf/run
+            - name: proc
+              mountPath: /hostfs/proc
+              readOnly: true
+            - name: sys
+              mountPath: /hostfs/sys
+              readOnly: true
+      volumes:
+        - name: conf
+          configMap:
+            name: categraf-conf
+            defaultMode: 0644
+            items:
+              - key: config.toml
+                path: config.toml
+              - key: exporter.toml
+                path: input.node_exporter/exporter.toml
+              - key: cpu.toml
+                path: input.cpu/cpu.toml
+              - key: mem.toml
+                path: input.mem/mem.toml
+              - key: disk.toml
+                path: input.disk/disk.toml
+              - key: net.toml
+                path: input.net/net.toml
+              - key: system.toml
+                path: input.system/system.toml
+        - name: run
+          emptyDir: {}
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+{{- end }}

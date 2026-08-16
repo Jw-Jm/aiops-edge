@@ -163,6 +163,7 @@ func (h *Handler) clusterCreate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "cluster.create", req.Name, "新增集群 provider="+req.Provider)
 	respondJSON(w, 201, map[string]interface{}{"ok": true, "id": id})
 }
 
@@ -429,6 +430,7 @@ func (h *Handler) clusterUpdate(w http.ResponseWriter, r *http.Request, id int64
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "cluster.update", strconv.FormatInt(id, 10), "更新集群 "+req.Name)
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 
@@ -448,6 +450,7 @@ func (h *Handler) clusterDelete(w http.ResponseWriter, r *http.Request, id int64
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "cluster.delete", existing.Name, "删除集群")
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 

@@ -113,6 +113,7 @@ func (h *Handler) createSLO(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "create slo: "+err.Error())
 		return
 	}
+	auditWrite(r, "slo.create", s.Name, "创建 SLO 目标 service="+s.Service)
 	respondJSON(w, http.StatusCreated, s)
 }
 
@@ -149,6 +150,7 @@ func (h *Handler) updateSLO(w http.ResponseWriter, r *http.Request, id string) {
 		respondError(w, http.StatusInternalServerError, "update slo: "+err.Error())
 		return
 	}
+	auditWrite(r, "slo.update", id, "更新 SLO 目标 "+s.Name)
 	respondJSON(w, http.StatusOK, s)
 }
 
@@ -202,6 +204,7 @@ func (h *Handler) deleteSLO(w http.ResponseWriter, r *http.Request, id string) {
 		respondError(w, http.StatusInternalServerError, "delete slo: "+err.Error())
 		return
 	}
+	auditWrite(r, "slo.delete", existing.Name, "删除 SLO 目标")
 	respondJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }
 

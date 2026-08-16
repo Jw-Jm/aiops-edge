@@ -32,6 +32,12 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// isDeletedService 判断服务名是否为已删除残留（以 "(deleted)" 结尾）。
+// P1-5 服务口径统一：活跃服务 = 最近 24h 有流量 且 service_name 不以 "(deleted)" 结尾。
+func isDeletedService(name string) bool {
+	return strings.HasSuffix(name, "(deleted)")
+}
+
 // orchestratorBase 返回 ai-orchestrator 服务地址（可经 env 覆盖，可移植）。
 func orchestratorBase() string {
 	return firstNonEmpty(os.Getenv("AI_ORCHESTRATOR_URL"), "http://ai-orchestrator.observability.svc.cluster.local:8080")
@@ -371,20 +377,25 @@ func parseRows(body []byte) ([]map[string]interface{}, error) {
 // 从 ClickHouse 动态发现服务，LEFT JOIN MySQL service_metadata 富化元数据。
 // 数据归属治理：服务列表以 trace_spans 实际接入为准（source=trace），
 // service_metadata 仅提供 owner/team/tier/description 富化，缺失字段走默认值。
+// P1-5 服务口径统一：活跃服务 = 最近 24h 有流量 且 不以 "(deleted)" 结尾；
+// 与 /dashboard/stats 的 services 计数同款过滤。默认剔除 deleted 残留，
+// 传 include_deleted=true 可放开（此时条目带 deleted:true 标记供前端区分）。
 func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	// 数据(P0-1)：trace_spans 有 tenant_id 列，必须按租户过滤（原注释"无 tenant_id 列"有误）
 	tenantClause := " AND tenant_id=" + chQuote(tid)
 	scopeClause := scopeServicesClause(r)    // 安全(P1-2)：scope.services 非空时按服务范围过滤
 	clusterClause := extractClusterClause(r) // A-3 修复：服务列表按集群过滤
+	// P1-5：默认过滤 deleted 残留服务；include_deleted=true 时放开
+	includeDeleted := r.URL.Query().Get("include_deleted") == "true"
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	// 1. 从 ClickHouse 拿动态服务列表（近 7 天有 trace 的服务）
+	// 1. 从 ClickHouse 拿动态服务列表（P1-5：近 24h 有 trace 的活跃服务，与 stats 口径一致）
 	chSQL := `SELECT DISTINCT service_name
               FROM observability.trace_spans
-              WHERE date >= today()-7` + tenantClause + clusterClause + scopeClause + `
+              WHERE date >= today()-1` + tenantClause + clusterClause + scopeClause + `
                 AND service_name != ''
               ORDER BY service_name`
 	body, err := h.queryClickHouse(ctx, chSQL)
@@ -400,20 +411,23 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 提取服务名列表
+	// 提取服务名列表（剔除 deleted 残留，除非 include_deleted=true）
 	services := make([]string, 0, len(rows))
 	for _, row := range rows {
 		if name, ok := row["service_name"].(string); ok && name != "" {
+			if !includeDeleted && isDeletedService(name) {
+				continue
+			}
 			services = append(services, name)
 		}
 	}
 
-	// 2. 从 ClickHouse 拿各服务指标聚合（调用量/错误数/平均延迟，近 7 天）
+	// 2. 从 ClickHouse 拿各服务指标聚合（调用量/错误数/平均延迟，近 24h）
 	//    解决服务列表三项指标(calls/errors/avg_latency_ms)恒为 0 的问题。
 	metricsSQL := `SELECT service_name AS service, count() AS calls,
 	                     countIf(is_error=1) AS errs, avg(duration_ns)/1000000 AS avg_ms
 	              FROM observability.trace_spans
-	              WHERE date >= today()-7` + tenantClause + clusterClause + scopeClause + `
+	              WHERE date >= today()-1` + tenantClause + clusterClause + scopeClause + `
 	              GROUP BY service_name`
 	metricsBody, err := h.queryClickHouse(ctx, metricsSQL)
 	if err != nil {
@@ -462,6 +476,8 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 			"errors":          int64(0),
 			"error_rate":      0.0,
 			"avg_latency_ms":  0.0,
+			// P1-5：保留 deleted 标记（默认过滤后通常为 false；include_deleted=true 时区分展示）
+			"deleted": isDeletedService(svc),
 		}
 		if mm, ok := metrics[svc]; ok {
 			for k, v := range mm {
@@ -909,6 +925,11 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	var items []biz.StatsItem
 	for _, row := range rows {
 		svc, _ := row["service_name"].(string)
+		// P1-5 服务口径统一：与 ListServices 同款过滤，剔除 "(deleted)" 残留服务，
+		// 保证 stats.services 与 /services 活跃服务数一致。
+		if isDeletedService(svc) {
+			continue
+		}
 		calls, _ := toInt64(row["calls"])
 		errors, _ := toInt64(row["errors"])
 		latSum, _ := toInt64(row["lat_sum"])
@@ -924,6 +945,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// 修复(P1-4)：统计口径统一。
 	// services 数 = 仅 trace_spans 中出现的服务（与 ListServices 同口径，真实服务数）；
 	// topology_services = 含 service_topology 目录中无 trace 服务的总数（前端展示用）。
+	// P1-5：topology_services 亦剔除 "(deleted)" 残留服务（与 GlobalTopology 剔除 deleted 节点一致）。
 	topologySQL := fmt.Sprintf(
 		"SELECT DISTINCT source_service AS s FROM observability.service_topology WHERE tenant_id=%s%s%s AND s != '' UNION DISTINCT SELECT DISTINCT target_service AS s FROM observability.service_topology WHERE tenant_id=%s%s%s AND s != ''",
 		chQuote(tid), clusterClause, scopeEdgeClause(r), chQuote(tid), clusterClause, scopeEdgeClause(r),
@@ -936,7 +958,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 				svcSet[it.Service] = true
 			}
 			for _, row := range tr {
-				if s, _ := row["s"].(string); s != "" {
+				if s, _ := row["s"].(string); s != "" && !isDeletedService(s) {
 					svcSet[s] = true
 				}
 			}

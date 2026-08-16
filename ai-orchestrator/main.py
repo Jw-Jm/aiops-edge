@@ -57,6 +57,12 @@ async def lifespan(app: FastAPI):
                           id='alert_to_case', replace_existing=True)
     except Exception as e:  # noqa: BLE001
         print(f"[startup] scheduler add_job(alert_to_case) error: {e}", flush=True)
+    # 1c. APScheduler 定时：节点部件健康真实聚合（P1-3，每 60s，失败仅打日志不抛错）
+    try:
+        scheduler.add_job(_scheduled_node_health_aggregate, 'interval', seconds=60,
+                          id='node_health_aggregate', replace_existing=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] scheduler add_job(node_health_aggregate) error: {e}", flush=True)
     # 2. SNMP 采集 + MySQL 迁移 + 知识库自动加载（均可降级，失败不阻塞）
     try:
         from db import migrate
@@ -186,6 +192,18 @@ async def _scheduled_anomaly_scan():
                 detector.detect(name, metric, val)
     except Exception as e:
         print(f"[scheduler] anomaly scan error: {e}")
+
+
+async def _scheduled_node_health_aggregate():
+    """P1-3: 每 60s 自动聚合节点部件健康（VM OS 层 + IPMI 硬件层 → node_component_health）。
+
+    阻塞的 HTTP/MySQL 调用放线程池，失败仅打日志不阻塞主流程。
+    """
+    try:
+        from node_health import NodeHealthAggregator
+        await asyncio.to_thread(NodeHealthAggregator().aggregate_all)
+    except Exception as e:
+        print(f"[scheduler] node health aggregate error: {e}", flush=True)
 
 # 延迟导入：orchestrator 中的 ChromaDB 模型下载会阻塞启动
 # 使用 startup event 在后台初始化
@@ -2699,6 +2717,87 @@ async def collect_snmp_device(dev_id: int):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  变更时间线 Change Events（P1-1）
+# ═══════════════════════════════════════════════════════════════
+
+class ChangeEventRequest(BaseModel):
+    cluster_id: str = "default"
+    service: str = ""
+    change_type: str = ""
+    operator: str = ""
+    content: str = ""
+    related_trace_ids: str = ""
+
+
+@app.post("/api/v1/ops/changes")
+async def create_change_event(req: ChangeEventRequest, request: Request):
+    """记录一条运维变更到变更时间线，返回变更 id。写入审计（复用 _audit_log）。"""
+    service = (req.service or "").strip()
+    change_type = (req.change_type or "").strip()
+    content = (req.content or "").strip()
+    if not service or not change_type:
+        raise HTTPException(400, "service and change_type required")
+    if not content:
+        raise HTTPException(400, "content required")
+    operator = (req.operator or "").strip() or _audit_operator(request)
+    cid = (req.cluster_id or "default").strip() or "default"
+    trace_ids = (req.related_trace_ids or "").strip()
+    from db import db_available, get_conn
+    if not db_available():
+        raise HTTPException(503, "MySQL unavailable, cannot record change event")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO change_events (cluster_id, service, change_type, operator, content, related_trace_ids) "
+                "VALUES (%s,%s,%s,%s,%s,%s)",
+                (cid, service, change_type, operator, content, trace_ids or None))
+            new_id = cur.lastrowid
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise HTTPException(500, f"insert change_event failed: {e}")
+    finally:
+        conn.close()
+    try:
+        _audit_log(f"change:{new_id}", "change_event", operator, service,
+                   content[:300], "ok",
+                   {"change_type": change_type, "cluster_id": cid, "related_trace_ids": trace_ids})
+    except Exception:
+        pass
+    return {"ok": True, "id": new_id}
+
+
+@app.get("/api/v1/ops/changes")
+async def list_change_events(service: str = "", cluster_id: str = "", limit: int = 50):
+    """变更时间线列表（按 created_at 倒序）。"""
+    limit = max(1, min(limit, 500))
+    from db import db_available, get_conn
+    if not db_available():
+        return {"changes": [], "total": 0}
+    conn = get_conn()
+    try:
+        where, vals = [], []
+        if service:
+            where.append("service=%s"); vals.append(service)
+        if cluster_id:
+            where.append("cluster_id=%s"); vals.append(cluster_id)
+        w = (" WHERE " + " AND ".join(where)) if where else ""
+        sql = "SELECT * FROM change_events" + w + " ORDER BY created_at DESC, id DESC LIMIT %s"
+        with conn.cursor() as cur:
+            cur.execute(sql, vals + [limit])
+            rows = cur.fetchall()
+        return {"changes": rows, "total": len(rows)}
+    except Exception as e:
+        return {"changes": [], "total": 0, "error": str(e)}
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════
 #  IPMI（本地 /dev/ipmi0 上报）+ 部件可用性
 # ═══════════════════════════════════════════════════════════════
 
@@ -2708,19 +2807,27 @@ from node_health import NodeHealthAggregator
 
 @app.post("/api/v1/ipmi/ingest")
 async def ipmi_ingest(body: dict = None):
-    """ipmi-exporter 上报节点传感器。可降级。"""
+    """ipmi-exporter 上报节点传感器 + SEL 事件（sel_events）。可降级。"""
     b = body or {}
     node = b.get("node") or b.get("node_name")
     if not node:
         raise HTTPException(400, "node required")
     sensors = b.get("sensors") or []
-    IPMIStore().ingest(node, sensors)
-    return {"ok": True, "count": len(sensors)}
+    sel_events = b.get("sel_events") or []
+    store = IPMIStore()
+    store.ingest(node, sensors, sel_events)
+    return {"ok": True, "count": len(sensors), "sel_count": len(sel_events)}
 
 
 @app.get("/api/v1/ipmi/sensors")
 async def list_ipmi_sensors(node: str = "", sensor_type: str = ""):
     return {"sensors": IPMIStore().query(node=node or None, sensor_type=sensor_type or None)}
+
+
+@app.get("/api/v1/ipmi/events")
+async def list_ipmi_sel_events(node: str = "", limit: int = 50):
+    """SEL 事件明细列表（按 event_time 倒序）。"""
+    return {"events": IPMIStore().query_sel(node=node or None, limit=limit)}
 
 
 @app.get("/api/v1/node/health")
@@ -2730,14 +2837,23 @@ async def list_node_health(node: str = ""):
 
 @app.post("/api/v1/node/health/aggregate")
 async def aggregate_node_health(body: dict = None):
-    """手动触发部件可用性聚合（mock node_exporter+IPMI 数据）。"""
+    """手动触发一次真实聚合（P1-3）：从 VM + IPMI 采集真实指标，按阈值判定部件状态并落库。
+
+    body: {node?: 仅聚合该节点, metrics?: 兼容旧 mock 模式（提供 metrics 时走原判定逻辑）}
+    不带 node 时聚合 VM 发现的全部节点。
+    """
     b = body or {}
-    node = b.get("node") or b.get("node_name")
-    if not node:
-        raise HTTPException(400, "node required")
-    metrics = b.get("metrics") or {}
-    status = NodeHealthAggregator().aggregate(node, metrics)
-    return {"ok": True, "health": status}
+    node = (b.get("node") or b.get("node_name") or "").strip()
+    agg = NodeHealthAggregator()
+    # 兼容旧 mock 调用：显式提供 metrics 时按原逻辑判定单节点
+    if b.get("metrics"):
+        if not node:
+            raise HTTPException(400, "node required when metrics provided")
+        status = agg.aggregate(node, b.get("metrics") or {})
+        return {"ok": True, "mode": "provided_metrics", "health": [{"node": node, "components": status}]}
+    results = agg.aggregate_all(nodes=[node] if node else None)
+    return {"ok": True, "mode": "auto_pipeline",
+            "aggregated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"), "health": results}
 
 
 # WebShell WebSocket 端点

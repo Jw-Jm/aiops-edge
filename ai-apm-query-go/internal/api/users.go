@@ -76,6 +76,7 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 	if req.IsApprover {
 		_ = d.SetApprover(id, true)
 	}
+	auditWrite(r, "user.create", req.Username, "创建用户 role="+req.Role)
 	respondJSON(w, 200, map[string]interface{}{"ok": true, "id": id})
 }
 
@@ -142,6 +143,7 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.IsApprover != nil {
 		_ = d.SetApprover(id, *req.IsApprover)
 	}
+	auditWrite(r, "user.update", strconv.FormatInt(id, 10), "更新用户 role="+req.Role)
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 
@@ -185,6 +187,7 @@ func (h *Handler) UserDelete(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "user.delete", existing.Username, "删除用户")
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 

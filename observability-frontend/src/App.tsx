@@ -33,6 +33,10 @@ const WorkflowsEditor = lazy(() => import('./pages/ai/Workflows/Editor'))
 const WorkflowsDetail = lazy(() => import('./pages/ai/Workflows/Detail'))
 const K8sActions = lazy(() => import('./pages/infra/K8sActions'))
 const Grafana = lazy(() => import('./pages/observability/Grafana'))
+// P2-4 新增页面：硬件健康 / 变更时间线 / 图谱视图
+const Hardware = lazy(() => import('./pages/infra/Hardware'))
+const Changes = lazy(() => import('./pages/infra/Changes'))
+const KnowledgeGraph = lazy(() => import('./pages/ai/KnowledgeGraph'))
 
 // ===== 侧栏导航：7 大板块 =====
 interface NavItem { path: string; label: string; icon: AppIconName; badge?: string }
@@ -64,6 +68,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '智能运维',
     items: [
       { path: '/ai/chat', label: 'AI 对话', icon: 'chat' },
+      { path: '/kg', label: '图谱视图', icon: 'topology' },
       { path: '/ai/tools', label: 'AI 工具', icon: 'nl2sql' },
       { path: '/ai/workflows', label: '工作流', icon: 'workflow' },
       { path: '/slo', label: 'SLO 目标', icon: 'settings' },
@@ -75,12 +80,14 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: '/capacity', label: '容量预测', icon: 'capacity' },
       { path: '/infra/k8s', label: 'K8s 运维', icon: 'k8s' },
+      { path: '/hardware', label: '硬件健康', icon: 'ipmi' },
     ],
   },
   {
     title: '报告',
     items: [
       { path: '/report', label: '报告中心', icon: 'reports' },
+      { path: '/changes', label: '变更时间线', icon: 'tasks' },
     ],
   },
   {
@@ -314,6 +321,9 @@ function AppLayout() {
               <Route path="/knowledge" element={<Knowledge />} />
               <Route path="/capacity" element={<Capacity />} />
               <Route path="/infra/k8s" element={<K8sActions />} />
+              <Route path="/hardware" element={<Hardware />} />
+              <Route path="/changes" element={<Changes />} />
+              <Route path="/kg" element={<KnowledgeGraph />} />
               <Route path="/observability/grafana" element={<Grafana />} />
               <Route path="/report" element={<Report />} />
               <Route path="/admin/users" element={<AdminUsers />} />

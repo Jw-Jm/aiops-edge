@@ -443,6 +443,7 @@ func (h *Handler) SaveLLMSettings(w http.ResponseWriter, r *http.Request) {
 	// 保存历史版本
 	go saveLLMHistory(settings.LLM)
 
+	auditWrite(r, "settings.llm.update", settings.LLM.Provider, "更新 LLM 配置 model="+settings.LLM.Model)
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"message": "LLM settings saved",
 		"data":    settings.LLM,

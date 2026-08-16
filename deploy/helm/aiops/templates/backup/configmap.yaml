@@ -1,0 +1,33 @@
+{{- if .Values.backup.enabled }}
+# ClickHouse 备份导出脚本（P0-9）— 由 clickhouse-backup CronJob 挂载执行
+# 最小可行方案：clickhouse-client 导出关键业务表（TSV）到 backup-pvc。
+# 数据量大时建议升级原生 BACKUP TABLE ... TO Disk(...)（需配置 backup Disk）或 clickhouse-backup 工具。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-backup-script
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: clickhouse-backup
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -e
+    echo "waiting for clickhouse..."
+    until clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1; do sleep 5; done
+    echo "clickhouse ready, exporting key tables..."
+    TS=$(date +%Y%m%d-%H%M%S)
+    OUT=/backup/clickhouse
+    mkdir -p "$OUT"
+    # 关键业务表（与 init_clickhouse.sql 一致，均在 observability 库）
+    for t in trace_spans log_records service_topology alert_events; do
+      echo "exporting observability.$t"
+      clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local \
+        --password "$CLICKHOUSE_PASSWORD" \
+        --query "SELECT * FROM observability.$t FORMAT TSV" \
+        > "$OUT/${t}-${TS}.tsv"
+    done
+    echo "retention: removing files older than {{ .Values.backup.retentionDays }} days"
+    find "$OUT" -type f -mtime +{{ .Values.backup.retentionDays }} -delete
+    echo "clickhouse backup finished: $OUT"
+{{- end }}

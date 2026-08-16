@@ -118,6 +118,7 @@ func (h *Handler) topologyNodeCreate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 400, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "topology.node.create", req.Name, "创建拓扑节点 type="+req.Type)
 	respondJSON(w, 200, map[string]interface{}{"ok": true, "id": id})
 }
 
@@ -129,6 +130,7 @@ func (h *Handler) topologyNodeUpdate(w http.ResponseWriter, r *http.Request, id 
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "topology.node.update", strconv.FormatInt(id, 10), "更新拓扑节点 "+req.Name)
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 
@@ -148,6 +150,7 @@ func (h *Handler) topologyNodeDelete(w http.ResponseWriter, r *http.Request, id 
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "topology.node.delete", strconv.FormatInt(id, 10), "删除拓扑节点 "+existing.Name)
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 
@@ -218,6 +221,7 @@ func (h *Handler) topologyRelationCreate(w http.ResponseWriter, r *http.Request)
 		respondJSON(w, 400, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "topology.relation.create", req.Type, "创建拓扑边 src_id="+strconv.FormatInt(req.SrcID, 10)+" dst_id="+strconv.FormatInt(req.DstID, 10))
 	respondJSON(w, 200, map[string]interface{}{"ok": true, "id": id})
 }
 
@@ -229,6 +233,7 @@ func (h *Handler) topologyRelationUpdate(w http.ResponseWriter, r *http.Request,
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "topology.relation.update", strconv.FormatInt(id, 10), "更新拓扑边 "+req.Type)
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 
@@ -248,6 +253,7 @@ func (h *Handler) topologyRelationDelete(w http.ResponseWriter, r *http.Request,
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	auditWrite(r, "topology.relation.delete", strconv.FormatInt(id, 10), "删除拓扑边 type="+existing.Type)
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
 

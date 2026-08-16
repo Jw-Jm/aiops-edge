@@ -1,0 +1,119 @@
+{{- if .Values.backup.enabled }}
+# =============================================================================
+# 备份 CronJobs（P0-9）— MySQL / ClickHouse 每日定时导出到 backup-pvc
+# 两个 CronJob 共用 backup-pvc（RWO 5Gi），默认 02:00/03:00 错峰执行避免 RWO 挂载冲突；
+# concurrencyPolicy: Forbid 防止同一 Job 上一轮未结束又开新一轮。
+# 轮转：job 内删除超过 values.backup.retentionDays 天的旧文件（默认保留最近 7 份）。
+# 生产启用：values.backup.enabled=true（默认即 true），schedule 可单独调整。
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: aiops-backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.backup.storageClass }}
+  storageClassName: {{ .Values.backup.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.storage }}
+---
+# MySQL 每日备份（默认 02:00）：mysqldump 全库 → /backup/mysql/
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mysql-backup
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: mysql-backup
+spec:
+  schedule: {{ .Values.backup.mysql.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: {{ .Values.backup.mysqlImage | default "mysql:8" }}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  echo "waiting for mysql..."
+                  until mysqladmin ping -h mysql.{{ .Values.namespace.observability }}.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; do sleep 5; done
+                  echo "mysql ready, starting mysqldump..."
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  OUT=/backup/mysql
+                  mkdir -p "$OUT"
+                  mysqldump -h mysql.{{ .Values.namespace.observability }}.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" \
+                    --single-transaction --routines --triggers --all-databases \
+                    > "$OUT/mysql-${TS}.sql"
+                  echo "dump done: $OUT/mysql-${TS}.sql ($(du -h "$OUT/mysql-${TS}.sql" | cut -f1))"
+                  echo "retention: removing files older than {{ .Values.backup.retentionDays }} days"
+                  find "$OUT" -type f -mtime +{{ .Values.backup.retentionDays }} -delete
+                  echo "mysql backup finished"
+              env:
+                - name: MYSQL_ROOT_PASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-pvc
+---
+# ClickHouse 每日备份（默认 03:00）：clickhouse-client 导出关键表（TSV）→ /backup/clickhouse/
+# 说明：数据量大时建议升级为原生 BACKUP TABLE ... TO Disk(...) 或 clickhouse-backup 工具，
+#       此处为最小可行方案（关键业务表 TSV 导出）。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: clickhouse-backup
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: clickhouse-backup
+spec:
+  schedule: {{ .Values.backup.clickhouse.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: {{ .Values.clickhouse.image }}
+              command: ["/bin/sh", "/scripts/backup.sh"]
+              env:
+                - name: CLICKHOUSE_PASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-pvc
+            - name: script
+              configMap:
+                name: clickhouse-backup-script
+                defaultMode: 0755
+{{- end }}
