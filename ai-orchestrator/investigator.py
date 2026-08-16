@@ -18,10 +18,16 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import agent_tool
+
+# 调查报告写回告警事件（query-api 内部接口，X-Internal-Token 认证）
+_QUERY_API_URL = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
+_INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
 log = logging.getLogger("investigator")
 
@@ -105,6 +111,50 @@ def _run_worker(persona, prompt: str, run_worker=None,
         return None
 
 
+def _writeback_to_alert_event(rule: str, report: str) -> str:
+    """把调查报告写回 query-api 告警事件 (investigation 字段)。
+
+    流程: GET /alerts/events?rule=<rule> 找 firing/最新事件 → POST
+    /alerts/events/{id}/investigation。失败/无事件/不可达仅返回说明文本,
+    绝不抛出 (不影响调查主流程)。
+    """
+    try:
+        q = urllib.parse.quote(rule)
+        url = f"{_QUERY_API_URL.rstrip('/')}/alerts/events?rule={q}"
+        req = urllib.request.Request(url, method="GET")
+        if _INTERNAL_TOKEN:
+            req.add_header("X-Internal-Token", _INTERNAL_TOKEN)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        events = data.get("data", []) if isinstance(data, dict) else []
+        if not isinstance(events, list) or not events:
+            return "(未找到匹配告警事件, 调查报告未写回)"
+        # 优先 firing 事件, 否则取最新 (last_timestamp 倒序)
+        target = None
+        for ev in events:
+            if ev.get("status") == "firing":
+                target = ev
+                break
+        if target is None:
+            target = events[0]
+        event_id = target.get("id", "")
+        if not event_id:
+            return "(告警事件缺少 id, 调查报告未写回)"
+        body = json.dumps({"investigation": report[:4000]}).encode("utf-8")
+        wreq = urllib.request.Request(
+            f"{_QUERY_API_URL.rstrip('/')}/alerts/events/{event_id}/investigation",
+            data=body, method="POST",
+            headers={"Content-Type": "application/json"})
+        if _INTERNAL_TOKEN:
+            wreq.add_header("X-Internal-Token", _INTERNAL_TOKEN)
+        with urllib.request.urlopen(wreq, timeout=10) as resp:
+            resp.read()
+        return f"(调查报告已写回告警事件 {event_id})"
+    except Exception as e:  # noqa: BLE001
+        log.warning("调查报告写回告警事件失败(不影响调查主流程): %s", e)
+        return f"(调查报告写回失败: {e})"
+
+
 def _store_report(rule: str, severity: str, payload: dict | None, report: str) -> str:
     """调查报告写知识库 (type=investigation)。RAGStore 不可用时仅返回说明文本。"""
     try:
@@ -174,7 +224,9 @@ def maybe_investigate(rule: str, severity: str, payload: dict | None = None,
             log.warning("告警 %s 调查未产出报告 (worker 超时或无结果), 跳过入库", rule)
             return None
         note = _store_report(rule, severity, payload, report)
-        return f"{report}\n\n{note}"
+        # 闭环: 调查报告写回告警事件 investigation 字段（告警详情页可见）
+        note_wb = _writeback_to_alert_event(rule, report)
+        return f"{report}\n\n{note}\n{note_wb}"
     except Exception as e:  # noqa: BLE001
         log.exception("maybe_investigate(%s) 异常: %s", rule, e)
         return None
