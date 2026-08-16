@@ -22,6 +22,7 @@ from skill_registry import SkillRegistry, ExpertRegistry
 from skills import init_skills, init_experts
 from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check, _llm_async
 from flow_api import router as flow_router
+from kg_api import router as kg_router
 import agent_tool  # B4: 后台 persona worker 终态通知队列 (drain_notifications)
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
@@ -160,6 +161,7 @@ app = FastAPI(title="AIOps Orchestrator", version="5.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 shell_policy = ShellPolicy()
 app.include_router(flow_router)
+app.include_router(kg_router)
 
 
 async def _scheduled_anomaly_scan():

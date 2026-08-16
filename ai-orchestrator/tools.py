@@ -6,6 +6,7 @@ import urllib.request
 import urllib.error
 
 from skill_registry import ToolRegistry
+from kg_tools import kg_evidence_tool
 
 QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
@@ -218,3 +219,18 @@ if not ToolRegistry.get("query_knowledge"):
             "max_results": {"type": "int", "required": False, "default": 5, "desc": "返回条数"},
         },
     )(_query_knowledge)
+
+# ═══════════════════════════════════════════════════════════════
+#  Mount E4: query_knowledge_graph 知识图谱证据链工具 (cls=safe, category=observability)
+# ═══════════════════════════════════════════════════════════════
+if not ToolRegistry.get("query_knowledge_graph"):
+    ToolRegistry.register(
+        name="query_knowledge_graph",
+        description="查询运维知识图谱: 服务的依赖关系/上下游/关联变更/所属基础设施, 返回结构化证据链",
+        category="observability",
+        cls_="safe",
+        params={
+            "service": {"type": "string", "required": True, "default": "", "desc": "服务名"},
+            "cluster_id": {"type": "string", "required": False, "default": "default", "desc": "集群ID"},
+        },
+    )(kg_evidence_tool)
