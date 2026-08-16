@@ -406,7 +406,7 @@ export interface KgGraph {
   unavailable?: boolean  // 后端 API 未就绪标记（client 容错写入）
 }
 export const getKgGraph = (params?: Record<string, unknown>) =>
-  api.get<KgGraph>('/kg/graph', { params }).catch(() => ({
+  api.get<KgGraph>('/ai/kg/graph', { params }).catch(() => ({
     data: { nodes: [], edges: [], links: [], unavailable: true } as KgGraph,
   }))
 
