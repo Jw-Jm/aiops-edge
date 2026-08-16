@@ -34,8 +34,9 @@ const (
 	ettAlertTimeout      = 60 * time.Second
 )
 
-// ettMetricSpec 容量 ETT 告警覆盖的指标与默认阈值（复用容量页默认 threshold=80；
-// network 在容量页要求显式阈值，这里统一用默认 80）。
+// ettMetricSpec 容量 ETT 告警覆盖的指标与默认阈值（复用容量页默认 threshold=80）。
+// network 不纳入：流量速率无百分比语义（容量页也要求 network 显式阈值），
+// 用默认 80% 会持续误报（部署验证实测 count=40 firing "预计 0.1 小时触达 80%"）。
 type ettMetricSpec struct {
 	Metric    string
 	Threshold float64
@@ -45,7 +46,6 @@ var ettAlertMetrics = []ettMetricSpec{
 	{"cpu", 80},
 	{"memory", 80},
 	{"disk", 80},
-	{"network", 80},
 }
 
 // ettAlertHours 返回 ETT 告警阈值小时数（env ETT_ALERT_HOURS，默认 72）。
