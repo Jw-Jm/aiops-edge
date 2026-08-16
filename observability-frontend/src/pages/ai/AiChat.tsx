@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Button, Input, Empty, Alert, message } from 'antd'
+import { Button, Input, Empty, Alert, Modal, message } from 'antd'
 import { BookOutlined } from '@ant-design/icons'
 import api, { TENANT_ID, getSession, executeSuggestion, finalReport, addKnowledgeCase } from '../../api/client'
 import { useSearchParams } from 'react-router-dom'
@@ -33,6 +33,23 @@ function riskView(m: ChatMessage): { text: string; color: string } | null {
   return null
 }
 
+// 环境操作二次确认：深色代码块突出"将执行的命令"
+const execCodeBlockStyle: React.CSSProperties = {
+  background: '#0f172a',
+  color: '#e2e8f0',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 12.5,
+  lineHeight: 1.6,
+  padding: '12px 14px',
+  borderRadius: 8,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  overflow: 'auto',
+  maxHeight: 280,
+  border: '1px solid #1e293b',
+  margin: 0,
+}
+
 const AiChat: React.FC = () => {
   const [searchParams] = useSearchParams()
   const [sessions, setSessions] = useState<any[]>([])
@@ -48,6 +65,8 @@ const AiChat: React.FC = () => {
   // 需求：对话沉淀故障案例——caseAdding: 防重 loading；caseAdded: 记录已入库的消息，避免重复提交
   const [caseAdding, setCaseAdding] = useState<Record<string, boolean>>({})
   const caseAddedRef = useRef<Set<string>>(new Set())
+  // 环境操作二次确认：点击"确认执行"/"执行自定义命令"先弹 Modal，确认后才真正调用 executeSuggestion
+  const [execConfirm, setExecConfirm] = useState<{ m: ChatMessage; customScript?: string } | null>(null)
 
   const loadSessions = async () => {
     try { const r = await api.get('/ai/sessions'); setSessions(r.data?.sessions || []) } catch {}
@@ -201,8 +220,20 @@ const AiChat: React.FC = () => {
   }
 
   // 需求2/3: 确认/自定义命令执行 → 基于执行结果自动发起下一轮深入分析
-  const handleExecute = async (m: ChatMessage, customScript?: string) => {
+  // 改为先弹二次确认 Modal（防误触），确认后才调用 executeSuggestion
+  const handleExecute = (m: ChatMessage, customScript?: string) => {
     if (loading) return
+    const script = (customScript ?? m.script ?? '').trim()
+    if (!script) return
+    setExecConfirm({ m, customScript })
+  }
+
+  const doExecute = async () => {
+    const conf = execConfirm
+    if (!conf) return
+    setExecConfirm(null)
+    const m = conf.m
+    const customScript = conf.customScript
     const script = (customScript ?? m.script ?? '').trim()
     if (!script) return
     const isCustom = !!customScript
@@ -385,6 +416,27 @@ const AiChat: React.FC = () => {
           <Button type="primary" loading={loading} icon={<AppIcon name="send" />} onClick={() => handleSend()} style={{ height: 36 }}>发送</Button>
         </div>
       </div>
+
+      {/* 环境操作二次确认：防误触，显式展示将执行的命令 + 风险摘要 */}
+      <Modal title="确认执行环境操作"
+        open={!!execConfirm}
+        onCancel={() => setExecConfirm(null)}
+        onOk={doExecute}
+        okText="确认执行" cancelText="取消"
+        okButtonProps={{ danger: true, loading: loading }}
+        width={600} destroyOnClose>
+        <Alert type="warning" showIcon style={{ marginBottom: 14 }}
+          message="此操作将改变运行环境，请确认已获授权"
+          description="执行后将在目标环境实际运行以下命令，部分操作不可撤销。" />
+        <div style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 6, fontWeight: 600 }}>将执行以下命令</div>
+        <pre style={execCodeBlockStyle}>{(execConfirm?.customScript ?? execConfirm?.m?.script ?? '').trim()}</pre>
+        {execConfirm?.m?.plan && (
+          <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'pre-wrap' }}>{execConfirm.m.plan}</div>
+        )}
+        {execConfirm && (() => { const rv = riskView(execConfirm.m); return rv ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: rv.color }}>{rv.text}</div>
+        ) : null })()}
+      </Modal>
     </div>
   )
 }

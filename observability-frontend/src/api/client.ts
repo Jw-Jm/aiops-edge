@@ -88,7 +88,9 @@ export const runFlow = (key: string, params: Record<string, unknown>) => api.pos
 
 // ===== Task Approval =====
 export const approveTask = (id: string) => api.post(`/ops/tasks/${id}/approve`)
-export const rejectTask = (id: string) => api.post(`/ops/tasks/${id}/reject`)
+// reject 可选携带 reason 写入审计；不传时保持原行为（向后兼容）
+export const rejectTask = (id: string, reason?: string) =>
+  api.post(`/ops/tasks/${id}/reject`, reason ? { reason } : undefined)
 export const listApprovalTasks = (params?: Record<string, unknown>) => api.get('/ops/tasks', { params })
 export const genRecoveryPlan = (data: Record<string, unknown>) => api.post('/ops/recovery/plan', data)
 export const getRecoveryPolicy = () => api.get('/ops/recovery/policy')

@@ -24,6 +24,7 @@ const AiTools = lazy(() => import('./pages/ai/AiTools'))
 const Capacity = lazy(() => import('./pages/capacity/Capacity'))
 const Report = lazy(() => import('./pages/report/Report'))
 const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
+const Approvals = lazy(() => import('./pages/admin/Approvals'))
 const SLO = lazy(() => import('./pages/slo/SLO'))
 const Knowledge = lazy(() => import('./pages/ai/Knowledge'))
 const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'))
@@ -94,6 +95,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '系统管理',
     footer: true,
     items: [
+      { path: '/admin/approvals', label: '审批中心', icon: 'approvals' },
       { path: '/admin/users', label: '用户管理', icon: 'users' },
       { path: '/admin/settings', label: '系统设置', icon: 'settings' },
     ],
@@ -326,6 +328,7 @@ function AppLayout() {
               <Route path="/kg" element={<KnowledgeGraph />} />
               <Route path="/observability/grafana" element={<Grafana />} />
               <Route path="/report" element={<Report />} />
+              <Route path="/admin/approvals" element={<Approvals />} />
               <Route path="/admin/users" element={<AdminUsers />} />
               <Route path="/admin/settings" element={<AdminSettings />} />
               <Route path="/" element={<Overview />} />

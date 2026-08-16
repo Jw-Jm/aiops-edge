@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Button, Drawer, Space, Table, Tag, Typography, message } from 'antd'
+import { Button, Drawer, Popconfirm, Space, Table, Tag, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   getWorkflow, listFlowRuns, getFlowRun, resumeFlowRun,
@@ -102,8 +102,12 @@ const WorkflowDetail: React.FC = () => {
           <Button size="small" onClick={() => openDetail(r)}>运行明细</Button>
           {r.status === 'waiting_approval' && isApprover && (
             <>
-              <Button size="small" danger loading={resuming} onClick={() => doResume(r.run_id, false)}>拒绝</Button>
-              <Button size="small" type="primary" loading={resuming} onClick={() => doResume(r.run_id, true)}>批准</Button>
+              <Popconfirm title="确认拒绝？该流程将中止执行" onConfirm={() => doResume(r.run_id, false)}>
+                <Button size="small" danger loading={resuming}>拒绝</Button>
+              </Popconfirm>
+              <Popconfirm title="确认批准该流程继续执行？环境操作将执行" onConfirm={() => doResume(r.run_id, true)}>
+                <Button size="small" type="primary" loading={resuming}>批准</Button>
+              </Popconfirm>
             </>
           )}
         </Space>
@@ -179,8 +183,12 @@ const WorkflowDetail: React.FC = () => {
         extra={
           detail?.status === 'waiting_approval' && isApprover ? (
             <Space>
-              <Button size="small" danger loading={resuming} onClick={() => detail && doResume(detail.run_id, false)}>拒绝</Button>
-              <Button size="small" type="primary" loading={resuming} onClick={() => detail && doResume(detail.run_id, true)}>批准</Button>
+              <Popconfirm title="确认拒绝？该流程将中止执行" onConfirm={() => detail && doResume(detail.run_id, false)}>
+                <Button size="small" danger loading={resuming}>拒绝</Button>
+              </Popconfirm>
+              <Popconfirm title="确认批准该流程继续执行？环境操作将执行" onConfirm={() => detail && doResume(detail.run_id, true)}>
+                <Button size="small" type="primary" loading={resuming}>批准</Button>
+              </Popconfirm>
             </Space>
           ) : undefined
         }>
