@@ -1,7 +1,6 @@
 """AI Orchestrator v5 — FastAPI + LangGraph + arq + ChromaDB + Detector"""
 import json
 import os
-import sys
 import time
 import re
 import uuid
@@ -913,6 +912,41 @@ def _create_chat_suggestion_task(event: dict, req, thread_id: str):
         return None
 
 
+# ═══════════════════════════════════════════════════════════════
+#  诊断执行硬超时 (P0): LLM 挂起/图中断时 asyncio.run(ainvoke) 可能永久阻塞,
+#  任务将无限期停在 diagnosing。放独立 daemon 线程执行, 等待 DIAGNOSIS_TIMEOUT 秒,
+#  超时抛 concurrent.futures.TimeoutError, 由调用方将任务置为 failed("诊断超时")。
+# ═══════════════════════════════════════════════════════════════
+DIAGNOSIS_TIMEOUT = int(os.environ.get("DIAGNOSIS_TIMEOUT", "600"))
+
+
+def _run_dag_diagnosis(tid: str, svc: str, ctx: str) -> dict:
+    """在独立 daemon 线程中执行 execute_sync_full(mode=full) 并等待至多
+    DIAGNOSIS_TIMEOUT 秒。超时抛 concurrent.futures.TimeoutError(调用方置 failed);
+    线程不可取消但为 daemon, 进程退出不被阻塞。"""
+    import queue as _queue
+    import threading as _threading
+    from concurrent.futures import TimeoutError as _FutureTimeoutError
+
+    result_q = _queue.Queue(maxsize=1)
+
+    def _worker():
+        try:
+            final = asyncio.run(_get_brain().execute_sync_full("diagnosis", svc, ctx, tid))
+            result_q.put(final)
+        except BaseException as e:  # noqa: BLE001  — 透传给等待方统一走 failed
+            result_q.put(e)
+
+    _threading.Thread(target=_worker, name=f"diag-{tid}", daemon=True).start()
+    try:
+        item = result_q.get(timeout=DIAGNOSIS_TIMEOUT)
+    except _queue.Empty:
+        raise _FutureTimeoutError(f"diagnosis timeout {DIAGNOSIS_TIMEOUT}s")
+    if isinstance(item, BaseException):
+        raise item
+    return item
+
+
 @app.post("/api/v1/ops/tasks")
 async def create_task(req: TaskCreateRequest, request: Request):
     if not req.context:
@@ -939,9 +973,11 @@ async def create_task(req: TaskCreateRequest, request: Request):
 
     task["status"] = "diagnosing"
     def _run():
+        from concurrent.futures import TimeoutError as _FutureTimeoutError
         try:
-            # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动
-            final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", req.service, req.context, tid))
+            # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动。
+            # P0: 加硬超时——LLM 挂起/图中断时不永久停在 diagnosing, 超时置 failed。
+            final_state = _run_dag_diagnosis(tid, req.service, req.context)
             # P0-2: 非交互 full 图初始 approved=False，DAG 在 wait_approval 处中断等待人工审批。
             # 中断态无 final_response，不能误标 done；回填 plan/script/risk 供审批面板展示。
             if final_state.get("__interrupt__"):
@@ -962,6 +998,9 @@ async def create_task(req: TaskCreateRequest, request: Request):
             if final_state.get("final_response"):
                 try: _upload_report(tid, final_state["final_response"], service=req.service or "", question=req.context or "")
                 except Exception: pass
+        except _FutureTimeoutError:
+            _task_store[tid]["status"] = "failed"
+            _task_store[tid]["diagnosis"] = f"诊断超时({DIAGNOSIS_TIMEOUT}s)"
         except Exception as e:
             _task_store[tid]["status"] = "failed"
             _task_store[tid]["diagnosis"] = str(e)[:500]
@@ -1063,6 +1102,10 @@ async def ops_webhook(request: Request):
 async def list_tasks(status: str = "", source: str = ""):
     result = list(_task_store.values())
     if status:
+        # P0: 任务生命周期枚举: queued → diagnosing → done(成功) / waiting / approved /
+        # rejected / failed。对外兼容 "succeeded" 查询 (存储态为 "done", 与 flow 引擎一致)。
+        if status == "succeeded":
+            status = "done"
         result = [t for t in result if t["status"] == status]
     if source:
         result = [t for t in result if t["source"] == source]
@@ -1081,9 +1124,11 @@ def _run_diagnosis(tid: str, svc: str, ctx: str):
     """在后台线程执行一次 LLM 诊断，并回填任务结果。"""
     import threading
     def _run():
+        from concurrent.futures import TimeoutError as _FutureTimeoutError
         try:
-            # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动
-            final_state = asyncio.run(_get_brain().execute_sync_full("diagnosis", svc, ctx, tid))
+            # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动。
+            # P0: 加硬超时——LLM 挂起/图中断时不永久停在 diagnosing, 超时置 failed。
+            final_state = _run_dag_diagnosis(tid, svc, ctx)
             # P0-2: 非交互 full 图初始 approved=False，DAG 在 wait_approval 处中断等待人工审批。
             # 中断态无 final_response，不能误标 done；回填 plan/script/risk 供审批面板展示。
             if final_state.get("__interrupt__"):
@@ -1104,6 +1149,9 @@ def _run_diagnosis(tid: str, svc: str, ctx: str):
             if final_state.get("final_response"):
                 try: _upload_report(tid, final_state["final_response"], service=svc, question=ctx)
                 except Exception: pass
+        except _FutureTimeoutError:
+            _task_store[tid]["status"] = "failed"
+            _task_store[tid]["diagnosis"] = f"诊断超时({DIAGNOSIS_TIMEOUT}s)"
         except Exception as e:
             _task_store[tid]["status"] = "failed"
             _task_store[tid]["diagnosis"] = str(e)[:500]
@@ -1715,32 +1763,10 @@ async def list_anomalies(service: str = "", limit: int = 50):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MinIO Object Storage
+#  报告产物持久化 (P0: 移除 MinIO — AGPLv3 且已归档停更)
+#  正文统一落 MySQL reports 表 (content 列) + 本地 AIOPS_DATA_DIR/reports 兜底,
+#  不再依赖 MinIO 对象存储 / MINIO_* 环境变量。
 # ═══════════════════════════════════════════════════════════════
-
-from minio import Minio
-from minio.error import S3Error
-
-_minio_access = os.environ.get("MINIO_ACCESS_KEY", "")
-_minio_secret = os.environ.get("MINIO_SECRET_KEY", "")
-_minio_enabled = bool(_minio_access and _minio_secret)
-if not _minio_enabled:
-    print(
-        "[minio] WARNING: MINIO_ACCESS_KEY / MINIO_SECRET_KEY 未配置：产物上传已禁用（生产必须通过 env/Secret 注入强口令，拒绝弱默认口令）",
-        file=sys.stderr,
-    )
-# 仅当显式提供 MINIO 凭证时才初始化客户端；否则禁用（不静默用弱默认口令）
-_minio = None
-if _minio_enabled:
-    _minio = Minio(
-        os.environ.get("MINIO_ENDPOINT", "minio.observability.svc.cluster.local:9000"),
-        access_key=_minio_access,
-        secret_key=_minio_secret,
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-    )
-BUCKET = "ops-reports"
-if _minio is not None and not _minio.bucket_exists(BUCKET):
-    _minio.make_bucket(BUCKET)
 
 
 def _extract_service_from_text(text: str) -> str:
@@ -1771,19 +1797,21 @@ def _task_service(task: dict) -> str:
 
 
 def _upload_report(task_id: str, content: str, filename: str = "report.md", service: str = "", question: str = ""):
-    """Upload task report to MinIO, return object name. Also persist metadata to MySQL.
-    question: 原始用户问题（用于报告中心的意图判定 verdict/risk_score）。"""
-    import io
-    data = content.encode("utf-8")
+    """持久化任务报告：markdown 正文写入 MySQL reports 表 (content 列, 含元数据)，
+    并落盘 AIOPS_DATA_DIR/reports/{task_id}/{filename} 作本地备份（替代 MinIO 对象存储）。
+    返回相对对象名（兼容旧返回语义）。question: 原始用户问题（报告中心意图判定）。"""
     obj_name = f"{task_id}/{filename}"
-    if _minio is not None:
-        try:
-            _minio.put_object(BUCKET, obj_name, io.BytesIO(data), len(data), content_type="text/markdown")
-        except Exception as e:
-            print(f"[reports] MinIO 上传失败: {e}")
-    else:
-        print(f"[reports] MinIO 未配置，跳过对象存储上传（仅持久化 MySQL 元数据）: {obj_name}")
-    # 同步持久化元数据到 MySQL reports（文件本体在 MinIO）
+    # 本地文件兜底 (PVC 挂载目录, 替代 MinIO)
+    try:
+        import os as _os
+        data_dir = _os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
+        local_path = _os.path.join(data_dir, "reports", task_id, filename)
+        _os.makedirs(_os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "w", encoding="utf-8") as f:
+            f.write(content or "")
+    except Exception as e:
+        print(f"[reports] 本地落盘失败: {e}")
+    # MySQL reports 表持久化（正文在 content 列，ReportStore 已兼容 llm_mode 缺列降级）
     try:
         _persist_inspection_report(task_id, service or "", content, filename, question)
     except Exception as e:
@@ -1975,28 +2003,48 @@ async def inspection_report_trend(days: int = 14, report_type: str = "inspection
 
 @app.get("/api/v1/ops/reports/{task_id}/download")
 async def download_report(task_id: str):
-    """Download task report from MinIO."""
-    from fastapi.responses import StreamingResponse
-    if _minio is None:
-        raise HTTPException(503, "MinIO 未配置（需注入 MINIO_ACCESS_KEY/MINIO_SECRET_KEY）")
+    """Download task report. 优先 MySQL reports 表 content 列; 降级读本地
+    AIOPS_DATA_DIR/reports/{task_id}/report.md (替代 MinIO 对象存储)。"""
+    from fastapi.responses import PlainTextResponse
+    content = ""
     try:
-        obj = _minio.get_object(BUCKET, f"{task_id}/report.md")
-        return StreamingResponse(obj.stream(), media_type="text/markdown",
-                                 headers={"Content-Disposition": f"attachment; filename={task_id}-report.md"})
-    except S3Error:
-        raise HTTPException(404, "report not found")
+        from db_agents import ReportStore
+        row = ReportStore().get_by_task_id(task_id)
+        if row and row.get("content"):
+            content = row["content"]
+    except Exception:
+        row = None
+    if not content:
+        # 降级: 本地文件
+        import os as _os
+        data_dir = _os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
+        local_path = _os.path.join(data_dir, "reports", task_id, "report.md")
+        try:
+            with open(local_path, encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            raise HTTPException(404, "report not found")
+    return PlainTextResponse(content, media_type="text/markdown",
+                             headers={"Content-Disposition": f"attachment; filename={task_id}-report.md"})
 
 
 @app.get("/api/v1/ops/reports")
 async def list_reports():
-    """List all stored reports."""
-    if _minio is None:
-        return {"reports": [], "error": "MinIO 未配置（需注入 MINIO_ACCESS_KEY/MINIO_SECRET_KEY）"}
+    """List all stored reports (来自 MySQL reports 表, 替代 MinIO 对象列表)。"""
     try:
-        objects = list(_minio.list_objects(BUCKET, recursive=True))
-        return {"reports": [{"name": o.object_name, "size": o.size, "last_modified": str(o.last_modified)} for o in objects]}
+        from db_agents import ReportStore
+        result = ReportStore().list(page=1, size=1000)
+        return {"reports": [
+            {"name": f"{r.get('task_id', '')}/report.md",
+             "task_id": r.get("task_id", ""),
+             "size": len(r.get("content") or ""),
+             "last_modified": str(r.get("created_at") or ""),
+             "service_name": r.get("service_name", ""),
+             "report_type": r.get("report_type", "")}
+            for r in result["items"]],
+            "count": len(result["items"])}
     except Exception as e:
-        return {"reports": [], "error": str(e)}
+        return {"reports": [], "count": 0, "error": str(e)}
 
 
 # ═══════════════════════════════════════════════════════════════

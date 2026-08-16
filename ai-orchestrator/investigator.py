@@ -88,10 +88,11 @@ def _build_prompt(rule: str, severity: str, payload: dict | None = None) -> str:
 
 def _run_worker(persona, prompt: str, run_worker=None,
                 timeout: int = WORKER_TIMEOUT):
-    """提交到 agent_tool._BG_EXECUTOR 并等待结果; 超时返回占位报告并记日志。
+    """提交到 agent_tool._BG_EXECUTOR 并等待结果; 超时记日志并返回 None。
 
-    修复: 真实 LLM 环境下 worker 可能超过 timeout 仍未完成, 此时返回
-    占位报告文本(而非 None), 保证调查报告仍入库、告警调查闭环不静默丢数据。
+    P0 加固: 真实 LLM 环境下 worker 可能超过 timeout 仍未完成。超时一律
+    返回 None (而非占位文本), 由 maybe_investigate 视为调查未完成并跳过入库,
+    绝不伪造"已调查成功"的结论。后台任务无法取消, 会继续执行但不再阻塞。
 
     run_worker 可注入 (测试/替换用); 缺省 agent_tool.run_worker。
     """
@@ -100,9 +101,8 @@ def _run_worker(persona, prompt: str, run_worker=None,
     try:
         return future.result(timeout=timeout)
     except FutureTimeoutError:
-        log.error("告警调查超时(%ss): 返回占位报告, 后台任务继续执行", timeout)
-        return ("(调查超时: worker 在 %s 秒内未完成, 已终止等待; "
-                "可稍后重试触发调查)" % timeout)
+        log.error("告警调查超时(%ss): 返回 None, 后台任务继续执行", timeout)
+        return None
 
 
 def _store_report(rule: str, severity: str, payload: dict | None, report: str) -> str:
@@ -147,8 +147,10 @@ def maybe_investigate(rule: str, severity: str, payload: dict | None = None,
     """
     try:
         if not _enabled():
+            log.info("investigator 总开关未开启 (INVESTIGATOR_ENABLED != true), 跳过自动调查")
             return None
         if not rule:
+            log.warning("告警规则为空, 跳过自动调查")
             return None
         if not _severity_ok(severity):
             log.info("告警 %s 级别 %s < %s, 跳过自动调查", rule, severity, MIN_SEVERITY)
@@ -169,6 +171,7 @@ def maybe_investigate(rule: str, severity: str, payload: dict | None = None,
         finally:
             _semaphore.release()
         if not report:
+            log.warning("告警 %s 调查未产出报告 (worker 超时或无结果), 跳过入库", rule)
             return None
         note = _store_report(rule, severity, payload, report)
         return f"{report}\n\n{note}"

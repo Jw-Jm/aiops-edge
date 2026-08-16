@@ -990,6 +990,12 @@ func (h *Handler) listAlertRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
+	// 安全(P0)：创建告警规则是写操作且可注入 PromQL/预测表达式，所有类型
+	// 规则仅限 admin 创建（与静默/写分支同款守卫）。
+	if !hasRole(r, "admin") {
+		respondError(w, http.StatusForbidden, "仅 admin 可创建告警规则")
+		return
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "failed to read body")
@@ -1010,14 +1016,6 @@ func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
 	if rule.Service == "" {
 		respondError(w, http.StatusBadRequest, "service is required")
 		return
-	}
-	// 安全：含原始 PromQL/预测表达式的规则类型（metric_raw/anomaly/forecast）
-	// 仅限 admin 创建，防止任意用户注入任意 PromQL 执行（可读取集群内任意指标）。
-	if rule.Type == "metric_raw" || rule.Type == "anomaly" || rule.Type == "forecast" {
-		if !hasRole(r, "admin") {
-			respondError(w, http.StatusForbidden, "仅 admin 可创建原始 PromQL/预测类规则")
-			return
-		}
 	}
 	// burn_rate 规则：仅支持 error_rate 指标 + availability 型 SLO（否则静默永不触发）
 	if rule.Type == "burn_rate" {

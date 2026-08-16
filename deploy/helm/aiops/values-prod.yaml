@@ -26,11 +26,7 @@ victoriaMetrics:
   storageClass: "standard"
 victoriaLogs:
   storageClass: "standard"
-redis:
-  storageClass: "standard"
 chromadb:
-  storageClass: "standard"
-minio:
   storageClass: "standard"
 mysql:
   storageClass: "standard"
@@ -45,15 +41,11 @@ aiOrchestrator:
 #   llmEncryptionKey: openssl rand -hex 32   （至少 32 字节，用于 AES-256 加密 LLM key）
 #   internalToken:    openssl rand -hex 24
 #   ingestApiKey:     openssl rand -hex 24
-#   clickhousePassword / redisPassword / mysqlRootPassword: openssl rand -hex 16
-#   minioAccessKey（>=3 字符）/ minioSecretKey（>=8 字符）：强口令
+#   clickhousePassword / mysqlRootPassword: openssl rand -hex 16
 secrets:
   jwtSecret: "CHANGE_ME"
   llmEncryptionKey: "CHANGE_ME"
   internalToken: "CHANGE_ME"
   ingestApiKey: "CHANGE_ME"
   clickhousePassword: "CHANGE_ME"
-  redisPassword: "CHANGE_ME"
-  minioAccessKey: "CHANGE_ME"
-  minioSecretKey: "CHANGE_ME"
   mysqlRootPassword: "CHANGE_ME"

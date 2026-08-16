@@ -368,8 +368,16 @@ func validateLLMBaseURL(raw string) string {
 }
 
 // isBlockedIP 判断 IP 是否属于禁止访问的私网/回环/链路本地地址。
+// IPv6 ULA(fc00::/7) 放行——避免 OrbStack DNS 把 api.deepseek.com 解析为 ULA
+// 时误伤合法公网域名。IPv4 用 RFC1918 手动判断（Go 的 IsPrivate 含 fc00::/7）。
 func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4[0] == 10 || (ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) || (ip4[0] == 192 && ip4[1] == 168)
+	}
+	return false
 }
 
 // SaveLLMSettings handles POST /api/v1/settings/llm

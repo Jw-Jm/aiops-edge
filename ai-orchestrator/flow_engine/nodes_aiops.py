@@ -126,7 +126,7 @@ def _report(ctx, config):
     red = co.get("red") or "(无指标数据)"
     exec_out = _node_out(ctx, "execute").get("output", "")
     report_text = f"[{_now()}] 服务 {svc} 诊断报告\n- 指标: {red[:300]}\n- 执行结果: {str(exec_out)[:300]}"
-    # P0-1 修复: 工作流报告节点输出后持久化到报告中心（MySQL reports 表 + MinIO 留档）
+    # P0-1 修复: 工作流报告节点输出后持久化到报告中心（MySQL reports 表 + 本地留档）
     # 与 orchestrator 的 _upload_report 复用同一持久化逻辑，确保工作流报告被报告中心收纳
     try:
         from main import _upload_report

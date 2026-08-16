@@ -32,7 +32,6 @@ get_or_gen() {
 }
 DEV_JWT="$(get_or_gen aiops-secrets JWT_SECRET dev-jwt-)"
 DEV_LLM_KEY="$(get_or_gen aiops-secrets LLM_ENCRYPTION_KEY dev-llm-)"
-DEV_MINIO_SECRET="$(get_or_gen aiops-secrets MINIO_SECRET_KEY devminio)"
 helm upgrade --install aiops "$CHART_DIR" \
   --namespace observability --create-namespace \
   --set deepflow.enabled=false \
@@ -41,9 +40,6 @@ helm upgrade --install aiops "$CHART_DIR" \
   --set secrets.internalToken="dev-internal-token" \
   --set secrets.ingestApiKey="dev-ingest-key" \
   --set secrets.clickhousePassword="dev-ch-pass" \
-  --set secrets.redisPassword="dev-redis-pass" \
-  --set secrets.minioAccessKey="aiopsdev" \
-  --set secrets.minioSecretKey="${DEV_MINIO_SECRET}" \
   --set secrets.mysqlRootPassword="dev-mysql-pass" \
   --wait \
   --timeout 15m

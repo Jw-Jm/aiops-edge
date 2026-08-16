@@ -27,11 +27,6 @@ secrets:
   internalToken: ""
   ingestApiKey: ""
   clickhousePassword: ""
-  redisPassword: ""
-  # MinIO 凭证：生产必须通过 Secret/env 注入强口令，禁止使用弱默认值。
-  # 留空时 MinIO 组件使用镜像默认弱口令（minioadmin/minioadmin123）——仅限本地演示，生产务必覆盖。
-  minioAccessKey: ""
-  minioSecretKey: ""
   mysqlRootPassword: ""
 
 # ---------------------------------------------------------------------------
@@ -69,33 +64,6 @@ victoriaLogs:
   storage: 5Gi
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
-    limits: { cpu: "1", memory: "1Gi" }
-
-# Redis：query-api 缓存为纯内存实现（原 redisGet/redisSet 为伪死代码，query-api 不依赖 Redis）。
-# 但 ai-orchestrator 的 ARQ 后台任务队列（tasks.py）依赖 Redis，故保留组件。
-redis:
-  enabled: true
-  external:
-    host: ""
-    port: "6379"
-  image: "redis:7-alpine"
-  storageClass: ""
-  storage: 1Gi
-  resources:
-    requests: { cpu: "100m", memory: "128Mi" }
-    limits: { cpu: "500m", memory: "512Mi" }
-
-
-minio:
-  enabled: true
-  external:
-    host: ""
-    port: "9000"
-  image: "minio/minio:RELEASE.2024-09-13T20-26-02Z"
-  storageClass: ""
-  storage: 10Gi
-  resources:
-    requests: { cpu: "200m", memory: "256Mi" }
     limits: { cpu: "1", memory: "1Gi" }
 
 mysql:
@@ -193,7 +161,6 @@ aiOrchestrator:
   enabled: true
   image: "ai-orchestrator:{{ .Values.global.imageTag }}"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
-  minioEndpoint: "minio.observability.svc.cluster.local:9000"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   llmMock: "false"

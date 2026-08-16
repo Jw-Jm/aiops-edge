@@ -32,16 +32,6 @@ spec:
             - name: INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
-            - name: MINIO_ENDPOINT
-              value: {{ .Values.aiOrchestrator.minioEndpoint | quote }}
-            - name: MINIO_ACCESS_KEY
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: MINIO_ACCESS_KEY }
-            - name: MINIO_SECRET_KEY
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: MINIO_SECRET_KEY }
-            - name: MINIO_SECURE
-              value: "false"
             - name: CLICKHOUSE_HOST
               value: {{ .Values.aiOrchestrator.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
@@ -66,13 +56,6 @@ spec:
                 secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
             - name: MYSQL_DB
               value: {{ .Values.mysql.database | default "aiops" | quote }}
-            - name: REDIS_HOST
-              value: {{ .Values.redis.serviceName | default "redis" | quote }}
-            - name: REDIS_PORT
-              value: {{ .Values.redis.port | default "6379" | quote }}
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: REDIS_PASSWORD }
           startupProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 10

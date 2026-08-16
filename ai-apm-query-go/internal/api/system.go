@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -14,8 +13,6 @@ import (
 func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 	status := map[string]interface{}{
 		"cache": GetCacheStats(),
-		// P3-4 修复：Redis 为真实部署探测连通性，不再固定返回 "in-memory" 误导。
-		"redis": redisStatus(),
 		"hpa":   getHPAStatus(),
 		"pods":  getPodCount(),
 	}
@@ -26,8 +23,6 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CacheStats(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 200, map[string]interface{}{
 		"cache": GetCacheStats(),
-		// P3-4 修复：与 system/status 一致，探测真实 Redis 连通性。
-		"redis": redisStatus(),
 	})
 }
 
@@ -43,25 +38,8 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// redisAddr 返回 Redis 地址（REDIS_ADDR/REDIS_HOST 环境变量，默认集群内域名）。
-func redisAddr() string {
-	return firstNonEmpty(os.Getenv("REDIS_ADDR"), os.Getenv("REDIS_HOST"), "redis.observability.svc.cluster.local:6379")
-}
-
-// redisStatus 探测 Redis 连通性（TCP 握手，3s 超时），返回 {connected, url}。
-// P3-4 修复：部署有真实 Redis 时显示真实状态，探活失败返回 connected:false 而非 "in-memory"。
-func redisStatus() map[string]interface{} {
-	addr := redisAddr()
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
-	if err != nil {
-		return map[string]interface{}{"connected": false, "url": addr, "error": err.Error()}
-	}
-	defer conn.Close()
-	return map[string]interface{}{"connected": true, "url": addr}
-}
-
 // SystemComponents 处理 GET /api/v1/system/components — 各组件探活结果列表。
-// 组件列表：query-api/ingest/ai-orchestrator/clickhouse/mysql/redis/
+// 组件列表：query-api/ingest/ai-orchestrator/clickhouse/mysql/
 // victoria-metrics/victoria-logs/minio/frontend。3s 超时并发探测，
 // 探活失败 status=down，超时接近 3s 的降级 degraded。
 func (h *Handler) SystemComponents(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +50,6 @@ func (h *Handler) SystemComponents(w http.ResponseWriter, r *http.Request) {
 		{"ai-orchestrator", "service", "http", "http://ai-orchestrator.observability.svc.cluster.local:8080/health"},
 		{"clickhouse", "middleware", "tcp", "clickhouse.observability.svc.cluster.local:8123"},
 		{"mysql", "middleware", "tcp", "mysql.observability.svc.cluster.local:3306"},
-		{"redis", "middleware", "tcp", redisAddr()},
 		{"victoria-metrics", "middleware", "http", "http://victoria-metrics.observability.svc.cluster.local:8428/health"},
 		{"victoria-logs", "middleware", "http", "http://victoria-logs.observability.svc.cluster.local:9428/health"},
 		{"minio", "middleware", "http", "http://minio.observability.svc.cluster.local:9000/minio/health/live"},

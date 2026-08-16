@@ -73,7 +73,7 @@ class AgentStore:
 
 
 class ReportStore:
-    """报告元数据持久化。文件仍存 MinIO。"""
+    """报告元数据持久化。正文存 MySQL reports 表 + 本地 AIOPS_DATA_DIR/reports 兜底（P0 已移除 MinIO）。"""
 
     def __init__(self):
         self._mem: list[dict] = []
