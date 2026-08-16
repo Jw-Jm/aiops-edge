@@ -1,12 +1,14 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
-# 先 COPY 全部源码：若项目本地已存在 node_modules（fetch-offline-deps.sh 预装到
-# deploy/offline/frontend-node_modules 并同步回源目录），则直接复用，零网络零下载；
-# 缺失时才走 npmmirror 国内源安装（配合 buildkit cache mount 持久化 npm 缓存）。
+COPY package.json package-lock.json* ./
+# 国内源 + npm 缓存持久化（buildkit cache mount：首次下载后后续构建零网络复用；
+# deploy/offline/npm-cache 由 fetch-offline-deps.sh 预下载，构建时可挂载复用）。
+# 注意：不 COPY 宿主 node_modules（含平台特定原生二进制，跨平台不可用），
+# 必须在容器内 npm ci 安装正确平台的 rollup/esbuild 等原生模块。
+RUN --mount=type=cache,target=/root/.npm \
+    npm config set registry https://registry.npmmirror.com && \
+    (npm ci --prefer-offline 2>/dev/null || npm install --prefer-offline)
 COPY . .
-RUN if [ ! -d node_modules ] || [ -z "$(ls -A node_modules 2>/dev/null)" ]; then \
-      npm config set registry https://registry.npmmirror.com && npm ci --prefer-offline; \
-    fi
 RUN npm run build
 
 FROM nginx:1.27-alpine

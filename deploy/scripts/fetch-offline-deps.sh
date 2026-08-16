@@ -19,19 +19,19 @@ FRONTEND_DIR="$ROOT/observability-frontend"
 
 mkdir -p "$OFFLINE_DIR"
 
-echo ">>> [1/2] frontend: npm ci 预装到 $OFFLINE_DIR/frontend-node_modules"
-if [ -d "$OFFLINE_DIR/frontend-node_modules" ] && [ -f "$OFFLINE_DIR/frontend-node_modules/.offline-ready" ]; then
-  echo "    缓存已存在，跳过（如需刷新删除 $OFFLINE_DIR/frontend-node_modules 后重跑）"
+echo ">>> [1/2] frontend: npm cache 预下载到 $OFFLINE_DIR/npm-cache"
+if [ -d "$OFFLINE_DIR/npm-cache" ] && [ -f "$OFFLINE_DIR/npm-cache/.offline-ready" ]; then
+  echo "    缓存已存在，跳过（如需刷新删除 $OFFLINE_DIR/npm-cache 后重跑）"
 else
   (
     cd "$FRONTEND_DIR"
     npm config set registry https://registry.npmmirror.com
-    npm ci 2>/dev/null || npm install
+    # 注意：只用 --cache 下载依赖到项目目录（npm cache 与平台无关，可跨容器复用），
+    # 不复制 node_modules（含平台特定原生二进制 rollup/esbuild，跨平台不可用）。
+    npm ci --cache "$OFFLINE_DIR/npm-cache" 2>/dev/null || npm install --cache "$OFFLINE_DIR/npm-cache"
   )
-  rm -rf "$OFFLINE_DIR/frontend-node_modules"
-  cp -R "$FRONTEND_DIR/node_modules" "$OFFLINE_DIR/frontend-node_modules"
-  touch "$OFFLINE_DIR/frontend-node_modules/.offline-ready"
-  echo "    已缓存 $(du -sh "$OFFLINE_DIR/frontend-node_modules" | cut -f1)"
+  touch "$OFFLINE_DIR/npm-cache/.offline-ready"
+  echo "    已缓存 $(du -sh "$OFFLINE_DIR/npm-cache" | cut -f1)"
 fi
 
 echo ">>> [2/2] query-api: go mod vendor（依赖已入库，验证完整性）"
