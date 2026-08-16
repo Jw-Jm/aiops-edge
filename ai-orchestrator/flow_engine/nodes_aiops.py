@@ -90,9 +90,10 @@ def _risk(ctx, config):
 
 
 def _execute(ctx, config):
-    """执行节点：真实执行，但受 ShellPolicy 白名单 + 元字符拦截约束。
-
-    仅执行可执行白名单（readonly/write）内的命令；越权命令不执行并返回提示。
+    """执行节点：真实执行，但受双重约束——
+    ① ShellPolicy 白名单 + 元字符拦截；
+    ② 安全(P0-4): write 类（环境变更）命令必须已经 wait_approval 人工审批
+      （ctx.vars["_approved"]），否则拒绝执行——杜绝绕过审批节点直接执行环境操作。
     """
     script = config.get("script", "")
     if not script:
@@ -102,9 +103,12 @@ def _execute(ctx, config):
         policy = ShellPolicy()
         if mc := policy.check_shell_metachars(script):
             return {"output": f"拒绝执行（含 shell 元字符）: {mc}"}
-        allowed, _cat = policy.is_whitelisted_for_execute(script)
+        allowed, category = policy.is_whitelisted_for_execute(script)
         if not allowed:
             return {"output": "拒绝执行（不在可执行白名单内）"}
+        # 环境变更命令（write 类）必须已人工审批（wait_approval 通过写入 _approved）
+        if category == "write" and not (ctx.vars or {}).get("_approved"):
+            return {"output": "拒绝执行：环境变更命令需先经人工审批（wait_approval 节点批准后才会执行）"}
     except Exception as e:
         return {"output": f"安全校验失败: {e}"}
     try:

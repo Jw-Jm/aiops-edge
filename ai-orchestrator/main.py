@@ -663,7 +663,8 @@ class SuggestionRequest(BaseModel):
     script: str = ""        # 要执行的命令（AI 建议或用户自定义）
     service: str = ""
     context: str = ""       # 分析上下文（诊断文本），供 execute_suggestion 用
-    approved: bool = True   # True=确认执行, False=驳回
+    approved: bool = False  # 安全(P0-4): 必须显式 true 才执行。默认 False=驳回，
+                            # 杜绝漏传字段/前端缺陷导致"未确认即执行"环境操作
 
 
 @app.post("/api/v1/ai/suggestion/execute")
@@ -1389,12 +1390,14 @@ async def put_recovery_policy(policy: dict, request: Request):
 
 
 @app.post("/api/v1/ops/recovery/plan")
-async def gen_recovery_plan(payload: dict):
+async def gen_recovery_plan(payload: dict, request: Request):
     """基于调查结果生成恢复方案（AI），并创建审批任务（source=recovery）。
 
     payload: {service, diagnosis?, investigation?, script?}
     若调用方已提供 script（预设动作），直接使用；否则由 AI 生成恢复建议。
+    安全(P0-4): 恢复方案含环境变更脚本，生成/预设均须审批人/admin 显式发起。
     """
+    _require_approver(request)
     service = payload.get("service", "")
     if not service:
         raise HTTPException(400, "service required")

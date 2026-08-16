@@ -75,6 +75,10 @@ class Engine:
                         if not approved:
                             result.status = RunStatus.WAITING
                         fired = "approved" if approved else "rejected"
+                    # 安全(P0-4): 人工审批通过后写入运行上下文标记，供后续 execute 节点
+                    # 校验"环境变更命令必须已人工审批"，杜绝绕过审批节点直接执行。
+                    if fired == "approved":
+                        ctx.vars["_approved"] = True
                 else:
                     fired = "next"
                 nr.fired_port = fired
