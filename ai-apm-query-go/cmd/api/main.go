@@ -209,6 +209,9 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/rules", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/flows/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/flows", handler.ProxyAI)
+	// 知识图谱查询/构建 API（orchestrator kg_api.py，/api/v1/ai/kg 前缀）
+	mux.HandleFunc("/api/v1/ai/kg/", handler.ProxyAI)
+	mux.HandleFunc("/api/v1/ai/kg", handler.ProxyAI)
 	// WebShell WebSocket：AuthMiddleware 已放行该路径（WebSocket 无 header），
 	// handler 内部从 ?token= 验证 JWT 并代理到 orchestrator（注入 INTERNAL_TOKEN）。
 	mux.HandleFunc("/api/v1/shell/ws", handler.ProxyShellWS)
