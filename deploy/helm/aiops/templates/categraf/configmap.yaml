@@ -4,6 +4,7 @@
 # 覆盖：基础主机插件（node_exporter + cpu/mem/disk/net/system）→ remote write → VictoriaMetrics。
 # 挂载方式：DaemonSet 将本 ConfigMap 的 items 按 path 映射成 conf/ 下的 input.* 目录结构
 #           （ConfigMap 键不允许含 /，故 data 用平铺键 + volume items.path 做子目录）。
+# 注意：categraf 插件必须以 [[instances]] 数组激活（无实例段则插件不启动，日志 no inputs）。
 # 生产按需增开 ipmi / snmp / mysql / redis 等插件（配置下发见平台设计
 #           docs/AIOPS_FULLSTACK_DESIGN.md 4.2：平台生成 TOML → providers=http 远程下发）。
 # =============================================================================
@@ -24,6 +25,8 @@ data:
     hostname = "$HOSTNAME"
     # 全局采集间隔（秒）
     interval = {{ .Values.categraf.interval | default 15 }}
+    # 配置来源：local=扫描 conf/ 下 input.* 子目录（必须显式声明，否则 no inputs）
+    providers = ["local"]
     # 全局标签：注入集群维度，便于跨集群区分（对应 ingest.clusterId）
     [global.labels]
     cluster_id = "{{ .Values.categraf.clusterId }}"
@@ -41,39 +44,29 @@ data:
     dial_timeout = 2500
     max_idle_conns_per_host = 100
 
-  # node_exporter 插件（替代原 node-exporter DaemonSet）
+  # node_exporter 插件（替代原 node-exporter DaemonSet）：node_* 标准指标 100% 兼容
   exporter.toml: |
-    # node_exporter 插件：OS 部件指标（CPU/内存/磁盘/网卡/文件系统等）
-    # 生产按需增开 ipmi/snmp/mysql/redis 插件（配置下发见平台设计 4.2）
-    # # collect interval
-    # interval = 15
-    collectors=[]
+    [[instances]]
+    collectors = ["cpu", "meminfo", "vmstat", "netdev", "filesystem", "loadavg", "uname", "time"]
 
   cpu.toml: |
-    # # collect interval
-    # interval = 15
-    # # whether collect per cpu
-    # collect_per_cpu = false
+    [[instances]]
+    collect_per_cpu = true
 
   mem.toml: |
-    # # collect interval
-    # interval = 15
+    [[instances]]
     collect_platform_fields = true
 
   disk.toml: |
-    # # collect interval
-    # interval = 15
+    [[instances]]
     # 忽略 K8s/容器相关挂载点与临时文件系统，避免重复/膨胀
     ignore_fs = ["tmpfs", "devtmpfs", "devfs", "iso9660", "overlay", "aufs", "squashfs", "nsfs", "CDFS", "fuse.juicefs"]
     ignore_mount_points = ["/boot", "/var/lib/kubelet/pods"]
 
   net.toml: |
-    # # collect interval
-    # interval = 15
-    # # whether collect protocol stats on Linux
-    # collect_protocol_stats = false
+    [[instances]]
+    collect_protocol_stats = false
 
   system.toml: |
-    # # collect interval
-    # interval = 15
+    [[instances]]
 {{- end }}

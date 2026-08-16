@@ -3,8 +3,10 @@
 # categraf DaemonSet — 每节点主机指标采集（P1-7，替代 node-exporter/ipmi-exporter）
 # 权限写法参照 ipmi-exporter DaemonSet：privileged（IPMI KCS / freeipmi 需要）+
 # hostPID（进程/主机视角采集，IPMI 本地读 /dev/ipmi0 需要）。
-# conf 目录由 ConfigMap(categraf-conf) 挂载 /etc/categraf/conf：
-#   ConfigMap 键不允许含 "/"，故 volume items 用 path 映射出 conf/input.* 子目录结构。
+# 配置加载：ConfigMap items 挂载产生 symlink 目录（input.cpu -> ..data/input.cpu），
+#   categraf local provider 用 IsDir() 检查不识别 symlink → "no inputs"。
+#   因此：ConfigMap 挂到 conf-cm（只读），启动命令 cp -rL 解引用复制到
+#   emptyDir 的 conf 目录，再 exec categraf（P0 部署验证修复）。
 # run 目录用 emptyDir（categraf 运行时 scratch，无需持久化）。
 # 探针：无 HTTP 端点，readiness 用 exec pgrep 检查采集进程存活。
 # 生产按需增开 ipmi/snmp/mysql/redis 插件（配置下发见平台设计 4.2）。
@@ -46,8 +48,14 @@ spec:
             # 集群 ID（与 ingest.clusterId 对齐，多集群纳管时区分配置）
             - name: CLUSTER_ID
               value: {{ .Values.categraf.clusterId | quote }}
-          command: ["/usr/bin/categraf"]
-          args: ["-configs", "/etc/categraf/conf"]
+          # cp -rL 解引用 ConfigMap symlink → 真实目录，categraf 才能识别 input.* 插件目录
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              rm -rf /etc/categraf/conf/*
+              cp -rL /etc/categraf/conf-cm/. /etc/categraf/conf/
+              exec /usr/bin/categraf -configs /etc/categraf/conf
           # 无 HTTP 探针：readiness 用 exec pgrep 检查 categraf 进程（-x 精确匹配避免自匹配）
           readinessProbe:
             exec:
@@ -59,6 +67,9 @@ spec:
           volumeMounts:
             - name: conf
               mountPath: /etc/categraf/conf
+            - name: conf-cm
+              mountPath: /etc/categraf/conf-cm
+              readOnly: true
             - name: run
               mountPath: /var/categraf/run
             - name: proc
@@ -69,6 +80,8 @@ spec:
               readOnly: true
       volumes:
         - name: conf
+          emptyDir: {}
+        - name: conf-cm
           configMap:
             name: categraf-conf
             defaultMode: 0644
