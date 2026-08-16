@@ -1413,18 +1413,20 @@ async def gen_recovery_plan(payload: dict, request: Request):
         script = "kubectl rollout restart deployment/%s" % service
     diagnosis = payload.get("diagnosis") or payload.get("investigation") or ""
     plan_text = f"恢复方案：\n- 操作: {script}\n- 影响面: 重启服务 {service}\n- 风险: 低（滚动重启，短暂中断）\n- 依据: {diagnosis[:200]}"
-    # 创建审批任务（source=recovery）
+    # 创建审批任务（source=recovery）——状态用 waiting（与任务生命周期枚举一致：
+    # queued → diagnosing → done / waiting / approved / rejected / failed），
+    # 审批中心按 waiting 筛选展示，待人工批准后由 approve 端点执行。
     tid = f"rec-{int(time.time()*1000)}"
     _task_store[tid] = {
         "id": tid, "task_id": tid, "source": "recovery",
         "service_name": service, "service": service,
-        "plan": plan_text, "script": script, "status": "pending",
+        "plan": plan_text, "script": script, "status": "waiting",
         "risk_score": 2, "risk_reason": "滚动重启，影响面受控",
         "diagnosis": diagnosis, "requester": "ai",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     _task_store.persist(tid)
-    return {"task_id": tid, "plan": plan_text, "script": script, "status": "pending"}
+    return {"task_id": tid, "plan": plan_text, "script": script, "status": "waiting"}
 
 
 # ═══════════════════════════════════════════════════════════════
