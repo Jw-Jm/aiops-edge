@@ -91,6 +91,27 @@ def query_topology(tenant_id: str = "default", cluster_id: str = "") -> str:
 
 
 def get_service_list(tenant_id: str = "default", cluster_id: str = "") -> str:
+    # 图谱优先：统一口径（自动构建的服务节点，排除 deleted），图谱不可达降级原逻辑
+    try:
+        from kg_graph import _load_graph, _json_loads
+        node_rows, _ = _load_graph()
+        svcs = set()
+        for r in node_rows:
+            if r.get("type") != "service":
+                continue
+            name = str(r.get("name") or "").strip()
+            if not name or name.endswith("(deleted)"):
+                continue
+            if cluster_id:
+                props = _json_loads(r.get("props_json"))
+                if str(props.get("cluster_id", "default")) != str(cluster_id):
+                    continue
+            svcs.add(name)
+        if svcs:
+            svcs = sorted(svcs)
+            return "服务数 " + str(len(svcs)) + "：\n" + "\n".join(svcs[:50])
+    except Exception:
+        pass
     url = f"{QUERY_API}/services"
     cp = _cluster_param(cluster_id)
     if cp:

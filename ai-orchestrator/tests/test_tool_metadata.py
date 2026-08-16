@@ -14,12 +14,12 @@ def test_tool_class_metadata():
 def test_new_tools_registered():
     """二期新增硬件/部件查询工具已注册。"""
     names = {x.name for x in ToolRegistry.list_all()}
-    for tool in ["snmp_query", "snmp_health", "ipmi_health", "node_health"]:
+    for tool in ["ipmi_health", "node_health"]:
         assert tool in names, f"tool {tool} not registered"
 
 
 def test_tool_class_values():
     """只读工具应为 safe Class，写操作工具需标记 mutating/dangerous。"""
     by_name = {x.name: x for x in ToolRegistry.list_all()}
-    for tool_name in ["snmp_query", "ipmi_health", "node_health"]:
+    for tool_name in ["ipmi_health", "node_health"]:
         assert by_name[tool_name].cls == "safe", f"{tool_name} should be safe"

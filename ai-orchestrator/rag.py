@@ -485,7 +485,6 @@ _TAG_KEYWORDS = [
     ("nginx", ["nginx", "网关", "反向代理", "upstream", "502", "504"]),
     ("capacity", ["容量", "磁盘", "内存", "cpu", "ett", "预测", "扩容", "空间不足"]),
     ("hardware/ipmi", ["温度", "风扇", "电源", "硬件", "ipmi", "sensor"]),
-    ("snmp", ["交换机", "端口", "网络设备", "snmp"]),
     ("k8s", ["kubernetes", "k8s", "pod", "节点", "deployment", "hpa", "pvc",
              "kubelet", "container", "namespace", "notready"]),
     ("app", ["应用", "服务", "错误率", "延迟", "超时", "error_rate", "p99", "接口", "api"]),

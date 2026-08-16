@@ -41,7 +41,7 @@ scheduler = AsyncIOScheduler()
 async def lifespan(app: FastAPI):
     """统一生命周期：startup + shutdown（替代废弃的 @app.on_event）。
 
-    管理：APScheduler 定时扫描、SNMP 采集/MySQL 迁移/知识库加载、AsyncSqliteSaver 连接。
+    管理：APScheduler 定时扫描、MySQL 迁移/知识库加载、AsyncSqliteSaver 连接。
     各启动项均可降级，失败不阻塞服务启动。
     """
     # === startup ===
@@ -64,14 +64,10 @@ async def lifespan(app: FastAPI):
                           id='node_health_aggregate', replace_existing=True)
     except Exception as e:  # noqa: BLE001
         print(f"[startup] scheduler add_job(node_health_aggregate) error: {e}", flush=True)
-    # 2. SNMP 采集 + MySQL 迁移 + 知识库自动加载（均可降级，失败不阻塞）
+    # 2. MySQL 迁移 + 知识库自动加载（均可降级，失败不阻塞）
     try:
         from db import migrate
         migrate()
-    except Exception:
-        pass
-    try:
-        asyncio.create_task(_snmp_collector.run_forever())
     except Exception:
         pass
     try:
@@ -2486,9 +2482,7 @@ async def toggle_rule(rule_key: str):
 
 from nl2sql import validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore, new_item
 from shell_ws import shell_ws
-from db_snmp import SNMPDeviceStore
-from snmp_collector import SNMPCollector
-import hardware_tools  # noqa: F401  注册 SNMP/IPMI/部件查询工具
+import hardware_tools  # noqa: F401  注册 IPMI/部件查询工具
 
 _nl2sql_store = Nl2SqlStore()
 _NL2SQL_SYSTEM = (
@@ -2684,12 +2678,8 @@ async def metrics():
 # ═══════════════════════════════════════════════════════════════
 #  Entry point (replaces server.py)
 # ═══════════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════════
-#  SNMP 设备与采集
-# ═══════════════════════════════════════════════════════════════
-
-_snmp_collector = SNMPCollector()
+#
+#  注：SNMP 采集能力已移除（原 snmp_collector / db_snmp 及 /api/v1/snmp/* 端点已删除）。
 
 
 def _seed_knowledge_bg():
@@ -2702,49 +2692,6 @@ def _seed_knowledge_bg():
     except Exception as e:  # noqa: BLE001
         import logging
         logging.getLogger("knowledge_seed").warning("知识库自动加载失败(不影响启动): %s", e)
-
-
-@app.get("/api/v1/snmp/devices")
-async def list_snmp_devices(active_only: bool = True):
-    return {"devices": SNMPDeviceStore().list(active_only=active_only)}
-
-
-@app.post("/api/v1/snmp/devices")
-async def add_snmp_device(body: dict = None):
-    b = body or {}
-    if not b.get("ip"):
-        raise HTTPException(400, "ip is required")
-    dev_id = SNMPDeviceStore().create({
-        "hostname": b.get("hostname", ""), "ip": b.get("ip"),
-        "community": b.get("community", "public"), "snmp_version": b.get("snmp_version", "v2c"),
-        "vendor": b.get("vendor", ""), "model": b.get("model", ""),
-        "location": b.get("location", ""), "status": b.get("status", "active"),
-    })
-    return {"ok": True, "id": dev_id}
-
-
-@app.delete("/api/v1/snmp/devices/{dev_id}")
-async def delete_snmp_device(dev_id: int):
-    SNMPDeviceStore().delete(dev_id)
-    return {"ok": True}
-
-
-@app.get("/api/v1/snmp/devices/{dev_id}/interfaces")
-async def list_snmp_interfaces(dev_id: int):
-    return {"interfaces": SNMPDeviceStore().list_interfaces(dev_id)}
-
-
-@app.post("/api/v1/snmp/devices/{dev_id}/collect")
-async def collect_snmp_device(dev_id: int):
-    """手动立即采集某设备接口。"""
-    devs = SNMPDeviceStore().list(active_only=False)
-    dev = next((d for d in devs if d.get("id") == dev_id), None)
-    if not dev:
-        raise HTTPException(404, "device not found")
-    data = _snmp_collector.collect_device(dev)
-    SNMPDeviceStore().save_interfaces(dev_id, data["interfaces"])
-    SNMPDeviceStore().touch_collect(dev_id)
-    return {"ok": True, "interfaces": len(data["interfaces"]), "sys_descr": data["sys_descr"]}
 
 
 # ═══════════════════════════════════════════════════════════════

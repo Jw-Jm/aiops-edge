@@ -45,7 +45,42 @@ def _clean(ctx, config):
 
 
 def _rca(ctx, config):
-    return {"mode": "deterministic", "root_cause": "", "evidence": "", "confidence": 0.0}
+    """RCA 证据链：图谱证据 + 指标异常 → 候选排序（带证据/置信度/验证动作）。"""
+    collected = _collect_out(ctx)
+    svc = config.get("service", "") or collected.get("service", "")
+    candidates = []
+    try:
+        from kg_tools import kg_evidence_tool  # 函数内 import 避免循环依赖
+        kg_ev = kg_evidence_tool(svc) if svc else ""
+    except Exception:
+        kg_ev = ""
+    red = str(collected.get("red", "") or "")
+    err_hit = ("error" in red.lower()) or ("错误" in red) or ("error_rate" in red)
+    if kg_ev and "暂不可用" not in kg_ev:
+        if err_hit:
+            candidates.append({"candidate": f"{svc} 存在依赖链/变更异常(图谱证据+指标异常)",
+                               "evidence": kg_ev[:400] + " | RED: " + red[:200],
+                               "confidence": 0.7,
+                               "verify_action": "沿图谱依赖链检查关联变更与中间件指标"})
+        else:
+            candidates.append({"candidate": f"{svc} 存在依赖链/变更异常(图谱证据)",
+                               "evidence": kg_ev[:500],
+                               "confidence": 0.55,
+                               "verify_action": "核对图谱关联变更与上游依赖状态"})
+    elif err_hit:
+        candidates.append({"candidate": f"{svc} 错误率/延迟指标异常",
+                           "evidence": red[:400],
+                           "confidence": 0.4,
+                           "verify_action": "查看 trace 与日志定位错误来源"})
+    if not candidates:
+        candidates.append({"candidate": "未发现明确异常证据", "evidence": "",
+                           "confidence": 0.2,
+                           "verify_action": "扩大时间窗口与指标范围复查"})
+    candidates.sort(key=lambda c: -c["confidence"])
+    top = candidates[0]
+    return {"mode": "evidence_chain", "root_cause": top["candidate"],
+            "evidence": top["evidence"], "confidence": top["confidence"],
+            "candidates": candidates}
 
 
 def _rag(ctx, config):

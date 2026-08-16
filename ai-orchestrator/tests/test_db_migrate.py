@@ -17,9 +17,8 @@ def test_phase2_migration_files_exist():
     assert len(phase2) == 1
     with open(phase2[0], encoding="utf-8") as fh:
         content = fh.read()
-    # 包含 5 张二期采集表
-    for table in ["snmp_devices", "network_interfaces", "ipmi_sensors",
-                  "ipmi_sel_events", "node_component_health"]:
+    # 包含 3 张二期采集表（SNMP 采集已移除）
+    for table in ["ipmi_sensors", "ipmi_sel_events", "node_component_health"]:
         assert f"CREATE TABLE IF NOT EXISTS {table}" in content
 
 

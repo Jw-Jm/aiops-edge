@@ -5,7 +5,7 @@
 # 挂载方式：DaemonSet 将本 ConfigMap 的 items 按 path 映射成 conf/ 下的 input.* 目录结构
 #           （ConfigMap 键不允许含 /，故 data 用平铺键 + volume items.path 做子目录）。
 # 注意：categraf 插件必须以 [[instances]] 数组激活（无实例段则插件不启动，日志 no inputs）。
-# 生产按需增开 ipmi / snmp / mysql / redis 等插件（配置下发见平台设计
+# 生产按需增开 ipmi / mysql / redis 等插件（配置下发见平台设计
 #           docs/AIOPS_FULLSTACK_DESIGN.md 4.2：平台生成 TOML → providers=http 远程下发）。
 # =============================================================================
 apiVersion: v1

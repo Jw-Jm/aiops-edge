@@ -13,7 +13,7 @@ NEW_CASES = [
      "plan": "1. 在 DeepFlow 拓扑中查看延迟分段，定位是哪一段链路（client→server）变慢；2. 查看该链路 TCP 重传率与丢包率（node_exporter tcp_retrans/segs）；3. 检查节点网卡带宽占用（node_network_transmit_bytes/rate）；4. 检查是否存在跨集群/跨 AZ 调用（看 cluster_id 标签）；5. 对带宽打满的节点限流或扩容，对跨网调用改内网路由"},
     {"service": "network", "symptom": "TCP 重传率持续升高，客户端大量超时，应用错误日志出现 connection reset by peer",
      "root_cause": "网络拥塞导致丢包、MTU 不一致、防火墙/安全组丢弃、对端连接数打满触发 RST、或网卡故障",
-     "plan": "1. 用 node_exporter tcp_retrans_segs/tcp_out_segs 计算重传率，定位异常节点；2. 检查对端服务的连接数（ss -s、连接数监控），确认是否达到上限；3. 检查网络设备（SNMP）端口错包/丢包计数；4. 核对 MTU 与防火墙策略；5. 临时降级为短连接+重试策略缓解，再根治链路"},
+     "plan": "1. 用 node_exporter tcp_retrans_segs/tcp_out_segs 计算重传率，定位异常节点；2. 检查对端服务的连接数（ss -s、连接数监控），确认是否达到上限；3. 核对 MTU 与防火墙策略；4. 临时降级为短连接+重试策略缓解，再根治链路"},
     {"service": "network", "symptom": "跨集群调用偶发超时，链路追踪显示 span 之间出现长时间 gap（几十秒），但各 span 自身耗时正常",
      "root_cause": "网络代理/网关超时、DNS 解析慢、跨集群网络不稳定（丢包重传）、或安全扫描/限流设备周期性介入",
      "plan": "1. 对比不同集群/实例的调用延迟分布，确认是否跨集群才超时；2. 检查 DNS 解析耗时（应用侧 dns_lookup 指标）；3. 查看网关/代理（如 ingress）日志中的超时与限流记录；4. 增加客户端超时与重试，服务端加大请求队列；5. 长期：跨集群调用改异步化或就近接入"},
@@ -66,13 +66,7 @@ NEW_CASES = [
     {"service": "capacity", "symptom": "内存使用率持续高位（>90%）但 CPU 正常，服务开始出现 OOMKilled",
      "root_cause": "内存泄漏、缓存/连接池配置过大、或 Pod 内存 limit 设置不合理",
      "plan": "1. 检查内存使用趋势与 OOM 事件；2. 用 heap dump/pprof 定位泄漏对象；3. 检查缓存与连接池配置上限；4. 调整内存 limit 或扩内存；5. 加内存监控告警"},
-    # ============ 6. SNMP 网络设备 / IPMI 硬件 ============
-    {"service": "snmp", "symptom": "交换机端口错包/丢包计数持续增长，通过该端口的服务出现偶发延迟与重传",
-     "root_cause": "端口物理故障/劣化（光模块、网线）、双工不匹配、或广播风暴",
-     "plan": "1. 用 SNMP 查看端口 in/out errors、discards、CRC 错误计数；2. 检查端口双工/速率协商是否正常；3. 检查光模块光功率（DOM）；4. 重启端口或更换线缆/模块；5. 配置端口错误率告警"},
-    {"service": "snmp", "symptom": "SNMP 设备采集失败或超时，设备列表显示不可达",
-     "root_cause": "SNMP community 变更、设备 IP 变更、防火墙拦截 161 端口、或设备 SNMP 服务未启用",
-     "plan": "1. snmpwalk 手工验证连通性与 community；2. 检查设备 IP/路由变更；3. 检查防火墙放行 UDP 161；4. 确认设备 SNMP 服务状态；5. 更新平台设备配置"},
+    # ============ 6. IPMI 硬件 ============
     {"service": "hardware", "symptom": "服务器 IPMI 传感器显示温度过高或风扇转速异常，硬件健康状态降级",
      "root_cause": "风扇故障、散热风道堵塞、环境温度过高、或传感器误报",
      "plan": "1. 查看 IPMI 传感器读数（温度/风扇/电压）；2. 检查服务器物理环境（机房温度/风道）；3. 检查故障风扇并更换；4. 清灰维护；5. 配置温度告警阈值提前介入"},

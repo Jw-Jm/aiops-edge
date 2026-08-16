@@ -477,18 +477,60 @@ def attach_changes(cluster_id: str = "default") -> dict:
     return _snapshot()
 
 
+def attach_middleware(cluster_id: str = "default") -> dict:
+    """从 trace_spans 的 db_system 字段挖掘 service→middleware 依赖边。
+
+    例: orders 调用了 MySQL → middleware 节点 mysql + DEPENDS_ON 边。
+    CH 不可达或表缺失时异常进 errors 列表，不抛出。
+    """
+    _reset_stats()
+    sql = ("SELECT service_name, db_system, count() AS c "
+           "FROM observability.trace_spans "
+           "WHERE db_system != '' AND start_time >= now() - INTERVAL 24 HOUR "
+           "GROUP BY service_name, db_system LIMIT 200")
+    try:
+        rows = _ch_query(sql)
+    except Exception as e:
+        _STATS["errors"].append(f"middleware query: {e}")
+        return _snapshot()
+    for r in rows:
+        svc = str(r.get("service_name") or "").strip()
+        db = str(r.get("db_system") or "").strip()
+        c = int(r.get("c") or 0)
+        if not svc or not db:
+            continue
+        try:
+            mid = upsert_node("middleware", db, {
+                "db_system": db, "cluster_id": cluster_id, "created_by": "auto"})
+            sid = get_node("service", svc, cluster_id)
+            if not sid:
+                sid = upsert_node("service", svc, {
+                    "cluster_id": cluster_id, "created_by": "auto"})
+            else:
+                sid = int(sid["id"])
+            upsert_edge(sid, mid, "DEPENDS_ON", {
+                "calls": c, "cluster_id": cluster_id, "created_by": "auto"})
+        except Exception as e:
+            _STATS["errors"].append(f"middleware edge {svc}->{db}: {e}")
+    return _snapshot()
+
+
 def build_all(cluster_id: str = "default") -> dict:
-    """依次执行 traces / k8s / changes 三条管线并汇总统计。"""
+    """依次执行 traces / k8s / middleware / changes 四条管线并汇总统计。"""
     traces = build_from_traces(cluster_id)
     k8s = build_from_k8s(cluster_id)
+    middleware = attach_middleware(cluster_id)
     changes = attach_changes(cluster_id)
     total = {}
     for k in _JSON_KEYS:
-        total[k] = traces.get(k, 0) + k8s.get(k, 0) + changes.get(k, 0)
+        total[k] = (traces.get(k, 0) + k8s.get(k, 0)
+                    + middleware.get(k, 0) + changes.get(k, 0))
     total["errors"] = (traces.get("errors", [])
                        + k8s.get("errors", [])
+                       + middleware.get("errors", [])
                        + changes.get("errors", []))
-    return {"traces": traces, "k8s": k8s, "changes": changes, "total": total}
+    return {"traces": traces, "k8s": k8s, "middleware": middleware,
+            "changes": changes, "total": total}
 
 
 # ═══════════════════════════════════════════════════════════════

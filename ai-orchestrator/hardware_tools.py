@@ -1,52 +1,8 @@
-"""二期强化硬件/部件查询工具 — 供 AI agent 调用，查询 SNMP/IPMI/部件可用性。
+"""二期强化硬件/部件查询工具 — 供 AI agent 调用，查询 IPMI/部件可用性。
 
 这些工具为只读（Class=safe），查询已采集的数据，不直接操作设备。
 """
 from skill_registry import ToolRegistry
-
-
-@ToolRegistry.register(
-    name="snmp_query",
-    description="查询网络设备（SNMP 交换机）的接口信息",
-    category="infra",
-    params={"ip": {"type": "string", "required": True, "desc": "设备 IP"},
-            "hostname": {"type": "string", "required": False, "desc": "设备主机名"}},
-    cls_="safe", scope="manager",
-    when_to_use="用户询问交换机/网络设备的接口、端口状态、流量时",
-)
-def snmp_query(ip: str = "", hostname: str = ""):
-    from db_snmp import SNMPDeviceStore
-    store = SNMPDeviceStore()
-    devs = store.list(active_only=False)
-    dev = None
-    if ip:
-        dev = next((d for d in devs if d.get("ip") == ip), None)
-    elif hostname:
-        dev = next((d for d in devs if d.get("hostname") == hostname), None)
-    if not dev:
-        return {"found": False, "message": "未找到 SNMP 设备"}
-    ifaces = store.list_interfaces(dev.get("id"))
-    return {"found": True, "device": dev.get("hostname"), "ip": dev.get("ip"),
-            "interfaces": [{"name": i.get("if_name"), "status": i.get("if_oper_status"),
-                            "in_octets": i.get("if_in_octets"), "out_octets": i.get("if_out_octets")}
-                           for i in ifaces]}
-
-
-@ToolRegistry.register(
-    name="snmp_health",
-    description="查询网络设备健康状态（SNMP 设备基本信息）",
-    category="infra",
-    params={"ip": {"type": "string", "required": False, "desc": "设备 IP"}},
-    cls_="safe", scope="manager",
-    when_to_use="用户询问网络设备健康、状态时",
-)
-def snmp_health(ip: str = ""):
-    from db_snmp import SNMPDeviceStore
-    devs = SNMPDeviceStore().list(active_only=False)
-    if ip:
-        dev = next((d for d in devs if d.get("ip") == ip), None)
-        return {"found": dev is not None, "device": dev or {}}
-    return {"found": len(devs) > 0, "devices": devs}
 
 
 @ToolRegistry.register(
