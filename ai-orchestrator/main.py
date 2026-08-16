@@ -2312,6 +2312,30 @@ async def add_knowledge_case(body: dict = None):
     resp = {"ok": True, "case_id": r, "inserted": r == cid, "validated": "pending"}
     if r != cid:
         resp["message"] = "已存在相似案例"
+    # ── 复盘回写：best-effort 将案例写入知识图谱（失败仅日志，不阻断入库）──
+    try:
+        from kg_graph import upsert_node, upsert_edge
+        case_node_id = upsert_node("case", cid, {
+            "service": service,
+            "symptom": symptom[:200],
+            "root_cause": (root_cause or "")[:200],
+            "cluster_id": "default",
+            "created_by": "auto",
+        })
+        svc = (service or "").strip()
+        if svc and svc != "unknown":
+            service_id = upsert_node("service", svc, {
+                "cluster_id": "default",
+                "created_by": "auto",
+            })
+            upsert_edge(service_id, case_node_id, "MENTIONED_IN", {
+                "case_id": cid,
+                "created_by": "auto",
+            })
+        # 说明：CAUSED_BY（根因实体识别）需从 root_cause 中提取疑似根因实体，
+        # 实现复杂且易误判，留待后续；此处仅建立 MENTIONED_IN 关联边。
+    except Exception as e:  # noqa: BLE001
+        print(f"[kg回写] 失败: {e}")
     return resp
 
 

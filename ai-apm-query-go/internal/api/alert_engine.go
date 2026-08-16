@@ -117,6 +117,9 @@ func (h *Handler) evaluateAlerts() {
 	copy(rules, alertRules)
 	alertRulesMu.RUnlock()
 
+	// P3-3b: 容量 ETT 联动告警。独立 goroutine + 超时执行，不阻塞本评估循环。
+	h.launchCapacityETTCheck()
+
 	// ── 并行评估阶段（P3-1a）──
 	// 按规则类型分组：非 K8s 规则（threshold/anomaly/forecast/burn_rate/log/trace 类）
 	// 并发评估（上限 8，避免打爆 VM/CH）；K8s 类规则（打实时 K8s API）独立分组、

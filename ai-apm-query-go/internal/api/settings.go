@@ -655,6 +655,26 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("X-Internal-Token", it)
 	}
 
+	// QuotaAI 配额检查（P3-2b）：仅对 LLM 调用路径（/ai/chat、/ai/nl2sql、/ai/final_report）
+	// 消耗配额。租户 QuotaAI>0 且当日已用达到上限 → 429 不转发；QuotaAI=0 或租户不存在
+	// （默认 default 恒在）→ 不限。当日计数为进程内内存实现（重启归零，见 tenant_quota.go），
+	// 生产可替换为 Redis/MySQL 计数表。
+	if isLLMProxyPath(r.URL.Path) {
+		tenant := extractTenantID(r)
+		used := quotaUsedToday(tenant)
+		if quota := tenantQuotaAI(tenant); quota > 0 && used >= quota {
+			respondJSON(w, http.StatusTooManyRequests, map[string]interface{}{
+				"error":          "AI 调用已达当日配额上限（quota_ai_calls）",
+				"tenant":         tenant,
+				"quota_ai_calls": quota,
+				"used_today":     used,
+			})
+			return
+		}
+		// 转发前计数 +1
+		quotaIncrementToday(tenant)
+	}
+
 	// Use longer timeout for AI requests (full 14-node DAG with 5 LLM calls = 120-300s)
 	aiClient := &http.Client{Timeout: 300 * time.Second}
 	resp, err := aiClient.Do(req)
