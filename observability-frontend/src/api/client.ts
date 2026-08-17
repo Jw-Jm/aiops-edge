@@ -396,8 +396,21 @@ export const getChanges = (params?: Record<string, unknown>) => api.get('/ops/ch
 export const postChange = (data: Record<string, unknown>) => api.post('/ops/changes', data)
 
 // ===== 知识图谱（骨架：后端 P2-1/P2-2 并行开发，失败时返回空图）=====
-export interface KgNode { id?: string; name: string; type?: string }
-export interface KgEdge { source: string; target: string; type?: string; value?: number }
+// 字段对齐后端 kg_api.kg_graph_full：节点 {id:int,type,name,props}，边 {id:int,src:int,dst:int,type,props}。
+// 兼容旧写法 source/target（部分 mock/降级路径可能使用），实际以 src/dst 为准。
+export interface KgNode { id?: string | number; name: string; type?: string; props?: Record<string, unknown> }
+export interface KgEdge {
+  id?: number
+  source?: string | number
+  target?: string | number
+  src?: string | number
+  dst?: string | number
+  type?: string
+  value?: number
+  calls?: number
+  errors?: number
+  props?: { calls?: number; errors?: number; cluster_id?: string; created_by?: string; [k: string]: unknown }
+}
 export interface KgGraph {
   nodes?: KgNode[]
   edges?: KgEdge[]
