@@ -170,6 +170,7 @@ func parsePods(data []byte) []map[string]interface{} {
 	var r struct {
 		Items []struct {
 			Metadata struct{ Name, Namespace string }
+			Spec     struct{ NodeName string `json:"nodeName"` }
 			Status   struct {
 				Phase             string
 				ContainerStatuses []struct{ RestartCount int } `json:"containerStatuses"`
@@ -181,7 +182,7 @@ func parsePods(data []byte) []map[string]interface{} {
 	for _, it := range r.Items {
 		rc := 0
 		if len(it.Status.ContainerStatuses) > 0 { rc = it.Status.ContainerStatuses[0].RestartCount }
-		pods = append(pods, map[string]interface{}{"name": it.Metadata.Name, "namespace": it.Metadata.Namespace, "status": it.Status.Phase, "restarts": rc})
+		pods = append(pods, map[string]interface{}{"name": it.Metadata.Name, "namespace": it.Metadata.Namespace, "status": it.Status.Phase, "restarts": rc, "node_name": it.Spec.NodeName})
 	}
 	return pods
 }

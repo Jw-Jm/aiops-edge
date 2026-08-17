@@ -197,6 +197,49 @@ def _pod_fields(p) -> tuple:
     return name, namespace, status, node_name
 
 
+def _pod_to_service_name(pod_name: Optional[str]) -> list:
+    """从 pod 名推导候选服务名（按优先级返回列表，调用方逐个匹配服务节点）。
+
+    - deployment 型：`query-api-7966f8dbb8-sjswt` → 候选 `query-api`（去最后两段 -hash-random）
+    - statefulset 型：`mysql-0` / `deepflow-clickhouse-0` → 候选 `mysql` / `deepflow-clickhouse`（去最后一段 -序号）
+    - daemonset 型：`deepflow-agent-b88wd` → 候选 `deepflow-agent`（去最后一段 -hash）
+    返回去重保序的候选列表；无法推导（无 `-` 分隔）返回空列表。
+    """
+    if not pod_name:
+        return []
+    parts = pod_name.split("-")
+    cands = []
+    if len(parts) >= 3:
+        cands.append("-".join(parts[:-2]))  # deployment：去 hash+random
+    if len(parts) >= 2:
+        cands.append("-".join(parts[:-1]))  # statefulset/daemonset：去序号/hash
+    seen = set()
+    out = []
+    for c in cands:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def _find_node_id(node_type: str, node_name: str) -> Optional[int]:
+    """查 topology_nodes 返回 id；不存在返回 None。"""
+    if not node_name:
+        return None
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM topology_nodes WHERE type=%s AND name=%s ORDER BY id LIMIT 1",
+                (node_type, node_name))
+            row = cur.fetchone()
+            return int(row["id"]) if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════
 #  节点 / 边 upsert
 # ═══════════════════════════════════════════════════════════════
@@ -380,6 +423,24 @@ def build_from_k8s(cluster_id: str = "default") -> dict:
     异常捕获进 errors 列表，不抛出。
     """
     _reset_stats()
+    # 集群节点：从 MySQL clusters 表取真实集群名（kubeconfig != 'mock'），兜底用 cluster_id
+    cluster_name = cluster_id
+    try:
+        conn = _get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM clusters WHERE kubeconfig != 'mock' AND status='active' ORDER BY id LIMIT 1")
+                row = cur.fetchone()
+                if row and row.get("name"):
+                    cluster_name = row["name"]
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    cid = upsert_node("cluster", cluster_name, {
+        "cluster_id": cluster_id, "created_by": "auto",
+    })
+
     try:
         payload = _qa_get("/infrastructure/nodes")
         for n in _extract_items(payload):
@@ -387,8 +448,11 @@ def build_from_k8s(cluster_id: str = "default") -> dict:
                 name, status, capacity = _node_fields(n)
                 if not name:
                     continue
-                upsert_node("node", name, {
+                nid = upsert_node("node", name, {
                     "name": name, "status": status, "capacity": capacity,
+                    "cluster_id": cluster_id, "created_by": "auto",
+                })
+                upsert_edge(cid, nid, "CONTAINS", {
                     "cluster_id": cluster_id, "created_by": "auto",
                 })
             except Exception as e:
@@ -414,6 +478,15 @@ def build_from_k8s(cluster_id: str = "default") -> dict:
                     upsert_edge(pid, nid, "RUNS_ON", {
                         "cluster_id": cluster_id, "created_by": "auto",
                     })
+                # service→pod RUNS_ON：pod 名推导候选服务名（deployment 去两段 / statefulset·daemonset 去一段），
+                # 逐个匹配已存在的 service 节点，命中即建边
+                for svc_name in _pod_to_service_name(name):
+                    sid = _find_node_id("service", svc_name)
+                    if sid:
+                        upsert_edge(sid, pid, "RUNS_ON", {
+                            "cluster_id": cluster_id, "created_by": "auto",
+                        })
+                        break
             except Exception as e:
                 _STATS["errors"].append(f"k8s pod {p.get('name')!r}: {e}")
     except Exception as e:
