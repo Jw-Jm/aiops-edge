@@ -110,6 +110,32 @@ async def lifespan(app: FastAPI):
         _flow_sched.start()
     except Exception as e:  # noqa: BLE001
         print(f"[startup] flow cron scheduler error: {e}", flush=True)
+    # A3: 知识图谱定时重建（默认 60s；KG_BUILD_INTERVAL_SECONDS 可配，0 关闭）
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _KgSched
+        from kg_graph import build_all as _kg_build_all
+        _kg_interval = int(os.environ.get("KG_BUILD_INTERVAL_SECONDS", "60"))
+        if _kg_interval > 0:
+            _kg_sched = _KgSched(daemon=True)
+
+            def _kg_build_job():
+                try:
+                    _r = _kg_build_all("default")
+                    _t = _r.get("total", {})
+                    print(
+                        f"[kg] 定时重建完成: nodes+{_t.get('nodes_added', 0)} "
+                        f"edges+{_t.get('edges_added', 0)} "
+                        f"errors={len(_t.get('errors', []))}",
+                        flush=True)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[kg] 定时重建失败: {e}", flush=True)
+
+            _kg_sched.add_job(_kg_build_job, 'interval', seconds=_kg_interval,
+                              id='kg_build_refresh', replace_existing=True)
+            _kg_sched.start()
+            print(f"[startup] kg 图谱定时重建已启动: 每 {_kg_interval}s", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[startup] kg build scheduler error: {e}", flush=True)
     # E2: 内置运维 playbook 向量化加载（重试直到 ChromaDB 就绪，幂等，失败不阻塞）
     # 注意: ChromaDB 首次初始化可能失败(与 knowledge_seed 并行竞争 tenant 创建),
     # 一次性线程会静默丢 playbook, 因此带重试循环 (10 次 × 15s)。

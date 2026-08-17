@@ -219,6 +219,8 @@ aiOrchestrator:
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   llmMock: "false"
+  # 知识图谱定时重建间隔（秒）；0 关闭。默认 60s（每 1 分钟刷新一次）
+  kgBuildIntervalSeconds: 60
   dataStorageClass: ""
   dataStorage: 5Gi
   resources:
