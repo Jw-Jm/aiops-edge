@@ -39,6 +39,7 @@ helm upgrade --install aiops "$CHART_DIR" \
   --set secrets.llmEncryptionKey="${DEV_LLM_KEY}" \
   --set secrets.internalToken="dev-internal-token" \
   --set secrets.ingestApiKey="dev-ingest-key" \
+  --set secrets.adminInitialPassword="admin123" \
   --set secrets.clickhousePassword="dev-ch-pass" \
   --set secrets.mysqlRootPassword="dev-mysql-pass" \
   --wait \

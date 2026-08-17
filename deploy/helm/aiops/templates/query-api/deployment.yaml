@@ -61,6 +61,9 @@ spec:
                 secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
             - name: MYSQL_DB
               value: {{ .Values.queryApi.mysqlDb | default "aiops" | quote }}
+            - name: ADMIN_INITIAL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: ADMIN_INITIAL_PASSWORD }
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 10

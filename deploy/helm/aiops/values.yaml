@@ -28,6 +28,8 @@ secrets:
   ingestApiKey: ""
   clickhousePassword: ""
   mysqlRootPassword: ""
+  # admin 初始密码（query-api 启动种子；未设置时生成随机密码并打印一次性提示，admin 将无法用默认密码登录）
+  adminInitialPassword: ""
 
 # ---------------------------------------------------------------------------
 # 中间件：enabled=true 由 Chart 内部拉起；enabled=false 走 external 复用已有实例
