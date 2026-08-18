@@ -185,6 +185,41 @@ func newTestHandler(t *testing.T) *Handler {
 	return h
 }
 
+// TestServiceDetailRedirectsToCanonicalTopologyDetail ensures service-list clicks
+// use the same complete detail contract as topology-node clicks. It fails if the
+// legacy endpoint resumes returning only a trend series.
+func TestServiceDetailRedirectsToCanonicalTopologyDetail(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest("GET", "/api/v1/services/orders?minutes=60", nil)
+	w := httptest.NewRecorder()
+
+	h.ServiceDetail(w, req)
+
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected service detail to redirect to the canonical topology detail endpoint, got %d: %s", w.Code, w.Body.String())
+	}
+	if got, want := w.Header().Get("Location"), "/api/v1/topology/node/orders?minutes=60"; got != want {
+		t.Fatalf("redirect location=%q, want %q", got, want)
+	}
+}
+
+// Service-list callers that do not yet provide a selected time window retain
+// the former 24-hour detail window when routed to topology detail.
+func TestServiceDetailDefaultsToLegacyDayWindow(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest("GET", "/api/v1/services/orders", nil)
+	w := httptest.NewRecorder()
+
+	h.ServiceDetail(w, req)
+
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("expected temporary redirect, got %d: %s", w.Code, w.Body.String())
+	}
+	if got, want := w.Header().Get("Location"), "/api/v1/topology/node/orders?minutes=1440"; got != want {
+		t.Fatalf("redirect location=%q, want %q", got, want)
+	}
+}
+
 // TestQueryMetricsWithoutServiceDoesNotError 验证 service 参数为空时不再返回
 // 400 "service parameter required"，而是放行到查询阶段（200 空结果或 500 CH 错误）。
 func TestQueryMetricsWithoutServiceDoesNotError(t *testing.T) {
@@ -408,5 +443,29 @@ func TestDashboardStatsEdgesFallsBackToMySQL(t *testing.T) {
 	// 因此 edges 应为 0（不 panic），且不因 CH 空返回导致错误。
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestListTracesHoursAddsStartTimePredicate(t *testing.T) {
+	var query string
+	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(""))
+	}))
+	defer chSrv.Close()
+
+	h := &Handler{client: &http.Client{}}
+	h.chHost, h.chPort = splitHostPort(chSrv.URL)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/traces?hours=6", nil)
+	rec := httptest.NewRecorder()
+
+	h.ListTraces(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(query, "start_time >= now() - INTERVAL 6 HOUR") {
+		t.Fatalf("expected six-hour start_time predicate, got query: %s", query)
 	}
 }

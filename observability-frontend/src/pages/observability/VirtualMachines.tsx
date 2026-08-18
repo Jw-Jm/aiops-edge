@@ -60,7 +60,8 @@ const VirtualMachines: React.FC = () => {
   }
 
   const cols = [
-    { title: '名称', dataIndex: 'name', key: 'name', render: (v: string, r: VmItem) => <a onClick={() => openDetail(r)} style={{ color: 'var(--primary)' }}>{v}</a> },
+    // B6 修复：移除名称列 onClick，仅保留 onRow 点击打开详情（避免双击触发两次请求）
+    { title: '名称', dataIndex: 'name', key: 'name', render: (v: string) => <span style={{ color: 'var(--primary)', fontWeight: 500 }}>{v}</span> },
     { title: '命名空间', dataIndex: 'namespace', key: 'namespace', width: 160 },
     { title: '状态', dataIndex: 'status', key: 'status', width: 110, render: (s?: string) => <Tag color={vmTone(s)}>{s || '-'}</Tag> },
     { title: '所在节点', dataIndex: 'node', key: 'node', width: 160, render: (v?: string) => <span style={{ fontSize: 12 }}>{v || '-'}</span> },

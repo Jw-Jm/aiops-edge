@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Table, Tag, Spin, Space, Empty as AntdEmpty } from 'antd'
+import { Table, Tag, Spin, Space } from 'antd'
 import { listNodeHealth, listIpmiSensors, listIpmiEvents } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty, StatusBadge, StatusTone } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
@@ -141,7 +141,7 @@ const Hardware: React.FC = () => {
         : t.includes('fan') ? 'fan'
           : (t.includes('power') || t.includes('psu')) ? 'power'
             : t.includes('volt') ? 'voltage'
-              : t ? 'other' : 'other'
+              : 'other'
       bucket[key].push(s)
     }
     return groups
@@ -185,9 +185,9 @@ const Hardware: React.FC = () => {
         <div className="card__head" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-soft)' }}>
           <div className="card__title">节点硬件健康</div>
         </div>
-        <Table rowKey="key" loading={healthLoading} columns={healthCols} dataSource={healthRows}
+        <Table rowKey={(r: any) => `${r?.node ?? r?.node_name ?? ''}-${r?.component || 'overall'}`} loading={healthLoading} columns={healthCols} dataSource={healthRows}
           size="middle" pagination={{ pageSize: 10, showSizeChanger: false }} scroll={{ x: 980 }}
-          locale={{ emptyText: <AntdEmpty description="暂无节点健康数据" /> }} />
+          locale={{ emptyText: <Empty text="暂无节点健康数据" /> }} />
       </div>
 
       {/* ② IPMI 传感器 */}
@@ -230,7 +230,7 @@ const Hardware: React.FC = () => {
         <Table rowKey={(r: any) => `${r?.id ?? ''}-${r?.event_id ?? ''}-${r?.event_time ?? ''}-${r?.event_desc ?? ''}`}
           loading={eventLoading} columns={eventCols} dataSource={events}
           size="middle" pagination={{ pageSize: 15, showSizeChanger: false }} scroll={{ x: 860 }}
-          locale={{ emptyText: <AntdEmpty description="暂无 SEL 事件" /> }} />
+          locale={{ emptyText: <Empty text="暂无 SEL 事件" /> }} />
       </div>
     </div>
   )

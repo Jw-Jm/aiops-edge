@@ -159,3 +159,201 @@ def test_get_session_state_reads_checkpoint_synchronously():
         if getattr(brain, "_async_conn", None) is not None:
             await brain._async_conn.close()
     asyncio.run(_cleanup())
+
+
+def test_get_session_state_preserves_structured_chat_messages():
+    """SQLite checkpoint 中的 suggestion/execresult 卡片必须可无损读取。"""
+    from orchestrator import BrainOrchestrator
+
+    expected_messages = [
+        {"id": "suggestion-1", "role": "assistant", "content": "", "kind": "suggestion",
+         "plan": "滚动重启", "script": "kubectl rollout restart", "riskScore": 0.8},
+        {"id": "execution-1", "role": "assistant", "content": "重启成功", "kind": "execresult"},
+    ]
+    thread_id = f"structured-messages-{uuid.uuid4().hex[:8]}"
+
+    async def _write_and_read():
+        brain = BrainOrchestrator()
+        await brain._ensure_async_checkpointer()
+        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        checkpoint = _make_checkpoint(f"ckpt-{thread_id}")
+        checkpoint["channel_values"] = {
+            "messages": expected_messages, "user_message": "排查 order-svc",
+            "final_response": "已完成诊断", "intent": "diagnosis", "service": "order-svc",
+        }
+        await brain.checkpointer.aput(config, checkpoint, {}, {})
+        return brain
+
+    brain = asyncio.run(_write_and_read())
+    values = brain.get_session_state(thread_id)
+    assert values["messages"] == expected_messages
+
+    async def _cleanup():
+        await brain._async_conn.close()
+    asyncio.run(_cleanup())
+
+
+def test_get_session_preserves_checkpoint_suggestion_and_execution_metadata(monkeypatch):
+    """历史会话恢复时，AiChat 处置卡和执行结果不能退化成纯文本。"""
+    import main
+
+    checkpoint_messages = [
+        {"id": "u-1", "role": "user", "content": "排查 order-svc", "timestamp": "2026-08-18T00:00:00Z"},
+        {
+            "id": "s-1", "role": "assistant", "content": "", "kind": "suggestion",
+            "plan": "滚动重启 order-svc", "script": "kubectl rollout restart deploy/order-svc",
+            "threadId": "session-1", "riskScore": 0.8, "riskReason": "会重启副本",
+            "service": "order-svc", "timestamp": "2026-08-18T00:01:00Z",
+        },
+        {
+            "id": "e-1", "role": "assistant", "content": "✅ 已执行命令：\n重启成功",
+            "kind": "execresult", "script": "kubectl rollout restart deploy/order-svc",
+            "threadId": "session-1", "timestamp": "2026-08-18T00:02:00Z",
+        },
+    ]
+
+    class FakeBrain:
+        def get_session_state(self, session_id):
+            assert session_id == "session-1"
+            return {
+                "intent": "diagnosis", "service": "order-svc",
+                "final_response": "已完成诊断", "messages": checkpoint_messages,
+            }
+
+    monkeypatch.setattr(main, "_get_brain", lambda: FakeBrain())
+    monkeypatch.setattr(main, "_load_persisted_session", lambda session_id: None)
+    response = asyncio.run(main.get_session("session-1"))
+
+    assert response["messages"][:3] == checkpoint_messages
+    assert response["messages"][-1] == {"role": "assistant", "content": "已完成诊断"}
+
+
+def test_get_session_converts_checkpoint_plan_risk_and_execution_fields(monkeypatch):
+    """旧 checkpoint 的 state 字段应转换为 AiChat 的 suggestion/execresult 消息。"""
+    import main
+
+    class FakeBrain:
+        def get_session_state(self, session_id):
+            return {
+                "messages": ["internal graph log"], "user_message": "排查 order-svc",
+                "final_response": "已完成诊断", "intent": "diagnosis", "service": "order-svc",
+                "plan": "滚动重启 order-svc", "script": "kubectl rollout restart deploy/order-svc",
+                "risk_score": 0.8, "risk_reason": "会重启副本", "execute_output": "重启成功",
+            }
+
+    monkeypatch.setattr(main, "_get_brain", lambda: FakeBrain())
+    response = asyncio.run(main.get_session("session-1"))
+
+    assert response["messages"][-2] == {
+        "role": "assistant", "content": "", "kind": "suggestion",
+        "plan": "滚动重启 order-svc", "script": "kubectl rollout restart deploy/order-svc",
+        "threadId": "session-1", "riskScore": 0.8, "riskReason": "会重启副本",
+        "service": "order-svc",
+    }
+    assert response["messages"][-1] == {
+        "role": "assistant", "content": "重启成功", "kind": "execresult",
+        "script": "kubectl rollout restart deploy/order-svc", "threadId": "session-1",
+        "service": "order-svc",
+    }
+
+
+def test_streamed_suggestion_execution_and_reload_preserve_aichat_card(monkeypatch):
+    """流式 suggestion 经执行后，重新加载会话仍展示完整的执行结果卡。"""
+    import main
+    from starlette.requests import Request
+
+    thread_id = f"stream-session-{uuid.uuid4().hex[:8]}"
+
+    class FakeBrain:
+        async def stream_sync(self, *args, **kwargs):
+            yield {
+                "type": "suggestion", "plan": "滚动重启 order-svc",
+                "script": "kubectl rollout restart deploy/order-svc",
+                "risk_score": 0.8, "risk_reason": "会重启副本",
+            }
+            yield {"type": "done", "text": "已完成诊断"}
+
+        def execute_suggestion(self, *args, **kwargs):
+            return "rollout successfully restarted"
+
+        def get_session_state(self, session_id):
+            assert session_id == thread_id
+            return {"messages": ["[collect] complete"], "intent": "diagnosis", "service": "order-svc"}
+
+    monkeypatch.setenv("INTERNAL_TOKEN", "test-token")
+    monkeypatch.setattr(main, "_get_brain", lambda: FakeBrain())
+    monkeypatch.setattr(main, "_audit_log", lambda *args, **kwargs: None)
+    request = Request({"type": "http", "method": "POST", "path": "/api/v1/ai/chat", "headers": []})
+
+    async def _drain_stream():
+        response = await main.ai_chat(main.ChatRequest(
+            intent="diagnosis", service="order-svc", message="排查 order-svc",
+            stream=True, session_id=thread_id), request)
+        async for _chunk in response.body_iterator:
+            pass
+
+    asyncio.run(_drain_stream())
+    approver_request = Request({
+        "type": "http", "method": "POST", "path": "/api/v1/ai/suggestion/execute",
+        "headers": [(b"x-internal-token", b"test-token"), (b"x-internal-role", b"admin")],
+    })
+    execution = main.execute_suggestion_command(main.SuggestionRequest(
+        thread_id=thread_id, service="order-svc", approved=True,
+        script="kubectl rollout restart deploy/order-svc", context="滚动重启 order-svc"), approver_request)
+    reloaded = asyncio.run(main.get_session(thread_id))
+
+    assert execution["exec_result"] == "rollout successfully restarted"
+    card = next(message for message in reloaded["messages"] if message.get("kind") == "execresult")
+    assert card["plan"] == "滚动重启 order-svc"
+    assert card["script"] == "kubectl rollout restart deploy/order-svc"
+    assert card["riskScore"] == 0.8
+    assert card["riskReason"] == "会重启副本"
+    assert card["threadId"] == thread_id
+    assert "rollout successfully restarted" in card["content"]
+
+
+def test_get_session_keeps_structured_cards_from_mixed_checkpoint_messages(monkeypatch):
+    """LangGraph 字符串诊断日志不能导致同数组内的 AiChat 卡片丢失。"""
+    import main
+
+    card = {
+        "id": "suggestion-1", "role": "assistant", "content": "", "kind": "suggestion",
+        "plan": "滚动重启", "script": "kubectl rollout restart", "riskScore": 0.8,
+        "threadId": "mixed-session",
+    }
+
+    class FakeBrain:
+        def get_session_state(self, session_id):
+            return {"messages": ["[collect] complete", card], "intent": "diagnosis", "service": "order-svc"}
+
+    monkeypatch.setattr(main, "_get_brain", lambda: FakeBrain())
+    reloaded = asyncio.run(main.get_session("mixed-session"))
+
+    assert reloaded["messages"] == [card]
+
+
+def test_get_session_uses_mixed_checkpoint_cards_when_sidecar_is_empty(monkeypatch):
+    """旧的空 SessionStore 行不能掩盖 checkpoint 内的 AiChat 卡片。"""
+    import main
+
+    card = {
+        "id": "execution-1", "role": "assistant", "content": "重启成功", "kind": "execresult",
+        "plan": "滚动重启", "script": "kubectl rollout restart", "riskScore": 0.8,
+        "threadId": "sidecar-empty-session",
+    }
+
+    class FakeBrain:
+        def get_session_state(self, session_id):
+            return {
+                "messages": ["[collect] complete", card], "intent": "diagnosis",
+                "service": "order-svc", "final_response": "已完成诊断",
+            }
+
+    monkeypatch.setattr(main, "_get_brain", lambda: FakeBrain())
+    monkeypatch.setattr(main, "_load_persisted_session", lambda session_id: {
+        "messages": [], "intent": "diagnosis", "service": "order-svc",
+    })
+
+    reloaded = asyncio.run(main.get_session("sidecar-empty-session"))
+
+    assert card in reloaded["messages"]

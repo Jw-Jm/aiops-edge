@@ -101,8 +101,15 @@ class WorkflowService:
             store.save_run_node(run_id, node_id, type_map.get(node_id, ""),
                                 nr.status, "{}", json.dumps(nr.output, ensure_ascii=False),
                                 nr.fired_port, nr.error)
-        store.update_run_status(run_id, result.status, error=result.error,
-                                context_json=json.dumps({"trigger": trigger}, ensure_ascii=False))
+        persisted_run = store.update_run_status(
+            run_id,
+            result.status,
+            error=result.error,
+            context_json=json.dumps({"trigger": trigger}, ensure_ascii=False),
+        )
+        if persisted_run:
+            persisted_run["nodes"] = store.get_run_nodes(run_id)
+        result.run = persisted_run
         return result
 
     def run_flow(self, flow_id, trigger=None, run_id: str = None):
@@ -113,7 +120,7 @@ class WorkflowService:
             raise ValueError(f"flow disabled: {flow_id}")
         trigger = trigger or {}
         trigger_type = trigger.get("type", "manual")
-        run_id = run_id or f"run_{uuid.uuid4().hex[:8]}"
+        run_id = run_id or f"run_{uuid.uuid4().hex}"
         self.store.create_run(flow_id, flow["version"], trigger_type,
                               json.dumps(trigger, ensure_ascii=False), run_id=run_id)
         return self._run_with(flow["graph"], run_id, flow_id, trigger,

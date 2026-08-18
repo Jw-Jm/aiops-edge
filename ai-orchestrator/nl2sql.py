@@ -43,6 +43,25 @@ _BARE_TABLE_RE = re.compile(
     r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)", re.IGNORECASE)
 _QUOTED_TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+[`'\"]", re.IGNORECASE)
 
+_DESTRUCTIVE_REQUEST_RE = re.compile(
+    r"(?:\b(?:delete|drop|truncate|update|insert|alter|create|remove|erase)\b|"
+    r"删除|删掉|清空|移除|"
+    r"(?:更新|修改)(?:所有|全部|服务|字段|数据|记录|表|配置|日志|trace|值)|"
+    r"(?:写入|插入|创建|新建|变更|覆盖)(?:所有|全部|一条|一行|一项|一张|一个|服务|字段|数据|记录|表|配置|日志|trace|值))",
+    re.IGNORECASE,
+)
+
+
+def is_destructive_request(question: str) -> bool:
+    """Whether a natural-language request asks NL2SQL to mutate data."""
+    return bool(_DESTRUCTIVE_REQUEST_RE.search(question or ""))
+
+
+READ_ONLY_NOTICE = (
+    "NL2SQL 仅支持只读查询，未执行删除、更新或其他写操作；"
+    "已将该请求改写为安全 SELECT。"
+)
+
 
 def validate_sql(sql: str, allowed: set = _ALLOWED_TABLES) -> bool:
     """安全校验：只允许 SELECT、表白名单（带库前缀）、禁止多语句/非查询关键字/表函数/INTO OUTFILE。"""
@@ -98,18 +117,47 @@ def extract_sql_from_markdown(raw: str) -> str:
 
 
 class Nl2SqlStore:
-    """NL→SQL 翻译状态存储（内存，MySQL 可用时可选扩展）。"""
+    """NL→SQL 翻译状态存储（内存，MySQL 可用时可选扩展）。
+
+    安全修复(G6): 增加 TTL 过期清理 + 容量上限，防止按查询累积的内存无界增长。
+    - 条目创建后超过 _TTL_SECONDS（默认 1 小时）即视为过期，get/save 时惰性清理；
+    - 超过 _MAX_ENTRIES 时淘汰最旧条目。
+    """
+
+    _TTL_SECONDS = 3600  # 1 小时过期
+    _MAX_ENTRIES = 500
 
     def __init__(self):
         self._mem: dict[str, dict] = {}
 
+    def _prune(self):
+        now = time.time()
+        stale = [sid for sid, item in self._mem.items()
+                 if now - float(item.get("created_ts", 0)) > self._TTL_SECONDS]
+        for sid in stale:
+            del self._mem[sid]
+        # 容量上限：超限时淘汰最旧条目（按 created_ts 升序）
+        if len(self._mem) > self._MAX_ENTRIES:
+            overflow = len(self._mem) - self._MAX_ENTRIES
+            for sid in sorted(self._mem, key=lambda s: float(self._mem[s].get("created_ts", 0)))[:overflow]:
+                del self._mem[sid]
+
     def save(self, item: dict) -> str:
         item["status"] = "pending"
+        item["created_ts"] = time.time()
+        self._prune()
         self._mem[item["id"]] = item
         return item["id"]
 
     def get(self, sid: str):
-        return self._mem.get(sid)
+        self._prune()
+        item = self._mem.get(sid)
+        if item is None:
+            return None
+        if time.time() - float(item.get("created_ts", 0)) > self._TTL_SECONDS:
+            del self._mem[sid]
+            return None
+        return item
 
     def mark_executed(self, sid: str):
         if sid in self._mem:

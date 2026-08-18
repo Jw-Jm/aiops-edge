@@ -6,6 +6,8 @@ import * as echarts from 'echarts'
 import { getTopology, getServices, getTopologyNodeDetail, getServiceDetail } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 import { computeHealth, healthColor } from '../../lib/health'
+import { normalizeErrorRate } from '../../lib/errorRate'
+import { computeForceLayout } from '../../lib/layout'
 
 const { Text } = Typography
 
@@ -25,7 +27,8 @@ function describeNode(
     if (l.target === name) up.add(l.source)
     if (l.source === name) down.add(l.target)
   }
-  const errorRate = metrics?.error_rate ?? metrics?.errorRate ?? 0
+  // A2: 错误率统一经 normalizeErrorRate 归一为 0-1 小数，兼容 0-1 / 0-100 双口径
+  const errorRate = normalizeErrorRate(metrics?.error_rate ?? metrics?.errorRate ?? 0)
   const latency = metrics?.latency_ms ?? metrics?.avg_ms ?? 0
   const upList = Array.from(up).sort()
   const downList = Array.from(down).sort()
@@ -73,12 +76,13 @@ const ServiceObservability: React.FC = () => {
   const [namespaces, setNamespaces] = useState<string[]>([])
   const [deletedNodeCount, setDeletedNodeCount] = useState(0)
   const [deletedSvcCount, setDeletedSvcCount] = useState(0)
+  // B12: 时间窗口由硬编码 24h 改为可选（分钟），随选择重新拉取拓扑
+  const [timeRange, setTimeRange] = useState<number>(1440)
 
   // Issue5: 拓扑/服务数据加载；抽成函数以便定时刷新（默认 30s 轮询，接近实时）
   const loadData = (silent = false) => {
     if (!silent) setLoading(true)
-    // P1: 时间窗由 1h 放宽到 24h，与总览口径一致（trace/log 为种子数据，1h 窗口会全零）
-    const topoParams: Record<string, unknown> = { minutes: 1440 }
+    const topoParams: Record<string, unknown> = { minutes: timeRange }
     // 选具体命名空间时带 namespace 参数，后端只返回该 ns 的拓扑 + 跨 ns 外部节点
     if (namespace) topoParams.namespace = namespace
     Promise.all([getTopology(topoParams), getServices()])
@@ -95,13 +99,18 @@ const ServiceObservability: React.FC = () => {
         const nodeKeep = allRaw.filter((n: any) => !String(n.name || '').includes('(deleted)'))
         setDeletedNodeCount(allRaw.length - nodeKeep.length)
 
-        const rawNodes: any[] = nodeKeep.map((n: any, i: number) => ({
-          id: String(n.id ?? n.name ?? i), name: n.name || n.id, category: n.category ?? 0,
-          symbolSize: 30 + ((n.metrics?.calls || 0) % 40),
-          namespace: n.namespace,
-          // 选具体 ns 时，namespace 不匹配或后端标记 external 的节点视为外部节点
-          external: !!namespace && (n.external === true || (!!n.namespace && n.namespace !== namespace)),
-        }))
+        const rawNodes: any[] = nodeKeep.map((n: any, i: number) => {
+          // B12: 节点大小改为对调用量 log 缩放（连续有意义），替代原先 calls%40 的锯齿式抖动
+          const calls = Number(n.metrics?.calls ?? n.calls ?? 0)
+          const size = calls > 0 ? 28 + Math.log10(calls + 1) * 9 : 28
+          return {
+            id: String(n.id ?? n.name ?? i), name: n.name || n.id, category: n.category ?? 0,
+            symbolSize: Math.max(24, Math.min(68, size)),
+            namespace: n.namespace,
+            // 选具体 ns 时，namespace 不匹配或后端标记 external 的节点视为外部节点
+            external: !!namespace && (n.external === true || (!!n.namespace && n.namespace !== namespace)),
+          }
+        })
         // 预置环形初始坐标，保证力导向布局在画布范围内（节点不超出页面）
         const N = Math.max(1, rawNodes.length)
         const nodesData: TopoNode[] = rawNodes.map((n, i) => ({
@@ -171,10 +180,11 @@ const ServiceObservability: React.FC = () => {
 
   useEffect(() => {
     loadData(false)
-    // Issue5: 30s 静默轮询，保持拓扑/服务列表近实时；切换集群/命名空间时也会重新加载
+    // Issue5: 30s 静默轮询，保持拓扑/服务列表近实时；切换集群/命名空间/时间窗时也会重新加载
     const timer = setInterval(() => loadData(true), 30000)
     return () => clearInterval(timer)
-  }, [currentClusterId, namespace])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentClusterId, namespace, timeRange])
 
   // 切换命名空间时清空稳定坐标缓存，让新 ns 的拓扑重新做力导向布局（不复用旧 ns 节点位置）
   useEffect(() => {
@@ -227,64 +237,17 @@ const ServiceObservability: React.FC = () => {
       }
     })
     // 自研力导向布局 + 硬性边界约束：ECharts 原生 force 布局没有"节点不飘出画布"的参数，
-    // repulsion 调大后节点会被推离中心、飘出画布。这里手写力导向迭代，每轮把节点坐标
-    // clamp 到画布范围内（padding 24px），从算法层面保证节点永不超出画布。
+    // repulsion 调大后节点会被推离中心、飘出画布。这里用共享模块 computeForceLayout
+    // （src/lib/layout.ts，B8）：seeded PRNG 确定性布局，替代原 Math.random() 抖动；
     // 已收敛过的节点（stablePosRef）用稳定坐标（仍 clamp），新节点用环形种子位置参与收敛。
     const cw = chartRef.current.clientWidth || 800
     const ch = chartRef.current.clientHeight || 500
-    const cx = cw / 2, cy = ch / 2, R = Math.min(cw, ch) * 0.32
-    const N = Math.max(1, nodes.length)
-    const seedPos = nodes.map((n, i) => {
+    const layoutNodes = nodes.map((n) => {
       const prev = stablePosRef.current[n.name]
-      if (prev && typeof prev.x === 'number' && typeof prev.y === 'number') return { x: prev.x, y: prev.y }
-      return { x: cx + R * Math.cos((2 * Math.PI * i) / N), y: cy + R * Math.sin((2 * Math.PI * i) / N) }
+      if (prev && typeof prev.x === 'number' && typeof prev.y === 'number') return { id: n.name, x: prev.x, y: prev.y }
+      return { id: n.name }
     })
-    // 手写力导向：斥力(320) + 引力(0.12) + 弹簧(edgeLength 120~240)，迭代 300 轮，
-    // 每轮把坐标 clamp 到 [pad, W-pad]x[pad, H-pad]。返回 Map:name->{x,y}。
-    const PAD = 24
-    const positions: Record<string, { x: number; y: number }> = {}
-    nodes.forEach((n, i) => { positions[n.name] = { ...seedPos[i] } })
-    const nodeIds = nodes.map((n) => n.name)
-    const edgeArr = links.map((l: any) => ({ s: String(l.source), t: String(l.target) }))
-    for (let iter = 0; iter < 300; iter++) {
-      // 斥力：所有节点两两排斥
-      for (let i = 0; i < nodeIds.length; i++) {
-        for (let j = i + 1; j < nodeIds.length; j++) {
-          const a = positions[nodeIds[i]], b = positions[nodeIds[j]]
-          let dx = a.x - b.x, dy = a.y - b.y
-          let d2 = dx * dx + dy * dy
-          if (d2 < 1) { dx = (Math.random() - 0.5) * 2; dy = (Math.random() - 0.5) * 2; d2 = 1 }
-          const d = Math.sqrt(d2)
-          const force = 320 / d2  // 斥力与距离平方成反比
-          const fx = (dx / d) * force, fy = (dy / d) * force
-          a.x += fx; a.y += fy
-          b.x -= fx; b.y -= fy
-        }
-      }
-      // 弹簧力：有边的节点拉到理想距离
-      for (const e of edgeArr) {
-        const a = positions[e.s], b = positions[e.t]
-        if (!a || !b) continue
-        let dx = b.x - a.x, dy = b.y - a.y
-        const d = Math.max(0.01, Math.sqrt(dx * dx + dy * dy))
-        const ideal = 180
-        const f = (d - ideal) * 0.02
-        a.x += (dx / d) * f; a.y += (dy / d) * f
-        b.x -= (dx / d) * f; b.y -= (dy / d) * f
-      }
-      // 引力：拉到画布中心
-      for (const id of nodeIds) {
-        const p = positions[id]
-        p.x += (cx - p.x) * 0.08
-        p.y += (cy - p.y) * 0.08
-      }
-      // 硬性边界约束：clamp 到画布内
-      for (const id of nodeIds) {
-        const p = positions[id]
-        p.x = Math.max(PAD, Math.min(cw - PAD, p.x))
-        p.y = Math.max(PAD, Math.min(ch - PAD, p.y))
-      }
-    }
+    const positions = computeForceLayout(layoutNodes, links, { width: cw, height: ch, iterations: 300 })
     const dataWithPos = nodes.map((n) => ({
       ...n,
       x: positions[n.name].x, y: positions[n.name].y,
@@ -394,7 +357,7 @@ const ServiceObservability: React.FC = () => {
     setDrawerOpen(true)
     setDrawerLoading(true)
     setNodeDetail(null)
-    getServiceDetail(name).then((r) => setNodeDetail(r.data)).catch(() => setNodeDetail({})).finally(() => setDrawerLoading(false))
+    getServiceDetail(name, { minutes: timeRange }).then((r) => setNodeDetail(r.data)).catch(() => setNodeDetail({})).finally(() => setDrawerLoading(false))
   }
 
   // 节点详情：指标趋势图（对齐 v1.1）
@@ -441,7 +404,7 @@ const ServiceObservability: React.FC = () => {
   const traceColumns = [
     { title: 'Trace ID', dataIndex: 'trace_id', key: 'trace_id', render: (v: string) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{(v || '').slice(0, 16)}</span> },
     { title: '状态', dataIndex: 'is_error', key: 'is_error', width: 70, render: (v: number) => v ? <StatusBadge text="错误" tone="crit" /> : <StatusBadge text="正常" tone="ok" /> },
-    { title: '延迟', dataIndex: 'duration_ms', key: 'duration_ms', render: (v: number, r: any) => `${(r?.max_ms ?? v ?? 0).toFixed(1)}ms` },
+    { title: '延迟', dataIndex: 'duration_ms', key: 'duration_ms', render: (v: number, r: any) => `${(v ?? r?.duration_ms ?? r?.max_ms ?? 0).toFixed(1)}ms` },
   ]
   const spanColumns = [
     { title: '操作', dataIndex: 'operation_name', key: 'operation_name' },
@@ -461,17 +424,21 @@ const ServiceObservability: React.FC = () => {
     { title: '服务', dataIndex: 'service', key: 'service', render: (v: string) => <a onClick={() => openServiceDetail(v)} style={{ color: 'var(--primary)' }}>{v}</a> },
     { title: '调用量', dataIndex: 'calls', key: 'calls', render: (v: number) => (v ?? 0).toLocaleString() },
     { title: '错误数', dataIndex: 'errors', key: 'errors', render: (v: number, r: any) => r.errors > 0 ? <StatusBadge text={`${r.errors}`} tone="crit" /> : <span style={{ color: 'var(--text-muted)' }}>0</span> },
-    { title: '错误率', dataIndex: 'error_rate', key: 'error_rate', render: (v: number) => `${((v ?? 0) * 100).toFixed(2)}%` },
+    { title: '错误率', dataIndex: 'error_rate', key: 'error_rate', render: (v: number) => `${(normalizeErrorRate(v) * 100).toFixed(2)}%` },
     { title: '平均延迟', dataIndex: 'avg_latency_ms', key: 'avg_latency_ms', render: (v: number) => `${(v ?? 0).toFixed(2)}ms` },
   ]
 
   const nodeName = selectedNode?.name || nodeDetail?.service_name || nodeDetail?.name || ''
   const desc = describeNode(nodeName, nodeDetail?.metrics || nodeDetail, links)
   const nd = nodeDetail || {}
+  const detailErrorRateRaw = nd?.error_rate ?? nd?.metrics?.error_rate
+  const detailErrorRate = detailErrorRateRaw === null || detailErrorRateRaw === undefined
+    ? null
+    : normalizeErrorRate(detailErrorRateRaw)
   // 2.4 健康度：基于详情返回的 Apdex 与错误率统一计算
   const health = computeHealth({
     apdex: nd?.apdex ?? nd?.metrics?.apdex ?? null,
-    errorRate: nd?.error_rate ?? nd?.metrics?.error_rate ?? null,
+    errorRate: detailErrorRate,
   })
   // 2.3 调用次数：从边数据里按 source/target 关联统计（须在 upData/downData 之前声明，
   // 否则 map 回调引用 const 触发 TDZ：Cannot access 'X' before initialization → 白屏）
@@ -502,6 +469,14 @@ const ServiceObservability: React.FC = () => {
           <Space>
             <Segmented value={view} onChange={(v) => setView(v as any)} options={[{ label: '拓扑视图', value: 'topo' }, { label: '服务列表', value: 'list' }]} />
             <Select value={namespace} onChange={setNamespace} style={{ width: 180 }} options={nsOptions} placeholder="选择命名空间" />
+            {/* B12: 时间窗口可选（1h/6h/24h/7d），替代原硬编码 24h */}
+            <Select value={timeRange} onChange={(v) => setTimeRange(v as number)} style={{ width: 130 }}
+              options={[
+                { value: 60, label: '近 1 小时' },
+                { value: 360, label: '近 6 小时' },
+                { value: 1440, label: '近 24 小时' },
+                { value: 10080, label: '近 7 天' },
+              ]} />
           </Space>
         } />
 
@@ -568,7 +543,7 @@ const ServiceObservability: React.FC = () => {
             <Row gutter={12} style={{ marginBottom: 16 }}>
               <Col span={6}><Card size="small" styles={{ body: { background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '14px 16px' } }} style={{ height: '100%' }}><Statistic title="Apdex" value={nd.apdex ?? 0} precision={2} valueStyle={{ color: (nd.apdex ?? 0) >= 0.9 ? 'var(--success)' : (nd.apdex ?? 0) >= 0.7 ? 'var(--warning)' : 'var(--danger)' }} /></Card></Col>
               <Col span={6}><Card size="small" styles={{ body: { background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '14px 16px' } }} style={{ height: '100%' }}><Statistic title="响应时间" value={nd.latency_ms ?? 0} suffix="ms" precision={2} valueStyle={{ color: (nd.latency_ms ?? 0) > 1000 ? 'var(--danger)' : (nd.latency_ms ?? 0) > 300 ? 'var(--warning)' : 'var(--primary)' }} /></Card></Col>
-              <Col span={6}><Card size="small" styles={{ body: { background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '14px 16px' } }} style={{ height: '100%' }}><Statistic title="请求错误率" value={nd.error_rate ?? 0} suffix="%" precision={2} valueStyle={{ color: (nd.error_rate ?? 0) > 3 ? 'var(--danger)' : 'var(--success)' }} /></Card></Col>
+              <Col span={6}><Card size="small" styles={{ body: { background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '14px 16px' } }} style={{ height: '100%' }}><Statistic title="请求错误率" value={(detailErrorRate ?? 0) * 100} suffix="%" precision={2} valueStyle={{ color: (detailErrorRate ?? 0) > 0.03 ? 'var(--danger)' : 'var(--success)' }} /></Card></Col>
               <Col span={6}><Card size="small" styles={{ body: { background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '14px 16px' } }} style={{ height: '100%' }}><Statistic title="吞吐率" value={nd.throughput ?? 0} suffix="rpm" valueStyle={{ color: 'var(--success)' }} /></Card></Col>
             </Row>
           )}

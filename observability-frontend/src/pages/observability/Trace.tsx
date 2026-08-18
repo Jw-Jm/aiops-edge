@@ -1,12 +1,22 @@
 import React, { useEffect, useState } from 'react'
 import { Drawer, Spin, Table, Tag, Select, Space, Button, Input } from 'antd'
-import { getTraces, getTraceDetail, getTraceContext } from '../../api/client'
+import { getTraces, getTraceDetail, getTraceContext, getServices } from '../../api/client'
 import { useUIStore } from '../../store/uiStore'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 
 interface TraceRow { trace_id: string; services?: any; max_ms?: number; spans?: number; start?: string; end?: string }
 
 interface SpanNode { span: any; depth: number }
+
+// B5 修复：start_time 单位防御 —— 后端 DateTime64 为纳秒时间戳，
+// 兼容毫秒/微秒输入，统一归一为毫秒（文档：ns=1e-9s, µs=1e-6s, ms=1e-3s）。
+function startToMs(v: unknown): number {
+  const n = Number(v)
+  if (!isFinite(n) || n === 0) return 0
+  if (n > 1e15) return n / 1e6   // 纳秒 → 毫秒
+  if (n > 1e12) return n / 1e3   // 微秒 → 毫秒
+  return n                        // 已是毫秒
+}
 
 // 2.6 树形瀑布图：按 parent_span_id 构建 span 树，输出 (树根列表, 最大耗时)
 function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number } {
@@ -53,17 +63,37 @@ const Trace: React.FC = () => {
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [svc, setSvc] = useState<string>('')
   const [search, setSearch] = useState<string>('')
-  const [limit, setLimit] = useState<number>(50)
+  const [services, setServices] = useState<string[]>([])
+  const [rangeHours, setRangeHours] = useState<number>(24)
+  const [offset, setOffset] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const PAGE_SIZE = 50
 
-  const load = (s = svc, l = limit, q = search) => {
+  // B5 修复：服务端分页（后端支持 limit/offset），翻页不再失效；
+  // 参数名对齐后端（service 而非 service_name），并携带时间范围 hours。
+  const load = (s = svc, q = search, h = rangeHours, append = false) => {
     setLoading(true)
-    getTraces({ limit: l, service_name: s || undefined, search: q || undefined })
-      .then((r) => setData(Array.isArray(r.data) ? r.data : r.data?.data || []))
-      .catch(() => setData([]))
+    const off = append ? offset : 0
+    getTraces({ limit: PAGE_SIZE, offset: off, service: s || undefined, search: q || undefined, hours: h })
+      .then((r) => {
+        const rows = Array.isArray(r.data) ? r.data : r.data?.data || []
+        setData((prev) => (append ? [...prev, ...rows] : rows))
+        setHasMore(rows.length >= PAGE_SIZE)
+        setOffset(off + rows.length)
+      })
+      .catch(() => { if (!append) setData([]) })
       .finally(() => setLoading(false))
   }
 
   useEffect(() => { load() }, [currentClusterId])
+
+  // B5: 服务下拉选项（复用 /services 活跃服务列表）
+  useEffect(() => {
+    getServices().then((r) => {
+      const d = Array.isArray(r.data) ? r.data : r.data?.data || []
+      setServices(d.map((x: any) => x.service_name || x.name).filter(Boolean))
+    }).catch(() => setServices([]))
+  }, [currentClusterId])
 
   const openDetail = (id: string) => {
     setDrawerOpen(true)
@@ -85,23 +115,35 @@ const Trace: React.FC = () => {
 
   // 2.6 树形瀑布图
   const { roots: spanTree, maxMs } = buildSpanTree(detail?.spans || [])
-  const spanStartBase = spanTree.length ? spanTree[0].span?.start_time || 0 : 0
+  // B5 修复：start_time 经 startToMs 归一为毫秒（防御 ns/µs/ms 单位差异），
+  // 与 maxMs（后端 duration_ns/1e6 已是毫秒）同单位比较。
+  const spanStartBase = spanTree.length ? startToMs(spanTree[0].span?.start_time) : 0
 
   return (
     <div>
       <Breadcrumb items={[{ t: '可观测' }, { t: '链路追踪' }]} />
       <PageHeader title="链路追踪" desc="按服务检索分布式调用链，下钻到单条 Trace 瀑布图"
         actions={<Space wrap>
+          <Select allowClear placeholder="按服务筛选" style={{ width: 160 }} value={svc || undefined}
+            onChange={(v) => { setSvc(v || ''); load(v || '', search, rangeHours) }}
+            options={services.map((s) => ({ value: s, label: s }))} />
+          <Select value={rangeHours} style={{ width: 110 }}
+            onChange={(v) => { setRangeHours(v); load(svc, search, v) }}
+            options={[{ value: 1, label: '近1小时' }, { value: 6, label: '近6小时' }, { value: 24, label: '近24小时' }]} />
           <Input.Search allowClear placeholder="搜索 trace_id / 操作 / URL" style={{ width: 240 }} value={search}
             onChange={(e) => setSearch(e.target.value)}
-            onSearch={(q) => { setSearch(q); load(svc, limit, q) }} />
-          <Select value={limit} onChange={(v) => { setLimit(v); load(svc, v) }} style={{ width: 100 }} options={[20, 50, 100].map((n) => ({ value: n, label: `${n} 条` }))} />
+            onSearch={(q) => { setSearch(q); load(svc, q, rangeHours) }} />
           <Button onClick={() => load()}>刷新</Button></Space>} />
 
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey="trace_id" loading={loading} columns={cols} dataSource={data} size="middle"
           pagination={{ pageSize: 20 }} scroll={{ x: 800 }}
           locale={{ emptyText: <Empty text="暂无调用链数据" hint="请确认服务已上报 trace，或尝试调整时间范围" /> }} />
+        {hasMore && (
+          <div style={{ textAlign: 'center', padding: 12 }}>
+            <Button loading={loading} onClick={() => load(svc, search, rangeHours, true)}>加载更多</Button>
+          </div>
+        )}
       </div>
 
       <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose title={`Trace ${detail?.trace_id || ''}`}
@@ -131,7 +173,7 @@ const Trace: React.FC = () => {
                       <div style={{ position: 'absolute', inset: '6px 0 0 0', background: 'repeating-linear-gradient(90deg, transparent, transparent 19px, var(--border-soft) 19px, var(--border-soft) 20px)', opacity: .6 }} />
                       {/* 耗时条：宽度 ∝ 耗时 / 总耗时 */}
                       <div style={{
-                        position: 'absolute', top: 1, left: `${(spanStartBase && s.start_time ? ((Number(s.start_time) - spanStartBase)) / (maxMs * 1e6 + 1) : 0)}%`,
+                        position: 'absolute', top: 1, left: `${spanStartBase ? ((startToMs(s.start_time) - spanStartBase) / (maxMs + 1)) * 100 : 0}%`,
                         width: `${Math.max(2, (Number(s.ms || 0) / maxMs) * 100)}%`, height: 18,
                         background: s.is_error ? 'var(--danger)' : 'var(--primary)', borderRadius: 4, opacity: .82, minWidth: 4,
                       }} title={`${s.operation_name} ${Number(s.ms || 0).toFixed(1)}ms`} />

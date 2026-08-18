@@ -18,9 +18,10 @@ spec:
       labels:
         app: clickhouse
     spec:
-      # init 容器：放开 default 用户网络为 ::/0 并真正启用密码认证。
+      # init 容器：为 default 用户启用密码认证并限制可访问网络。
       # 镜像默认 default-user.xml 仅限本机（pod 内跨主机访问 403），此处生成 users.d 配置覆盖网络+密码：
-      #  - networks 放开 ::/0（凭集群网络隔离保护，但认证由下方密码兜底）
+      #  - networks 由 values.clickhouse.userNetworks 控制（G5：不再开放 ::/0，默认仅私有网段，
+      #    生产收紧为实际 pod CIDR；网络层隔离由 NetworkPolicy 兜底）
       #  - password_sha256_hex 由 Secret 的 CLICKHOUSE_PASSWORD 实时计算，与 query-api/ingest/orchestrator
       #    注入的 CLICKHOUSE_PASSWORD 保持一致（P0-2：落地 ClickHouse 认证，消除死密钥）。
       initContainers:
@@ -35,21 +36,23 @@ spec:
               # P0-2 修复: 镜像默认 users.xml 的 default 用户已声明认证字段(空 password),
               # 直接新增 password_sha256_hex 会触发 ClickHouse "More than one field ... used to
               # specify authentication info for user default"(exit 36, 部署崩溃)。
-              # 因此先 remove 掉默认认证字段, 再写 sha256 密码, 并放开网络。
-              cat > /etc/clickhouse-server/users.d/default-password.xml <<EOF
-              <clickhouse>
-                <users>
-                  <default>
-                    <password remove="1"/>
-                    <no_password remove="1"/>
-                    <password_sha256_hex>${HASH}</password_sha256_hex>
-                    <networks>
-                      <ip>::/0</ip>
-                    </networks>
-                  </default>
-                </users>
-              </clickhouse>
-              EOF
+              # 因此先 remove 掉默认认证字段, 再写 sha256 密码, 并限制网络。
+              {
+                echo "<clickhouse>"
+                echo "  <users>"
+                echo "    <default>"
+                echo '      <password remove="1"/>'
+                echo '      <no_password remove="1"/>'
+                echo "      <password_sha256_hex>${HASH}</password_sha256_hex>"
+                echo "      <networks>"
+                for IP in {{ .Values.clickhouse.userNetworks | join " " }}; do
+                  echo "        <ip>${IP}</ip>"
+                done
+                echo "      </networks>"
+                echo "    </default>"
+                echo "  </users>"
+                echo "</clickhouse>"
+              } > /etc/clickhouse-server/users.d/default-password.xml
           env:
             - name: CLICKHOUSE_PASSWORD
               valueFrom:

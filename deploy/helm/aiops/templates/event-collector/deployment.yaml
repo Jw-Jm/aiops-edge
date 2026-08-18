@@ -16,8 +16,8 @@ spec:
         app: event-collector
     spec:
       serviceAccountName: event-collector
-      tolerations:
-        - operator: Exists
+      # G5 加固：移除 `tolerations: operator: Exists`（容忍所有污点）。
+      # 默认不调度到被污点节点；如确需在特定污点节点采集 SEL，请显式添加受限 tolerations。
       containers:
         - name: event-collector
           image: {{ tpl .Values.eventCollector.image . }}
@@ -52,7 +52,14 @@ spec:
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
           securityContext:
-            privileged: true
+            # G5 加固：移除 privileged:true。IPMI KCS 本地读 /dev/ipmi0 需要原始 I/O，
+            # 改用最小 capability SYS_RAWIO（hostPath 设备挂载见下方 volumes）；
+            # 若运行环境不支持 capability 访问 /dev/ipmi0，可改用 device plugin 暴露设备。
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["SYS_RAWIO"]
           volumeMounts:
             # IPMI 本地 KCS 接口（无 /dev/ipmi0 的节点组件自动跳过 SEL 采集）
             - name: dev-ipmi

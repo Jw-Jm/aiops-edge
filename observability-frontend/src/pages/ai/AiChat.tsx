@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { Button, Input, Empty, Alert, Modal, message } from 'antd'
 import { BookOutlined } from '@ant-design/icons'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import api, { TENANT_ID, getSession, executeSuggestion, finalReport, addKnowledgeCase } from '../../api/client'
 import { useSearchParams } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
@@ -9,6 +11,13 @@ interface ChatMessage {
   id: string; role: 'user' | 'assistant'; content: string; timestamp: string
   kind?: 'text' | 'suggestion' | 'execresult' | 'report'
   plan?: string; script?: string; threadId?: string; riskScore?: number; riskReason?: string; service?: string
+}
+
+interface ToolActivity {
+  id: string
+  name: string
+  status: 'running' | 'success' | 'error'
+  result?: string
 }
 
 // P1-5: 兼容新旧两种风险格式：
@@ -58,6 +67,7 @@ const AiChat: React.FC = () => {
   const [input, setInput] = useState(searchParams.get('q') || '')
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState('')
+  const [toolActivity, setToolActivity] = useState<ToolActivity[]>([])
   // P0-1: 后端 SSE notice 事件（type=notice, level=warning, text=...）→ 消息区顶部黄色提示条
   const [notice, setNotice] = useState('')
   const abortRef = useRef<AbortController | null>(null)
@@ -108,9 +118,12 @@ const AiChat: React.FC = () => {
     try {
       const d = (await getSession(sid)).data
       const msgs: ChatMessage[] = []
+      // B2 修复：保留服务端返回的完整消息对象（kind/plan/script/threadId/riskScore/riskReason/service 等
+      // 处置卡片元数据原样还原），仅兜底 id/timestamp；消息 id 优先用服务端唯一 id。
       ;(d?.messages || []).forEach((m: any, i: number) => {
-        if (m.role === 'user') msgs.push({ id: `s-${sid}-${i}`, role: 'user', content: m.content, timestamp: d.created_at || '' })
-        else if (m.role === 'assistant') msgs.push({ id: `s-${sid}-${i}`, role: 'assistant', content: m.content, timestamp: d.created_at || '' })
+        const base = { ...m, id: m.id || `s-${sid}-${i}`, timestamp: m.timestamp || d.created_at || '' }
+        if (m.role === 'user') msgs.push({ ...base, role: 'user', content: m.content })
+        else if (m.role === 'assistant') msgs.push({ ...base, role: 'assistant', content: m.content })
       })
       setMessages(msgs); setActiveSession(sid)
     } catch {}
@@ -141,6 +154,7 @@ const AiChat: React.FC = () => {
     setInput('')
     if (text) setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content: text, timestamp: new Date().toISOString() }])
     setLoading(true); setProgress('正在分析…')
+    setToolActivity([])
     const controller = new AbortController()
     abortRef.current = controller
     try {
@@ -150,10 +164,10 @@ const AiChat: React.FC = () => {
         const raw = localStorage.getItem('aiops-ui-v3')
         if (raw) { clusterId = JSON.parse(raw)?.state?.currentClusterId || 'all' }
       } catch { clusterId = 'all' }
-      // 修复：直接从 localStorage 取 token（client.ts 初始化时 localStorage 为空，
-      // axios defaults 未写入；登录后只 sync 到 localStorage，未回写 axios defaults，
-      // 导致 fetch 读到空 Authorization 头 → 401）。此处直接读 localStorage 兜底。
-      const tok = localStorage.getItem('token') || ''
+      // B12 修复：统一走共享 api 实例（复用其 baseURL / token / 拦截器逻辑），
+      // SSE 流式响应保留 fetch 实现（axios 不便于流式读取）。
+      const authHeader = (api.defaults.headers.common.Authorization as string) || ''
+      const tok = authHeader.replace(/^Bearer\s+/i, '') || localStorage.getItem('token') || ''
       const resp = await fetch(`${api.defaults.baseURL}/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID, Authorization: tok ? `Bearer ${tok}` : '' },
@@ -187,6 +201,19 @@ const AiChat: React.FC = () => {
               // P0-1: notice 事件 → 消息区顶部黄色提示条（用户可关闭）
               const text = ev.text ?? ev.message ?? ev.content ?? ''
               if (text) setNotice(String(text))
+            }
+            else if (evName === 'tool_start') {
+              const id = String(ev.tool_call_id || `${ev.name}-${Date.now()}`)
+              setToolActivity((prev) => {
+                if (prev.some((x) => x.id === id)) return prev
+                return [...prev, { id, name: String(ev.name || '工具'), status: 'running' }]
+              })
+            }
+            else if (evName === 'tool_end') {
+              const id = String(ev.tool_call_id || '')
+              setToolActivity((prev) => prev.map((x) => x.id === id
+                ? { ...x, name: String(ev.name || x.name), status: ev.status === 'error' ? 'error' : 'success', result: String(ev.result || '') }
+                : x))
             }
             else if (evName === 'suggestion') {
               // Issue1: 每次分析只渲染一张处置建议确认卡。后端每次分析只发一个 suggestion
@@ -299,7 +326,7 @@ const AiChat: React.FC = () => {
         const d = res.data || {}
         caseAddedRef.current.add(m.id)
         setCaseAdding((p) => ({ ...p, [m.id]: false }))
-        if (d.inserted === false) message.warning('已存在相似案例')
+        if (d.inserted === false) message.warning(d.message || '已存在相似案例，未重复加入')
         else message.success(d.case_id ? `已加入知识库 (案例 ${d.case_id})` : '已加入知识库')
       })
       .catch((e: any) => {
@@ -355,6 +382,17 @@ const AiChat: React.FC = () => {
             <Alert type="warning" showIcon closable message={notice}
               onClose={() => setNotice('')} style={{ marginBottom: 12 }} />
           )}
+          {toolActivity.length > 0 && (
+            <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 8, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+              {toolActivity.map((tool) => (
+                <div key={tool.id} style={{ fontSize: 12, lineHeight: 1.6 }}>
+                  <span style={{ marginRight: 6 }}>{tool.status === 'running' ? '🔧' : tool.status === 'success' ? '✅' : '❌'}</span>
+                  <b>{tool.name}</b>{tool.status === 'running' ? ' 运行中…' : ' 已完成'}
+                  {tool.result && <div style={{ margin: '3px 0 4px 22px', color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{tool.result}</div>}
+                </div>
+              ))}
+            </div>
+          )}
           {messages.map((m, i) => {
             // 需求：沉淀故障案例时取当前建议之前最近一条用户问题作为 symptom
             const symptomMsg = [...messages.slice(0, i)].reverse().find((x) => x.role === 'user')
@@ -366,8 +404,12 @@ const AiChat: React.FC = () => {
                   background: 'var(--surface-2)', border: '1px solid var(--warning)', borderLeft: '3px solid var(--warning)',
                   minWidth: 0, overflow: 'hidden' }}>
                   <div style={{ fontWeight: 700, marginBottom: 6 }}>🛠️ 处置建议 · 待确认</div>
-                  {/* P2-14: plan 全量展示（不再截断） */}
-                  {m.plan && <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8, color: 'var(--text-muted)' }}>{m.plan}</div>}
+                  {/* P2-14: plan 全量展示（不再截断）；C1: 经 react-markdown 渲染 */}
+                  {m.plan && (
+                    <div className="ai-msg__md" style={{ marginBottom: 8, color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.7 }}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.plan}</ReactMarkdown>
+                    </div>
+                  )}
                   {/* P3-3: 无命令时不显示空命令块 */}
                   {m.script ? (
                     <div style={{ maxWidth: '100%', overflow: 'auto' }}>
@@ -387,9 +429,16 @@ const AiChat: React.FC = () => {
                     onExecute={handleExecute} onReject={handleReject} onFinalReport={handleFinalReport} onAddCase={handleAddCase} />
                 </div>
               ) : (
-                <div style={{ maxWidth: '82%', padding: '10px 14px', borderRadius: 10, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.7,
+                <div style={{ maxWidth: '82%', padding: '10px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.7,
                   background: m.role === 'user' ? 'var(--primary-soft)' : 'var(--surface-2)', border: m.role === 'user' ? 'none' : '1px solid var(--border)' }}>
-                  {m.content}
+                  {/* C1: 助手消息经 react-markdown 渲染；用户消息保持纯文本 pre-wrap */}
+                  {m.role === 'assistant' ? (
+                    <div className="ai-msg__md">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <span style={{ whiteSpace: 'pre-wrap' }}>{m.content}</span>
+                  )}
                   {/* 需求：回复完成（done）且为最新一条助手消息时，可将本次分析加入知识库 */}
                   {m.role === 'assistant' && !loading && i === messages.length - 1
                     && !m.content.startsWith('❌') && !m.content.startsWith('⚠️') && !m.content.startsWith('⏱️')

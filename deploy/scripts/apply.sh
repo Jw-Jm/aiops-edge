@@ -14,7 +14,38 @@ helm repo add deepflow https://deepflowio.github.io/deepflow >/dev/null 2>&1 || 
 helm repo update deepflow >/dev/null 2>&1 || true
 
 echo "=== [1/2] 部署 observability (自研 + 中间件) ==="
-# 本机开发默认密钥（生产环境务必用 values-prod.yaml 覆盖真实密钥）。
+# =============================================================================
+# 凭据注入（G5 安全加固）
+# 生产凭据必须由环境变量注入，禁止在脚本/仓库中提交硬编码默认值。
+# 部署前必须设置以下环境变量（缺失即报错退出，绝不降级为弱默认值）：
+#   ADMIN_PASSWORD         admin 初始密码
+#   CLICKHOUSE_PASSWORD    ClickHouse default 用户密码
+#   MYSQL_ROOT_PASSWORD    MySQL root 密码
+#   INTERNAL_TOKEN         orchestrator 内部调用 token
+#   INGEST_API_KEY         ingest 数据接收 API key
+# 可选覆盖（不设置则复用集群中已有 Secret 或生成随机值）：
+#   JWT_SECRET / LLM_ENCRYPTION_KEY（>=32 字符，query-api 启动强校验）
+# =============================================================================
+require_env() {
+  local name="$1"
+  if [ -z "${!name:-}" ]; then
+    echo "错误: 环境变量 $name 未设置。" >&2
+    echo "生产部署必须显式注入凭据，禁止使用硬编码/弱默认值。" >&2
+    echo "请设置后重试，例如:" >&2
+    echo "  export ADMIN_PASSWORD='<强随机值>'" >&2
+    echo "  export CLICKHOUSE_PASSWORD='<强随机值>'" >&2
+    echo "  export MYSQL_ROOT_PASSWORD='<强随机值>'" >&2
+    echo "  export INTERNAL_TOKEN='<强随机值>'" >&2
+    echo "  export INGEST_API_KEY='<强随机值>'" >&2
+    exit 1
+  fi
+}
+require_env ADMIN_PASSWORD
+require_env CLICKHOUSE_PASSWORD
+require_env MYSQL_ROOT_PASSWORD
+require_env INTERNAL_TOKEN
+require_env INGEST_API_KEY
+
 # 说明：jwtSecret / llmEncryptionKey 必须 >=32 字符（query-api 启动强校验，缺省会拒绝启动）。
 # P0-1 修复(密钥漂移)：若集群中已存在 aiops-secrets（含 LLM_ENCRYPTION_KEY），则复用其值，
 # 不再每次 helm upgrade 随机生成 —— 否则密钥轮换会导致已保存的 LLM API Key 密文无法解密，
@@ -30,18 +61,18 @@ get_or_gen() {
     printf '%s%.32s' "$prefix" "$(openssl rand -hex 32 2>/dev/null || echo 0123456789abcdef0123456789abcdef)"
   fi
 }
-DEV_JWT="$(get_or_gen aiops-secrets JWT_SECRET dev-jwt-)"
-DEV_LLM_KEY="$(get_or_gen aiops-secrets LLM_ENCRYPTION_KEY dev-llm-)"
+JWT_SECRET_VAL="${JWT_SECRET:-$(get_or_gen aiops-secrets JWT_SECRET dev-jwt-)}"
+LLM_KEY_VAL="${LLM_ENCRYPTION_KEY:-$(get_or_gen aiops-secrets LLM_ENCRYPTION_KEY dev-llm-)}"
 helm upgrade --install aiops "$CHART_DIR" \
   --namespace observability --create-namespace \
   --set deepflow.enabled=false \
-  --set secrets.jwtSecret="${DEV_JWT}" \
-  --set secrets.llmEncryptionKey="${DEV_LLM_KEY}" \
-  --set secrets.internalToken="dev-internal-token" \
-  --set secrets.ingestApiKey="dev-ingest-key" \
-  --set secrets.adminInitialPassword="admin123" \
-  --set secrets.clickhousePassword="dev-ch-pass" \
-  --set secrets.mysqlRootPassword="dev-mysql-pass" \
+  --set secrets.jwtSecret="${JWT_SECRET_VAL}" \
+  --set secrets.llmEncryptionKey="${LLM_KEY_VAL}" \
+  --set secrets.internalToken="${INTERNAL_TOKEN}" \
+  --set secrets.ingestApiKey="${INGEST_API_KEY}" \
+  --set secrets.adminInitialPassword="${ADMIN_PASSWORD}" \
+  --set secrets.clickhousePassword="${CLICKHOUSE_PASSWORD}" \
+  --set secrets.mysqlRootPassword="${MYSQL_ROOT_PASSWORD}" \
   --wait \
   --timeout 15m
 

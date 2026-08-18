@@ -11,7 +11,6 @@ export interface ClusterOption {
 
 interface UIState {
   collapsed: boolean
-  commandOpen: boolean
   aiDockOpen: boolean
   // 多集群纳管：当前选中的集群 id（'all' = 全部集群），持久化
   currentClusterId: string
@@ -19,7 +18,6 @@ interface UIState {
   // 集群是否加载中/失败
   clusterLoading: boolean
   toggleCollapsed: () => void
-  setCommandOpen: (v: boolean) => void
   setAiDockOpen: (v: boolean) => void
   setCurrentCluster: (id: string) => void
   setClusters: (clusters: ClusterOption[]) => void
@@ -30,13 +28,11 @@ export const useUIStore = create<UIState>()(
   persist(
     (set) => ({
       collapsed: false,
-      commandOpen: false,
       aiDockOpen: false,
       currentClusterId: 'all',
       clusters: [],
       clusterLoading: false,
       toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
-      setCommandOpen: (v) => set({ commandOpen: v }),
       setAiDockOpen: (v) => set({ aiDockOpen: v }),
       setCurrentCluster: (id) => set({ currentClusterId: id || 'all' }),
       setClusters: (clusters) => set({ clusters }),
@@ -67,7 +63,6 @@ export const useUIStore = create<UIState>()(
       // 仅持久化用户选择项，不持久化动态集群列表
       partialize: (s) => ({
         collapsed: s.collapsed,
-        commandOpen: s.commandOpen,
         aiDockOpen: s.aiDockOpen,
         currentClusterId: s.currentClusterId,
       }),

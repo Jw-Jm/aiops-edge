@@ -1,4 +1,4 @@
-import tempfile, os
+import tempfile, os, re
 from flow_engine.store import FlowStore
 from flow_engine.usecase import WorkflowService
 from flow_engine.nodes_aiops import register_aiops_nodes
@@ -35,6 +35,16 @@ def test_run_chain_succeeds():
     res = svc.run_flow(f["id"], {"service": "demo"}, run_id)
     assert res.status == "succeeded"
     assert "s" in res.context.nodes
+
+
+def test_automatic_run_uses_full_uuid_run_id():
+    svc = _svc()
+    flow = svc.create_flow("流程", "", _chain_graph())
+
+    result = svc.run_flow(flow["id"], {"type": "cron"})
+
+    assert result.run is not None
+    assert re.fullmatch(r"run_[0-9a-f]{32}", result.run["run_id"])
 
 def test_run_approval_pauses_and_resume():
     svc = _svc()

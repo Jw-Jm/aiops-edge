@@ -1,0 +1,385 @@
+{{- if .Values.networkPolicy.enabled }}
+# =============================================================================
+# NetworkPolicy（G5 安全加固）
+# 默认拒绝 observability 命名空间内所有入站流量，仅放行组件间必需链路：
+#   frontend→query-api；query-api→orchestrator/clickhouse/mysql/victoria-metrics/victoria-logs；
+#   ingest→clickhouse/victoria-logs；event-collector→clickhouse；
+#   ai-orchestrator→clickhouse/mysql/victoria-metrics。
+# 另含保持平台功能所必需的链路：frontend 公共入口放行、orchestrator→query-api、
+# categraf→victoria-metrics（remote write）、victoria-metrics→ingest/orchestrator/node-exporter（抓取）、
+# backup/init job→mysql/clickhouse。
+# 依赖 CNI 支持 NetworkPolicy；不支持的 CNI 下为 no-op。
+# 标签约定：本 chart 各组件统一使用 `app: <组件名>`（见各 deployment/statefulset）。
+# =============================================================================
+
+# 1) 默认拒绝所有入站流量（兜底：未显式放行的 pod 一律拒绝入站）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+# 2) frontend 为公共入口（NodePort/Ingress），放行任意来源访问
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-ingress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes: ["Ingress"]
+  ingress:
+    - {}
+---
+# 3) frontend → query-api（前端 nginx 代理 /api）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-query-api
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: query-api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+---
+# 4) query-api → ai-orchestrator（ProxyAI 转发）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-api-to-orchestrator
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-orchestrator
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: query-api
+---
+# 5) query-api → clickhouse
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-api-to-clickhouse
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: clickhouse
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: query-api
+---
+# 6) query-api → mysql
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-api-to-mysql
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: mysql
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: query-api
+---
+# 7) query-api → victoria-metrics（PromQL passthrough）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-api-to-victoria-metrics
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: victoria-metrics
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: query-api
+---
+# 8) query-api → victoria-logs（日志写入/查询）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-api-to-victoria-logs
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: victoria-logs
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: query-api
+---
+# 9) ingest → clickhouse
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingest-to-clickhouse
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: clickhouse
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingest
+---
+# 10) ingest → victoria-logs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingest-to-victoria-logs
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: victoria-logs
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingest
+---
+# 11) event-collector → clickhouse
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-event-collector-to-clickhouse
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: clickhouse
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: event-collector
+---
+# 12) ai-orchestrator → clickhouse
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-orchestrator-to-clickhouse
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: clickhouse
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-orchestrator
+---
+# 13) ai-orchestrator → mysql
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-orchestrator-to-mysql
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: mysql
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-orchestrator
+---
+# 14) ai-orchestrator → victoria-metrics（指标写入）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-orchestrator-to-victoria-metrics
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: victoria-metrics
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-orchestrator
+---
+# 15) ai-orchestrator → query-api（QUERY_API_URL 调用）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-orchestrator-to-query-api
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: query-api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-orchestrator
+---
+# 16) categraf → victoria-metrics（remote write）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-categraf-to-victoria-metrics
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: victoria-metrics
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: categraf
+---
+# 17) victoria-metrics → ingest / ai-orchestrator / node-exporter（Prometheus 抓取 /metrics）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-victoria-metrics-scrape
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ingest
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-victoria-metrics-scrape-orchestrator
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-orchestrator
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+{{- if .Values.nodeExporter.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-victoria-metrics-scrape-node-exporter
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: node-exporter
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+{{- end }}
+---
+# 18) 备份/初始化 Job → mysql / clickhouse
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backup-to-mysql
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: mysql
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mysql-backup
+        - podSelector:
+            matchLabels:
+              app: mysql-init
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backup-to-clickhouse
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: clickhouse
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: clickhouse-backup
+        - podSelector:
+            matchLabels:
+              app: clickhouse-init
+{{- if .Values.vmalert.enabled }}
+---
+# 19) vmalert → victoria-metrics（告警查询，vmalert 默认关闭）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-vmalert-to-victoria-metrics
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: victoria-metrics
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: vmalert
+{{- end }}
+{{- end }}

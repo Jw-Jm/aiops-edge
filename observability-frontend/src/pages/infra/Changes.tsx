@@ -58,26 +58,40 @@ const Changes: React.FC = () => {
   useEffect(() => { load() }, [currentClusterId])
 
   // 客户端筛选（后端接口尚未就绪，先全量拉取本地过滤）
+  // B12: 服务/类型筛选语义统一——均用精确匹配（归一化小写全等），避免"服务子串、类型精确"不一致
   const filtered = useMemo(() => rows.filter((r) => {
     const svc = String(r?.service ?? '').toLowerCase()
-    if (service && !svc.includes(service.trim().toLowerCase())) return false
+    if (service && svc !== service.trim().toLowerCase()) return false
     if (changeType && String(r?.change_type ?? '').toLowerCase() !== String(changeType).toLowerCase()) return false
     return true
   }), [rows, service, changeType])
 
   const submit = async () => {
-    const v = await form.validateFields()
+    let v: Record<string, string>
+    try {
+      v = await form.validateFields()
+    } catch {
+      message.error('请完善必填项后再提交')
+      return
+    }
     setSubmitting(true)
-    postChange({
-      cluster_id: v.cluster_id,
-      service: v.service,
-      change_type: v.change_type,
-      operator: v.operator,
-      content: v.content,
-    })
-      .then(() => { message.success('变更已登记'); setModalOpen(false); form.resetFields(); load() })
-      .catch((e) => message.error(e?.response?.data?.error || '登记失败'))
-      .finally(() => setSubmitting(false))
+    try {
+      await postChange({
+        cluster_id: v.cluster_id,
+        service: v.service,
+        change_type: v.change_type,
+        operator: v.operator,
+        content: v.content,
+      })
+      message.success('变更已登记')
+      setModalOpen(false)
+      form.resetFields()
+      load()
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || e?.response?.data?.detail || e?.message || '登记失败')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const cols = [
@@ -105,7 +119,7 @@ const Changes: React.FC = () => {
 
   return (
     <div>
-      <Breadcrumb items={[{ t: '报告' }, { t: '变更时间线' }]} />
+      <Breadcrumb items={[{ t: '基础设施' }, { t: '变更时间线' }]} />
       <PageHeader title="变更时间线" desc="集群/服务变更记录 · 支持按服务与变更类型筛选 · 可手动登记变更"
         actions={
           <Button type="primary" onClick={() => { form.resetFields(); setModalOpen(true) }}>登记变更</Button>

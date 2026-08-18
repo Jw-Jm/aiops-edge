@@ -1,4 +1,4 @@
-from nl2sql import validate_sql, normalize_sql, Nl2SqlStore
+from nl2sql import validate_sql, normalize_sql, Nl2SqlStore, is_destructive_request
 
 ALLOWED_TABLES = {"observability.trace_spans", "observability.service_topology",
                   "observability.log_records"}
@@ -26,6 +26,31 @@ def test_accept_valid():
 
 def test_reject_update():
     assert not validate_sql("UPDATE observability.trace_spans SET is_error=0", ALLOWED_TABLES)
+
+
+def test_destructive_nl2sql_request_is_detected_for_read_only_notice():
+    assert is_destructive_request("删除所有 trace 数据")
+    assert is_destructive_request("drop all trace records")
+    assert not is_destructive_request("查询最近一小时的 trace 数据")
+    assert not is_destructive_request("查询记录的最后更新时间")
+
+
+def test_destructive_nl2sql_detects_documented_chinese_mutation_phrasings():
+    for question in ("更新服务数据", "修改字段值", "插入一条 trace 记录", "创建一张表"):
+        assert is_destructive_request(question), question
+
+
+def test_translate_returns_explicit_read_only_notice_for_destructive_request():
+    """The API must not silently rewrite a mutating request to SELECT."""
+    import asyncio
+
+    from main import nl2sql_translate
+
+    result = asyncio.run(nl2sql_translate({"question": "删除所有 trace 数据"}, None))
+
+    assert "只读" in result["read_only_notice"]
+    assert "SELECT" in result["sql"].upper()
+    assert "原请求" in result["explanation"]
 
 
 # ── P1-1 安全加固：表函数 / INTO OUTFILE / 裸表名 ─────────────────────────

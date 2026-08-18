@@ -97,6 +97,7 @@ class FlowStore:
         self._conn.execute("UPDATE flow_runs SET status=?, error=?, context_json=? WHERE run_id=?",
                            (status, error, context_json, run_id))
         self._conn.commit()
+        return self.get_run(run_id)
 
     def get_run(self, run_id) -> dict | None:
         r = self._conn.execute("SELECT * FROM flow_runs WHERE run_id=?", (run_id,)).fetchone()

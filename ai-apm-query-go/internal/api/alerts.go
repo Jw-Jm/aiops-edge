@@ -23,24 +23,24 @@ import (
 
 // AlertRule defines an alert rule.
 type AlertRule struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Service     string  `json:"service"`
-	Type        string  `json:"type"`      // "threshold", "mutation", "anomaly", "forecast", "burn_rate", "metric_raw", "sel_event", "middleware_metric"
-	Metric      string  `json:"metric"`     // "error_rate", "latency_p99", "call_count", 或 metric_raw/middleware_metric 的 PromQL
-	Condition   string  `json:"condition"`  // ">", "<", ">=", "<="
-	Threshold   float64 `json:"threshold"`
-	Duration    int     `json:"duration"` // minutes
-	Severity    string  `json:"severity"` // "critical", "warning", "info"
-	Enabled     bool    `json:"enabled"`
-	WebhookURL  string  `json:"webhook_url,omitempty"` // 规则级 webhook（可选，覆盖全局）
-	Cooldown    int     `json:"cooldown,omitempty"`   // 触发冷却（分钟）：冷却期内不重复告警
-	Dampening   int     `json:"dampening,omitempty"`  // 连续确认（次数）：连续 N 次 breach 才告警
-	BaselineSeconds int    `json:"baseline_seconds,omitempty"` // anomaly 基线窗口（秒）
-	AnomalyMethod   string `json:"anomaly_method,omitempty"`   // anomaly 检测方法：zscore|mad
-	SLOID           string `json:"slo_id,omitempty"`           // burn_rate 引用的 SLO 目标 id
-	Keyword         string `json:"keyword,omitempty"`          // log_keyword 日志关键字（body LIKE '%keyword%'）
-	Cluster         string `json:"cluster,omitempty"`          // A-6：规则生效集群（空=全部）
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Service         string  `json:"service"`
+	Type            string  `json:"type"`      // "threshold", "mutation", "anomaly", "forecast", "burn_rate", "metric_raw", "sel_event", "middleware_metric"
+	Metric          string  `json:"metric"`    // "error_rate", "latency_p99", "call_count", 或 metric_raw/middleware_metric 的 PromQL
+	Condition       string  `json:"condition"` // ">", "<", ">=", "<="
+	Threshold       float64 `json:"threshold"`
+	Duration        int     `json:"duration"` // minutes
+	Severity        string  `json:"severity"` // "critical", "warning", "info"
+	Enabled         bool    `json:"enabled"`
+	WebhookURL      string  `json:"webhook_url,omitempty"`      // 规则级 webhook（可选，覆盖全局）
+	Cooldown        int     `json:"cooldown,omitempty"`         // 触发冷却（分钟）：冷却期内不重复告警
+	Dampening       int     `json:"dampening,omitempty"`        // 连续确认（次数）：连续 N 次 breach 才告警
+	BaselineSeconds int     `json:"baseline_seconds,omitempty"` // anomaly 基线窗口（秒）
+	AnomalyMethod   string  `json:"anomaly_method,omitempty"`   // anomaly 检测方法：zscore|mad
+	SLOID           string  `json:"slo_id,omitempty"`           // burn_rate 引用的 SLO 目标 id
+	Keyword         string  `json:"keyword,omitempty"`          // log_keyword 日志关键字（body LIKE '%keyword%'）
+	Cluster         string  `json:"cluster,omitempty"`          // A-6：规则生效集群（空=全部）
 }
 
 // inCooldown 判断规则是否处于冷却期（距上次触发 < Cooldown 分钟）。
@@ -61,28 +61,28 @@ func shouldAlertAfterDampening(rule AlertRule, streak int) bool {
 
 // AlertEvent represents a triggered alert event.
 type AlertEvent struct {
-	ID               string  `json:"id"`
-	RuleID           string  `json:"rule_id"`
-	RuleName         string  `json:"rule_name"`
-			  Object           string  `json:"object"`              // 具体告警对象（Pod 名/Deployment 名等），避免前端 fallback 到 service
-	Service          string  `json:"service"`
-	Severity         string  `json:"severity"`
-	Message          string  `json:"message"`
-	Value            float64 `json:"value"`
-	Threshold        float64 `json:"threshold"`
-	Timestamp        string  `json:"timestamp"`
-	Count            int     `json:"count"`
-	FirstTimestamp   string  `json:"first_timestamp"`
-	LastTimestamp    string  `json:"last_timestamp"`
-	Status           string  `json:"status"` // firing/acknowledged/resolved
-	AcknowledgedAt   string  `json:"acknowledged_at,omitempty"`
-	AcknowledgedBy   string  `json:"acknowledged_by,omitempty"`
-	ResolvedAt       string  `json:"resolved_at,omitempty"`
-	ResolvedBy       string  `json:"resolved_by,omitempty"`
-	Timeline         string  `json:"timeline,omitempty"`       // 状态变更历史（JSON 数组）
-	Investigation    string  `json:"investigation,omitempty"` // 调查结果（RCA 分析 JSON）
-	Signature        string  `json:"signature,omitempty"`     // dedupe 指纹（rule+service+detail）
-	Cluster          string  `json:"cluster,omitempty"`       // A-6：事件所属集群（继承规则）
+	ID             string  `json:"id"`
+	RuleID         string  `json:"rule_id"`
+	RuleName       string  `json:"rule_name"`
+	Object         string  `json:"object"` // 具体告警对象（Pod 名/Deployment 名等），避免前端 fallback 到 service
+	Service        string  `json:"service"`
+	Severity       string  `json:"severity"`
+	Message        string  `json:"message"`
+	Value          float64 `json:"value"`
+	Threshold      float64 `json:"threshold"`
+	Timestamp      string  `json:"timestamp"`
+	Count          int     `json:"count"`
+	FirstTimestamp string  `json:"first_timestamp"`
+	LastTimestamp  string  `json:"last_timestamp"`
+	Status         string  `json:"status"` // firing/acknowledged/resolved
+	AcknowledgedAt string  `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy string  `json:"acknowledged_by,omitempty"`
+	ResolvedAt     string  `json:"resolved_at,omitempty"`
+	ResolvedBy     string  `json:"resolved_by,omitempty"`
+	Timeline       string  `json:"timeline,omitempty"`      // 状态变更历史（JSON 数组）
+	Investigation  string  `json:"investigation,omitempty"` // 调查结果（RCA 分析 JSON）
+	Signature      string  `json:"signature,omitempty"`     // dedupe 指纹（rule+service+detail）
+	Cluster        string  `json:"cluster,omitempty"`       // A-6：事件所属集群（继承规则）
 }
 
 // eventSignature 生成事件指纹（rule+service+detail 维度），用于 dedupe。
@@ -134,22 +134,22 @@ type AggAlertEvent struct {
 	RuleID         string `json:"rule_id"`
 	RuleName       string `json:"rule_name"`
 	Service        string `json:"service"`
-	Object         string `json:"object"`     // 具体告警对象（Pod 名/Deployment 名等），替代"服务"归纳
+	Object         string `json:"object"` // 具体告警对象（Pod 名/Deployment 名等），替代"服务"归纳
 	Severity       string `json:"severity"`
 	Message        string `json:"message"`
 	Count          int    `json:"count"`
 	FirstTimestamp string `json:"first_timestamp"`
 	LastTimestamp  string `json:"last_timestamp"`
-	Status         string `json:"status"`     // firing/acknowledged/resolved（修复：让前端能区分已恢复事件）
+	Status         string `json:"status"` // firing/acknowledged/resolved（修复：让前端能区分已恢复事件）
 }
 
 var (
-	alertRules       []AlertRule
-	alertRulesMu     sync.RWMutex
+	alertRules   []AlertRule
+	alertRulesMu sync.RWMutex
 
-	alertEvents       []AlertEvent
-	alertEventsMu     sync.RWMutex
-	maxAlertEvents    = 1000
+	alertEvents    []AlertEvent
+	alertEventsMu  sync.RWMutex
+	maxAlertEvents = 1000
 
 	// alertCH: 告警事件持久化用的 ClickHouse 访问（由 main 建 Handler 后注入）。
 	// 告警事件属时序数据，CH 列式存储 + TTL 管理生命周期，适配大数据量。
@@ -159,20 +159,20 @@ var (
 	// groupInterval: 同一 (service, rule_id) 在此窗口内合并为一条事件，降低重复告警
 	// repeatInterval: 同一规则持续触发超过该时长仍不恢复 → 升级一条事件
 	// 可通过环境变量覆盖
-	alertGroupInterval   = 5 * time.Minute
-	alertRepeatInterval  = 60 * time.Minute
-	alertSilences        []AlertSilence
-	alertSilencesMu      sync.RWMutex
+	alertGroupInterval  = 5 * time.Minute
+	alertRepeatInterval = 60 * time.Minute
+	alertSilences       []AlertSilence
+	alertSilencesMu     sync.RWMutex
 )
 
 // AlertSilence 表示一条告警静默规则（抑制指定服务/规则的告警一段时间）
 type AlertSilence struct {
 	ID        string `json:"id"`
-	Service   string `json:"service"`            // 空 = 所有服务
-	RuleID    string `json:"rule_id"`            // 空 = 所有规则
+	Service   string `json:"service"` // 空 = 所有服务
+	RuleID    string `json:"rule_id"` // 空 = 所有规则
 	Comment   string `json:"comment"`
 	CreatedAt string `json:"created_at"`
-	ExpiresAt string `json:"expires_at"`         // RFC3339，到此后失效
+	ExpiresAt string `json:"expires_at"` // RFC3339，到此后失效
 }
 
 func init() {
@@ -582,7 +582,7 @@ func (h *Handler) AlertRules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// AlertRuleByID handles GET and DELETE for /api/v1/alerts/rules/{id}
+// AlertRuleByID handles GET, PUT, and DELETE for /api/v1/alerts/rules/{id}.
 func (h *Handler) AlertRuleByID(w http.ResponseWriter, r *http.Request) {
 	// Strip "/api/v1/alerts/rules/" prefix to get the ID
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/rules/")
@@ -595,6 +595,8 @@ func (h *Handler) AlertRuleByID(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		h.getAlertRule(w, r, id)
+	case http.MethodPut:
+		h.updateAlertRule(w, r, id)
 	case http.MethodDelete:
 		h.deleteAlertRule(w, r, id)
 	case http.MethodOptions:
@@ -824,6 +826,11 @@ func (h *Handler) AlertEventByID(w http.ResponseWriter, r *http.Request) {
 
 // AlertEventAck handles POST /api/v1/alerts/events/{id}/ack
 func (h *Handler) AlertEventAck(w http.ResponseWriter, r *http.Request) {
+	// G3 修复（S5）：确认告警是写操作，需 admin 角色（与创建规则同款守卫）。
+	if !hasRole(r, "admin") {
+		respondError(w, http.StatusForbidden, "仅 admin 可确认告警")
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
 	id = strings.TrimSuffix(id, "/ack")
 	if id == "" {
@@ -856,6 +863,11 @@ func (h *Handler) AlertEventAck(w http.ResponseWriter, r *http.Request) {
 
 // AlertEventResolve handles POST /api/v1/alerts/events/{id}/resolve
 func (h *Handler) AlertEventResolve(w http.ResponseWriter, r *http.Request) {
+	// G3 修复（S5）：解决告警是写操作，需 admin 角色（与创建规则同款守卫）。
+	if !hasRole(r, "admin") {
+		respondError(w, http.StatusForbidden, "仅 admin 可解决告警")
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/alerts/events/")
 	id = strings.TrimSuffix(id, "/resolve")
 	if id == "" {
@@ -966,6 +978,11 @@ func (h *Handler) AlertSilenceByID(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// G3 修复（S5）：删除静默是写操作，需 admin 角色（与创建静默同款守卫）。
+	if !hasRole(r, "admin") {
+		respondError(w, http.StatusForbidden, "仅 admin 可删除静默")
+		return
+	}
 	alertSilencesMu.Lock()
 	for i, s := range alertSilences {
 		if s.ID == id {
@@ -996,56 +1013,8 @@ func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusForbidden, "仅 admin 可创建告警规则")
 		return
 	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "failed to read body")
-		return
-	}
-	defer r.Body.Close()
-
-	var rule AlertRule
-	if err := json.Unmarshal(body, &rule); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-
-	if rule.Name == "" {
-		respondError(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	if rule.Service == "" {
-		respondError(w, http.StatusBadRequest, "service is required")
-		return
-	}
-	// burn_rate 规则：仅支持 error_rate 指标 + availability 型 SLO（否则静默永不触发）
-	if rule.Type == "burn_rate" {
-		if rule.Metric != "error_rate" {
-			respondError(w, http.StatusBadRequest, "burn_rate 规则仅支持 error_rate 指标")
-			return
-		}
-		if rule.SLOID != "" {
-			dao := &store.SLOTargetDAO{}
-			if slo, err := dao.Get(rule.SLOID); err != nil {
-				respondError(w, http.StatusInternalServerError, err.Error())
-				return
-			} else if slo == nil {
-				respondError(w, http.StatusBadRequest, "SLO 目标不存在")
-				return
-			} else if slo.SLOType != "availability" {
-				respondError(w, http.StatusBadRequest, "burn_rate 仅支持 availability 型 SLO（烧毁率基于错误预算）")
-				return
-			}
-		}
-	}
-
-	// sel_event 规则：service 存 IPMI 节点名，必须非空（节点维度硬件事件告警）
-	if rule.Type == "sel_event" && rule.Service == "" {
-		respondError(w, http.StatusBadRequest, "sel_event 规则需指定节点名（service）")
-		return
-	}
-	// middleware_metric 规则：metric 存中间件深度指标 PromQL 查询，必须非空
-	if rule.Type == "middleware_metric" && rule.Metric == "" {
-		respondError(w, http.StatusBadRequest, "middleware_metric 规则需指定 metric（PromQL 查询）")
+	rule, ok := parseAlertRule(w, r)
+	if !ok {
 		return
 	}
 
@@ -1061,6 +1030,54 @@ func (h *Handler) createAlertRule(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
 		"data": rule,
 	})
+}
+
+// parseAlertRule decodes and validates the rule shape shared by create and update.
+func parseAlertRule(w http.ResponseWriter, r *http.Request) (AlertRule, bool) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "failed to read body")
+		return AlertRule{}, false
+	}
+	defer r.Body.Close()
+
+	var rule AlertRule
+	if err := json.Unmarshal(body, &rule); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return AlertRule{}, false
+	}
+	if rule.Name == "" {
+		respondError(w, http.StatusBadRequest, "name is required")
+		return AlertRule{}, false
+	}
+	if rule.Service == "" {
+		respondError(w, http.StatusBadRequest, "service is required")
+		return AlertRule{}, false
+	}
+	if rule.Type == "burn_rate" {
+		if rule.Metric != "error_rate" {
+			respondError(w, http.StatusBadRequest, "burn_rate 规则仅支持 error_rate 指标")
+			return AlertRule{}, false
+		}
+		if rule.SLOID != "" {
+			dao := &store.SLOTargetDAO{}
+			if slo, err := dao.Get(rule.SLOID); err != nil {
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return AlertRule{}, false
+			} else if slo == nil {
+				respondError(w, http.StatusBadRequest, "SLO 目标不存在")
+				return AlertRule{}, false
+			} else if slo.SLOType != "availability" {
+				respondError(w, http.StatusBadRequest, "burn_rate 仅支持 availability 型 SLO（烧毁率基于错误预算）")
+				return AlertRule{}, false
+			}
+		}
+	}
+	if rule.Type == "middleware_metric" && rule.Metric == "" {
+		respondError(w, http.StatusBadRequest, "middleware_metric 规则需指定 metric（PromQL 查询）")
+		return AlertRule{}, false
+	}
+	return rule, true
 }
 
 func (h *Handler) getAlertRule(w http.ResponseWriter, r *http.Request, id string) {
@@ -1079,7 +1096,43 @@ func (h *Handler) getAlertRule(w http.ResponseWriter, r *http.Request, id string
 	respondError(w, http.StatusNotFound, "rule not found")
 }
 
+func (h *Handler) updateAlertRule(w http.ResponseWriter, r *http.Request, id string) {
+	if !hasRole(r, "admin") {
+		respondError(w, http.StatusForbidden, "仅 admin 可更新告警规则")
+		return
+	}
+	rule, ok := parseAlertRule(w, r)
+	if !ok {
+		return
+	}
+	rule.ID = id
+
+	alertRulesMu.Lock()
+	found := false
+	for i := range alertRules {
+		if alertRules[i].ID == id {
+			alertRules[i] = rule
+			found = true
+			break
+		}
+	}
+	alertRulesMu.Unlock()
+
+	if !found {
+		respondError(w, http.StatusNotFound, "rule not found")
+		return
+	}
+	saveAlertRules()
+	auditWrite(r, "alert_rule.update", rule.Name, "更新告警规则 type="+rule.Type+" metric="+rule.Metric)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"data": rule})
+}
+
 func (h *Handler) deleteAlertRule(w http.ResponseWriter, r *http.Request, id string) {
+	// G3 修复（S5）：删除规则是写操作，需 admin 角色（与创建规则同款守卫）。
+	if !hasRole(r, "admin") {
+		respondError(w, http.StatusForbidden, "仅 admin 可删除告警规则")
+		return
+	}
 	// 先在锁内删除内存规则并释放锁，再在锁外持久化 MySQL（避免锁内调用 saveAlertRules 死锁）
 	alertRulesMu.Lock()
 	found := false
@@ -1674,8 +1727,8 @@ func (h *Handler) evalK8sUnavailableReplicas() float64 {
 	var r struct {
 		Items []struct {
 			Status struct {
-				Replicas             int  `json:"replicas"`
-				UnavailableReplicas  *int `json:"unavailableReplicas"`
+				Replicas            int  `json:"replicas"`
+				UnavailableReplicas *int `json:"unavailableReplicas"`
 			} `json:"status"`
 		} `json:"items"`
 	}
@@ -2051,12 +2104,12 @@ func InitK8sRules() {
 
 // AggregateAlerts groups alert events by service and severity
 type AlertAggregation struct {
-	Service   string                `json:"service"`
-	Total     int                   `json:"total"`
-	BySeverity map[string]int       `json:"by_severity"`
-	LatestRule string               `json:"latest_rule"`
-	LatestTime string               `json:"latest_time"`
-	Events    []AlertEvent          `json:"events"`
+	Service    string         `json:"service"`
+	Total      int            `json:"total"`
+	BySeverity map[string]int `json:"by_severity"`
+	LatestRule string         `json:"latest_rule"`
+	LatestTime string         `json:"latest_time"`
+	Events     []AlertEvent   `json:"events"`
 }
 
 func (h *Handler) AlertAggregation(w http.ResponseWriter, r *http.Request) {
@@ -2087,6 +2140,8 @@ func (h *Handler) AlertAggregation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := make([]AlertAggregation, 0, len(agg))
-	for _, a := range agg { result = append(result, *a) }
+	for _, a := range agg {
+		result = append(result, *a)
+	}
 	respondJSON(w, 200, map[string]interface{}{"data": result})
 }

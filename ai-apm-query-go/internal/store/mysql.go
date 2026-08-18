@@ -401,6 +401,24 @@ CREATE TABLE IF NOT EXISTS anomaly_events (
   INDEX idx_service (service_name),
   INDEX idx_detected (detected_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// audit_logs 审计日志（H5/R5 修复：此前 INSERT 存在但表从未创建，审计写入静默失败）。
+	// 列与 audit.go auditWrite 的 INSERT 对齐：task_id, action, operator, target_service,
+	// command, result, detail；id 自增主键 + created_at 时间戳。
+	_, _ = conn.Exec(`
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  task_id VARCHAR(64) DEFAULT '',
+  action VARCHAR(128) NOT NULL DEFAULT '',
+  operator VARCHAR(128) DEFAULT '',
+  target_service VARCHAR(255) DEFAULT '',
+  command VARCHAR(255) DEFAULT '',
+  result VARCHAR(32) DEFAULT 'success',
+  detail JSON NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_audit_created (created_at),
+  INDEX idx_audit_operator (operator)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 }
 
 func env(key, def string) string {

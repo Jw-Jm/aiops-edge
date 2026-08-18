@@ -40,7 +40,8 @@ const Overview: React.FC = () => {
   const [nodeSort, setNodeSort] = useState<'cpu' | 'memory'>('cpu')
   const [showAllNodes, setShowAllNodes] = useState(false)
 
-  const clusterName = currentClusterId === 'all' ? '全部集群' : (clusters.find((c) => (c.id === 1 ? 'default' : c.name) === currentClusterId)?.name || currentClusterId)
+  // A6: 移除集群名映射 hack（c.id===1 ? 'default' : c.name），直接用集群 name 作为 cluster_id 字符串
+  const clusterName = currentClusterId === 'all' ? '全部集群' : (clusters.find((c) => c.name === currentClusterId)?.name || currentClusterId)
 
   const load = () => {
     setLoading(true)
@@ -48,7 +49,9 @@ const Overview: React.FC = () => {
       getDashboardStats().then((r) => setStats(r.data)).catch(() => setStats(null)),
       getDashboardResources({ cluster_id: currentClusterId || 'all' }).then((r) => setResources(r.data)).catch(() => setResources(null)),
       getNodeMetrics().then((r) => setNodes(Array.isArray(r.data?.nodes) ? r.data.nodes : [])).catch(() => setNodes([])),
-      getAlertEvents({ limit: 200 }).then((r) => {
+      // B12: 活跃告警 limit 由 200 提至 1000，覆盖大集群多规则场景，避免活跃告警被静默截断。
+      // 后续应改为服务端分页统计（见 C2）。
+      getAlertEvents({ limit: 1000 }).then((r) => {
         const data = r.data
         setAlerts(Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []))
       }).catch(() => setAlerts([])),
@@ -68,6 +71,24 @@ const Overview: React.FC = () => {
   const displayedNodes = showAllNodes ? sortedNodes : sortedNodes.slice(0, 5)
   const activeAlerts = useMemo(() => alerts.filter((a) => isActive(a.status)).sort((a, b) => (severityRank[String(b.severity || 'warning').toLowerCase()] || 2) - (severityRank[String(a.severity || 'warning').toLowerCase()] || 2)), [alerts])
   const trend = stats?.trend || []
+  // A6: 服务数口径与拓扑视图一致（后端 /dashboard/stats 同时返回 services 与 topology_services，
+  // 前者仅 trace 服务、后者含拓扑目录，总览卡片用 topology_services 才能与拓扑视图对得上）
+  const topologyServices = (stats as any)?.topology_services ?? stats?.services ?? 0
+  const hasDataGap = !!(stats?.data_gaps?.length)
+  // A6: 各卡片使用自己的数据序列——服务数卡片用当前口径常量序列（趋势无逐桶服务数），不重复调用量序列
+  const svcSparkSeries = trend.length > 1 ? Array.from({ length: trend.length }, () => topologyServices) : []
+  const errRateSparkSeries = trend.map((t) => (t.calls ? t.errors / t.calls : 0))
+  // A6: 数据采集中断时给统计卡加"数据不完整"角标，避免健康数值误导
+  const withGapTag = (card: React.ReactNode) => (
+    <div style={{ position: 'relative', height: '100%' }}>
+      {card}
+      {hasDataGap && (
+        <Tag color="warning" style={{ position: 'absolute', top: 4, right: 4, fontSize: 10, lineHeight: '16px', margin: 0, borderRadius: 999 }}>
+          数据不完整
+        </Tag>
+      )}
+    </div>
+  )
 
   useEffect(() => {
     const el = trendRef.current
@@ -99,10 +120,10 @@ const Overview: React.FC = () => {
     {stats?.data_gaps?.length ? <Alert showIcon type="warning" message={`检测到数据采集中断：${stats.data_gaps.length} 个时段无数据`} style={{ marginBottom: 16 }} /> : null}
 
     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-      <Col xs={12} md={6}><StatCard label="服务数量" value={loading ? '…' : (stats?.services ?? 0)} unit="个" spark={sparkPts(trend.map((t) => t.calls))} sparkColor="var(--primary)" /></Col>
-      <Col xs={12} md={6}><StatCard label="调用总量" value={loading ? '…' : (stats?.total_calls ?? 0).toLocaleString()} unit="次" spark={sparkPts(trend.map((t) => t.calls))} sparkColor="var(--primary)" /></Col>
-      <Col xs={12} md={6}><StatCard label="请求错误率" value={loading ? '…' : `${(stats?.error_rate ?? 0).toFixed(2)}`} unit="%" trend={`${(stats?.error_rate ?? 0).toFixed(2)}%`} trendDir={(stats?.error_rate ?? 0) > 0 ? 'up' : 'flat'} spark={sparkPts(trend.map((t) => t.errors))} sparkColor="var(--danger)" /></Col>
-      <Col xs={12} md={6}><StatCard label="P95 延迟" value={loading ? '…' : `${(stats?.latency_p95 ?? 0).toFixed(1)}`} unit="ms" /></Col>
+      <Col xs={12} md={6}>{withGapTag(<StatCard label="服务数量" value={loading ? '…' : topologyServices} unit="个" spark={sparkPts(svcSparkSeries)} sparkColor="var(--primary)" />)}</Col>
+      <Col xs={12} md={6}>{withGapTag(<StatCard label="调用总量" value={loading ? '…' : (stats?.total_calls ?? 0).toLocaleString()} unit="次" spark={sparkPts(trend.map((t) => t.calls))} sparkColor="var(--primary)" />)}</Col>
+      <Col xs={12} md={6}>{withGapTag(<StatCard label="请求错误率" value={loading ? '…' : `${(stats?.error_rate ?? 0).toFixed(2)}`} unit="%" trend={`${(stats?.error_rate ?? 0).toFixed(2)}%`} trendDir={(stats?.error_rate ?? 0) > 0 ? 'up' : 'flat'} spark={sparkPts(errRateSparkSeries)} sparkColor="var(--danger)" />)}</Col>
+      <Col xs={12} md={6}>{withGapTag(<StatCard label="P95 延迟" value={loading ? '…' : `${(stats?.latency_p95 ?? 0).toFixed(1)}`} unit="ms" />)}</Col>
     </Row>
 
     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>

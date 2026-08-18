@@ -609,13 +609,56 @@ func (h *Handler) GetLLMConfig() LLMSettings {
 	return cfg
 }
 
+// ── ProxyAI 安全加固（G2）──
+// restrictedProxyPaths 是需要 admin/approver 角色的高危代理路径前缀：
+// NL2SQL（可执行 SQL）、shell（命令执行）、ipmi/node/snmp（硬件与节点操作）、
+// ops（任务/审计/报告/变更）、ai/kg（知识图谱构建）。普通 user 角色一律 403。
+var restrictedProxyPaths = []string{
+	"/api/v1/ai/nl2sql",
+	"/api/v1/ai/shell",
+	"/api/v1/ipmi",
+	"/api/v1/node",
+	"/api/v1/snmp",
+	"/api/v1/ops",
+	"/api/v1/ai/kg",
+}
+
+// isRestrictedProxyPath 判断被代理路径是否属于高危面（需 admin/approver）。
+func isRestrictedProxyPath(path string) bool {
+	for _, p := range restrictedProxyPaths {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	maxProxyBody     = 10 << 20 // 请求体上限 10MB
+	maxProxyResponse = 50 << 20 // 响应体上限 50MB
+)
+
 func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
+	// G2 安全加固：高危代理路径仅限 admin/approver 角色调用，普通 user 403。
+	if isRestrictedProxyPath(r.URL.Path) && !hasPrivilegedRole(r) {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "forbidden: admin or approver role required"})
+		return
+	}
 	// 用 orchestratorBase()（env 可覆盖），与 ProxyShellWS 一致，便于测试注入 mock。
 	url := orchestratorBase() + r.URL.Path
 	if r.URL.RawQuery != "" {
 		url += "?" + r.URL.RawQuery
 	}
-	body, _ := io.ReadAll(r.Body)
+	// G2 安全加固：请求体大小上限（10MB），超限 413 拒绝，防止超大 body 占内存。
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxProxyBody+1))
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "failed to read body"})
+		return
+	}
+	if len(body) > maxProxyBody {
+		respondJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{"error": "request body too large (>10MB)"})
+		return
+	}
 	req, _ := http.NewRequest(r.Method, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -689,7 +732,11 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	// G2 安全加固：响应体大小上限（50MB），超限截断，防止超大响应占内存。
+	n, _ := io.Copy(w, io.LimitReader(resp.Body, maxProxyResponse+1))
+	if n > maxProxyResponse {
+		log.Printf("ProxyAI response truncated: path=%s size=%d > %d", r.URL.Path, n, maxProxyResponse)
+	}
 }
 
 // requesterApprover 从请求 JWT 提取请求者 role 与是否审批人（查 MySQL）。

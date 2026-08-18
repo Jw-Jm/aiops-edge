@@ -52,29 +52,31 @@ type Writer struct {
 	memSeq uint64
 
 	// 内存/重试上限（防止 ClickHouse 长时间不可用时 OOM / 磁盘打满）
-	maxBufferSpans   int   // 内存缓冲最大 span 数，超限丢弃最旧
-	maxRetryBatches  int   // 重试队列最大批次条数，超限丢弃最旧
-	maxRetryBytes    int64 // 重试队列最大字节数，超限丢弃最旧
-	retryBytes       int64 // 当前重试队列总字节数
+	maxBufferSpans  int   // 内存缓冲最大 span 数，超限丢弃最旧
+	maxRetryBatches int   // 重试队列最大批次条数，超限丢弃最旧
+	maxRetryBytes   int64 // 重试队列最大字节数，超限丢弃最旧
+	retryBytes      int64 // 当前重试队列总字节数
 
 	// OnWritten 写入成功回调（用于 metrics 统计，可为 nil）
 	OnWritten func(n int)
+	// OnDropped 背压丢弃回调（缓冲满丢最旧 span 时触发，用于 dropped 计数，可为 nil）
+	OnDropped func(n int)
 }
 
 // NewWriter creates a Writer. walDir 为 WAL 持久化目录（生产挂载 PVC；空则退化为内存、仅重试不落盘）。
 func NewWriter(host string, port int, walDir string) *Writer {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &Writer{
-		endpoint:         chEndpoint(host, port),
-		batchSize:        1024,
-		flushEvery:       5 * time.Second,
-		httpClient:       newCHHTTPClient(),
-		ctx:              ctx,
-		cancel:           cancel,
-		retryPending:     make(map[uint64][]byte),
-		maxBufferSpans:   10240,   // 10× batchSize，防止高峰突发 OOM
-		maxRetryBatches:  500,     // 重试队列上限条数
-		maxRetryBytes:    512 << 20, // 512MB 重试队列上限
+		endpoint:        chEndpoint(host, port),
+		batchSize:       1024,
+		flushEvery:      5 * time.Second,
+		httpClient:      newCHHTTPClient(),
+		ctx:             ctx,
+		cancel:          cancel,
+		retryPending:    make(map[uint64][]byte),
+		maxBufferSpans:  10240,     // 10× batchSize，防止高峰突发 OOM
+		maxRetryBatches: 500,       // 重试队列上限条数
+		maxRetryBytes:   512 << 20, // 512MB 重试队列上限
 	}
 	if walDir != "" {
 		wal, err := NewWALFile(walDir, walSpanFile)
@@ -122,6 +124,10 @@ func (w *Writer) Add(span *model.Span) {
 		w.buffer = w.buffer[:len(w.buffer)-1]
 		w.mu.Unlock()
 		log.Printf("WRITER: buffer full (%d), dropping oldest span (backpressure)", w.maxBufferSpans)
+		// H3：背压丢弃必须可观测（/metrics 暴露 spans_dropped 计数）
+		if w.OnDropped != nil {
+			w.OnDropped(1)
+		}
 		return
 	}
 	w.buffer = append(w.buffer, span)
@@ -384,6 +390,34 @@ func (w *Writer) insertBatch(rows []byte) error {
 		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// Ping 快速探测 ClickHouse 连通性（短超时，供 /health 探针使用，H4）。
+func (w *Writer) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	u := w.endpoint + "/?" + buildQueryParam("SELECT 1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// RetryQueueSize 返回当前重试队列批次数（供 /health 与 /metrics 使用）。
+func (w *Writer) RetryQueueSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.retryPending)
 }
 
 func buildQueryParam(query string) string {

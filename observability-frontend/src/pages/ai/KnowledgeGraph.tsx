@@ -3,7 +3,9 @@ import { Select, Spin, Space, Tag, Segmented, Table, Input, Switch, type TableCo
 import * as echarts from 'echarts'
 import { getKgGraph, KgNode, KgEdge, KgGraph } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty, StatusBadge, type StatusTone } from '../../components/ui/PageKit'
+import ErrorState from '../../components/ErrorState'
 import { useUIStore } from '../../store/uiStore'
+import { computeForceLayout } from '../../lib/layout'
 
 // 节点类型 → 颜色（P2-4 规格：service 蓝 / instance 青 / node 绿 / pod 紫 / middleware 橙 / server 红 / switch 深灰）
 const TYPE_COLORS: Record<string, string> = {
@@ -303,12 +305,12 @@ function filterTreeBySearch(rows: TreeRow[], q: string): TreeRow[] {
   return rec(rows)
 }
 
-// 行状态：服务按错误数推导；其余取 props.status（Running/Ready→正常，Error/Fail→异常）
+// 行状态：服务按错误数推导（B12：0 调用的健康服务显示"空闲"而非"未知"）；其余取 props.status（Running/Ready→正常，Error/Fail→异常）
 function statusOf(r: TreeRow): string {
   if (r.type === 'service') {
     if ((r.errors || 0) > 0) return '异常'
     if ((r.calls || 0) > 0) return '正常'
-    return '未知'
+    return '空闲'
   }
   const s = String((r.props as Record<string, unknown>)?.status || '').toLowerCase()
   if (!s) return '未知'
@@ -322,6 +324,7 @@ function statusToneOf(r: TreeRow): StatusTone {
   if (s === '异常') return 'crit'
   if (s === '正常') return 'ok'
   if (s === '告警') return 'warn'
+  if (s === '空闲') return 'muted'
   if (s === '未知') return 'muted'
   return 'info'
 }
@@ -356,6 +359,8 @@ const KnowledgeGraph: React.FC = () => {
   const stablePosRef = useRef<Record<string, { x: number; y: number }>>({})
   const [loading, setLoading] = useState(true)
   const [graph, setGraph] = useState<KgGraph>({ nodes: [], edges: [] })
+  // B12: 加载失败错误态（client.ts 不再吞错，错误传播到这里经 ErrorState 展示 + 重试）
+  const [error, setError] = useState<string | null>(null)
 
   // 视图切换：图谱视图 / 列表视图（参照 ServiceObservability 的 Segmented 模式）
   const [view, setView] = useState<'graph' | 'list'>('graph')
@@ -371,22 +376,40 @@ const KnowledgeGraph: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 拉取图谱（后端 API 尚未就绪时 client 容错返回空图 + unavailable 标记）
+  // A5: 集群数字 id → 后端字符串 cluster_id 的映射。uiStore.clusters 的 name 即后端 cluster_id 标记
+  // （主集群 id===1 上报为 'default'，纳管集群用集群 name），选集群下拉传的是数字 id（如 1），
+  // 需映射后再传给 getKgGraph，移除硬编码 cluster_id:'default'。
+  const clusterIdMap = useMemo(() => {
+    const m = new Map<string, string>()
+    clusters.forEach((c) => m.set(String(c.id), c.name))
+    return m
+  }, [clusters])
+
+  // A5: 切换集群时清空稳定坐标缓存，避免不同集群的节点坐标残留（布局沿用上一集群位置）
+  useEffect(() => {
+    stablePosRef.current = {}
+  }, [currentClusterId])
+
+  // 拉取图谱（B12：错误不再静默吞掉，传播到 ErrorState 展示 + 重试）
   const loadGraph = (silent = false) => {
     if (!silent) setLoading(true)
-    // Bug3 修复：图谱数据后端按 props.cluster_id 标记，当前真实环境统一为 "default"。
-    // 集群下拉传的是 kubernetes-cluster 的数字 id（如 1），与图谱 cluster_id 体系不一致，
-    // 选中具体集群时传数字 id 会让后端按 cluster_id 过滤返回 0 节点（str("1") != str("default")）。
-    // 这里选中具体集群时传 cluster_id="default"（图谱数据实际标签），让图谱可见；
-    // "全部集群"保持不传 cluster_id（后端默认 default），行为不变。
-    const params: Record<string, unknown> = currentClusterId !== 'all' ? { cluster_id: 'default' } : {}
+    const params: Record<string, unknown> = currentClusterId !== 'all'
+      ? { cluster_id: clusterIdMap.get(currentClusterId) || currentClusterId }
+      : {}
     getKgGraph(params)
       .then((r) => {
         const next = r.data || { nodes: [], edges: [] }
+        setError(null)
         // 30s 静默轮询只在数据真正变化时才 setState，避免每次都触发布局重新迭代导致节点持续飘移
         setGraph((prev) => (graphFp(prev) === graphFp(next) ? prev : next))
       })
-      .catch(() => setGraph({ nodes: [], edges: [], unavailable: true }))
+      .catch((e) => {
+        setError(
+          (e as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+          (e as { message?: string })?.message ||
+          '图谱加载失败'
+        )
+      })
       .finally(() => { if (!silent) setLoading(false) })
   }
   useEffect(() => {
@@ -475,62 +498,19 @@ const KnowledgeGraph: React.FC = () => {
     }).filter((l) => l.source && l.target && l.source !== 'undefined' && l.target !== 'undefined'
       && validIds.has(l.source) && validIds.has(l.target))
 
-    // Bug2 修复：自研力导向布局 + 硬性边界约束。每轮把节点坐标 clamp 到画布范围内，
+    // Bug2 修复：自研力导向布局 + 硬性边界约束（B8：抽为共享模块 src/lib/layout.ts，
+    // seeded PRNG 确定性布局替代 Math.random 抖动）。每轮把节点坐标 clamp 到画布范围内，
     // 从算法层面保证节点永不超出画布。已收敛过的节点用稳定坐标，新节点用环形种子位置。
     const cw = chartRef.current.clientWidth || 800
     const ch = chartRef.current.clientHeight || 500
-    const cx = cw / 2, cy = ch / 2, R = Math.min(cw, ch) * 0.32
-    const N = Math.max(1, nodes.length)
-    const seedPos = nodes.map((n, i) => {
+    const layoutNodes = nodes.map((n) => {
       const prev = stablePosRef.current[n.id]
-      if (prev && typeof prev.x === 'number' && typeof prev.y === 'number') return { x: prev.x, y: prev.y }
-      return { x: cx + R * Math.cos((2 * Math.PI * i) / N), y: cy + R * Math.sin((2 * Math.PI * i) / N) }
+      if (prev && typeof prev.x === 'number' && typeof prev.y === 'number') return { id: n.id, x: prev.x, y: prev.y }
+      return { id: n.id }
     })
-    const PAD = 24
-    const PAD_BOTTOM = 60
-    const positions: Record<string, { x: number; y: number }> = {}
-    nodes.forEach((n, i) => { positions[n.id] = { ...seedPos[i] } })
-    const nodeIds = nodes.map((n) => n.id)
-    const edgeArr = links.map((l) => ({ s: String(l.source), t: String(l.target) }))
-    for (let iter = 0; iter < 300; iter++) {
-      // 斥力：所有节点两两排斥
-      for (let i = 0; i < nodeIds.length; i++) {
-        for (let j = i + 1; j < nodeIds.length; j++) {
-          const a = positions[nodeIds[i]], b = positions[nodeIds[j]]
-          let dx = a.x - b.x, dy = a.y - b.y
-          let d2 = dx * dx + dy * dy
-          if (d2 < 1) { dx = (Math.random() - 0.5) * 2; dy = (Math.random() - 0.5) * 2; d2 = 1 }
-          const d = Math.sqrt(d2)
-          const force = 320 / d2  // 斥力与距离平方成反比
-          const fx = (dx / d) * force, fy = (dy / d) * force
-          a.x += fx; a.y += fy
-          b.x -= fx; b.y -= fy
-        }
-      }
-      // 弹簧力：有边的节点拉到理想距离
-      for (const e of edgeArr) {
-        const a = positions[e.s], b = positions[e.t]
-        if (!a || !b) continue
-        let dx = b.x - a.x, dy = b.y - a.y
-        const d = Math.max(0.01, Math.sqrt(dx * dx + dy * dy))
-        const ideal = 180
-        const f = (d - ideal) * 0.02
-        a.x += (dx / d) * f; a.y += (dy / d) * f
-        b.x -= (dx / d) * f; b.y -= (dy / d) * f
-      }
-      // 引力：拉到画布中心
-      for (const id of nodeIds) {
-        const p = positions[id]
-        p.x += (cx - p.x) * 0.08
-        p.y += (cy - p.y) * 0.08
-      }
-      // 硬性边界约束：clamp 到画布内
-      for (const id of nodeIds) {
-        const p = positions[id]
-        p.x = Math.max(PAD, Math.min(cw - PAD, p.x))
-        p.y = Math.max(PAD, Math.min(ch - PAD_BOTTOM, p.y))
-      }
-    }
+    const positions = computeForceLayout(layoutNodes, links, {
+      width: cw, height: ch, iterations: 300, paddingBottom: 60,
+    })
     const dataWithPos = nodes.map((n) => ({
       ...n,
       x: positions[n.id].x, y: positions[n.id].y,
@@ -681,8 +661,10 @@ const KnowledgeGraph: React.FC = () => {
 
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <Spin spinning={loading}>
-          {unavailable ? (
-            <Empty text="图谱构建中" hint="后端图谱服务尚未就绪（P2-1/P2-2 并行开发中），稍后自动可用" />
+          {error && !loading ? (
+            <ErrorState message={error} onRetry={() => loadGraph(false)} />
+          ) : unavailable ? (
+            <Empty text="图谱构建中" hint="后端图谱服务尚未就绪，稍后自动可用" />
           ) : nodeCount === 0 ? (
             <Empty text="暂无图谱数据" hint="切换集群或等待图谱采集完成" />
           ) : view === 'graph' ? (
@@ -754,9 +736,9 @@ const KnowledgeGraph: React.FC = () => {
             )}
           </div>
         )}
-        {nodeCount === 0 && (
+        {nodeCount === 0 && !error && (
           <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--text-muted)' }}>
-            图谱数据将在此展示（后端 API 就绪后自动填充）
+            图谱数据将在此展示
           </div>
         )}
       </div>

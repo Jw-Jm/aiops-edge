@@ -25,26 +25,34 @@ const LogMetrics: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
 
-  const search = (targetMode?: 'logs' | 'aggregate') => {
+  // A7: 筛选条件变更时自动触发查询（与模式切换一致）。overrides 让 onChange 立即生效，
+  // 避免 setState 异步导致 search() 读到旧值。
+  const search = (targetMode?: 'logs' | 'aggregate', overrides: Partial<{ source: string; level: string; hours: number; hideHealth: boolean }> = {}) => {
     const m = targetMode || mode
     setLoading(true)
     setErr('')
+    const src = overrides.source ?? source
+    const lv = overrides.level ?? level
+    const hr = overrides.hours ?? hours
+    const hh = overrides.hideHealth ?? hideHealth
     const p: Record<string, unknown> = {
       limit: 100,
-      source,
-      hours,
+      source: src,
+      hours: hr,
       ...(q ? { query: q } : {}),
-      ...(level !== 'all' ? { level } : {}),
+      ...(lv !== 'all' ? { level: lv } : {}),
       // 修复(P2-3)：过滤健康检查探针日志（/health、/ready、/v1/query）
-      ...(hideHealth ? { exclude_health: true } : {}),
+      ...(hh ? { exclude_health: true } : {}),
     }
     const req = m === 'logs' ? queryLogs(p) : aggregateLogs({ ...p, group_by: 'service_name' })
     req.then((r) => {
       const d = r.data
       if (m === 'logs') {
         // Issue3/5: 统一 clickhouse 与 victorialogs 字段（query-api 已归一为 body/service_name/severity/timestamp）
-        // _source 直接取当前选中的 source（用户选择的 VictoriaLogs 即标记为 VictoriaLogs）
+        // A7: _source 读取返回数据行自身的来源（x.source / x._source，VictoriaLogs 行自带 source 字段），
+        // 不再直接取当前选中的 source，避免显示标签与实际数据源不符。
         const raw: any[] = Array.isArray(d) ? d : d?.data || d?.rows || []
+        const respSource = (d as any)?.source || src
         setRows(raw.map((x: any) => ({
           ...x,
           ts: x.ts || x.timestamp || x._time || '',
@@ -52,7 +60,7 @@ const LogMetrics: React.FC = () => {
           service_name: x.service_name || x.service || x.kubernetes?.container_name || '-',
           message: x.message || x.body || x._msg || '',
           pod: x.pod || x.kubernetes?.pod_name || x.namespace || '',
-          _source: source === 'victorialogs' ? 'victorialogs' : 'clickhouse',
+          _source: x._source || x.source || respSource,
         })))
       } else {
         // Issue5: 后端聚合返回 { services: [{service,count}], trend, levels } 对象而非数组；
@@ -60,7 +68,7 @@ const LogMetrics: React.FC = () => {
         const svc = Array.isArray(d) ? d : (d?.services || d?.data || d?.rows || [])
         setAggs(svc.map((x: any) => ({ ...x, service_name: x.service_name || x.service, count: Number(x.count ?? x.cnt ?? 0) })))
       }
-    }).catch((e) => {
+    }).catch((e: any) => {
       setErr(e?.response?.data?.error || '查询失败')
       setRows([]); setAggs([])
     }).finally(() => setLoading(false))
@@ -87,15 +95,17 @@ const LogMetrics: React.FC = () => {
           <Segmented value={mode} onChange={(v) => { const m = v as any; setMode(m); setRows([]); setAggs([]); search(m) }}
             options={[{ label: '日志检索', value: 'logs' }, { label: '聚合统计', value: 'aggregate' }]} />
           <Tooltip title="ClickHouse 为平台默认日志存储；VictoriaLogs 可选">
-            <Select value={source} onChange={(v) => setSource(v as any)} style={{ width: 140 }}
+            {/* A7: 切换数据源自动重新查询 */}
+            <Select value={source} onChange={(v) => { const ns = v as any; setSource(ns); search(undefined, { source: ns }) }} style={{ width: 140 }}
               options={[{ value: 'clickhouse', label: '数据源 · ClickHouse' }, { value: 'victorialogs', label: '数据源 · VictoriaLogs' }]} />
           </Tooltip>
-          <Select value={level} onChange={setLevel} style={{ width: 100 }}
+          {/* A7: 级别/时间范围/探针过滤变更自动重新查询 */}
+          <Select value={level} onChange={(v) => { const nl = v as string; setLevel(nl); search(undefined, { level: nl }) }} style={{ width: 100 }}
             options={[{ value: 'all', label: '全部级别' }, { value: 'error', label: '错误' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }, { value: 'debug', label: '调试' }]} />
-          <Select value={hours} onChange={setHours} style={{ width: 100 }}
+          <Select value={hours} onChange={(v) => { const nh = v as number; setHours(nh); search(undefined, { hours: nh }) }} style={{ width: 100 }}
             options={[{ value: 1, label: '近 1 小时' }, { value: 6, label: '近 6 小时' }, { value: 24, label: '近 24 小时' }, { value: 168, label: '近 7 天' }]} />
           <Input value={q} onChange={(e) => setQ(e.target.value)} onPressEnter={() => search()} placeholder="搜索关键词，如 error / 服务名" style={{ width: 320 }} />
-          <Button type={hideHealth ? 'default' : 'primary'} onClick={() => { setHideHealth(!hideHealth); }} title="过滤 /health、/v1/query 等探针噪音日志">{hideHealth ? '过滤探针' : '显示探针'}</Button>
+          <Button type={hideHealth ? 'default' : 'primary'} onClick={() => { const nhh = !hideHealth; setHideHealth(nhh); search(undefined, { hideHealth: nhh }) }} title="过滤 /health、/v1/query 等探针噪音日志">{hideHealth ? '过滤探针' : '显示探针'}</Button>
           <Button type="primary" onClick={() => search()} loading={loading}>查询</Button>
         </Space>
         {err && <div style={{ marginTop: 10, color: 'var(--danger)', fontSize: 12 }}>⚠ {err}</div>}
@@ -103,7 +113,7 @@ const LogMetrics: React.FC = () => {
 
       <div className="card" style={{ padding: 0 }}>
         {mode === 'logs' ? (
-          <Table rowKey={(r) => `${r.ts}-${r.message}`} loading={loading} columns={logCols} dataSource={rows}
+          <Table rowKey={(r) => `${r.ts}-${r.level}-${r.service_name}-${(r.message || '').slice(0, 20)}`} loading={loading} columns={logCols} dataSource={rows}
             size="small" pagination={{ pageSize: 20 }} scroll={{ x: 900, y: 'calc(100vh - 360px)' }} locale={{ emptyText: <Empty text="暂无日志" hint="试试切换数据源或扩大时间范围" /> }} />
         ) : (
           <Table rowKey={(r) => r.service_name || r._group} loading={loading}

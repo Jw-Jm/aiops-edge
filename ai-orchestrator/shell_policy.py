@@ -85,12 +85,30 @@ class ShellPolicy:
         # 管道只读过滤器(kubectl ... | grep/head/tail/awk/wc/sort)
         r"^\s*(grep|egrep|head|tail|awk|wc|sort|uniq|sed)\s+",
     ]
+    # kubectl exec 仅允许：命名空间限定目标 + `--` 后只读诊断命令白名单。
+    # 安全修复(G5): 原 `kubectl exec \S+ -- ` 允许任意 pod 任意命令（cat /etc/shadow、
+    # rm -rf / 等），且元字符检查对 `--` 后的 payload 无效。现收紧为：
+    #   1) 目标必须是 `pod/名称 -n 命名空间`（拒绝集群级/无命名空间目标）；
+    #   2) `--` 后的命令必须命中只读诊断命令白名单（cat/ls/ps/env/df/free/top -b -n1/
+    #      curl -s/wget -qO-/grep/tail/head/date/hostname/uptime/ip addr/ss -tlnp）；
+    #   3) 敏感路径（凭据/密钥）在 is_whitelisted_for_execute 内二次拦截。
+    EXEC_READONLY_COMMANDS = (
+        "cat", "ls", "ps", "env", "df", "free", "top -b -n1",
+        "curl -s", "wget -qO-", "grep", "tail", "head", "date",
+        "hostname", "uptime", "ip addr", "ss -tlnp",
+    )
+    _EXEC_CMD_ALT = "|".join(re.escape(c) for c in EXEC_READONLY_COMMANDS)
+    # exec 内禁止读取的敏感路径（凭据/密钥/宿主信息），防 `cat /etc/shadow` 类越权读取
+    _EXEC_SENSITIVE_RE = re.compile(
+        r"/etc/(shadow|passwd|sudoers)|/var/run/secrets|/root/\.(ssh|aws|kube)|\.kube/config",
+        re.IGNORECASE,
+    )
     EXEC_WRITE = [
         r"kubectl rollout restart deployment/\S+",
         r"kubectl scale deployment/\S+ --replicas=\d+",
         r"kubectl rollout undo deployment/\S+",
         r"kubectl delete pod \S+ --grace-period=\d+",
-        r"kubectl exec \S+ -- ",
+        r"kubectl exec (pod/)?[A-Za-z0-9_.-]+ -n [A-Za-z0-9_.-]+ -- (" + _EXEC_CMD_ALT + r")(\s|$)",
         # 节点调度写操作 (工作流 C, 需人工审批)
         r"kubectl cordon node \S+",
         r"kubectl uncordon node \S+",
@@ -122,6 +140,9 @@ class ShellPolicy:
         meta = self.check_shell_metachars(command)
         if meta:
             return (False, "metachars")
+        # 1.5) exec 命令敏感路径拦截（防 `kubectl exec ... -- cat /etc/shadow` 越权读取）
+        if re.search(r"kubectl exec", command, re.IGNORECASE) and self._EXEC_SENSITIVE_RE.search(command):
+            return (False, "sensitive_path")
         # 2) 危险参数黑名单(整段命令, 不限首行) — 白名单外的 kubectl 危险动词兜底
         for pattern, cat, desc in self.EXTRA_BLACKLIST:
             if re.search(pattern, command, re.IGNORECASE):
@@ -131,6 +152,16 @@ class ShellPolicy:
         readonly_hit = write_hit = False
         all_whitelisted = True
         for seg in segments:
+            if re.search(r"kubectl exec", seg, re.IGNORECASE):
+                # exec 命令必须命中收紧后的 exec 白名单（命名空间限定 + 只读诊断命令），
+                # 不允许被其他只读模式（如 `kubectl get pods`）子串匹配绕过——
+                # 否则 `kubectl exec pod/x -n ns -- kubectl get pods` 会绕过命令白名单。
+                seg_wr = any(re.search(p, seg) for p in self.EXEC_WRITE)
+                if not seg_wr:
+                    all_whitelisted = False
+                    break
+                write_hit = True
+                continue
             seg_ro = any(re.search(p, seg) for p in self.EXEC_READONLY)
             seg_wr = any(re.search(p, seg) for p in self.EXEC_WRITE)
             if seg_ro:

@@ -25,6 +25,7 @@ REQUIRE_SIGNED = os.environ.get("MARKETPLACE_REQUIRE_SIGNED", "0") == "1"
 
 _SIGNATURE_FILE = "signature.json"
 _SIGNATURE_SCHEMA = "algo/sig/pub_key"
+_SOURCE_TYPES = {"local", "tarball", "git"}
 
 
 # ── 路径安全 ────────────────────────────────────────────────────────────
@@ -50,6 +51,25 @@ def _scan_skills(pack_dir: str) -> list:
 
 
 # ── 安装来源获取 ────────────────────────────────────────────────────────
+
+def _resolve_source_type(source: str, supplied_source_type: str | None) -> str:
+    """Validate the optional UI hint against the source before staging side effects."""
+    if supplied_source_type is not None and (
+            not isinstance(supplied_source_type, str) or supplied_source_type not in _SOURCE_TYPES):
+        raise ValueError("source_type 必须是 local、tarball、git 或省略")
+    if not isinstance(source, str):
+        raise ValueError("不支持的安装来源")
+    if os.path.isdir(source):
+        resolved = "local"
+    elif source.endswith((".tar.gz", ".tgz", ".tar")):
+        resolved = "tarball"
+    elif source.startswith(("http://", "https://", "git://", "git@")) or source.endswith(".git"):
+        resolved = "git"
+    else:
+        raise ValueError(f"不支持的安装来源: {source}")
+    if supplied_source_type is not None and supplied_source_type != resolved:
+        raise ValueError(f"source_type 与安装来源冲突: {supplied_source_type} != {resolved}")
+    return resolved
 
 def _fetch_to_staging(source: str) -> str:
     """将 local 目录 / tarball / git URL 拉到 staging，返回 pack 根目录。"""
@@ -143,7 +163,11 @@ def _db_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS installed_packs ("
-        " pack_id TEXT PRIMARY KEY, source TEXT, signature_state TEXT, installed_at TEXT)")
+        " pack_id TEXT PRIMARY KEY, source TEXT, source_type TEXT, signature_state TEXT, installed_at TEXT)")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(installed_packs)")}
+    if "source_type" not in columns:
+        conn.execute("ALTER TABLE installed_packs ADD COLUMN source_type TEXT")
+        conn.commit()
     return conn
 
 
@@ -151,12 +175,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _record_installed(pack_id: str, source: str, state: str) -> None:
+def _record_installed(pack_id: str, source: str, state: str, source_type: str | None = None) -> None:
     conn = _db_conn()
     try:
         conn.execute(
-            "INSERT OR REPLACE INTO installed_packs (pack_id, source, signature_state, installed_at)"
-            " VALUES (?,?,?,?)", (pack_id, source, state, _now()))
+            "INSERT OR REPLACE INTO installed_packs (pack_id, source, source_type, signature_state, installed_at)"
+            " VALUES (?,?,?,?,?)", (pack_id, source, source_type, state, _now()))
         conn.commit()
     finally:
         conn.close()
@@ -166,10 +190,15 @@ def list_installed() -> list:
     conn = _db_conn()
     try:
         rows = conn.execute(
-            "SELECT pack_id, source, signature_state, installed_at"
+            "SELECT pack_id, source, source_type, signature_state, installed_at"
             " FROM installed_packs ORDER BY installed_at").fetchall()
-        return [{"pack_id": r[0], "source": r[1], "signature_state": r[2], "installed_at": r[3]}
-                for r in rows]
+        packs = []
+        for r in rows:
+            pack = {"pack_id": r[0], "source": r[1], "signature_state": r[3], "installed_at": r[4]}
+            if r[2] is not None:
+                pack["source_type"] = r[2]
+            packs.append(pack)
+        return packs
     finally:
         conn.close()
 
@@ -183,7 +212,7 @@ def _reload_registries() -> None:
 
 # ── 安装 / 卸载 ────────────────────────────────────────────────────────
 
-def install(source: str, as_admin: bool = False) -> dict:
+def install(source: str, as_admin: bool = False, source_type: str | None = None) -> dict:
     """从 local 目录 / tarball / git 安装 skill pack 到用户 skills 目录。
 
     流程: staging → 逃逸检查 → 唯一性 → 签名校验(三态+REQUIRE_SIGNED 门控) → 落盘 → 记库 → reload。
@@ -191,6 +220,7 @@ def install(source: str, as_admin: bool = False) -> dict:
     if not as_admin:
         raise PermissionError("仅管理员可安装")
 
+    _resolve_source_type(source, source_type)
     staging = _fetch_to_staging(source)
     try:
         skills = _scan_skills(staging)
@@ -217,10 +247,13 @@ def install(source: str, as_admin: bool = False) -> dict:
 
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         os.rename(staging, dest)
-        _record_installed(pack_id, source, state)
+        _record_installed(pack_id, source, state, source_type)
         _reload_registries()
-        return {"pack_id": pack_id, "signature_state": state,
-                "skills": [os.path.basename(s) for s in skills]}
+        result = {"pack_id": pack_id, "signature_state": state,
+                  "skills": [os.path.basename(s) for s in skills]}
+        if source_type is not None:
+            result["source_type"] = source_type
+        return result
     finally:
         parent = os.path.dirname(staging)
         if parent and os.path.exists(parent):

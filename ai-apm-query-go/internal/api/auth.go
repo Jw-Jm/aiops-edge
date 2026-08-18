@@ -298,7 +298,66 @@ func (h *Handler) RequireRoleForWrite(role string, next http.HandlerFunc) http.H
 	}
 }
 
+// ── Token 撤销（G1 安全加固）──
+// revokedTokens 按原始 JWT 字符串撤销（登出/单 token 失效）；
+// revokedUsers 按用户名撤销（删除/禁用用户后其全部 token 立即失效）。
+// 纯内存实现：进程重启后失效（与 JWT 24h 有效期相比可接受，生产可换 Redis）。
+var (
+	revokedTokens   = map[string]bool{}
+	revokedUsers    = map[string]bool{}
+	revokedTokensMu sync.Mutex
+)
+
+// revokeToken 撤销指定 JWT 字符串（登出场景）。
+func revokeToken(token string) {
+	if token == "" {
+		return
+	}
+	revokedTokensMu.Lock()
+	revokedTokens[token] = true
+	revokedTokensMu.Unlock()
+}
+
+// revokeUser 撤销指定用户名的全部 token（删除/禁用用户后即时失效）。
+func revokeUser(username string) {
+	if username == "" {
+		return
+	}
+	revokedTokensMu.Lock()
+	revokedUsers[username] = true
+	revokedTokensMu.Unlock()
+}
+
+// isTokenRevoked 判断 token 或其用户名是否已被撤销。
+func isTokenRevoked(token, username string) bool {
+	revokedTokensMu.Lock()
+	defer revokedTokensMu.Unlock()
+	if revokedTokens[token] {
+		return true
+	}
+	return revokedUsers[username]
+}
+
+// hasPrivilegedRole 判断请求者是否为 admin 或审批人（approver）。
+// 后端角色词汇为 admin|user，审批人通过 users.is_approver 标记表达（G2 角色门控）。
+func hasPrivilegedRole(r *http.Request) bool {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	username, role, _, ok := validateJWT(token)
+	if !ok {
+		return false
+	}
+	if role == "admin" {
+		return true
+	}
+	if u, _ := (&store.UserDAO{}).GetByUsername(username); u != nil && u.IsApprover {
+		return true
+	}
+	return false
+}
+
 // AuthMiddleware 鉴权中间件：公开端点放行；内部服务（X-Internal-Token）放行；其余必须 JWT。
+// G1 安全加固：JWT 校验通过后，进一步校验 token 未被撤销、用户仍存在且 status==1
+// （删除/禁用用户后其 token 立即失效，不再依赖 24h 过期）。
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -328,7 +387,20 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 		// 其余所有请求必须带合法 JWT
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if _, _, _, ok := validateJWT(token); !ok {
+		username, _, _, ok := validateJWT(token)
+		if !ok {
+			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
+			return
+		}
+		// G1：token 撤销检查（登出/删除/禁用用户后即时失效）
+		if isTokenRevoked(token, username) {
+			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized: token revoked"})
+			return
+		}
+		// G1：用户存在性 + status==1 校验（查库）。MySQL 不可达/用户不存在/被禁用一律 401
+		// （fail-closed：认证后端故障不允许降级放行）。
+		u, err := (&store.UserDAO{}).GetByUsername(username)
+		if err != nil || u == nil || u.Status != 1 {
 			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 			return
 		}

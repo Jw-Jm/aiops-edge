@@ -95,7 +95,7 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
 		DisplayName, Role, Email string
-		Status                   int
+		Status                   *int
 		Password                 string
 		Scope                    string
 		IsApprover               *bool
@@ -105,9 +105,15 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 400, map[string]interface{}{"error": "invalid JSON"})
 		return
 	}
-	status := req.Status
-	if status == 0 {
-		status = 1
+	// G1 修复（S8）：允许 status=0 禁用用户（此前 if status==0 {status=1} 导致永远无法停用）。
+	// 未传 status 时保持原值（部分更新语义）。
+	status := 1
+	if req.Status != nil {
+		status = *req.Status
+		if status != 0 && status != 1 {
+			respondJSON(w, 400, map[string]interface{}{"error": "status must be 0 or 1"})
+			return
+		}
 	}
 	// 未提供的字段保留原值（部分更新）
 	d := &store.UserDAO{}
@@ -122,6 +128,9 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		if req.Email == "" {
 			req.Email = existing.Email
 		}
+		if req.Status == nil {
+			status = existing.Status
+		}
 	}
 	var newHash *string
 	if req.Password != "" {
@@ -134,6 +143,10 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	if err := d.Update(id, req.DisplayName, req.Role, req.Email, status, newHash); err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
+	}
+	// G1：禁用用户后其全部 token 立即失效（撤销该用户名）
+	if status == 0 && existing != nil {
+		revokeUser(existing.Username)
 	}
 	// 可选：更新 scope（数据范围）
 	if bodyScope := getBodyField(body, "scope"); bodyScope != "" {
@@ -187,6 +200,8 @@ func (h *Handler) UserDelete(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	// G1：删除用户后其全部 token 立即失效（撤销该用户名）
+	revokeUser(existing.Username)
 	auditWrite(r, "user.delete", existing.Username, "删除用户")
 	respondJSON(w, 200, map[string]interface{}{"ok": true})
 }
@@ -228,18 +243,19 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, role, scopeClaim, ok := validateJWT(token)
+	username, _, _, ok := validateJWT(token)
 	if !ok {
 		respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 		return
 	}
-	u, _ := (&store.UserDAO{}).GetByUsername(username)
-	if u != nil {
-		respondJSON(w, 200, map[string]interface{}{
-			"username": u.Username, "role": u.Role, "display_name": u.DisplayName, "email": u.Email, "scope": u.Scope,
-		})
+	// G1 修复（S2）：用户不存在/被禁用时返回 401，绝不回退返回 token claims
+	// （否则删除/禁用用户后其 token 仍能通过 /me 获取有效身份信息）。
+	u, err := (&store.UserDAO{}).GetByUsername(username)
+	if err != nil || u == nil || u.Status != 1 {
+		respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 		return
 	}
-	// 降级路径或用户不存在时返回 token 内信息
-	respondJSON(w, 200, map[string]interface{}{"username": username, "role": role, "scope": scopeClaim})
+	respondJSON(w, 200, map[string]interface{}{
+		"username": u.Username, "role": u.Role, "display_name": u.DisplayName, "email": u.Email, "scope": u.Scope,
+	})
 }

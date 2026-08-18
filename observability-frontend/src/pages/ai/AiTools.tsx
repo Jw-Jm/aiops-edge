@@ -1,19 +1,41 @@
 import React, { useEffect, useState } from 'react'
-import { Tabs, Input, Button, Space, Table, Tag, Empty, Spin, Select, Popconfirm, Typography, message } from 'antd'
-import { nl2sqlTranslate, nl2sqlExecute, getMcpTools, listSkills, callMcpTool } from '../../api/client'
+import { Alert, Tabs, Input, Button, Space, Table, Tag, Empty, Spin, Select, Popconfirm, Typography, Modal, message } from 'antd'
+import api, { nl2sqlTranslate, nl2sqlExecute, getMcpTools, listSkills, executeSkill, callMcpTool } from '../../api/client'
 import {
-  installMarketplacePack, listInstalledPacks, uninstallMarketplacePack,
+  listInstalledPacks, uninstallMarketplacePack,
   type InstalledPack, type InstallResult, type SourceType,
 } from '../../api/marketplace'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
 import AppIcon from '../../components/AppIcons'
 import { useUIStore } from '../../store/uiStore'
 
+// B12 修复：MCP 参数按工具输入 schema 声明类型转换（number/boolean），
+// 避免全部以字符串发送导致后端类型校验失败。
+function coerceMcpArgs(args: Record<string, any>, schema: Record<string, any> | undefined): Record<string, any> {
+  const out: Record<string, any> = {}
+  for (const [k, raw] of Object.entries(args)) {
+    const type = schema?.[k]?.type || 'string'
+    const v = String(raw ?? '')
+    if (type === 'number' || type === 'integer') {
+      const n = Number(v)
+      out[k] = isNaN(n) ? v : n
+    } else if (type === 'boolean') {
+      if (v === 'true') out[k] = true
+      else if (v === 'false') out[k] = false
+      else out[k] = v
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
 const AiTools: React.FC = () => {
   const [q, setQ] = useState('')
   const [sql, setSql] = useState('')
   const [sqlId, setSqlId] = useState('')
   const [sqlErr, setSqlErr] = useState('')
+  const [sqlNotice, setSqlNotice] = useState('')
   const [execLoading, setExecLoading] = useState(false)
   const [result, setResult] = useState<{ columns?: string[]; rows?: any[]; count?: number } | null>(null)
   const [skills, setSkills] = useState<any[]>([])
@@ -22,6 +44,9 @@ const AiTools: React.FC = () => {
   const [mcpArgs, setMcpArgs] = useState<Record<string, any>>({})
   const [mcpResult, setMcpResult] = useState('')
   const [mcpLoading, setMcpLoading] = useState(false)
+  // B4: 技能执行结果弹窗
+  const [skillResult, setSkillResult] = useState<{ key: string; name: string; output: string } | null>(null)
+  const [skillExecKey, setSkillExecKey] = useState<string | null>(null)
   const currentClusterId = useUIStore((s) => s.currentClusterId)
   const clusters = useUIStore((s) => s.clusters)
   const scopeLabel = currentClusterId === 'all'
@@ -34,11 +59,13 @@ const AiTools: React.FC = () => {
   }, [])
 
   const translate = () => {
-    setSqlErr(''); setSql(''); setSqlId(''); setResult(null)
+    setSqlErr(''); setSqlNotice(''); setSql(''); setSqlId(''); setResult(null)
     nl2sqlTranslate({ question: q }).then((r) => {
       const d = r.data
       if (d?.error) setSqlErr(d.error)
-      else { setSql(d?.sql || JSON.stringify(d)); setSqlId(d?.id || '') }
+      // B12 修复：响应中无 sql 字段时给出明确错误提示，不再把整个响应体当 SQL 展示
+      else if (d?.sql) { setSql(d.sql); setSqlId(d?.id || ''); setSqlNotice(d?.read_only_notice || '') }
+      else setSqlErr('翻译失败：响应中未包含 SQL 字段，请检查后端 NL2SQL 服务')
     }).catch((e) => setSqlErr(e?.response?.data?.error || '翻译失败'))
   }
 
@@ -73,6 +100,7 @@ const AiTools: React.FC = () => {
                   <Button type="primary" onClick={translate}>翻译 SQL</Button>
                 </Space>
                 {sqlErr && <div style={{ marginTop: 10, color: 'var(--danger)', fontSize: 12 }}>⚠ {sqlErr}</div>}
+                {sqlNotice && <Alert style={{ marginTop: 10 }} type="warning" showIcon message={sqlNotice} />}
                 {sql && (
                   <>
                     <pre style={{ marginTop: 12, background: 'var(--surface-2)', borderRadius: 8, padding: 12, fontSize: 12, whiteSpace: 'pre-wrap', position: 'relative' }}>
@@ -129,7 +157,7 @@ const AiTools: React.FC = () => {
                       <Button type="primary" loading={mcpLoading} onClick={async () => {
                         setMcpLoading(true)
                         try {
-                          const r = await callMcpTool(activeTool.name, mcpArgs)
+                          const r = await callMcpTool(activeTool.name, coerceMcpArgs(mcpArgs, activeTool.parameters))
                           setMcpResult(typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2))
                         } catch (e: any) {
                           setMcpResult(`调用失败: ${e?.response?.data?.error || e?.response?.data?.detail || e?.message || e}`)
@@ -152,7 +180,26 @@ const AiTools: React.FC = () => {
                 <Table rowKey="key" dataSource={skills} size="small" pagination={false}
                   locale={{ emptyText: <Empty description={<span style={{ fontSize: 12, color: 'var(--text-muted)' }}>暂无技能<br />可复用诊断/巡检能力将通过 AI 对话自动调度</span>} /> }}
                   columns={[{ title: '技能', dataIndex: 'name', key: 'name', render: (_: any, r: any) => r.name || r.key },
-                    { title: '描述', dataIndex: 'description', key: 'description', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '-'}</span> }]} />
+                    { title: '描述', dataIndex: 'description', key: 'description', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '-'}</span> },
+                    {
+                      title: '操作', key: 'act', width: 90,
+                      render: (_: unknown, r: any) => {
+                        const key = r.key || r.name
+                        return (
+                          <Button size="small" type="primary" ghost loading={skillExecKey === key}
+                            onClick={async () => {
+                              setSkillExecKey(key)
+                              try {
+                                const res = await executeSkill(key, {})
+                                const out = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
+                                setSkillResult({ key, name: r.name || key, output: out })
+                              } catch (e: any) {
+                                setSkillResult({ key, name: r.name || key, output: `执行失败: ${e?.response?.data?.error || e?.response?.data?.detail || e?.message || e}` })
+                              } finally { setSkillExecKey(null) }
+                            }}>执行</Button>
+                        )
+                      },
+                    }]} />
               </div>
             ),
           },
@@ -162,6 +209,16 @@ const AiTools: React.FC = () => {
           },
         ]}
       />
+
+      {/* B4: 技能执行结果弹窗 */}
+      <Modal title={skillResult ? `技能执行结果 · ${skillResult.name}` : '技能执行结果'}
+        open={!!skillResult} onCancel={() => setSkillResult(null)} footer={null} width={640} destroyOnClose>
+        {skillResult && (
+          <pre style={{ maxHeight: 420, overflow: 'auto', fontSize: 12, background: 'var(--bg-soft)', padding: 12, borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {skillResult.output}
+          </pre>
+        )}
+      </Modal>
     </div>
   )
 }
@@ -190,7 +247,8 @@ const MarketplaceTab: React.FC = () => {
   const onInstall = () => {
     if (!source.trim()) { message.warning('请填写安装来源'); return }
     setInstalling(true); setResult(null)
-    installMarketplacePack(source.trim())
+    // B12 修复：sourceType 参与实际安装请求（后端当前仅消费 source，source_type 为前向兼容字段）
+    api.post('/ai/marketplace/install', { source: source.trim(), source_type: sourceType })
       .then((r) => {
         setResult(r.data)
         message.success('安装成功')

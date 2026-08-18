@@ -3,6 +3,8 @@ from fastapi.testclient import TestClient
 
 def test_final_report_returns_report():
     # 隔离测试：不依赖真实 DB，monkeypatch get_session_state / AuditStore / _llm
+    import os
+    os.environ["INTERNAL_TOKEN"] = "test-internal-token"
     import main as m
     class FakeBrain:
         def get_session_state(self, sid):
@@ -27,7 +29,10 @@ def test_final_report_returns_report():
     # 直接调用内部处理函数更稳妥：用 main.app
     try:
         with TestClient(m.app) as client:
-            r = client.post("/api/v1/ai/final_report", json={"session_id": "sid1", "service": "order-svc"})
+            # G1 认证中间件：需携带 X-Internal-Token（与 INTERNAL_TOKEN 一致）
+            r = client.post("/api/v1/ai/final_report",
+                            json={"session_id": "sid1", "service": "order-svc"},
+                            headers={"X-Internal-Token": "test-internal-token"})
             resp = r
     except Exception as e:
         pytest.skip(f"main.app 不可用: {e}")

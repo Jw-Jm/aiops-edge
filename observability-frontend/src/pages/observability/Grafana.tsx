@@ -17,13 +17,22 @@ const Grafana: React.FC = () => {
   const [searched, setSearched] = useState(false)
   const [err, setErr] = useState('')
   const [viewing, setViewing] = useState<GrafanaDashboardItem | null>(null)
+  const [iframeLoading, setIframeLoading] = useState(false)
+  const [iframeError, setIframeError] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const iframeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // 健康检查（只做一次）
+  // 健康检查：30s 轮询，Grafana 后启动可自动恢复；卸载时清理
   useEffect(() => {
-    getGrafanaHealth()
-      .then((r) => { setHealth(r.data); setHealthOk(true) })
-      .catch(() => { setHealthOk(false); setHealth(null) })
+    const checkHealth = () => {
+      getGrafanaHealth()
+        .then((r) => { setHealth(r.data); setHealthOk(true) })
+        .catch(() => { setHealthOk(false); setHealth(null) })
+    }
+    checkHealth()
+    const interval = setInterval(checkHealth, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   // 搜索：防抖 400ms
@@ -47,6 +56,20 @@ const Grafana: React.FC = () => {
     }, 400)
     return () => { if (timer.current) clearTimeout(timer.current) }
   }, [q])
+
+  // iframe 加载状态：进入仪表盘时置 loading，onLoad/onError 清除；
+  // 兜底超时（20s）判定加载失败（部分浏览器 iframe onError 不触发）
+  useEffect(() => {
+    if (!viewing) return
+    setIframeLoading(true)
+    setIframeError(false)
+    if (iframeTimer.current) clearTimeout(iframeTimer.current)
+    iframeTimer.current = setTimeout(() => {
+      setIframeLoading(false)
+      setIframeError(true)
+    }, 20000)
+    return () => { if (iframeTimer.current) clearTimeout(iframeTimer.current) }
+  }, [viewing, reloadTick])
 
   const deepLink = (d: GrafanaDashboardItem) =>
     `${IFRAME_BASE}${d.uid}?theme=light`
@@ -82,9 +105,27 @@ const Grafana: React.FC = () => {
             </div>
           </div>
           <div style={{ position: 'relative', height: 'calc(100vh - 300px)', minHeight: 420 }}>
+            {iframeLoading && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.65)', zIndex: 2 }}>
+                <Spin tip="仪表盘加载中…" />
+              </div>
+            )}
+            {iframeError && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'var(--bg)', zIndex: 2 }}>
+                <Empty text="仪表盘加载失败" hint="Grafana 可能未就绪，可稍后重试" />
+                <Button size="small" onClick={() => setReloadTick((t) => t + 1)}>重试</Button>
+              </div>
+            )}
+            {/* sandbox 取舍说明：iframe src 为同源代理（/grafana/d/...），Grafana 需同源加载其静态资源，
+                故保留 allow-same-origin（最宽松组合，会削弱隔离）。若后续 Grafana 迁移到独立域名，
+                应收紧为 sandbox="allow-scripts" 并配合 CSP frame-ancestors 隔离。 */}
             <iframe
+              key={`${viewing.uid}-${reloadTick}`}
               title={`grafana-${viewing.uid}`}
               src={`${IFRAME_BASE}${viewing.uid}?theme=light&kiosk`}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              onLoad={() => { if (iframeTimer.current) clearTimeout(iframeTimer.current); setIframeLoading(false); setIframeError(false) }}
+              onError={() => { if (iframeTimer.current) clearTimeout(iframeTimer.current); setIframeError(true); setIframeLoading(false) }}
               style={{ width: '100%', height: '100%', border: 'none' }} />
           </div>
           <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--text-muted)' }}>
@@ -100,8 +141,16 @@ const Grafana: React.FC = () => {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {dashboards.map((d, i) => (
-            <div key={d.uid || i} className="card" style={{ marginBottom: 0, cursor: 'pointer' }}
-              onClick={() => setViewing(d)}>
+            <div key={d.uid || i} className="card" role="button" tabIndex={0}
+              aria-label={`浏览仪表盘 ${d.title || d.uid}`}
+              style={{ marginBottom: 0, cursor: 'pointer' }}
+              onClick={() => setViewing(d)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setViewing(d)
+                }
+              }}>
               <div className="card__body">
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                   <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

@@ -31,6 +31,7 @@ class RunResult:
     context: RunContext = field(default_factory=RunContext)
     node_results: dict = field(default_factory=dict)
     error: str = ""
+    run: dict | None = None
 
 
 def resolve_config(config: dict, ctx: RunContext) -> dict:

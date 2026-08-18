@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -24,8 +25,12 @@ func (h *Handler) buildQueryRangeURL(query, start, end, step string) string {
 	return u.String()
 }
 
-// maxVMPayload 限制 VM 代理响应体上限（10MB），防止超大响应占内存（安全加固）。
-const maxVMPayload = 10 << 20
+// maxVMPayload 限制 VM 代理响应体上限（20MB），防止超大响应占内存（安全加固）。
+const maxVMPayload = 20 << 20
+
+// maxQueryRangePoints 限制 query_range 单次查询的数据点上限（G4/S14 修复），
+// 防止 (end-start)/step 过小导致 VM 返回海量数据点。
+const maxQueryRangePoints = 10000
 
 // ---- /metrics/query PromQL 透传路径简单限流（安全加固，参照 auth.go 登录限流风格）----
 // metricsQueryAttempts 按客户端 IP 计数：60s 窗口内最多 metricsQueryLimit 次，
@@ -122,6 +127,7 @@ func (h *Handler) proxyVMInstantQuery(w http.ResponseWriter, r *http.Request, qu
 
 // QueryRange 处理 GET /api/v1/metrics/query_range，代理 VictoriaMetrics /api/v1/query_range。
 // 参数：query=PromQL 表达式, start/end/step（Prometheus 兼容时间格式）。
+// G4 安全加固（S14）：按 IP 限流 + 数据点上限 + 响应体大小上限，防止透传端点被滥用。
 func (h *Handler) QueryRange(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	query := q.Get("query")
@@ -134,6 +140,18 @@ func (h *Handler) QueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.vmURL == "" {
 		respondError(w, http.StatusServiceUnavailable, "victoria-metrics not configured")
+		return
+	}
+	// G4：按客户端 IP 限流（与 instant query 共用计数，60s 窗口 metricsQueryLimit 次）
+	if !allowMetricsQuery(clientIP(r)) {
+		respondError(w, http.StatusTooManyRequests, "metrics query rate limit exceeded")
+		return
+	}
+	// G4：数据点上限——(end-start)/step 超过 maxQueryRangePoints 直接拒绝，
+	// 要求增大 step 或缩小时间范围，防止 VM 返回海量数据点。
+	if pts, ok := queryRangePoints(start, end, step); ok && pts > maxQueryRangePoints {
+		respondError(w, http.StatusBadRequest,
+			fmt.Sprintf("query_range too large: %d data points exceeds max %d (increase step or reduce time range)", pts, maxQueryRangePoints))
 		return
 	}
 	target := h.buildQueryRangeURL(query, start, end, step)
@@ -149,10 +167,44 @@ func (h *Handler) QueryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	// G4：响应体大小上限（20MB），超限返回 502。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxVMPayload+1))
+	if err != nil {
+		respondError(w, http.StatusBadGateway, "victoria-metrics read error: "+err.Error())
+		return
+	}
+	if len(body) > maxVMPayload {
+		respondError(w, http.StatusBadGateway, "victoria-metrics response too large (>20MB)")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+// queryRangePoints 估算 query_range 的数据点数量。
+// start/end 支持 Unix 秒（数字）或 RFC3339 时间串；解析失败返回 ok=false（跳过检查）。
+func queryRangePoints(start, end, step string) (int, bool) {
+	toUnix := func(s string) (float64, bool) {
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f, true
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return float64(t.Unix()), true
+		}
+		return 0, false
+	}
+	sv, ok1 := toUnix(start)
+	ev, ok2 := toUnix(end)
+	st, ok3 := toUnix(step)
+	if !ok1 || !ok2 || !ok3 || st <= 0 {
+		return 0, false
+	}
+	pts := int((ev - sv) / st)
+	if pts < 0 {
+		pts = -pts
+	}
+	return pts, true
 }
 
 // vmRangeQuery 调 VM /api/v1/query_range 返回历史数值序列（供 zscore/MAD / SLO 烧毁率）。

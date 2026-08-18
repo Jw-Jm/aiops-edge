@@ -5,6 +5,7 @@ import time
 import re
 import uuid
 import asyncio
+import secrets
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header
@@ -35,6 +36,11 @@ if os.environ.get("LLM_MOCK", "").lower() in ("true", "1", "yes"):
 #  APScheduler — 定时异常扫描（每 5 分钟，只检测+持久化，不触发 LLM）
 # ═══════════════════════════════════════════════════════════════
 scheduler = AsyncIOScheduler()
+
+# 安全修复(G7): 后台 BackgroundScheduler 句柄（flow cron / kg 重建），
+# 优雅关闭时一并停止，避免进程退出后线程泄漏。
+_flow_sched = None
+_kg_sched = None
 
 
 @asynccontextmanager
@@ -95,6 +101,7 @@ async def lifespan(app: FastAPI):
         print(f"[startup] k8s tools register error: {e}", flush=True)
     # A2: workflow cron 触发器调度（独立 BackgroundScheduler，30s 对齐 job）
     try:
+        global _flow_sched
         from apscheduler.schedulers.background import BackgroundScheduler as _BgSched
         from flow_engine.trigger_scheduler import CronTriggerManager
         from flow_api import get_flow_service as _get_flow_service
@@ -112,6 +119,7 @@ async def lifespan(app: FastAPI):
         print(f"[startup] flow cron scheduler error: {e}", flush=True)
     # A3: 知识图谱定时重建（默认 60s；KG_BUILD_INTERVAL_SECONDS 可配，0 关闭）
     try:
+        global _kg_sched
         from apscheduler.schedulers.background import BackgroundScheduler as _KgSched
         from kg_graph import build_all as _kg_build_all
         _kg_interval = int(os.environ.get("KG_BUILD_INTERVAL_SECONDS", "60"))
@@ -168,6 +176,13 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown(wait=False)
     except Exception:  # noqa: BLE001
         pass
+    # 安全修复(G7): 一并停止 flow cron / kg 重建 BackgroundScheduler，避免线程泄漏
+    for _sched in (_flow_sched, _kg_sched):
+        if _sched is not None:
+            try:
+                _sched.shutdown(wait=False)
+            except Exception:  # noqa: BLE001
+                pass
     # AsyncSqliteSaver 连接关闭（如已初始化，避免进程退出资源泄漏）
     try:
         from orchestrator import brain
@@ -180,7 +195,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AIOps Orchestrator", version="5.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# 安全修复(G2): CORS 从全开 `*` 收紧为前端来源白名单（env CORS_ORIGINS，逗号分隔）。
+# 默认 http://localhost:30253（本地前端 dev server）；生产部署前后端同源时配置为实际来源。
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:30253").split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"])
 shell_policy = ShellPolicy()
 app.include_router(flow_router)
 app.include_router(kg_router)
@@ -288,32 +306,52 @@ def _fetch_saved_llm_config() -> dict | None:
 
 
 def _parse_llm_config(request: Request):
-    """提取 LLM 配置：优先请求头 (ProxyAI headers)，否则回退到数据库已保存配置。"""
-    h = request.headers
-    if h.get("X-LLM-API-Key"):
-        provider = h.get("X-LLM-Provider", "openai")
-        norm, backend = _normalize_provider(provider)
-        _get_brain().set_llm_config({
-            "api_key": h["X-LLM-API-Key"],
-            "model": h.get("X-LLM-Model", "gpt-4o"),
-            "base_url": h.get("X-LLM-Base-URL", "https://api.openai.com/v1"),
-            "provider": norm,
-            "backend": backend,
-        })
-    else:
-        # 无请求头 → 回退到数据库已保存的启用配置
-        # P1-4: 拉取失败(None)时**不清空**现有配置，保留 holder 上次有效值——
-        # 避免 NL2SQL 等端点因一次拉取抖动（网络/query-api 不可用）丢 key 而静默降级。
-        saved = _fetch_saved_llm_config()
-        if saved is not None:
-            _get_brain().set_llm_config(saved)
+    """提取 LLM 配置：仅从服务端配置（DB/环境变量）读取，禁止请求头覆盖。
+
+    安全修复(G3): 移除 X-LLM-Base-URL / X-LLM-API-Key 请求头覆盖——攻击者可借
+    X-LLM-Base-URL 指向内网地址触发 SSRF + 任意 LLM 调用（成本滥用）。LLM 配置
+    必须来自服务端设置（query-api 已保存配置，经内部接口拉取）。前端如需测试
+    自定义 LLM 配置，必须走 admin 门控的设置端点，而非请求头。
+    """
+    # 拉取失败(None)时**不清空**现有配置，保留 holder 上次有效值——
+    # 避免 NL2SQL 等端点因一次拉取抖动（网络/query-api 不可用）丢 key 而静默降级。
+    saved = _fetch_saved_llm_config()
+    if saved is not None:
+        _get_brain().set_llm_config(saved)
 
 
 # ═══════════════════════════════════════════════════════════════
 #  Rate Limiter (in-memory fallback, 100 req/min per IP)
+#  安全修复(G6): ① TTL 清理防内存无界增长；② LLM 重端点单独更严限流（20 req/min/IP）。
 # ═══════════════════════════════════════════════════════════════
 
 _rate_limit_store: dict[str, list] = defaultdict(list)
+_llm_rate_limit_store: dict[str, list] = defaultdict(list)
+_RATE_LIMIT_PER_MIN = int(os.environ.get("RATE_LIMIT_PER_MIN", "100"))
+_LLM_RATE_LIMIT_PER_MIN = int(os.environ.get("LLM_RATE_LIMIT_PER_MIN", "20"))
+_RATE_WINDOW = 60  # 秒
+_RATE_PRUNE_AGE = 600  # 秒：超过 10 分钟未活动的 IP 条目被清理
+
+
+def _prune_rate_store(store: dict, now: float):
+    """TTL 清理：删除超过 _RATE_PRUNE_AGE 未活动的 IP 条目，防止内存无界增长。
+    仅在 store 规模较大时全量扫描，避免每请求 O(n) 开销。"""
+    if len(store) < 1000:
+        return
+    stale = [ip for ip, ts in store.items() if not ts or now - ts[-1] > _RATE_PRUNE_AGE]
+    for ip in stale:
+        del store[ip]
+
+
+def _is_llm_heavy_path(path: str) -> bool:
+    """LLM 重端点：/ai/chat、/ops/rca/deep、/ai/nl2sql/translate、/ops/tasks/{tid}/run。"""
+    if (path.startswith("/api/v1/ai/chat")
+            or path.startswith("/api/v1/ops/rca/deep")
+            or path.startswith("/api/v1/ai/nl2sql/translate")):
+        return True
+    if path.startswith("/api/v1/ops/tasks/") and path.endswith("/run"):
+        return True
+    return False
 
 
 @app.middleware("http")
@@ -324,12 +362,61 @@ async def rate_limit_middleware(request: Request, call_next):
 
     client_ip = request.client.host if request.client else "unknown"
     now = time.time()
-    window = [t for t in _rate_limit_store.get(client_ip, []) if now - t < 60]
-    if len(window) >= 100:
-        return JSONResponse({"error": "rate limit exceeded (100 req/min)"}, status_code=429)
+    _prune_rate_store(_rate_limit_store, now)
+    _prune_rate_store(_llm_rate_limit_store, now)
+
+    # LLM 重端点：更严限流（默认 20 req/min/IP），独立计数
+    if _is_llm_heavy_path(request.url.path):
+        window = [t for t in _llm_rate_limit_store.get(client_ip, []) if now - t < _RATE_WINDOW]
+        if len(window) >= _LLM_RATE_LIMIT_PER_MIN:
+            return JSONResponse(
+                {"error": f"rate limit exceeded ({_LLM_RATE_LIMIT_PER_MIN} req/min for LLM endpoints)"},
+                status_code=429)
+        window.append(now)
+        _llm_rate_limit_store[client_ip] = window
+        return await call_next(request)
+
+    window = [t for t in _rate_limit_store.get(client_ip, []) if now - t < _RATE_WINDOW]
+    if len(window) >= _RATE_LIMIT_PER_MIN:
+        return JSONResponse({"error": f"rate limit exceeded ({_RATE_LIMIT_PER_MIN} req/min)"}, status_code=429)
 
     window.append(now)
     _rate_limit_store[client_ip] = window
+    return await call_next(request)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  认证中间件 (G1) — 纵深防御：不再仅依赖 query-api 代理信任边界。
+#  所有端点默认要求 X-Internal-Token 或 Authorization: Bearer <INTERNAL_TOKEN>，
+#  仅显式白名单放行（健康检查/指标/内部采集上报）。直连 orchestrator 无 token 一律 401。
+# ═══════════════════════════════════════════════════════════════
+
+# 白名单：健康检查、Prometheus 指标、ipmi-exporter 直接上报（该采集器不经代理、无法携带 token）
+_AUTH_ALLOWLIST = ("/health", "/api/v1/health", "/metrics", "/api/v1/ipmi/ingest")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if any(path.startswith(p) for p in _AUTH_ALLOWLIST):
+        return await call_next(request)
+    # CORS 预检请求（OPTIONS）不带自定义头，放行交由 CORSMiddleware 处理
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    expected = os.environ.get("INTERNAL_TOKEN", "")
+    if not expected:
+        # fail-closed：未配置内部 token 时拒绝所有非白名单请求，避免"无 token 即全开"
+        return JSONResponse({"error": "authentication required"}, status_code=401)
+
+    got = ""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        got = auth[len("Bearer "):].strip()
+    if not got:
+        got = request.headers.get("X-Internal-Token", "")
+    if not got or not secrets.compare_digest(got, expected):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     return await call_next(request)
 
 
@@ -356,6 +443,7 @@ async def ai_chat(req: ChatRequest, request: Request):
 
         def _run_stream():
             async def _astream():
+                streamed_events = []
                 async for event in _get_brain().stream_sync(
                         req.intent, req.service or "", req.message, thread_id,
                         mode="dual" if req.dual_agent else "chat",
@@ -365,16 +453,14 @@ async def ai_chat(req: ChatRequest, request: Request):
                     if event.get("type") == "suggestion":
                         event["thread_id"] = thread_id
                         event["exec_context"] = req.exec_result
+                    streamed_events.append(event)
+                    if event.get("type") == "done":
+                        _persist_streamed_chat_session(
+                            thread_id, req.intent, req.service or "", req.message, streamed_events)
                     event_queue.put(event)
             try:
                 asyncio.run(_astream())
                 event_queue.put(None)  # sentinel: done
-                # Issue4: 会话完成后更新 session_store（提供 updated_at 供历史会话按时间倒序）
-                try:
-                    from session_store import session_store
-                    session_store.save(thread_id, req.intent, req.service or "", [])
-                except Exception:
-                    pass
             except Exception as e:
                 event_queue.put({"type": "error", "text": str(e)[:200]})
                 event_queue.put(None)
@@ -538,8 +624,9 @@ async def marketplace_install(request: Request, body: dict = None):
     _require_admin(request)
     import marketplace
     src = (body or {}).get("source", "")
+    source_type = (body or {}).get("source_type")
     try:
-        result = marketplace.install(src, as_admin=True)
+        result = marketplace.install(src, as_admin=True, source_type=source_type)
         try:
             _audit_log("marketplace", "install", _audit_operator(request),
                        result["pack_id"], src, "ok")
@@ -701,13 +788,16 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
     if not script:
         raise HTTPException(400, "script is required")
     if not req.approved:
-        return {"thread_id": req.thread_id, "approved": False, "exec_result": "已驳回，未执行"}
+        exec_result = "已驳回，未执行"
+        _persist_execution_result(req, exec_result)
+        return {"thread_id": req.thread_id, "approved": False, "exec_result": exec_result}
     try:
         exec_result = _get_brain().execute_suggestion(
             req.service or "", script, req.context or "", task_id=req.thread_id or "manual")
     except Exception as e:
-        return {"thread_id": req.thread_id, "approved": True,
-                "exec_result": f"执行失败: {e}", "error": True}
+        exec_result = f"执行失败: {e}"
+        _persist_execution_result(req, exec_result)
+        return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result, "error": True}
     # 审计 (P1-2): task_id=真实会话ID(无则 "manual"), operator=当前用户/角色, target=服务名
     try:
         _audit_log(req.thread_id or "manual", "approve",
@@ -716,6 +806,7 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
                    {"source": "ai_chat"})
     except Exception:
         pass
+    _persist_execution_result(req, exec_result)
     return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result}
 
 
@@ -815,18 +906,160 @@ async def get_session(sid: str):
     # 不再用 graph.get_state()（AsyncSqliteSaver 主线程同步调用会抛 InvalidStateError /
     # 跨 loop 抛 RuntimeError → HTTP 500 → 前端历史会话点击无反应）。
     vals = _get_brain().get_session_state(sid)
-    if vals:
-        msgs = []
-        if vals.get("user_message"):
-            msgs.append({"role": "user", "content": vals["user_message"]})
-        if vals.get("final_response"):
-            msgs.append({"role": "assistant", "content": vals["final_response"]})
+    persisted = _load_persisted_session(sid)
+    if vals or persisted:
+        values = vals or {}
+        sidecar_messages = (persisted or {}).get("messages")
+        checkpoint_messages = values.get("messages")
+        stored_messages = sidecar_messages if _has_aichat_messages(sidecar_messages) else checkpoint_messages
+        msgs = _normalize_session_messages(sid, stored_messages, values)
+        final_response = values.get("final_response", "")
+        if not final_response:
+            final_response = next(
+                (message.get("content", "") for message in reversed(msgs)
+                 if message.get("role") == "assistant" and not message.get("kind")), "")
         return {
-            "session_id": sid, "intent": vals.get("intent", ""),
-            "service": vals.get("service", ""), "messages": msgs,
-            "final_response": vals.get("final_response", ""),
+            "session_id": sid,
+            "intent": values.get("intent", "") or (persisted or {}).get("intent", ""),
+            "service": values.get("service", "") or (persisted or {}).get("service", ""),
+            "messages": msgs, "final_response": final_response,
         }
     raise HTTPException(404, "session not found")
+
+
+def _session_messages_from_checkpoint(session_id: str, values: dict) -> list[dict]:
+    """Map persisted graph state to the message schema consumed by AiChat.
+
+    Graph checkpoints predate the chat transcript and keep plan/risk/execution
+    details as state fields. Preserve those fields directly instead of trying
+    to extract them from the final report prose.
+    """
+    messages = []
+    service = values.get("service", "")
+    if values.get("user_message"):
+        messages.append({"role": "user", "content": values["user_message"]})
+    if values.get("final_response"):
+        messages.append({"role": "assistant", "content": values["final_response"]})
+
+    plan = values.get("plan", "")
+    script = values.get("script", "")
+    if plan or script:
+        messages.append({
+            "role": "assistant", "content": "", "kind": "suggestion",
+            "plan": plan, "script": script, "threadId": session_id,
+            "riskScore": values.get("risk_score", 0),
+            "riskReason": values.get("risk_reason", ""), "service": service,
+        })
+
+    execution_result = values.get("execute_output") or values.get("exec_context")
+    if execution_result:
+        messages.append({
+            "role": "assistant", "content": execution_result, "kind": "execresult",
+            "script": script, "threadId": session_id, "service": service,
+        })
+    return messages
+
+
+def _is_aichat_message(message) -> bool:
+    return isinstance(message, dict) and message.get("role") in {"user", "assistant"}
+
+
+def _has_aichat_messages(messages) -> bool:
+    return isinstance(messages, list) and any(_is_aichat_message(message) for message in messages)
+
+
+def _normalize_session_messages(session_id: str, messages, values: dict) -> list[dict]:
+    """Keep valid AiChat cards from mixed LangGraph logs and fill missing state data."""
+    normalized = [message for message in (messages or []) if _is_aichat_message(message)]
+    fallback = _session_messages_from_checkpoint(session_id, values)
+    if not normalized:
+        return fallback
+
+    has_user = any(message.get("role") == "user" for message in normalized)
+    has_text = any(message.get("role") == "assistant" and not message.get("kind") for message in normalized)
+    has_suggestion = any(message.get("kind") == "suggestion" for message in normalized)
+    has_execution = any(message.get("kind") == "execresult" for message in normalized)
+    for message in fallback:
+        kind = message.get("kind")
+        if message.get("role") == "user" and not has_user:
+            normalized.append(message)
+        elif message.get("role") == "assistant" and not kind and not has_text:
+            normalized.append(message)
+        elif kind == "suggestion" and not has_suggestion and not has_execution:
+            normalized.append(message)
+        elif kind == "execresult" and not has_execution:
+            normalized.append(message)
+    return normalized
+
+
+def _load_persisted_session(session_id: str) -> dict | None:
+    try:
+        from session_store import session_store
+        return session_store.load(session_id)
+    except Exception:
+        return None
+
+
+def _persist_streamed_chat_session(thread_id: str, intent: str, service: str,
+                                   user_message: str, events: list[dict]) -> None:
+    """Persist the same message cards emitted through the chat SSE stream."""
+    try:
+        from session_store import session_store
+        existing = session_store.load(thread_id) or {}
+        messages = list(existing.get("messages") or [])
+        if user_message:
+            messages.append({"role": "user", "content": user_message})
+
+        suggestions = []
+        for event in events:
+            if event.get("type") == "suggestion":
+                suggestions.append({
+                    "role": "assistant", "content": "", "kind": "suggestion",
+                    "plan": event.get("plan", ""), "script": event.get("script", ""),
+                    "threadId": event.get("thread_id") or event.get("task_id") or thread_id,
+                    "riskScore": event.get("risk_score", event.get("riskScore", 0)),
+                    "riskReason": event.get("risk_reason", event.get("riskReason", "")),
+                    "service": service,
+                })
+            elif event.get("type") == "done" and event.get("text"):
+                messages.append({"role": "assistant", "content": event["text"]})
+        messages.extend(suggestions)
+        session_store.save(thread_id, intent or existing.get("intent", ""),
+                           service or existing.get("service", ""), messages)
+    except Exception as exc:
+        print(f"[chat] session transcript persistence failed: {exc}")
+
+
+def _persist_execution_result(req: SuggestionRequest, exec_result: str) -> None:
+    """Replace the persisted suggestion card with its execution-result state."""
+    if not req.thread_id:
+        return
+    try:
+        from session_store import session_store
+        session = session_store.load(req.thread_id)
+        if not session:
+            return
+        messages = list(session.get("messages") or [])
+        content = f"✅ 已执行命令：\n{req.script}\n\n执行结果：\n{exec_result}"
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if (message.get("kind") == "suggestion"
+                    and message.get("threadId") == req.thread_id
+                    and message.get("script") == req.script):
+                updated = dict(message)
+                updated.update(kind="execresult", content=content)
+                messages[index] = updated
+                break
+        else:
+            messages.append({
+                "role": "assistant", "content": content, "kind": "execresult",
+                "plan": req.context or "", "script": req.script,
+                "threadId": req.thread_id, "service": req.service or "",
+            })
+        session_store.save(req.thread_id, session.get("intent", ""),
+                           req.service or session.get("service", ""), messages)
+    except Exception as exc:
+        print(f"[chat] execution transcript persistence failed: {exc}")
 
 
 @app.delete("/api/v1/ai/session/{sid}")
@@ -1843,6 +2076,26 @@ def _task_service(task: dict) -> str:
     return _extract_service_from_text(msg)
 
 
+# 安全修复(G4): 报告 task_id/session_id 严格格式校验，防路径穿越（`..%2F` 越界读写）。
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_REPORT_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _valid_task_id(task_id: str) -> bool:
+    return bool(task_id) and bool(_TASK_ID_RE.match(task_id))
+
+
+def _safe_report_path(data_dir: str, task_id: str, filename: str) -> str | None:
+    """构造 reports 目录内的安全路径：realpath 解析后必须位于 reports 目录内，否则返回 None。"""
+    if not _valid_task_id(task_id) or not _REPORT_FILENAME_RE.match(filename or ""):
+        return None
+    reports_dir = os.path.realpath(os.path.join(data_dir, "reports"))
+    local_path = os.path.realpath(os.path.join(reports_dir, task_id, filename))
+    if not local_path.startswith(reports_dir + os.sep):
+        return None
+    return local_path
+
+
 def _upload_report(task_id: str, content: str, filename: str = "report.md", service: str = "", question: str = ""):
     """持久化任务报告：markdown 正文写入 MySQL reports 表 (content 列, 含元数据)，
     并落盘 AIOPS_DATA_DIR/reports/{task_id}/{filename} 作本地备份（替代 MinIO 对象存储）。
@@ -1852,10 +2105,13 @@ def _upload_report(task_id: str, content: str, filename: str = "report.md", serv
     try:
         import os as _os
         data_dir = _os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
-        local_path = _os.path.join(data_dir, "reports", task_id, filename)
-        _os.makedirs(_os.path.dirname(local_path), exist_ok=True)
-        with open(local_path, "w", encoding="utf-8") as f:
-            f.write(content or "")
+        local_path = _safe_report_path(data_dir, task_id, filename)
+        if local_path is None:
+            print(f"[reports] 跳过本地落盘: 非法 task_id/filename {task_id!r}/{filename!r}（防路径穿越）")
+        else:
+            _os.makedirs(_os.path.dirname(local_path), exist_ok=True)
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write(content or "")
     except Exception as e:
         print(f"[reports] 本地落盘失败: {e}")
     # MySQL reports 表持久化（正文在 content 列，ReportStore 已兼容 llm_mode 缺列降级）
@@ -2051,7 +2307,12 @@ async def inspection_report_trend(days: int = 14, report_type: str = "inspection
 @app.get("/api/v1/ops/reports/{task_id}/download")
 async def download_report(task_id: str):
     """Download task report. 优先 MySQL reports 表 content 列; 降级读本地
-    AIOPS_DATA_DIR/reports/{task_id}/report.md (替代 MinIO 对象存储)。"""
+    AIOPS_DATA_DIR/reports/{task_id}/report.md (替代 MinIO 对象存储)。
+
+    安全修复(G4): task_id 严格格式校验 + realpath 前缀校验，防 `..%2F` 路径穿越。
+    """
+    if not _valid_task_id(task_id):
+        raise HTTPException(400, "invalid task_id")
     from fastapi.responses import PlainTextResponse
     content = ""
     try:
@@ -2065,7 +2326,9 @@ async def download_report(task_id: str):
         # 降级: 本地文件
         import os as _os
         data_dir = _os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
-        local_path = _os.path.join(data_dir, "reports", task_id, "report.md")
+        local_path = _safe_report_path(data_dir, task_id, "report.md")
+        if local_path is None:
+            raise HTTPException(400, "invalid task_id")
         try:
             with open(local_path, encoding="utf-8") as f:
                 content = f.read()
@@ -2506,7 +2769,8 @@ async def toggle_rule(rule_key: str):
 #  NL→ClickHouse SQL（生成-确认-执行 + 安全护栏）
 # ═══════════════════════════════════════════════════════════════
 
-from nl2sql import validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore, new_item
+from nl2sql import (validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore,
+                    new_item, is_destructive_request, READ_ONLY_NOTICE)
 from shell_ws import shell_ws
 import hardware_tools  # noqa: F401  注册 IPMI/部件查询工具
 
@@ -2589,8 +2853,8 @@ async def nl2sql_translate(body: dict = None, request: Request = None):
     if not question:
         raise HTTPException(400, "question is required")
 
-    # P1-4: 与其他端点一致，从请求头解析 LLM 配置（优先 X-LLM-API-Key / 已保存配置），
-    # 不再依赖 brain.llm_config 残留状态（密钥持有者生命周期由 set_llm_config 统一管理）。
+    # P1-4: 与其他端点一致，从服务端配置解析 LLM 配置（G3 安全修复后不再读取请求头，
+    # 仅从 DB/环境变量读取；密钥持有者生命周期由 set_llm_config 统一管理）。
     if request is not None:
         _parse_llm_config(request)
 
@@ -2604,6 +2868,7 @@ async def nl2sql_translate(body: dict = None, request: Request = None):
         sql_raw = ""
     sql_raw = extract_sql_from_markdown(sql_raw or "")
     used_fallback = False
+    read_only_notice = READ_ONLY_NOTICE if is_destructive_request(question) else ""
     if not validate_sql(sql_raw):
         # LLM 不可用 / mock 输出非 SQL / 校验不过：回退到确定性 SQL，保证功能可用
         sql_raw = _fallback_nl2sql(question)
@@ -2619,11 +2884,13 @@ async def nl2sql_translate(body: dict = None, request: Request = None):
         explanation = f"{question} (时间窗口: {value}{label})"
     else:
         explanation = question
+    if read_only_notice:
+        explanation = f"{read_only_notice} 原请求：{question}"
     item = new_item(sql, explanation)
     sid = _nl2sql_store.save(item)
     # P1-4: 显式返回 used_fallback，前端可据此提示"AI 降级为模板 SQL"
     return {"id": sid, "sql": sql, "explanation": explanation, "pending": True,
-            "used_fallback": used_fallback}
+            "used_fallback": used_fallback, "read_only_notice": read_only_notice}
 
 
 @app.post("/api/v1/ai/nl2sql/{sid}/execute")
@@ -2664,8 +2931,19 @@ async def nl2sql_get(sid: str):
 
 @app.get("/api/v1/ops/export/chat/{sid}")
 async def export_chat(sid: str):
-    """Export AI Chat session as Markdown file."""
-    state = _get_brain().graph.get_state({"configurable": {"thread_id": sid}})
+    """Export AI Chat session as Markdown file.
+
+    安全修复(G7): ① sid 严格格式校验（防路径穿越）；② graph.get_state 包 try/except
+    返回 404（langgraph 对不存在的 thread 抛异常，原实现会 500）；③ 同步 get_state
+    丢线程池执行，避免阻塞 event loop。
+    """
+    if not _valid_task_id(sid):
+        raise HTTPException(400, "invalid session id")
+    try:
+        state = await asyncio.to_thread(
+            _get_brain().graph.get_state, {"configurable": {"thread_id": sid}})
+    except Exception:
+        raise HTTPException(404, "session not found")
     if not state or not state.values:
         raise HTTPException(404, "session not found")
     vals = state.values
@@ -2917,6 +3195,10 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     # 彻底解决并发耗尽: 使用多个 worker (1个主 + gunicorn风格)
     # health probe 用独立线程池的 uvicorn 配置
+    # 安全修复(G1): 保持 0.0.0.0 绑定——k8s Service 路由依赖 pod IP 可达，且
+    # ipmi-exporter 直接经 Service 上报 /api/v1/ipmi/ingest。认证中间件
+    # (auth_middleware) 是强制认证点：除白名单外所有端点要求 X-Internal-Token /
+    # Bearer INTERNAL_TOKEN，直连无 token 一律 401（纵深防御，不再仅依赖代理信任边界）。
     uvicorn.run(app, host="0.0.0.0", port=port,
                 timeout_keep_alive=300,
                 limit_concurrency=50,  # 恢复并发限制但提高上限

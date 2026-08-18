@@ -117,13 +117,6 @@ body {
 
 .topbar { display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 24px; background: var(--surface-1);
   border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; }
-.search-trigger { display: flex; align-items: center; gap: 8px; width: 320px; padding: 7px 12px; border-radius: 8px;
-  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); font-size: 13px; cursor: pointer;
-  transition: border-color var(--t-fast), box-shadow var(--t-fast); }
-.search-trigger:hover { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-ring); }
-.search-trigger svg { width: 15px; height: 15px; }
-.search-trigger .kbd { margin-left: auto; font-size: 11px; padding: 1px 6px; border-radius: 5px;
-  background: var(--surface-3); border: 1px solid var(--border); color: var(--text-muted); }
 .topbar__spacer { flex: 1; }
 .env-switch { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 12px;
   background: var(--success-soft); color: var(--success); font-weight: 500; }
@@ -142,8 +135,6 @@ body {
 /* 顶栏窄屏自适应：窄屏下收起次要元素，避免横向溢出（修复 /slo /infra/k8s 在 800px 溢出 5-7px） */
 @media (max-width: 960px) {
   .topbar { gap: 10px; padding: 0 16px; }
-  .search-trigger { width: auto; flex: 0 1 220px; min-width: 120px; }
-  .search-trigger .kbd { display: none; }
   .topbar__clock { display: none; }
   .topbar__label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .user-chip .text-sm { display: none; }
@@ -151,7 +142,6 @@ body {
 }
 @media (max-width: 800px) {
   .topbar { gap: 8px; padding: 0 12px; }
-  .search-trigger { flex-basis: 160px; min-width: 100px; }
   .topbar__label { display: none; }
 }
 

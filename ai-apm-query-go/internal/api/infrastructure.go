@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -23,7 +24,8 @@ const (
 var k8sClient *http.Client
 
 func init() {
-	k8sClient = &http.Client{}
+	// H5 修复（R3）：k8sClient 加 15s 超时，防止 K8s API 挂起时请求无限阻塞。
+	k8sClient = &http.Client{Timeout: 15 * time.Second}
 	// Try loading CA cert
 	if caData, err := os.ReadFile(saCACertFile); err == nil {
 		pool := x509.NewCertPool()
@@ -34,7 +36,21 @@ func init() {
 	}
 }
 
+// requirePrivilegedRole 基础设施端点 RBAC 守卫（G3/S4）：
+// 仅 admin/approver 可读集群节点/Pod/Deployment/Namespace/HPA 等敏感资源，
+// 普通 user 角色 403。返回 false 时已写入响应。
+func requirePrivilegedRole(w http.ResponseWriter, r *http.Request) bool {
+	if !hasPrivilegedRole(r) {
+		respondJSON(w, 403, map[string]interface{}{"error": "forbidden: admin or approver role required"})
+		return false
+	}
+	return true
+}
+
 func (h *Handler) Nodes(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
 	data, err := k8sAPI("/api/v1/nodes")
 	if err != nil {
 		// K8s 不可达：返回空节点 + 错误说明（不伪造节点，避免误导）
@@ -49,9 +65,14 @@ func (h *Handler) Nodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Pods(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
 	ns := r.URL.Query().Get("namespace")
 	path := "/api/v1/pods"
-	if ns != "" && ns != "all" { path = fmt.Sprintf("/api/v1/namespaces/%s/pods", ns) }
+	if ns != "" && ns != "all" {
+		path = fmt.Sprintf("/api/v1/namespaces/%s/pods", ns)
+	}
 	data, err := k8sAPI(path)
 	if err != nil {
 		// K8s 不可达：返回空列表 + 错误说明（不伪造 Pod，避免误导展示不存在的资源）
@@ -66,9 +87,14 @@ func (h *Handler) Pods(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Deployments(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
 	ns := r.URL.Query().Get("namespace")
 	path := "/apis/apps/v1/deployments"
-	if ns != "" && ns != "all" { path = fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments", ns) }
+	if ns != "" && ns != "all" {
+		path = fmt.Sprintf("/apis/apps/v1/namespaces/%s/deployments", ns)
+	}
 	data, err := k8sAPI(path)
 	if err != nil {
 		// K8s 不可达：返回空列表 + 错误说明（不伪造 Deployment）
@@ -83,6 +109,9 @@ func (h *Handler) Deployments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Namespaces(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
 	data, err := k8sAPI("/api/v1/namespaces")
 	if err != nil {
 		// K8s 不可达：返回空列表 + 错误说明（不伪造 namespace）
@@ -98,13 +127,17 @@ func (h *Handler) Namespaces(w http.ResponseWriter, r *http.Request) {
 
 func k8sAPI(path string) ([]byte, error) {
 	token, err := os.ReadFile(saTokenFile)
-	if err != nil { return kubectlFallback(path) }
+	if err != nil {
+		return kubectlFallback(path)
+	}
 
 	req, _ := http.NewRequest("GET", apiHost+path, nil)
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
 
 	resp, err := k8sClient.Do(req)
-	if err != nil { return kubectlFallback(path) }
+	if err != nil {
+		return kubectlFallback(path)
+	}
 	defer resp.Body.Close()
 
 	return io.ReadAll(resp.Body)
@@ -112,21 +145,40 @@ func k8sAPI(path string) ([]byte, error) {
 
 func kubectlFallback(path string) ([]byte, error) {
 	args := []string{"get"}
+	selector := ""
+	if u, err := url.Parse(path); err == nil {
+		selector = u.Query().Get("labelSelector")
+	}
+	selectorArgs := []string{}
+	if selector != "" {
+		selectorArgs = []string{"-l", selector}
+	}
 	if strings.Contains(path, "/metrics.k8s.io") {
-		return exec.Command("kubectl", "top", "nodes", "-o", "json").Output()
+		args := []string{"top", "nodes"}
+		args = append(args, selectorArgs...)
+		args = append(args, "-o", "json")
+		return exec.Command("kubectl", args...).Output()
 	}
 	switch {
 	case strings.Contains(path, "/nodes"):
-		args = append(args, "nodes", "-o", "json")
+		args = append(args, "nodes")
+		args = append(args, selectorArgs...)
+		args = append(args, "-o", "json")
 	case strings.Contains(path, "/namespaces") && strings.Contains(path, "/pods"):
 		parts := strings.Split(path, "/")
 		for i, p := range parts {
-			if p == "namespaces" && i+1 < len(parts) { args = append(args, "pods", "-n", parts[i+1], "-o", "json"); break }
+			if p == "namespaces" && i+1 < len(parts) {
+				args = append(args, "pods", "-n", parts[i+1], "-o", "json")
+				break
+			}
 		}
 	case strings.Contains(path, "/namespaces") && strings.Contains(path, "/deployments"):
 		parts := strings.Split(path, "/")
 		for i, p := range parts {
-			if p == "namespaces" && i+1 < len(parts) { args = append(args, "deployments", "-n", parts[i+1], "-o", "json"); break }
+			if p == "namespaces" && i+1 < len(parts) {
+				args = append(args, "deployments", "-n", parts[i+1], "-o", "json")
+				break
+			}
 		}
 	case strings.Contains(path, "/pods"):
 		args = append(args, "pods", "--all-namespaces", "-o", "json")
@@ -143,9 +195,9 @@ func parseNodes(data []byte) []map[string]interface{} {
 		Items []struct {
 			Metadata struct{ Name string }
 			Status   struct {
-				Conditions []struct{ Type, Status string }
-				NodeInfo   struct{ KubeletVersion string }
-				Capacity   map[string]string
+				Conditions  []struct{ Type, Status string }
+				NodeInfo    struct{ KubeletVersion string }
+				Capacity    map[string]string
 				Allocatable map[string]string
 			}
 		}
@@ -155,12 +207,18 @@ func parseNodes(data []byte) []map[string]interface{} {
 	for _, it := range r.Items {
 		ready := "NotReady"
 		for _, c := range it.Status.Conditions {
-			if c.Type == "Ready" && c.Status == "True" { ready = "Ready" }
+			if c.Type == "Ready" && c.Status == "True" {
+				ready = "Ready"
+			}
 		}
 		cpu := it.Status.Capacity["cpu"]
-		if cpu == "" { cpu = it.Status.Allocatable["cpu"] }
+		if cpu == "" {
+			cpu = it.Status.Allocatable["cpu"]
+		}
 		mem := it.Status.Capacity["memory"]
-		if mem == "" { mem = it.Status.Allocatable["memory"] }
+		if mem == "" {
+			mem = it.Status.Allocatable["memory"]
+		}
 		nodes = append(nodes, map[string]interface{}{"name": it.Metadata.Name, "status": ready, "cpu": cpu, "memory": mem, "version": it.Status.NodeInfo.KubeletVersion})
 	}
 	return nodes
@@ -170,8 +228,10 @@ func parsePods(data []byte) []map[string]interface{} {
 	var r struct {
 		Items []struct {
 			Metadata struct{ Name, Namespace string }
-			Spec     struct{ NodeName string `json:"nodeName"` }
-			Status   struct {
+			Spec     struct {
+				NodeName string `json:"nodeName"`
+			}
+			Status struct {
 				Phase             string
 				ContainerStatuses []struct{ RestartCount int } `json:"containerStatuses"`
 			}
@@ -181,7 +241,9 @@ func parsePods(data []byte) []map[string]interface{} {
 	pods := []map[string]interface{}{}
 	for _, it := range r.Items {
 		rc := 0
-		if len(it.Status.ContainerStatuses) > 0 { rc = it.Status.ContainerStatuses[0].RestartCount }
+		if len(it.Status.ContainerStatuses) > 0 {
+			rc = it.Status.ContainerStatuses[0].RestartCount
+		}
 		pods = append(pods, map[string]interface{}{"name": it.Metadata.Name, "namespace": it.Metadata.Namespace, "status": it.Status.Phase, "restarts": rc, "node_name": it.Spec.NodeName})
 	}
 	return pods
@@ -223,7 +285,9 @@ func parseNamespaces(data []byte) []map[string]interface{} {
 // 返回的数值统一到"原单位"的数值：CPU 返回核心数，内存返回以 Ki 为基数（1Gi=1024Ki）。
 func parseQuantity(s string) float64 {
 	s = strings.TrimSpace(s)
-	if s == "" { return 0 }
+	if s == "" {
+		return 0
+	}
 	// 后缀映射：CPU 的 m=0.001；内存的 Ki/Mi/Gi 以 Ki 为基数
 	mult := 1.0
 	numStr := s
@@ -237,18 +301,25 @@ func parseQuantity(s string) float64 {
 		mult = 0.001
 		numStr = s[:len(s)-1]
 	case strings.HasSuffix(lower, "ki"):
-		mult = 1.0; numStr = s[:len(s)-2]
+		mult = 1.0
+		numStr = s[:len(s)-2]
 	case strings.HasSuffix(lower, "mi"):
-		mult = 1024.0; numStr = s[:len(s)-2]
+		mult = 1024.0
+		numStr = s[:len(s)-2]
 	case strings.HasSuffix(lower, "gi"):
-		mult = 1024.0 * 1024.0; numStr = s[:len(s)-2]
+		mult = 1024.0 * 1024.0
+		numStr = s[:len(s)-2]
 	case strings.HasSuffix(lower, "k"):
-		mult = 1000.0; numStr = s[:len(s)-1]
+		mult = 1000.0
+		numStr = s[:len(s)-1]
 	case strings.HasSuffix(lower, "g"):
-		mult = 1e9; numStr = s[:len(s)-1]
+		mult = 1e9
+		numStr = s[:len(s)-1]
 	}
 	v, err := strconv.ParseFloat(numStr, 64)
-	if err != nil { return 0 }
+	if err != nil {
+		return 0
+	}
 	return v * mult
 }
 
@@ -263,19 +334,23 @@ func parseNodeMetrics(data []byte, capacities map[string]map[string]string) []ma
 	json.Unmarshal(data, &r)
 	out := []map[string]interface{}{}
 	for _, it := range r.Items {
-		cpuUsage := parseQuantity(it.Usage["cpu"])       // 核心数
-		memUsage := parseQuantity(it.Usage["memory"])    // Ki 基数
+		cpuUsage := parseQuantity(it.Usage["cpu"])    // 核心数
+		memUsage := parseQuantity(it.Usage["memory"]) // Ki 基数
 		cpuCap := parseQuantity(capacities[it.Metadata.Name]["cpu"])
 		memCap := parseQuantity(capacities[it.Metadata.Name]["memory"])
 		cpuPct := 0.0
-		if cpuCap > 0 { cpuPct = cpuUsage / cpuCap * 100 }
+		if cpuCap > 0 {
+			cpuPct = cpuUsage / cpuCap * 100
+		}
 		memPct := 0.0
-		if memCap > 0 { memPct = memUsage / memCap * 100 }
+		if memCap > 0 {
+			memPct = memUsage / memCap * 100
+		}
 		out = append(out, map[string]interface{}{
-			"node": it.Metadata.Name,
+			"node":      it.Metadata.Name,
 			"cpu_usage": it.Usage["cpu"], "cpu_capacity": capacities[it.Metadata.Name]["cpu"],
 			"cpu_usage_pct": round2(cpuPct),
-			"mem_usage": it.Usage["memory"], "mem_capacity": capacities[it.Metadata.Name]["memory"],
+			"mem_usage":     it.Usage["memory"], "mem_capacity": capacities[it.Metadata.Name]["memory"],
 			"mem_usage_pct": round2(memPct),
 		})
 	}
@@ -285,16 +360,29 @@ func parseNodeMetrics(data []byte, capacities map[string]map[string]string) []ma
 // k8sAPIFn 可注入（测试用）；默认指向 k8sAPI。
 var k8sAPIFn = k8sAPI
 
+func clusterScopedNodePath(r *http.Request, path string) string {
+	clusterID := r.URL.Query().Get("cluster_id")
+	if clusterID == "" || clusterID == "all" {
+		return path
+	}
+	query := url.Values{}
+	query.Set("labelSelector", "cluster_id="+clusterID)
+	return path + "?" + query.Encode()
+}
+
 // NodesMetrics 处理 GET /api/v1/nodes/metrics — 节点实时 CPU/内存用量（metrics-server）。
 func (h *Handler) NodesMetrics(w http.ResponseWriter, r *http.Request) {
-	data, err := k8sAPIFn("/apis/metrics.k8s.io/v1beta1/nodes")
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
+	data, err := k8sAPIFn(clusterScopedNodePath(r, "/apis/metrics.k8s.io/v1beta1/nodes"))
 	if err != nil {
 		respondJSON(w, 200, map[string]interface{}{"nodes": []map[string]interface{}{}, "error": err.Error()})
 		return
 	}
 	// capacity 从 in-cluster /api/v1/nodes 读取（不依赖 kubectl）
 	capMap := map[string]map[string]string{}
-	if nd, nerr := k8sAPIFn("/api/v1/nodes"); nerr == nil {
+	if nd, nerr := k8sAPIFn(clusterScopedNodePath(r, "/api/v1/nodes")); nerr == nil {
 		for _, n := range parseNodes(nd) {
 			name, _ := n["name"].(string)
 			cpu, _ := n["cpu"].(string)
@@ -311,6 +399,9 @@ func (h *Handler) NodesMetrics(w http.ResponseWriter, r *http.Request) {
 // 返回容器列表（名称/镜像/状态/restartCount/ready）、Pod 状态、节点、IP、
 // 创建时间、资源请求/限制（CPU/mem）及该 Pod 最近事件（复用 parseK8sEvents 逻辑）。
 func (h *Handler) PodDetail(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/infrastructure/pods/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -331,10 +422,10 @@ func (h *Handler) PodDetail(w http.ResponseWriter, r *http.Request) {
 			CreationTimestamp string `json:"creationTimestamp"`
 		} `json:"metadata"`
 		Spec struct {
-			NodeName string `json:"nodeName"`
+			NodeName   string `json:"nodeName"`
 			Containers []struct {
-				Name  string `json:"name"`
-				Image string `json:"image"`
+				Name      string `json:"name"`
+				Image     string `json:"image"`
 				Resources struct {
 					Requests map[string]string `json:"requests"`
 					Limits   map[string]string `json:"limits"`
@@ -396,6 +487,9 @@ func (h *Handler) PodDetail(w http.ResponseWriter, r *http.Request) {
 // HPA 处理 GET /api/v1/infrastructure/hpa — 集群 HPA 列表（跨命名空间）。
 // 复用 system.go getHPAStatus 的解析思路，返回结构化列表。
 func (h *Handler) HPA(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
 	done := make(chan map[string]interface{}, 1)
 	go func() {
 		out, err := kubeList("", "get", "hpa", "-A", "-o", "json")

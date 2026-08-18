@@ -11,6 +11,11 @@ import (
 )
 
 func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
+	// G3 修复（S6）：系统状态含集群拓扑/缓存/HPA 信息，仅 admin 可访问。
+	if !hasRole(r, "admin") {
+		respondJSON(w, 403, map[string]interface{}{"error": "forbidden: admin role required"})
+		return
+	}
 	status := map[string]interface{}{
 		"cache": GetCacheStats(),
 		"hpa":   getHPAStatus(),
@@ -21,20 +26,36 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CacheStats(w http.ResponseWriter, r *http.Request) {
+	// G3 修复（S6）：缓存统计仅 admin 可访问。
+	if !hasRole(r, "admin") {
+		respondJSON(w, 403, map[string]interface{}{"error": "forbidden: admin role required"})
+		return
+	}
 	respondJSON(w, 200, map[string]interface{}{
 		"cache": GetCacheStats(),
 	})
 }
 
 func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
-	pattern := r.URL.Query().Get("pattern")
-	if pattern == "" {
-		pattern = "cache:"
+	// G3 修复（S6）：缓存刷新仅 admin 可访问。
+	if !hasRole(r, "admin") {
+		respondJSON(w, 403, map[string]interface{}{"error": "forbidden: admin role required"})
+		return
 	}
-	InvalidateCache(pattern)
+	// G3 修复（S6）：移除任意 pattern 能力——仅允许精确 key 匹配，
+	// 防止用空/宽泛 pattern 反复清空缓存造成 DoS。key 必须与缓存条目完全一致。
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		respondJSON(w, 400, map[string]interface{}{"error": "key required (exact cache key)"})
+		return
+	}
+	if !InvalidateCacheExact(key) {
+		respondJSON(w, 404, map[string]interface{}{"error": "cache key not found"})
+		return
+	}
 	respondJSON(w, 200, map[string]interface{}{
 		"invalidated": true,
-		"pattern":     pattern,
+		"key":         key,
 	})
 }
 
@@ -43,6 +64,11 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 // victoria-metrics/victoria-logs/minio/frontend。3s 超时并发探测，
 // 探活失败 status=down，超时接近 3s 的降级 degraded。
 func (h *Handler) SystemComponents(w http.ResponseWriter, r *http.Request) {
+	// G3 修复（S6）：组件探活执行 kubectl 探测内部服务，泄露集群拓扑，仅 admin 可访问。
+	if !hasRole(r, "admin") {
+		respondJSON(w, 403, map[string]interface{}{"error": "forbidden: admin role required"})
+		return
+	}
 	type compItem struct{ name, typ, kind, addr string }
 	components := []compItem{
 		{"query-api", "service", "http", "http://query-api.observability.svc.cluster.local:8080/health"},

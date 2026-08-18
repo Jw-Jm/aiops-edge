@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -24,6 +25,14 @@ const (
 
 	// watch 服务端超时（秒），到点服务端主动断流，触发重新 LIST 以恢复一致视图
 	maxWatchTimeout = 300
+
+	// maxRecentEventUIDs 内存去重集合上限：保留最近 N 个事件 UID，
+	// 防止 LIST→WATCH 循环/重连时同一事件被重复写入（H1）。
+	maxRecentEventUIDs = 1000
+
+	// resumeTolerance 断点续采容忍窗口：重启后接受 ts >= checkpoint - 5min 的事件，
+	// 容忍晚到/乱序事件（checkpoint 为 max(ts)，直接按 max(ts) 过滤会丢乱序事件）。
+	resumeTolerance = 5 * time.Minute
 )
 
 // k8sEvent 覆盖 core/v1 与 events.k8s.io/v1 两种 Event 字段（字段冗余，按需取用）。
@@ -31,6 +40,7 @@ type k8sEvent struct {
 	Metadata struct {
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
+		UID       string `json:"uid"`
 	} `json:"metadata"`
 
 	// core/v1
@@ -73,8 +83,10 @@ type watchEvent struct {
 }
 
 // k8sWatcher 通过 K8s REST API 采集事件（纯标准库实现，无 client-go 依赖）。
-// 流程：断点续采（CH 查最新 ts）→ LIST 全量（过滤 Warning/Error）→ watch=true 增量，
+// 流程：断点续采（CH 查最新 ts，容忍 5min 乱序）→ LIST 全量（过滤 Warning/Error）→ watch=true 增量，
 // 断连自动重连（重新 LIST）。
+// H1 去重：内存维护最近 maxRecentEventUIDs 个事件 UID，LIST/WATCH 阶段对同一 UID 只写一次；
+// 重启后 checkpoint 回退 5min 容忍乱序，残余重复由 ReplacingMergeTree（含 name/message 的完整键）兜底。
 type k8sWatcher struct {
 	cfg        *Config
 	writer     *EventWriter
@@ -83,6 +95,10 @@ type k8sWatcher struct {
 	token      string
 	eventsPath string // 探测成功后缓存，如 /api/v1/events
 	collected  atomic.Int64
+
+	dedupMu   sync.Mutex
+	dedup     map[string]struct{} // 最近事件 UID 集合
+	dedupRing []string            // FIFO 顺序，用于淘汰最旧 UID
 }
 
 // NewK8sWatcher 构造 in-cluster K8s REST 客户端。
@@ -115,17 +131,44 @@ func NewK8sWatcher(cfg *Config, writer *EventWriter) (*k8sWatcher, error) {
 	}
 
 	return &k8sWatcher{
-		cfg:     cfg,
-		writer:  writer,
-		client:  &http.Client{Transport: tr},
-		baseURL: "https://" + net.JoinHostPort(host, port),
-		token:   strings.TrimSpace(string(tokenBytes)),
+		cfg:       cfg,
+		writer:    writer,
+		client:    &http.Client{Transport: tr},
+		baseURL:   "https://" + net.JoinHostPort(host, port),
+		token:     strings.TrimSpace(string(tokenBytes)),
+		dedup:     make(map[string]struct{}),
+		dedupRing: make([]string, 0, maxRecentEventUIDs),
 	}, nil
+}
+
+// seen 记录事件 UID 并返回是否已见过（重复则跳过写入）。UID 为空时不做去重（放行）。
+// 集合上限 maxRecentEventUIDs，FIFO 淘汰最旧，避免内存无界增长。
+func (k *k8sWatcher) seen(uid string) bool {
+	if uid == "" {
+		return false
+	}
+	k.dedupMu.Lock()
+	defer k.dedupMu.Unlock()
+	if _, ok := k.dedup[uid]; ok {
+		return true
+	}
+	k.dedup[uid] = struct{}{}
+	k.dedupRing = append(k.dedupRing, uid)
+	if len(k.dedupRing) > maxRecentEventUIDs {
+		old := k.dedupRing[0]
+		k.dedupRing = k.dedupRing[1:]
+		delete(k.dedup, old)
+	}
+	return false
 }
 
 // Run 主循环：断点续采 + LIST→WATCH，断连自动重连（指数退避，不崩溃）。
 func (k *k8sWatcher) Run(ctx context.Context) {
 	resumeTs := k.checkpoint()
+	// H1：checkpoint 为 max(ts)，回退 5min 容忍晚到/乱序事件，避免重启后丢乱序数据。
+	if !resumeTs.IsZero() {
+		resumeTs = resumeTs.Add(-resumeTolerance)
+	}
 	log.Printf("K8S watcher: started (cluster=%s, resumeTs=%s)", k.cfg.ClusterID, fmtTime(resumeTs))
 	backoff := 5 * time.Second
 	for {
@@ -167,16 +210,23 @@ func (k *k8sWatcher) syncOnce(ctx context.Context, resumeTs time.Time) error {
 		return err
 	}
 	kept := 0
+	skippedDup := 0
 	for i := range events {
 		e := &events[i]
 		if !keepEvent(e, resumeTs) {
+			continue
+		}
+		// H1：同一 UID 的事件只写一次（LIST→WATCH 循环/重连时避免重复写）
+		if k.seen(e.Metadata.UID) {
+			skippedDup++
 			continue
 		}
 		k.writer.Add(k.toEvent(e))
 		kept++
 	}
 	k.collected.Add(int64(kept))
-	log.Printf("K8S watcher: listed %d events, kept %d (Warning/Error), watch from rv=%s", len(events), kept, rv)
+	log.Printf("K8S watcher: listed %d events, kept %d (Warning/Error), dedup-skipped %d, watch from rv=%s",
+		len(events), kept, skippedDup, rv)
 	return k.watchLoop(ctx, rv)
 }
 
@@ -300,6 +350,10 @@ func (k *k8sWatcher) watchLoop(ctx context.Context, rv string) error {
 				continue
 			}
 			if !keepEvent(&e, time.Time{}) { // 增量阶段仅按类型过滤
+				continue
+			}
+			// H1：同一 UID 的事件只写一次（LIST 已入库的事件在 watch 增量中不再重复写）
+			if k.seen(e.Metadata.UID) {
 				continue
 			}
 			k.writer.Add(k.toEvent(&e))

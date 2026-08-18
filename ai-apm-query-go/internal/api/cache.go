@@ -124,6 +124,19 @@ func InvalidateCache(pattern string) {
 	}
 }
 
+// InvalidateCacheExact 仅删除与 key 完全匹配的缓存条目（G3/S6 修复：
+// 移除任意 pattern 能力，防止普通用户用空/宽泛 pattern 反复清空缓存造成 DoS）。
+// 返回是否命中并删除。
+func InvalidateCacheExact(key string) bool {
+	appCache.mu.Lock()
+	defer appCache.mu.Unlock()
+	if _, ok := appCache.store[key]; ok {
+		delete(appCache.store, key)
+		return true
+	}
+	return false
+}
+
 // GetCacheStats returns cache statistics
 func GetCacheStats() map[string]interface{} {
 	appCache.mu.RLock()

@@ -68,13 +68,14 @@ func AggregateStats(rows []StatsItem) *DashboardStats {
 		item := r
 		if item.Calls > 0 {
 			item.AvgLatency = float64(item.LatSumNs) / float64(item.Calls) / 1e6 // ns → ms
-			item.ErrorRate = float64(item.Errors) / float64(item.Calls) * 100
+			// A2 修复：error_rate 统一为 0-1 小数（与 /services 口径一致），前端负责乘 100 展示
+			item.ErrorRate = float64(item.Errors) / float64(item.Calls)
 		}
 		s.TopServices = append(s.TopServices, item)
 	}
 	s.Services = len(rows)
 	if s.TotalCalls > 0 {
-		s.ErrorRate = float64(s.TotalErrors) / float64(s.TotalCalls) * 100
+		s.ErrorRate = float64(s.TotalErrors) / float64(s.TotalCalls)
 	}
 	return &s
 }

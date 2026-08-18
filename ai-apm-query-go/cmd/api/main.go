@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -277,7 +279,15 @@ func main() {
 	corsHandler := api.CORSMiddleware(mux)
 	authHandler := api.AuthMiddleware(corsHandler)
 
-	server := &http.Server{Addr: fmt.Sprintf(":%d", *port), Handler: authHandler}
+	// H5 修复（R3）：http.Server 加超时，防止慢客户端/慢请求无限占用连接。
+	server := &http.Server{
+		Addr:              fmt.Sprintf(":%d", *port),
+		Handler:           authHandler,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	// Production K8s log shipper → VictoriaLogs
 	go handler.StartLogShipper()
 
@@ -292,5 +302,11 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	log.Println("shutting down...")
-	server.Close()
+	// H5 修复（R3）：用 Shutdown 优雅排空（10s 宽限），替代直接 Close 丢弃在途请求。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("graceful shutdown error: %v", err)
+	}
+	log.Println("server stopped")
 }

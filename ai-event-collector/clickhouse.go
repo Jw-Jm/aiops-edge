@@ -16,6 +16,14 @@ import (
 )
 
 // chDDL observability.k8s_events 建表 DDL（组件启动时 CREATE TABLE IF NOT EXISTS 自建）。
+// H1 修复：ReplacingMergeTree 去重键补上 name/message —— 此前仅 (tenant,cluster,ts,involved_object,reason)，
+// 同 ts+object+reason 但内容（name/message）不同的事件会被合并丢失；补全后 dedup 键完整，事件不再有损去重。
+// 注意：已存在的表不会自动迁移。生产升级需手动执行：
+//
+//	ALTER TABLE observability.k8s_events
+//	  MODIFY ORDER BY (tenant_id, cluster_id, ts, involved_object, reason, name, message);
+//
+// 组件启动时 CREATE TABLE IF NOT EXISTS 只对新建表生效，不会改写存量表结构。
 const chDDL = `CREATE TABLE IF NOT EXISTS observability.k8s_events (
   tenant_id String,
   cluster_id String DEFAULT 'default',
@@ -32,7 +40,7 @@ const chDDL = `CREATE TABLE IF NOT EXISTS observability.k8s_events (
   node String DEFAULT '',
   time_bucket DateTime
 ) ENGINE = ReplacingMergeTree
-ORDER BY (tenant_id, cluster_id, ts, involved_object, reason)
+ORDER BY (tenant_id, cluster_id, ts, involved_object, reason, name, message)
 TTL time_bucket + INTERVAL 30 DAY`
 
 // Event 一条待写事件（K8s 事件与 IPMI SEL 统一结构）。
@@ -67,7 +75,8 @@ type EventWriter struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 
-	flushed atomic.Int64 // 累计成功写入行数（日志统计）
+	flushed      atomic.Int64 // 累计成功写入行数（日志统计）
+	retryDropped atomic.Int64 // 重试队列满时丢弃的批次总数（/metrics 暴露）
 }
 
 // NewEventWriter 创建写入器并确保 ClickHouse 表存在。
@@ -186,6 +195,7 @@ func (w *EventWriter) enqueueRetry(rows []byte) {
 	const maxRetryBatches = 100
 	if len(w.retry) >= maxRetryBatches {
 		w.retry = w.retry[1:]
+		w.retryDropped.Add(1)
 		log.Printf("CH: retry queue full (%d), dropping oldest batch", maxRetryBatches)
 	}
 	w.retry = append(w.retry, rows)
@@ -332,6 +342,44 @@ func (w *EventWriter) countFlushed(rows []byte) {
 	}
 	w.flushed.Add(int64(n))
 	log.Printf("CH: flushed %d events (total %d)", n, w.flushed.Load())
+}
+
+// Ping 快速探测 ClickHouse 连通性（短超时，供 /health 探针使用）。
+func (w *EventWriter) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	u := w.endpoint + "/?" + chQueryParams("SELECT 1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// RetryQueueSize 返回当前重试队列批次数（供 /health 与 /metrics 使用）。
+func (w *EventWriter) RetryQueueSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.retry)
+}
+
+// FlushedTotal 返回累计成功写入行数（/metrics 暴露）。
+func (w *EventWriter) FlushedTotal() int64 {
+	return w.flushed.Load()
+}
+
+// RetryDroppedTotal 返回重试队列满时丢弃的批次总数（/metrics 暴露）。
+func (w *EventWriter) RetryDroppedTotal() int64 {
+	return w.retryDropped.Load()
 }
 
 // Close 取消后台循环并尽力冲刷缓冲与重试队列。

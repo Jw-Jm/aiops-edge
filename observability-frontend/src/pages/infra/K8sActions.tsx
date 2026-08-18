@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  Button, Col, Input, InputNumber, Row, Select, Segmented, Space, Spin, Table, Tag, Typography,
+  Button, Col, Input, InputNumber, Modal, Row, Select, Segmented, Space, Spin, Table, Tag, Typography,
 } from 'antd'
 import {
   k8sPreflight, k8sExecute,
@@ -14,14 +14,12 @@ import { useUIStore } from '../../store/uiStore'
 
 const { Text } = Typography
 
-// kind → 可用动作（与后端 ACTION_KINDS 一致，仅做前端过滤）
-const ACTION_BY_KIND: Record<string, string[]> = {
-  node: ['cordon', 'uncordon', 'drain'],
-  pod: ['delete_pod', 'evict_pod'],
-  deployment: ['rollout_restart', 'scale'],
-  statefulset: ['rollout_restart', 'scale'],
-  daemonset: ['rollout_restart'],
-}
+// B12: kind → 可用动作，由 k8s.ts 的 K8S_ACTION_KINDS（单一来源）反查派生，
+// 不再在页面内硬编码一份 ACTION_BY_KIND，避免与后端动作清单漂移。
+const ACTION_BY_KIND: Record<string, string[]> = Object.entries(K8S_ACTION_KINDS).reduce((acc, [action, kinds]) => {
+  kinds.forEach((k) => { (acc[k] ||= []).push(action) })
+  return acc
+}, {} as Record<string, string[]>)
 
 const ACTION_LABEL: Record<string, string> = {
   rollout_restart: '滚动重启',
@@ -85,6 +83,7 @@ const K8sActions: React.FC = () => {
   const [execResult, setExecResult] = useState<K8sExecuteResult | null>(null)
   const [execLoading, setExecLoading] = useState(false)
   const [execError, setExecError] = useState('')
+  const [confirmVisible, setConfirmVisible] = useState(false)
 
   const destructive = K8S_DESTRUCTIVE.includes(action as any)
 
@@ -101,7 +100,8 @@ const K8sActions: React.FC = () => {
       const d = r.data
       const list = d?.pods || d?.deployments || d?.nodes
       setRows(Array.isArray(list) ? list : [])
-      if (d?.error && Array.isArray(list) && list.length === 0) setListErr(String(d.error))
+      // B12: 列表错误不再仅空列表时显示——即使有数据也展示后端 error（如部分命名空间失败）
+      if (d?.error) setListErr(String(d.error))
     }).catch((e) => {
       setRows([])
       setListErr(e?.response?.data?.error || '列表加载失败')
@@ -125,7 +125,7 @@ const K8sActions: React.FC = () => {
   }, [kind])
 
   // 资源参数变化 → 失效旧预检
-  const resetPreflight = () => { setPreflight(null); setExecResult(null); setExecError('') }
+  const resetPreflight = () => { setPreflight(null); setExecResult(null); setExecError(''); setConfirmVisible(false) }
 
   const buildExtra = (): Record<string, unknown> => {
     const extra: Record<string, unknown> = {}
@@ -175,6 +175,11 @@ const K8sActions: React.FC = () => {
     } finally {
       setExecLoading(false)
     }
+  }
+
+  const requestExecute = () => {
+    if (!preflight?.preflight_token || preflight.ok === false) return
+    setConfirmVisible(true)
   }
 
   // 载入已批准审批单（供 destructive 动作选择 approval_task_id）
@@ -308,8 +313,8 @@ const K8sActions: React.FC = () => {
               <Button type="primary" onClick={doPreflight} loading={preflightLoading} disabled={!name}>
                 ① 预检
               </Button>
-              <Button danger type="primary" onClick={doExecute} loading={execLoading}
-                disabled={!preflight?.preflight_token || (destructive && !approvalTaskId)}>
+              <Button danger type="primary" onClick={requestExecute} loading={execLoading}
+                disabled={!preflight?.preflight_token || preflight.ok === false || (destructive && !approvalTaskId)}>
                 ② 执行{preflight?.preflight_token ? '' : '（需先预检）'}
               </Button>
               <Button size="small" onClick={resetPreflight}>清空</Button>
@@ -346,6 +351,28 @@ const K8sActions: React.FC = () => {
           </div>
         </Col>
       </Row>
+
+      <Modal
+        title="确认执行 K8s 操作"
+        open={confirmVisible}
+        onCancel={() => setConfirmVisible(false)}
+        onOk={() => { setConfirmVisible(false); void doExecute() }}
+        okText="确认执行"
+        cancelText="取消"
+        okButtonProps={{ danger: true, loading: execLoading }}
+        destroyOnClose
+      >
+        <div style={{ marginBottom: 10, color: 'var(--danger)', fontWeight: 600 }}>
+          预检已通过，确认要在 {namespace || '集群'} 上执行“{ACTION_LABEL[action] || action}”吗？
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+          目标：{kind}/{name}{namespace ? ` · ${namespace}` : ''}
+        </div>
+        <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, whiteSpace: 'pre-wrap', background: 'var(--surface-2)', padding: 10, borderRadius: 6 }}>
+          {preflight?.command || '(预检未返回命令)'}
+        </pre>
+        {destructive && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warning)' }}>该动作还需要已批准的审批单。</div>}
+      </Modal>
     </div>
   )
 }

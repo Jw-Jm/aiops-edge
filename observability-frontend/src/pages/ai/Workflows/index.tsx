@@ -42,6 +42,9 @@ const Workflows: React.FC = () => {
       const list: FlowItem[] = r?.data?.flows || r?.data || []
       setFlows(list)
       // 拉取各工作流最近一次运行状态（容错失败）
+      // TODO(B10): N+1 —— 每工作流一次 listFlowRuns 查询（约 46-50 行）。后端提供批量
+      // 最新运行状态端点（如 GET /ai/workflows/runs/latest）或列表响应内嵌 latest_run
+      // 后可移除，改为单次请求。
       const latest: Record<string, FlowRunItem> = {}
       await Promise.allSettled(list.map(async (f) => {
         const rr = await listFlowRuns(f.id)

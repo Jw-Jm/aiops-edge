@@ -27,6 +27,13 @@ def _chain_graph():
         {"id": "s", "type": "summarize", "name": "汇总", "config": {}, "position": {"x": 0, "y": 100}},
     ], "edges": [{"id": "e1", "source": "c", "sourcePort": "next", "target": "s"}]}
 
+
+def _approval_graph():
+    return {"nodes": [
+        {"id": "w", "type": "wait_approval", "name": "审批", "config": {}, "position": {"x": 0, "y": 0}},
+        {"id": "e", "type": "execute", "name": "执行", "config": {}, "position": {"x": 0, "y": 100}},
+    ], "edges": [{"id": "e1", "source": "w", "sourcePort": "approved", "target": "e"}]}
+
 def test_node_types_endpoint(client):
     r = client.get("/api/v1/ai/workflows/node-types")
     assert r.status_code == 200
@@ -59,6 +66,65 @@ def test_run_flow(client):
     run_id = rr.json()["run_id"]
     dr = client.get(f"/api/v1/ai/workflows/{fid}/runs/{run_id}")
     assert dr.status_code == 200 and dr.json()["run"]["status"] == "succeeded"
+
+
+def test_run_flow_returns_the_persisted_terminal_record(client):
+    created = client.post(
+        "/api/v1/ai/workflows",
+        json={"name": "f", "description": "d", "graph": _chain_graph()},
+        headers=ADMIN,
+    )
+    fid = created.json()["id"]
+
+    response = client.post(f"/api/v1/ai/workflows/{fid}/run", json={"trigger": {"service": "demo"}})
+
+    assert response.status_code == 200
+    payload = response.json()
+    run = payload["run"]
+    assert run["run_id"] == payload["run_id"]
+    assert run["flow_id"] == fid
+    assert run["status"] == "succeeded"
+    assert [node["node_id"] for node in run["nodes"]] == ["c", "s"]
+
+
+def test_repeated_identical_runs_create_distinct_terminal_records(client):
+    created = client.post(
+        "/api/v1/ai/workflows",
+        json={"name": "f", "description": "d", "graph": _chain_graph()},
+        headers=ADMIN,
+    )
+    fid = created.json()["id"]
+
+    first = client.post(f"/api/v1/ai/workflows/{fid}/run", json={"trigger": {"service": "demo"}})
+    second = client.post(f"/api/v1/ai/workflows/{fid}/run", json={"trigger": {"service": "demo"}})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["run_id"] != second.json()["run_id"]
+    assert [run["status"] for run in client.get(f"/api/v1/ai/workflows/{fid}/runs").json()["runs"]] == ["succeeded", "succeeded"]
+
+
+def test_approved_resume_returns_persisted_terminal_record(client):
+    created = client.post(
+        "/api/v1/ai/workflows",
+        json={"name": "approval", "description": "", "graph": _approval_graph()},
+        headers=ADMIN,
+    )
+    fid = created.json()["id"]
+    started = client.post(f"/api/v1/ai/workflows/{fid}/run", json={"trigger": {}})
+    assert started.json()["status"] == "waiting_approval"
+
+    resumed = client.post(
+        f"/api/v1/ai/workflows/{fid}/runs/{started.json()['run_id']}/resume",
+        json={"approved": True},
+        headers=ADMIN,
+    )
+
+    assert resumed.status_code == 200
+    run = resumed.json()["run"]
+    assert run["run_id"] == started.json()["run_id"]
+    assert run["status"] == "succeeded"
+    assert {node["node_id"] for node in run["nodes"]} == {"w", "e"}
 
 
 def test_resume_requires_approver(client):

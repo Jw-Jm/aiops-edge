@@ -8,22 +8,59 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
 // selCollector IPMI SEL 采集器：周期性执行 ipmitool（或回退 ipmi-sel）解析 SEL 事件并写 CH。
+// H1 去重：内存维护最近 maxRecentSELIDs 个 (node, record-id)，同一记录只写一次，
+// 避免每周期 `sel list last 20` 全量重插造成重复写。
 type selCollector struct {
 	cfg      *Config
 	writer   *EventWriter
 	hostname string
+
+	dedupMu   sync.Mutex
+	dedup     map[string]struct{} // 最近 (node/record-id) 集合
+	dedupRing []string            // FIFO 顺序，用于淘汰最旧记录
 }
+
+// maxRecentSELIDs 内存去重集合上限（SEL record id 每 BMC 独立编号，按 node 前缀区分）。
+const maxRecentSELIDs = 500
 
 func NewSELCollector(cfg *Config, writer *EventWriter) *selCollector {
 	hn, err := os.Hostname()
 	if err != nil || hn == "" {
 		hn = "localhost"
 	}
-	return &selCollector{cfg: cfg, writer: writer, hostname: hn}
+	return &selCollector{
+		cfg:       cfg,
+		writer:    writer,
+		hostname:  hn,
+		dedup:     make(map[string]struct{}),
+		dedupRing: make([]string, 0, maxRecentSELIDs),
+	}
+}
+
+// seen 记录 (node, record-id) 并返回是否已见过（重复则跳过写入）。
+// 集合上限 maxRecentSELIDs，FIFO 淘汰最旧，避免内存无界增长。
+func (s *selCollector) seen(key string) bool {
+	if key == "" {
+		return false
+	}
+	s.dedupMu.Lock()
+	defer s.dedupMu.Unlock()
+	if _, ok := s.dedup[key]; ok {
+		return true
+	}
+	s.dedup[key] = struct{}{}
+	s.dedupRing = append(s.dedupRing, key)
+	if len(s.dedupRing) > maxRecentSELIDs {
+		old := s.dedupRing[0]
+		s.dedupRing = s.dedupRing[1:]
+		delete(s.dedup, old)
+	}
+	return false
 }
 
 // Run 周期循环采集（间隔 SEL_INTERVAL_SECONDS），单次失败仅记日志不退出。
@@ -51,11 +88,19 @@ func (s *selCollector) collectOnce(ctx context.Context) {
 			return
 		}
 		entries := s.readSEL(node)
+		kept := 0
+		skippedDup := 0
 		for _, en := range entries {
+			// H1：SEL record id 每 BMC 独立编号，按 (node, record-id) 去重，同一记录只写一次
+			if s.seen(node + "/" + en.Name) {
+				skippedDup++
+				continue
+			}
 			s.writer.Add(en)
+			kept++
 		}
 		if len(entries) > 0 {
-			log.Printf("SEL: node=%s collected %d entries", node, len(entries))
+			log.Printf("SEL: node=%s collected %d entries (dedup-skipped %d)", node, kept, skippedDup)
 		}
 	}
 }

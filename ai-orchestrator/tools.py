@@ -148,6 +148,13 @@ def execute_shell(command: str, timeout: int = 30) -> str:
     reject = policy.check(command)
     if reject:
         return f"命令被安全策略拒绝: {reject}"
+    # 安全修复(G5): 纵深防御——低层执行函数强制白名单 + 元字符校验，不依赖调用方自觉。
+    # 任何调用方（含未来新增）都无法绕过 is_whitelisted_for_execute / check_shell_metachars。
+    if mc := policy.check_shell_metachars(command):
+        return f"命令被安全策略拒绝: {mc}"
+    allowed, category = policy.is_whitelisted_for_execute(command)
+    if not allowed:
+        return f"命令被安全策略拒绝: 不在可执行白名单内 ({category})"
     if blk := policy.check_extra_blacklist(command):
         return f"命令被安全策略拒绝: {blk}"
     try:

@@ -2,6 +2,7 @@ package clickhouse
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -33,10 +34,13 @@ type LogWriter struct {
 	// WAL 持久化（独立 ingest-wal-log.log，不与 span/edge 共享）
 	wal *WAL
 	// 待重试的序列化批次（seq -> 序列化后的 TabSeparated bytes）
-	retryPending  map[uint64][]byte
-	memSeq        uint64 // 无 WAL 时用内存递增序号作为 key，避免互相覆盖丢数据
+	retryPending    map[uint64][]byte
+	memSeq          uint64 // 无 WAL 时用内存递增序号作为 key，避免互相覆盖丢数据
 	maxRetryBatches int
-	retryBytes    int64
+	retryBytes      int64
+
+	// OnDropped 背压丢弃回调（缓冲满丢最旧记录时触发，用于 dropped 计数，可为 nil）
+	OnDropped func(n int)
 }
 
 // NewLogWriter creates a new LogWriter. walDir 为 WAL 持久化目录（生产挂载 PVC；空则退化为内存重试）。
@@ -83,6 +87,10 @@ func (w *LogWriter) Add(lr *model.LogRecord) {
 		w.buffer = w.buffer[:len(w.buffer)-1]
 		w.mu.Unlock()
 		log.Printf("LOGWRITER: buffer full (%d), dropping oldest record (backpressure)", w.maxBufferRecords)
+		// H3：背压丢弃必须可观测（/metrics 暴露 logs_dropped 计数）
+		if w.OnDropped != nil {
+			w.OnDropped(1)
+		}
 		return
 	}
 	w.buffer = append(w.buffer, lr)
@@ -306,6 +314,34 @@ func (w *LogWriter) insertBatchBytes(rows []byte) error {
 		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// Ping 快速探测 ClickHouse 连通性（短超时，供 /health 探针使用，H4）。
+func (w *LogWriter) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	u := w.endpoint + "/?" + "query=" + url.QueryEscape("SELECT 1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// RetryQueueSize 返回当前重试队列批次数（供 /health 与 /metrics 使用）。
+func (w *LogWriter) RetryQueueSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.retryPending)
 }
 
 // Close stops the flush loop and performs a final flush

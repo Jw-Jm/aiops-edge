@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,9 +48,13 @@ func TestParseNodeMetrics(t *testing.T) {
 		memPct := m["mem_usage_pct"].(float64)
 		if name == "orbstack" {
 			// 0.25/2*100 = 12.5
-			if cpuPct < 12.4 || cpuPct > 12.6 { t.Errorf("orbstack cpu_pct=%v want ~12.5", cpuPct) }
+			if cpuPct < 12.4 || cpuPct > 12.6 {
+				t.Errorf("orbstack cpu_pct=%v want ~12.5", cpuPct)
+			}
 			// 3212084Ki / 4Gi(4194304Ki) *100
-			if memPct < 76 || memPct > 77 { t.Errorf("orbstack mem_pct=%v want ~76.6", memPct) }
+			if memPct < 76 || memPct > 77 {
+				t.Errorf("orbstack mem_pct=%v want ~76.6", memPct)
+			}
 		}
 	}
 }
@@ -68,20 +75,94 @@ func TestNodesMetricsHandler(t *testing.T) {
 	}
 	defer func() { k8sAPIFn = orig }()
 	req := httptest.NewRequest("GET", "/api/v1/nodes/metrics", nil)
+	// G3 修复：基础设施端点需 admin/approver 角色，测试注入 admin token。
+	req.Header.Set("Authorization", "Bearer "+generateJWT("admin", "admin", ""))
 	w := httptest.NewRecorder()
 	h.NodesMetrics(w, req)
-	if w.Code != http.StatusOK { t.Fatalf("expected 200, got %d", w.Code) }
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 	var resp map[string]interface{}
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	nodes := resp["nodes"].([]interface{})
-	if len(nodes) != 1 { t.Fatalf("expected 1 node, got %d", len(nodes)) }
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node, got %d", len(nodes))
+	}
 	m := nodes[0].(map[string]interface{})
-	if m["node"] != "orbstack" { t.Fatalf("expected node orbstack, got %v", m["node"]) }
+	if m["node"] != "orbstack" {
+		t.Fatalf("expected node orbstack, got %v", m["node"])
+	}
 	// usage 250m/2 *100 = 12.5；mem 2Gi/4Gi*100 = 50
 	if pct := m["cpu_usage_pct"].(float64); pct < 12.4 || pct > 12.6 {
 		t.Errorf("cpu_usage_pct=%v want ~12.5", pct)
 	}
 	if pct := m["mem_usage_pct"].(float64); pct < 49.9 || pct > 50.1 {
 		t.Errorf("mem_usage_pct=%v want ~50", pct)
+	}
+}
+
+func TestNodesMetricsHandlerScopesK8sQueriesByClusterID(t *testing.T) {
+	h := &Handler{}
+	orig := k8sAPIFn
+	t.Cleanup(func() { k8sAPIFn = orig })
+	k8sAPIFn = func(path string) ([]byte, error) {
+		const selector = "?labelSelector=cluster_id%3Dcluster-a"
+		switch path {
+		case "/apis/metrics.k8s.io/v1beta1/nodes" + selector:
+			return []byte(`{"items":[{"metadata":{"name":"worker-a"},"usage":{"cpu":"250m","memory":"2Gi"}}]}`), nil
+		case "/api/v1/nodes" + selector:
+			return []byte(`{"items":[{"metadata":{"name":"worker-a"},"status":{"capacity":{"cpu":"2","memory":"4Gi"}}}]}`), nil
+		default:
+			if strings.Contains(path, "nodes") {
+				t.Errorf("expected cluster-scoped node query, got %q", path)
+			}
+			return nil, nil
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nodes/metrics?cluster_id=cluster-a", nil)
+	req.Header.Set("Authorization", "Bearer "+generateJWT("admin", "admin", ""))
+	rec := httptest.NewRecorder()
+
+	h.NodesMetrics(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestKubectlFallbackScopesClusterNodeQueries(t *testing.T) {
+	dir := t.TempDir()
+	kubectl := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("write kubectl shim: %v", err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "metrics",
+			path: "/apis/metrics.k8s.io/v1beta1/nodes?labelSelector=cluster_id%3Dcluster-a",
+			want: "top\nnodes\n-l\ncluster_id=cluster-a\n-o\njson\n",
+		},
+		{
+			name: "capacity",
+			path: "/api/v1/nodes?labelSelector=cluster_id%3Dcluster-a",
+			want: "get\nnodes\n-l\ncluster_id=cluster-a\n-o\njson\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := kubectlFallback(tc.path)
+			if err != nil {
+				t.Fatalf("kubectlFallback(%q): %v", tc.path, err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("kubectl arguments = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

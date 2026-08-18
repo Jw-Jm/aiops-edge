@@ -351,3 +351,36 @@ func TestCreateMiddlewareMetricRuleRequiresMetric(t *testing.T) {
 		t.Fatalf("expected 400 for empty metric, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestAlertRuleByIDPutUpdatesExistingRule(t *testing.T) {
+	alertRulesMu.Lock()
+	originalRules := append([]AlertRule(nil), alertRules...)
+	alertRules = []AlertRule{{
+		ID: "rule-to-update", Name: "old name", Service: "checkout", Type: "threshold",
+		Metric: "error_rate", Threshold: 5, Duration: 5, Severity: "warning",
+	}}
+	alertRulesMu.Unlock()
+	t.Cleanup(func() {
+		alertRulesMu.Lock()
+		alertRules = originalRules
+		alertRulesMu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/alerts/rules/rule-to-update",
+		strings.NewReader(`{"name":"checkout errors","service":"checkout","type":"threshold","metric":"error_rate","threshold":2,"duration":10,"severity":"critical"}`))
+	req.Header.Set("Authorization", "Bearer "+generateJWT("admin", "admin", ""))
+	rec := httptest.NewRecorder()
+
+	(&Handler{}).AlertRuleByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected PUT update status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	alertRulesMu.RLock()
+	updated := alertRules[0]
+	alertRulesMu.RUnlock()
+	if updated.ID != "rule-to-update" || updated.Name != "checkout errors" || updated.Threshold != 2 || updated.Duration != 10 {
+		t.Fatalf("unexpected updated rule: %+v", updated)
+	}
+}

@@ -40,9 +40,11 @@ class AgentState(TypedDict):
     red_metrics: str
     trace_data: str
     k8sgpt_raw: str
+    k8sgpt_error: str
 
     # RAG
     similar_cases: str
+    knowledge_tool_error: str
 
     # analysis
     crewai_result: str
@@ -111,8 +113,17 @@ def _llm_key_ready() -> bool:
     注意: cfg(llm_config) 里 api_key 已被 set_llm_config 安全剔除(只存 _LLM_KEY_HOLDER),
     因此必须检查 _LLM_KEY_HOLDER 而非 cfg.get('api_key'), 否则真实 key 存在时也会被误判为
     '无 key' 而全部走 mock/跳过 —— 这正是"LLM 并未实际调用"的根因。
+
+    兼容直接注入的运行时配置（例如测试替身或旧版调用方）：生产路径仍由
+    set_llm_config() 将 key 放入 holder，只有 holder 为空时才读取 brain.llm_config。
     """
-    return bool(_LLM_KEY_HOLDER.get("api_key"))
+    if _LLM_KEY_HOLDER.get("api_key"):
+        return True
+    try:
+        cfg = getattr(brain, "llm_config", None)
+        return isinstance(cfg, dict) and bool(cfg.get("api_key"))
+    except Exception:
+        return False
 
 
 def _is_llm_failure(text) -> bool:
@@ -151,16 +162,10 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
         # 禁用 CrewAI 遥测，避免启动时网络超时阻塞
         _os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
         _os.environ.setdefault("CREWAI_TELEMETRY_OPT_OUT", "true")
-        # 关键: CrewAI 内部从环境变量读取 OPENAI_API_KEY/BASE_URL/MODEL，
-        # 必须显式设置（否则部分版本会报 "OPENAI_API_KEY is required" 或卡住）。
-        # 安全：调用后立即清理，避免明文 key 常驻进程环境变量。
-        _prev_key = _os.environ.get("OPENAI_API_KEY")
-        _prev_base = _os.environ.get("OPENAI_BASE_URL")
-        _prev_model = _os.environ.get("OPENAI_MODEL")
-        _os.environ["OPENAI_API_KEY"] = api_key
-        _os.environ["OPENAI_BASE_URL"] = cfg.get("base_url", "https://api.openai.com/v1")
-        _os.environ["OPENAI_MODEL"] = cfg.get("model", "gpt-4o")
-
+        # 安全修复(G7): 不再设置进程全局 OPENAI_API_KEY/BASE_URL/MODEL 环境变量——
+        # 并发调用会互相覆盖（LLM env 竞态），且明文 key 会常驻进程环境/泄漏到子进程。
+        # CrewAI LLM 构造器直接接收 api_key/base_url/model 参数（见下方 LLM(...)），
+        # 无需依赖环境变量；env 仅作为构造器内部兜底，不在此处写入。
         from crewai import Agent, Task, Crew, LLM
         llm = LLM(model=cfg["model"], api_key=api_key,
                    base_url=cfg["base_url"], provider=cfg.get("backend", "openai"), temperature=0.3)
@@ -184,14 +189,6 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
                 return "[LLM 调用超时, 请稍后重试]"
         finally:
             _LLM_SEMAPHORE.release()
-            # 清理本次调用设置的环境变量（恢复原值或删除），避免 key 常驻进程环境
-            for k, prev in (("OPENAI_API_KEY", _prev_key),
-                            ("OPENAI_BASE_URL", _prev_base),
-                            ("OPENAI_MODEL", _prev_model)):
-                if prev is None:
-                    _os.environ.pop(k, None)
-                else:
-                    _os.environ[k] = prev
     except Exception as e:
         return f"[LLM error: {e}]"
 
@@ -448,6 +445,30 @@ _FAULT_MARKERS = (
     "报错", "崩溃", "不可用", "重启", "慢", "延迟", "性能", "报警",
 )
 
+# Explicit tool requests must take precedence over the lightweight information
+# path.  For example, "用 k8sgpt 诊断当前集群有哪些问题" contains the
+# information marker "有哪些", but the user explicitly asked for a tool call.
+_EXPLICIT_TOOL_KEYWORDS = {
+    "k8sgpt_diagnose": ("k8sgpt", "k8s gpt", "k8s-gpt"),
+    "query_knowledge": (
+        "知识库", "知识搜索", "搜索知识", "案例库", "案例检索", "历史案例",
+        "参考知识", "运维手册", "playbook", "rag", "knowledge", "knowledge base", "knowledge search",
+    ),
+}
+
+
+def _explicit_tool_route(question: str) -> Optional[str]:
+    """Return the explicitly requested read-only tool, if any.
+
+    This is deliberately deterministic: an LLM should not be able to turn an
+    explicit tool request into a generic service-list answer.
+    """
+    q = (question or "").lower()
+    for tool_name, keywords in _EXPLICIT_TOOL_KEYWORDS.items():
+        if any(keyword in q for keyword in keywords):
+            return tool_name
+    return None
+
 
 def _is_info_query(question: str) -> bool:
     """信息查询类问题判定：含查询词（有哪些/列表/总结等）且不含故障语义 → True。
@@ -457,6 +478,8 @@ def _is_info_query(question: str) -> bool:
     """
     q = (question or "").strip()
     if not q:
+        return False
+    if _explicit_tool_route(q):
         return False
     if any(k in q for k in _FAULT_MARKERS):
         return False
@@ -712,10 +735,22 @@ async def node_collect(state: AgentState) -> dict:
     except:
         result["logs_data"] = ""
     # P1-6: K8sGPT 不再每次对话无条件调用——仅 diagnosis 意图且非信息查询时调用，
-    # 避免聊天/信息查询链路被 k8sgpt analyze 拖慢；失败快速跳过不阻塞（timeout 10s）
+    # 避免聊天/信息查询链路被 k8sgpt analyze 拖慢；显式 k8sgpt 请求始终调用匹配工具。
     import shutil
     is_diag = (state.get("intent") or "").lower() == "diagnosis"
-    if is_diag and not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt"):
+    explicit_tool = _explicit_tool_route(state.get("user_message", ""))
+    if explicit_tool == "k8sgpt_diagnose":
+        try:
+            # Use the registered read-only tool so an explicit request is
+            # observable and gets the same fallback text as MCP callers.
+            raw = await asyncio.to_thread(k8sgpt_diagnose)
+            result["k8sgpt_raw"] = str(raw or "未发现集群问题")[:20000]
+            if any(marker in result["k8sgpt_raw"].lower() for marker in ("未安装", "失败", "超时")):
+                result["k8sgpt_error"] = result["k8sgpt_raw"]
+        except Exception as exc:
+            result["k8sgpt_raw"] = f"K8sGPT 诊断失败: {str(exc)[:300]}"
+            result["k8sgpt_error"] = result["k8sgpt_raw"]
+    elif is_diag and not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt"):
         try:
             env = dict(os.environ)
             if api_key:
@@ -871,6 +906,29 @@ async def node_rag(state: AgentState) -> dict:
     symptom = state.get("user_message", "")
     svc = state.get("service", "")
     query = f"{svc}: {symptom}" if svc else symptom
+    if _explicit_tool_route(symptom) == "query_knowledge":
+        try:
+            # query_knowledge is the explicit knowledge-search tool; keep the
+            # result in the normal similar_cases field so downstream reports
+            # and checkpoint consumers remain backwards compatible.
+            from tools import _query_knowledge
+            knowledge = await asyncio.to_thread(_query_knowledge, query=query)
+            if knowledge:
+                return {
+                    "similar_cases": f"## 知识库检索结果\n{knowledge}",
+                    "messages": [f"[{_now()}] 知识库检索完成"],
+                }
+            return {
+                "similar_cases": "",
+                "knowledge_tool_error": "知识库未返回结果",
+                "messages": [f"[{_now()}] 知识库检索失败: 未返回结果"],
+            }
+        except Exception as exc:
+            return {
+                "similar_cases": "",
+                "knowledge_tool_error": f"知识库检索失败: {str(exc)[:300]}",
+                "messages": [f"[{_now()}] 知识库检索失败"],
+            }
     try:
         # rag.search (ChromaDB) 是同步阻塞 IO，丢线程池
         cases = await asyncio.to_thread(rag.search, query, 3)
@@ -1349,6 +1407,7 @@ async def node_summarize(state: AgentState) -> dict:
     verify = "✅ 执行成功" if state.get("verify_pass") else "❌ 执行未达预期" if state.get("script") else ""
     plan = state.get("plan", "")
     risk = state.get("risk_score", 0)
+    explicit_tool = _explicit_tool_route(msg)
 
     # P1-5: LLM 超时/错误占位符不得进入最终报告诊断结论 → 降级为确定性诊断段落
     if _is_llm_failure(crewai):
@@ -1366,10 +1425,15 @@ async def node_summarize(state: AgentState) -> dict:
         # P3-7: 目标为空时输出"未指定"，不残留 '-'（P3-1 遗留的 markdown 残留修复）
         parts.append(f"**目标**: {svc or '未指定'} | **问题**: {msg}")
         if holmes: parts.append(f"### Trace 分析\n{holmes[:3000]}")
-        if k8sgpt: parts.append(f"### K8s 诊断\n{k8sgpt[:2000]}")
         if crewai: parts.append(f"### 诊断结论\n{crewai[:3000]}")
     else:
         parts.append(crewai or "LLM 未配置")
+
+    if explicit_tool == "query_knowledge":
+        knowledge = state.get("similar_cases", "")
+        parts.append(knowledge[:6000] if knowledge else "### 知识库检索结果\n未检索到相关知识。")
+    if k8sgpt and (intent == "diagnosis" or explicit_tool == "k8sgpt_diagnose"):
+        parts.append(f"### K8sGPT 诊断\n{k8sgpt[:2000]}")
 
     # P1-3/P1-5: 统一 0~1 风险分（由诊断结论中的异常证据计算），不再输出 ⭐(1/5) 文本
     risk_score01 = _risk_from_evidence(crewai or "") if (crewai or risk) else 0.0
@@ -1563,7 +1627,7 @@ class BrainOrchestrator:
         这里改为直接从同步 `self._conn` 读 checkpoints 表并反序列化 checkpoint，
         完全绕开 async checkpointer，跨 event loop 安全。
 
-        返回: {"user_message","final_response","intent","service"} 或 None。
+        返回会话摘要和原始 messages/state 字段，供历史会话无损还原 AiChat 卡片。
         """
         if self._conn is None:
             return None
@@ -1586,6 +1650,13 @@ class BrainOrchestrator:
                 "final_response": values.get("final_response", ""),
                 "intent": values.get("intent", ""),
                 "service": values.get("service", ""),
+                "messages": values.get("messages", []),
+                "plan": values.get("plan", ""),
+                "script": values.get("script", ""),
+                "risk_score": values.get("risk_score", 0),
+                "risk_reason": values.get("risk_reason", ""),
+                "execute_output": values.get("execute_output", ""),
+                "exec_context": values.get("exec_context", ""),
             }
         except Exception as _e:
             print(f"[get_session_state] error for {thread_id}: {_e}")
@@ -1634,9 +1705,9 @@ class BrainOrchestrator:
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
             "llm_config": self.llm_config,
-            "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "",
+            "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
-            "similar_cases": "", "crewai_result": "", "holmesgpt_result": "",
+            "similar_cases": "", "knowledge_tool_error": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
             # P0-2: 初始 approved=False——非交互 full 图必须走人工审批
             # (approved 由 approve/resume 显式置位；chat 图无 wait_approval 节点不受影响)
@@ -1687,9 +1758,9 @@ class BrainOrchestrator:
             "history_context": history_context,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
             "llm_config": self.llm_config,
-            "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "",
+            "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
-            "similar_cases": "", "crewai_result": "", "holmesgpt_result": "",
+            "similar_cases": "", "knowledge_tool_error": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
             # P0-2: 初始 approved=False——非交互 full 图必须走人工审批
             # (approved 由 approve/resume 显式置位；chat 图无 wait_approval 节点不受影响)
@@ -1725,8 +1796,11 @@ class BrainOrchestrator:
                 label = step_names.get(node_name, node_name)
                 yield {"type": "progress", "node": node_name, "text": f"{label}", "step": min(step_num, 7), "total": 8}
                 # 工具级事件（节点级推断；真实工具级采集为独立后续）
+                explicit_tool = _explicit_tool_route(message)
                 tool_node_map = {"crewai": "CrewAI 分析", "holmes": "Trace 调查", "rca": "RCA 根因分析",
                                  "rag": "RAG 案例匹配", "plan": "生成操作方案"}
+                if explicit_tool == "query_knowledge":
+                    tool_node_map.pop("rag", None)
                 tool_id = f"tool_{node_name}_{step_num}"
                 if node_name in tool_node_map:
                     yield {"type": "tool_start", "tool_call_id": tool_id,
@@ -1736,6 +1810,24 @@ class BrainOrchestrator:
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": tool_node_map[node_name], "status": "success",
                            "arguments": {}, "result": friendly_result}
+                if node_name == "collect" and explicit_tool == "k8sgpt_diagnose":
+                    tool_id = f"tool_k8sgpt_{step_num}"
+                    k8sgpt_error = node_data.get("k8sgpt_error", "")
+                    yield {"type": "tool_start", "tool_call_id": tool_id,
+                           "name": "k8sgpt_diagnose", "status": "pending", "arguments": {}}
+                    yield {"type": "tool_end", "tool_call_id": tool_id,
+                           "name": "k8sgpt_diagnose",
+                           "status": "error" if k8sgpt_error else "success", "arguments": {},
+                           "result": str(k8sgpt_error or node_data.get("k8sgpt_raw") or "未返回 K8sGPT 结果")[:3000]}
+                elif node_name == "rag" and explicit_tool == "query_knowledge":
+                    tool_id = f"tool_knowledge_{step_num}"
+                    knowledge_error = node_data.get("knowledge_tool_error", "")
+                    yield {"type": "tool_start", "tool_call_id": tool_id,
+                           "name": "query_knowledge", "status": "pending", "arguments": {}}
+                    yield {"type": "tool_end", "tool_call_id": tool_id,
+                           "name": "query_knowledge",
+                           "status": "error" if knowledge_error else "success", "arguments": {},
+                           "result": str(knowledge_error or node_data.get("similar_cases") or "未检索到知识库结果")[:3000]}
                 # 双层 Agent 节点级事件（批3）：coordinator/subagent/reviewer
                 if node_name == "coordinator":
                     yield {"type": "tool_start", "tool_call_id": tool_id, "name": "Coordinator 拆解",

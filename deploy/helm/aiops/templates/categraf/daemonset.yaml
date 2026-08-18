@@ -1,8 +1,11 @@
 {{- if .Values.categraf.enabled }}
 # =============================================================================
 # categraf DaemonSet — 每节点主机指标采集（P1-7，替代 node-exporter/ipmi-exporter）
-# 权限写法参照 ipmi-exporter DaemonSet：privileged（IPMI KCS / freeipmi 需要）+
-# hostPID（进程/主机视角采集，IPMI 本地读 /dev/ipmi0 需要）。
+# 权限说明（G5 加固）：
+#   - hostPID 已移除：主机指标经 /hostfs/proc、/hostfs/sys hostPath 只读挂载采集，
+#     无需共享宿主机 PID 命名空间（如需 procstat 采集宿主机进程，需评估后单独开启）。
+#   - privileged 保留：input.ipmi 插件本地读 /dev/ipmi0（IPMI KCS 原始 I/O）需要；
+#     若未启用 ipmi 插件，可移除 privileged 并改用最小 capability。
 # 配置加载：ConfigMap items 挂载产生 symlink 目录（input.cpu -> ..data/input.cpu），
 #   categraf local provider 用 IsDir() 检查不识别 symlink → "no inputs"。
 #   因此：ConfigMap 挂到 conf-cm（只读），启动命令 cp -rL 解引用复制到
@@ -28,7 +31,6 @@ spec:
       labels:
         app.kubernetes.io/name: categraf
     spec:
-      hostPID: true
       tolerations:
         - operator: Exists
       containers:
@@ -36,6 +38,8 @@ spec:
           image: {{ .Values.categraf.image }}
           imagePullPolicy: IfNotPresent
           securityContext:
+            # G5：privileged 仅因 input.ipmi 读 /dev/ipmi0（IPMI KCS 原始 I/O）必需；
+            # 未启用 ipmi 插件时可移除并改用 capabilities: add: [SYS_RAWIO]。
             privileged: true
           env:
             - name: TZ

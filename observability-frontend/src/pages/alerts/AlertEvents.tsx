@@ -4,10 +4,15 @@ import { useSearchParams } from 'react-router-dom'
 import { getAlertEvents, rcaAlertAnalysis, deleteAlertEvent } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
+import { normalizeSeverity, SEVERITY_LABELS } from '../../lib/severity'
 
 interface AlertEvent { id: string | number; severity?: string; labels?: any; summary?: string; description?: string; service_name?: string; startsAt?: string; status?: string }
 
-const sevTone = (s: string): 'crit' | 'warn' | 'info' => (s === 'critical' || s === '严重' ? 'crit' : s === 'warning' || s === '警告' ? 'warn' : 'info')
+// A4: 严重度展示/筛选统一走 normalizeSeverity（中文/英文/数字 → critical|warning|info）
+const sevTone = (s: string): 'crit' | 'warn' | 'info' => {
+  const n = normalizeSeverity(s)
+  return n === 'critical' ? 'crit' : n === 'warning' ? 'warn' : 'info'
+}
 
 const AlertEvents: React.FC = () => {
   const currentClusterId = useUIStore((s) => s.currentClusterId)
@@ -50,8 +55,9 @@ const AlertEvents: React.FC = () => {
     return map[base] || ''
   }
   // 2.10 当前告警=未解决（firing/acknowledged/空）；历史告警=全部
+  // A4: 筛选比较统一归一化后的严重度，中文（严重/警告）事件也能被英文筛选值命中
   const filtered = data
-    .filter((e) => (sev === 'all' ? true : severity(e).toLowerCase().includes(sev)))
+    .filter((e) => (sev === 'all' ? true : normalizeSeverity(severity(e)) === normalizeSeverity(sev)))
     .filter((e) => {
       if (status === 'all') return true
       const st = String(eventStatus(e)).toLowerCase()
@@ -68,7 +74,7 @@ const AlertEvents: React.FC = () => {
     })
 
   const cols = [
-    { title: '严重度', key: 'severity', width: 90, render: (_: any, r: AlertEvent) => { const s = severity(r); return <StatusBadge text={s === 'critical' || s === '严重' ? '严重' : s === 'warning' || s === '警告' ? '警告' : '信息'} tone={sevTone(s)} /> } },
+    { title: '严重度', key: 'severity', width: 90, render: (_: any, r: AlertEvent) => { const s = normalizeSeverity(severity(r)); return <StatusBadge text={SEVERITY_LABELS[s]} tone={sevTone(s)} /> } },
     { title: '摘要', key: 'summary', render: (_: any, r: any) => <a onClick={() => setDetail(r)} style={{ color: 'var(--text)' }}>{r.rule_name || r.message || r.summary || r.labels?.alertname || '告警'}</a> },
     { title: '告警对象', key: 'object', render: (_: any, r: any) => r.object || r.labels?.pod || r.labels?.deployment || r.labels?.service || r.service || '-' },
     { title: '次数', key: 'count', width: 80, render: (_: any, r: any) => <span style={{ color: 'var(--text-muted)' }}>{r.count ?? 1}</span> },
@@ -161,7 +167,7 @@ const AlertEvents: React.FC = () => {
         </Space>} />
 
       <div className="card" style={{ padding: 0 }}>
-        <Table rowKey="id" loading={loading} columns={cols} dataSource={filtered} size="middle"
+        <Table rowKey={(r: any, idx?: number) => `${r?.id ?? 'evt'}-${idx ?? 0}`} loading={loading} columns={cols} dataSource={filtered} size="middle"
           pagination={{ pageSize: 20 }} scroll={{ x: 900 }} locale={{ emptyText: <Empty text="暂无告警" /> }} />
       </div>
 
@@ -174,7 +180,7 @@ const AlertEvents: React.FC = () => {
                 dataSource={[
                   { k: '规则', v: (detail as any).rule_name || detail.summary || '-' },
                   { k: '服务', v: (detail as any).service || (detail as any).labels?.service || '-' },
-                  { k: '严重度', v: severity(detail) },
+                  { k: '严重度', v: SEVERITY_LABELS[normalizeSeverity(severity(detail))] },
                   { k: '消息', v: (detail as any).message || detail.description || '-' },
                   { k: '触发次数', v: `${(detail as any).count ?? 1}` },
                   { k: '首次触发', v: (detail as any).first_timestamp || '-' },

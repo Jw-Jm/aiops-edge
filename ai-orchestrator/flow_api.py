@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from flow_engine.store import FlowStore
@@ -238,9 +239,9 @@ def run_flow(flow_id: str, req: RunRequest):
     if req.service:
         trigger.setdefault("service", req.service)
     try:
-        run_id = f"run_{flow_id}_{abs(hash(flow_id + str(trigger))) % 10**10}"
+        run_id = f"run_{uuid.uuid4().hex}"
         result = svc.run_flow(flow_id, trigger, run_id)
-        return {"run_id": run_id, "status": result.status,
+        return {"run_id": run_id, "status": result.status, "run": result.run,
                 "result": result.context.nodes.get("summarize", {}).get("output", {}) if result.status == "succeeded" else {}}
     except KeyError:
         raise HTTPException(404, "flow not found")
@@ -273,6 +274,6 @@ def resume_run(flow_id: str, run_id: str, req: ResumeRequest, request: Request):
     svc = get_flow_service()
     try:
         result = svc.resume_run(run_id, req.approved)
-        return {"run_id": run_id, "status": result.status}
+        return {"run_id": run_id, "status": result.status, "run": result.run}
     except KeyError:
         raise HTTPException(404, "run not found")

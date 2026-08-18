@@ -26,8 +26,14 @@ const Report: React.FC = () => {
     load()
     // Issue7: 30s 轮询刷新，使 AI 对话新生成的巡检/诊断报告自动出现在报告中心，无需手动刷新
     // 需求：切换集群后同步刷新（currentClusterId 变化时重建 effect）
-    const timer = setInterval(load, 30000)
-    return () => clearInterval(timer)
+    // B12: Tab 隐藏时暂停轮询（visibilitychange），避免后台空转请求
+    let timer: ReturnType<typeof setInterval> | null = null
+    const start = () => { if (!timer) timer = setInterval(load, 30000) }
+    const stop = () => { if (timer) { clearInterval(timer); timer = null } }
+    const onVis = () => { document.visibilityState === 'visible' ? start() : stop() }
+    document.addEventListener('visibilitychange', onVis)
+    start()
+    return () => { document.removeEventListener('visibilitychange', onVis); stop() }
   }, [currentClusterId])
 
   const taskIdOf = (r: any) => r.task_id || r.id || ''
@@ -107,7 +113,7 @@ const Report: React.FC = () => {
       <Breadcrumb items={[{ t: '报告' }, { t: '报告中心' }]} />
       <PageHeader title="报告中心" desc="诊断报告 / 巡检报告的生成与下载" />
       <div className="card" style={{ padding: 0 }}>
-        <Table rowKey="task_id" loading={loading} columns={cols} dataSource={data} size="middle"
+        <Table rowKey={taskIdOf} loading={loading} columns={cols} dataSource={data} size="middle"
           pagination={{ pageSize: 20 }} locale={{ emptyText: <Empty text="暂无报告" /> }} />
       </div>
 

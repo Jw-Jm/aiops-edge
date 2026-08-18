@@ -28,6 +28,31 @@ function readCurrentClusterId(): string {
   }
 }
 
+// 全局端点白名单：这些接口与具体集群无关，注入 cluster_id 会静默缩小结果集（见 F3）。
+// 仅对集群级端点注入 cluster_id；/clusters 自身也跳过（避免干扰集群 CRUD）。
+const GLOBAL_PATHS = [
+  '/clusters',
+  '/users',
+  '/ops/tasks',
+  '/ops/audit-logs',
+  '/ops/reports',
+  '/ops/changes',
+  '/node/health',
+  '/ipmi',
+  '/settings',
+  '/auth',
+  '/slo',
+  '/ai/sessions',
+  '/ai/session',
+  '/ai/knowledge',
+  '/ai/skills',
+  '/ai/workflows',
+  '/ai/flows',
+  '/mcp',
+  '/grafana',
+  '/system',
+]
+
 // Request interceptor: set Authorization header + 多集群过滤参数
 api.interceptors.request.use((config) => {
   const t = localStorage.getItem('token')
@@ -35,10 +60,9 @@ api.interceptors.request.use((config) => {
     config.headers.Authorization = `Bearer ${t}`
   }
   const cid = readCurrentClusterId()
-  // 跳过对集群管理接口自身注入 cluster_id（避免干扰集群 CRUD）
   const url = config.url || ''
-  const isClusterApi = url.startsWith('/clusters')
-  if (!isClusterApi && cid !== 'all') {
+  const isGlobal = GLOBAL_PATHS.some((p) => url.startsWith(p))
+  if (!isGlobal && cid !== 'all') {
     config.params = { ...(config.params || {}), cluster_id: cid }
   }
   return config
@@ -61,7 +85,7 @@ api.interceptors.response.use(
 
 // Services
 export const getServices = () => api.get('/services')
-export const getServiceDetail = (name: string) => api.get(`/services/${name}`)
+export const getServiceDetail = (name: string, params?: Record<string, unknown>) => api.get(`/services/${name}`, { params })
 export const getTraces = (params?: Record<string, unknown>) => api.get('/traces', { params })
 export const getTraceDetail = (id: string) => api.get(`/traces/${id}`)
 export const getTraceContext = (id: string) => api.get(`/traces/${id}/context`)
@@ -395,7 +419,7 @@ export interface ChangeItem {
 export const getChanges = (params?: Record<string, unknown>) => api.get('/ops/changes', { params })
 export const postChange = (data: Record<string, unknown>) => api.post('/ops/changes', data)
 
-// ===== 知识图谱（骨架：后端 P2-1/P2-2 并行开发，失败时返回空图）=====
+// ===== 知识图谱 =====
 // 字段对齐后端 kg_api.kg_graph_full：节点 {id:int,type,name,props}，边 {id:int,src:int,dst:int,type,props}。
 // 兼容旧写法 source/target（部分 mock/降级路径可能使用），实际以 src/dst 为准。
 export interface KgNode { id?: string | number; name: string; type?: string; props?: Record<string, unknown> }
@@ -416,12 +440,12 @@ export interface KgGraph {
   edges?: KgEdge[]
   links?: KgEdge[]
   cluster_id?: string
-  unavailable?: boolean  // 后端 API 未就绪标记（client 容错写入）
+  unavailable?: boolean  // 后端 API 未就绪标记（兼容旧容错路径）
 }
+// B12: 移除 .catch 吞错——错误传播到调用方（KnowledgeGraph 经 ErrorState 展示 + 重试），
+// 不再静默返回空图，避免"加载失败"与"无数据"混淆。
 export const getKgGraph = (params?: Record<string, unknown>) =>
-  api.get<KgGraph>('/ai/kg/graph', { params }).catch(() => ({
-    data: { nodes: [], edges: [], links: [], unavailable: true } as KgGraph,
-  }))
+  api.get<KgGraph>('/ai/kg/graph', { params })
 
 // ===== 系统健康组件（平台健康页）=====
 export interface SystemComponent {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -44,13 +45,16 @@ func main() {
 
 	writer := clickhouse.NewWriter(*chHost, *chPort, walDir)
 	writer.OnWritten = func(n int) { met.AddSpansWritten(int64(n)) }
+	writer.OnDropped = func(n int) { met.AddSpansDropped(int64(n)) } // H3：背压丢弃可观测
 	defer writer.Close()
 
 	metricsWriter := clickhouse.NewMetricsWriter(*chHost, *chPort, walDir)
 	metricsWriter.OnEdgesWritten = func(n int) { met.AddEdgesWritten(int64(n)) }
+	metricsWriter.OnDropped = func(n int) { met.AddMetricsDropped(int64(n)) } // H3：背压丢弃可观测
 	defer metricsWriter.Close()
 
 	logWriter := clickhouse.NewLogWriter(*chHost, *chPort, walDir)
+	logWriter.OnDropped = func(n int) { met.AddLogsDropped(int64(n)) } // H3：背压丢弃可观测
 	defer logWriter.Close()
 
 	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志，
@@ -100,16 +104,16 @@ func main() {
 	startDeepFlowSyncers()
 
 	pl := pipeline.New(writer, metricsWriter)
-	pl.SetClusterID(clusterID)                   // 多集群纳管：数据打 cluster_id 标
-	pl.SetOnServiceMetric(met.AddServiceRED)     // 服务 RED 指标暴露到 /metrics
+	pl.SetClusterID(clusterID)               // 多集群纳管：数据打 cluster_id 标
+	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics
 	defer pl.Close()
 
 	// DeepFlow data receiver
 	dfReceiver := pipeline.NewDeepFlowReceiver(pl)
 
-	apiKey := os.Getenv("INGEST_API_KEY") // 为空则不启用鉴权（便于本地调试），生产必须配置
+	apiKey := os.Getenv("INGEST_API_KEY")           // 为空则不启用鉴权（便于本地调试），生产必须配置
 	rl := newRateLimiter(parseEnvInt("INGEST_RPS")) // 每接收端点 QPS 上限；<=0 表示不限
-	maxBody := int64(10 << 20) // 默认 10MB body 上限
+	maxBody := int64(10 << 20)                      // 默认 10MB body 上限
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/traces", func(w http.ResponseWriter, r *http.Request) {
@@ -205,9 +209,22 @@ func main() {
 	// DeepFlow native protocol endpoint
 	mux.HandleFunc("/v1/deepflow", dfReceiver.ServeHTTP)
 
+	// /health 真实健康（H4）：探测 ClickHouse 连通性 + 重试队列水位，
+	// 依赖异常时返回 503 + JSON body，触发重启/告警。CH 探测结果缓存 5s 避免打爆 CH。
+	hc := &healthCache{}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		healthy, reason := hc.check(writer, logWriter, metricsWriter)
+		w.Header().Set("Content-Type", "application/json")
+		if !healthy {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "unhealthy",
+				"reason": reason,
+			})
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 	})
 
 	// Prometheus 指标端点（生产供 vmalert 抓取告警）
@@ -256,7 +273,50 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	log.Println("Shutting down...")
-	server.Close()
+	// H6：Shutdown 优雅排空在途请求（10s 上限），再冲刷各 writer 缓冲/WAL
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("server shutdown error: %v", err)
+	}
+}
+
+// healthCache 缓存 ClickHouse 连通性探测结果，避免每次探针都打 CH（H4）。
+type healthCache struct {
+	mu        sync.Mutex
+	lastCheck time.Time
+	healthy   bool
+	reason    string
+}
+
+// check 返回缓存（5s 内复用）或重新探测的健康状态。
+// 不健康条件：CH 不可达，或任一 writer 重试队列超过高水位阈值。
+func (h *healthCache) check(writer *clickhouse.Writer, logWriter *clickhouse.LogWriter, metricsWriter *clickhouse.MetricsWriter) (bool, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if time.Since(h.lastCheck) < 5*time.Second {
+		return h.healthy, h.reason
+	}
+	healthy := true
+	reason := ""
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := writer.Ping(ctx); err != nil {
+		healthy = false
+		reason = fmt.Sprintf("clickhouse unreachable: %v", err)
+	}
+	cancel()
+	totalRetry := writer.RetryQueueSize() + logWriter.RetryQueueSize() + metricsWriter.RetryQueueSize()
+	if totalRetry > 500 { // 各 writer 重试上限 500 批，合计 >500 视为严重背压
+		healthy = false
+		if reason != "" {
+			reason += "; "
+		}
+		reason += fmt.Sprintf("retry queue depth %d exceeds threshold", totalRetry)
+	}
+	h.lastCheck = time.Now()
+	h.healthy = healthy
+	h.reason = reason
+	return healthy, reason
 }
 
 // extractAttributes converts OTel attribute list to flat map
@@ -331,10 +391,10 @@ func parseEnvInt(key string) int {
 
 // rateLimiter 是基于固定窗口的简单令牌限流器（生产可替换为更精确的滑动窗口）。
 type rateLimiter struct {
-	limit    int
-	mu       sync.Mutex
-	window   time.Time
-	windowN  int
+	limit   int
+	mu      sync.Mutex
+	window  time.Time
+	windowN int
 }
 
 // newRateLimiter 从环境变量字符串创建限流器。limit<=0 表示不限流。

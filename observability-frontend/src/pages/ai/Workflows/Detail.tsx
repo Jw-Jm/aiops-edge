@@ -49,6 +49,22 @@ const WorkflowDetail: React.FC = () => {
   useEffect(() => { load() }, [id])
   // eslint-disable-next-line react-hooks/exhaustive-deps
 
+  // B10: 存在进行中运行（running/waiting_approval/pending 等）时每 5s 轮询刷新运行列表，
+  // 终态（succeeded/failed/cancelled/skipped）后自动停止。
+  useEffect(() => {
+    if (!id) return
+    const ACTIVE = ['running', 'waiting_approval', 'pending', 'queued', 'diagnosing']
+    const hasActive = runs.some((r) => ACTIVE.includes(String(r.status || '').toLowerCase()))
+    if (!hasActive) return
+    const timer = setInterval(async () => {
+      try {
+        const rr = await listFlowRuns(id)
+        setRuns(rr?.data?.runs || rr?.data?.items || [])
+      } catch { /* 轮询失败忽略，下次重试 */ }
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [id, runs])
+
   const openDetail = async (run: FlowRunItem) => {
     if (!id) return
     setDetailLoading(true)

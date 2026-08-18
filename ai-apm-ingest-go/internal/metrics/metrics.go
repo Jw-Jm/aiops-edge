@@ -17,8 +17,11 @@ type Metrics struct {
 	spansReceived  atomic.Int64 // 累计接收 span
 	spansWritten   atomic.Int64 // 累计成功写入 ClickHouse 的 span
 	spansFailed    atomic.Int64 // 累计写入失败（已进重试队列）
+	spansDropped   atomic.Int64 // 累计因背压丢弃的 span（缓冲满，H3）
 	logsReceived   atomic.Int64
+	logsDropped    atomic.Int64 // 累计因背压丢弃的日志（缓冲满，H3）
 	metricsWritten atomic.Int64
+	metricsDropped atomic.Int64 // 累计因背压丢弃的指标/拓扑边批次（缓冲满，H3）
 	edgesWritten   atomic.Int64
 	reqTotal       atomic.Int64 // 接收请求总数
 	reqRejected    atomic.Int64 // 因鉴权/限流拒绝的请求
@@ -26,7 +29,7 @@ type Metrics struct {
 	lastWriteFail  atomic.Int64
 
 	// 服务 RED 标签化计数器（service → 累计值），供 vmagent 抓取进 VictoriaMetrics。
-	redMu     sync.Mutex
+	redMu      sync.Mutex
 	serviceRED map[string]*serviceREDEntry
 }
 
@@ -89,15 +92,21 @@ func (m *Metrics) ResetServiceRED() {
 	m.serviceRED = make(map[string]*serviceREDEntry)
 }
 
-func (m *Metrics) IncSpansReceived()   { m.spansReceived.Add(1) }
+func (m *Metrics) IncSpansReceived()        { m.spansReceived.Add(1) }
 func (m *Metrics) AddSpansReceived(n int64) { m.spansReceived.Add(n) }
-func (m *Metrics) AddSpansWritten(n int64)  { m.spansWritten.Add(n); m.lastWriteOk.Store(time.Now().Unix()) }
-func (m *Metrics) IncSpansFailed()          { m.spansFailed.Add(1); m.lastWriteFail.Store(time.Now().Unix()) }
-func (m *Metrics) IncLogsReceived()         { m.logsReceived.Add(1) }
-func (m *Metrics) AddMetricsWritten(n int64){ m.metricsWritten.Add(n) }
-func (m *Metrics) AddEdgesWritten(n int64)  { m.edgesWritten.Add(n) }
-func (m *Metrics) IncReqTotal()             { m.reqTotal.Add(1) }
-func (m *Metrics) IncReqRejected()          { m.reqRejected.Add(1) }
+func (m *Metrics) AddSpansWritten(n int64) {
+	m.spansWritten.Add(n)
+	m.lastWriteOk.Store(time.Now().Unix())
+}
+func (m *Metrics) IncSpansFailed()           { m.spansFailed.Add(1); m.lastWriteFail.Store(time.Now().Unix()) }
+func (m *Metrics) AddSpansDropped(n int64)   { m.spansDropped.Add(n) }
+func (m *Metrics) IncLogsReceived()          { m.logsReceived.Add(1) }
+func (m *Metrics) AddLogsDropped(n int64)    { m.logsDropped.Add(n) }
+func (m *Metrics) AddMetricsWritten(n int64) { m.metricsWritten.Add(n) }
+func (m *Metrics) AddMetricsDropped(n int64) { m.metricsDropped.Add(n) }
+func (m *Metrics) AddEdgesWritten(n int64)   { m.edgesWritten.Add(n) }
+func (m *Metrics) IncReqTotal()              { m.reqTotal.Add(1) }
+func (m *Metrics) IncReqRejected()           { m.reqRejected.Add(1) }
 
 // Snapshot 生成 Prometheus 文本输出。
 func (m *Metrics) Snapshot() string {
@@ -110,12 +119,21 @@ ai_ingest_spans_written_total %d
 # HELP ai_ingest_spans_failed_total Total spans failed to write (in retry queue).
 # TYPE ai_ingest_spans_failed_total counter
 ai_ingest_spans_failed_total %d
+# HELP ai_ingest_spans_dropped_total Total spans dropped due to backpressure (buffer full).
+# TYPE ai_ingest_spans_dropped_total counter
+ai_ingest_spans_dropped_total %d
 # HELP ai_ingest_logs_received_total Total logs received.
 # TYPE ai_ingest_logs_received_total counter
 ai_ingest_logs_received_total %d
+# HELP ai_ingest_logs_dropped_total Total logs dropped due to backpressure (buffer full).
+# TYPE ai_ingest_logs_dropped_total counter
+ai_ingest_logs_dropped_total %d
 # HELP ai_ingest_metrics_written_total Total service metrics written.
 # TYPE ai_ingest_metrics_written_total counter
 ai_ingest_metrics_written_total %d
+# HELP ai_ingest_metrics_dropped_total Total metrics/topology batches dropped due to backpressure (buffer full).
+# TYPE ai_ingest_metrics_dropped_total counter
+ai_ingest_metrics_dropped_total %d
 # HELP ai_ingest_edges_written_total Total topology edges written.
 # TYPE ai_ingest_edges_written_total counter
 ai_ingest_edges_written_total %d
@@ -132,8 +150,9 @@ ai_ingest_last_write_ok_time %d
 # TYPE ai_ingest_last_write_fail_time gauge
 ai_ingest_last_write_fail_time %d
 `,
-		m.spansReceived.Load(), m.spansWritten.Load(), m.spansFailed.Load(),
-		m.logsReceived.Load(), m.metricsWritten.Load(), m.edgesWritten.Load(),
+		m.spansReceived.Load(), m.spansWritten.Load(), m.spansFailed.Load(), m.spansDropped.Load(),
+		m.logsReceived.Load(), m.logsDropped.Load(),
+		m.metricsWritten.Load(), m.metricsDropped.Load(), m.edgesWritten.Load(),
 		m.reqTotal.Load(), m.reqRejected.Load(),
 		m.lastWriteOk.Load(), m.lastWriteFail.Load()) + m.serviceREDSnapshot()
 }

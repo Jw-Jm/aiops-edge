@@ -10,21 +10,6 @@ function clusterTone(s?: string): StatusTone {
   return 'info'
 }
 
-// 节点实时用量格式化：CPU（metrics-server 返回 nanocores，如 "2472171400n"，转为核数）
-function fmtNodeCpu(s?: string): string {
-  if (!s) return '-'
-  const t = s.trim()
-  if (t.endsWith('n')) {
-    const n = parseFloat(t.slice(0, -1))
-    return isNaN(n) ? t : `${(n / 1e9).toFixed(2)}`
-  }
-  if (t.endsWith('m')) {
-    const n = parseFloat(t.slice(0, -1))
-    return isNaN(n) ? t : `${(n / 1000).toFixed(2)}`
-  }
-  return t
-}
-
 // 节点实时用量格式化：内存（Ki 为基数，转为人类可读的 Gi/Mi）
 function fmtNodeMem(s?: string): string {
   if (!s) return '-'
@@ -41,7 +26,17 @@ function fmtNodeMem(s?: string): string {
   if (ki >= 1024) return `${(ki / 1024).toFixed(1)}Mi`
   return `${ki.toFixed(0)}Ki`
 }
-import {
+
+// B7: k8s quantity 字符串 → 核数（number），供 fmtCpu 统一格式化 usage 与 capacity。
+function cpuQuantityToCores(s?: string): number | null {
+  if (!s) return null
+  const t = s.trim()
+  if (t.endsWith('n')) { const n = parseFloat(t.slice(0, -1)); return isNaN(n) ? null : n / 1e9 }
+  if (t.endsWith('m')) { const n = parseFloat(t.slice(0, -1)); return isNaN(n) ? null : n / 1000 }
+  const n = parseFloat(t)
+  return isNaN(n) ? null : n
+}
+import api, {
   getLLMSettings, saveLLMSettings, testLLMConnection, listLLMModels,
   listClusters,
   createCluster,
@@ -52,12 +47,12 @@ import {
   getClusterEvents,
   listAuditLogs,
   listUsers,
-  getNodeMetrics,
   getSystemComponents,
   type SystemComponent,
   type ClusterItem,
   type ClusterNodeItem,
 } from '../../api/client'
+import { fmtCpu } from '../../lib/format'
 
 
 // ---- 预设 LLM 厂商：选择后自动填充 base_url ----
@@ -102,9 +97,11 @@ function ClusterManager() {
   useEffect(() => { load() }, [])
 
   // viewDetail 加载节点时并行获取实时用量
+  // B7 修复：按当前集群 id 拉取节点指标（后端支持后生效；client.ts 的 getNodeMetrics 无参，
+  // 这里直接走 api 实例显式传 cluster_id）。
   useEffect(() => {
     if (!detail) return
-    getNodeMetrics().then((r) => {
+    api.get('/nodes/metrics', { params: { cluster_id: String(detail.id) } }).then((r) => {
       const m: Record<string, any> = {}
       ;(r.data?.nodes || []).forEach((n: any) => { m[n.node] = n })
       setNodeMetrics(m)
@@ -231,7 +228,7 @@ function ClusterManager() {
                   { title: '状态', dataIndex: 'status', width: 100, render: (s) => <StatusBadge text={s} tone={clusterTone(s)} /> },
                   { title: 'IP', dataIndex: 'ip', width: 130 },
                   { title: 'OS', dataIndex: 'os', ellipsis: true },
-                  { title: 'CPU 用量', width: 130, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.cpu_usage_pct}% (${fmtNodeCpu(m.cpu_usage)}/${m.cpu_capacity})` : (r.cpu || '-') } },
+                  { title: 'CPU 用量', width: 130, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.cpu_usage_pct}% (${fmtCpu(cpuQuantityToCores(m.cpu_usage))}/${fmtCpu(cpuQuantityToCores(m.cpu_capacity))})` : (r.cpu || '-') } },
                   { title: '内存用量', width: 150, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.mem_usage_pct}% (${fmtNodeMem(m.mem_usage)}/${fmtNodeMem(m.mem_capacity)})` : (r.memory || '-') } },
                 ]} />
               )},
@@ -283,6 +280,9 @@ function operatorView(op: unknown, userMap: Record<string, string>): React.React
 function AuditLog() {
   const [rows, setRows] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   // P2-6: 加载用户列表建立 id → 显示名 映射，审计日志 operator 为纯数字用户 ID 时显示用户名
   const [userMap, setUserMap] = useState<Record<string, string>>({})
 
@@ -298,16 +298,22 @@ function AuditLog() {
     }).catch(() => { /* 用户列表不可用时保持 ID 兜底展示 */ })
   }, [])
 
-  useEffect(() => {
+  // B7 修复：审计日志改服务端分页（后端支持 page/size 并返回 total），
+  // 不再硬编码 limit=100 静默截断。
+  const load = (p = page, s = pageSize) => {
     setLoading(true)
-    listAuditLogs({ limit: 100 })
+    listAuditLogs({ page: p, size: s })
       .then((r) => {
         const d = r.data
-        setRows(Array.isArray(d) ? d : (d?.items ?? d?.data ?? []))
+        const items = Array.isArray(d) ? d : (d?.items ?? d?.data ?? [])
+        setRows(items)
+        setTotal(Array.isArray(d) ? items.length : (d?.total ?? items.length))
       })
       .catch(() => setRows([]))
       .finally(() => setLoading(false))
-  }, [])
+  }
+
+  useEffect(() => { load() }, [])
 
   return (
     <div>
@@ -317,7 +323,15 @@ function AuditLog() {
         size="small"
         loading={loading}
         dataSource={rows}
-        pagination={{ pageSize: 20 }}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          pageSizeOptions: [20, 50, 100],
+          showTotal: (t) => `共 ${t} 条`,
+          onChange: (p, s) => { setPage(p); setPageSize(s); load(p, s) },
+        }}
         columns={[
           // Issue8: 后端审计日志返回 created_at（非 timestamp）；缺失时回退 target
           { title: '时间', dataIndex: 'created_at', width: 180, render: (v, r: any) => (r.created_at || r.timestamp || '').replace('T', ' ').slice(0, 19) },
@@ -495,8 +509,11 @@ function PlatformHealth() {
 
   useEffect(() => {
     load(false)
-    const timer = setInterval(() => load(true), 5000) // 5s 轮询
-    return () => clearInterval(timer)
+    // B7 修复：Tab 隐藏时暂停 5s 轮询（visibilitychange），恢复可见时立即刷新一次
+    const timer = setInterval(() => { if (!document.hidden) load(true) }, 5000)
+    const onVis = () => { if (!document.hidden) load(true) }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis) }
   }, [])
 
   // 状态 → Tag 颜色：ok=绿 degraded=橙 down=红
@@ -530,40 +547,9 @@ function PlatformHealth() {
   )
 }
 
+// B7 修复：移除死代码（未使用的 form/loading/useEffect/llmTab），
+// AI 模型配置已由 LLMConfig 组件承载。
 const AdminSettings: React.FC = () => {
-  const [form] = Form.useForm()
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    getLLMSettings().then((r) => {
-      const d = r.data?.data || r.data
-      if (d) {
-        form.setFieldsValue({
-          provider: d.active_provider || d.provider || '',
-          base_url: d.base_url || '',
-          model: d.model || '',
-          api_key: d.api_key ? String(d.api_key).slice(0, 4) + '***' : '',
-        })
-      }
-    }).catch(() => {}).finally(() => setLoading(false))
-  }, [])
-
-  const llmTab = (
-    <div style={{ maxWidth: 640 }}>
-      <div className="card" style={{ padding: 20 }}>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>AI 模型配置</div>
-        <Form form={form} layout="vertical">
-          <Form.Item name="provider" label="模型供应商">
-            <Select options={[{ value: 'deepseek', label: 'DeepSeek' }, { value: 'openai', label: 'OpenAI' }, { value: 'qwen', label: '通义千问' }]} />
-          </Form.Item>
-          <Form.Item name="base_url" label="Base URL"><Input placeholder="https://api.deepseek.com" /></Form.Item>
-          <Form.Item name="model" label="模型"><Input placeholder="deepseek-chat" /></Form.Item>
-          <Form.Item name="api_key" label="API Key"><Input.Password placeholder="sk-..." /></Form.Item>
-        </Form>
-      </div>
-    </div>
-  )
-
   return (
     <div>
       <Breadcrumb items={[{ t: '系统管理' }, { t: '系统设置' }]} />

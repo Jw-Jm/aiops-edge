@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Drawer, message } from 'antd'
+import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Drawer, Popconfirm, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { getAlertRules, createAlertRule, deleteAlertRule } from '../../api/client'
+import { getAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
 
-interface Rule { id: string; name?: string; rule_name?: string; service_name?: string; metric?: string; threshold?: number; severity?: string; enabled?: boolean; condition?: string; duration?: number; cooldown?: number }
+interface Rule { id: string; name?: string; rule_name?: string; service?: string; service_name?: string; metric?: string; threshold?: number; severity?: string; enabled?: boolean; condition?: string; duration?: number; cooldown?: number; type?: string; anomaly_method?: string; baseline_seconds?: number; keyword?: string; slo_id?: string }
 
 const AlertRules: React.FC = () => {
   const currentClusterId = useUIStore((s) => s.currentClusterId)
@@ -13,6 +13,7 @@ const AlertRules: React.FC = () => {
   const [data, setData] = useState<Rule[]>([])
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<Rule | null>(null) // B3: 编辑中的规则（null = 新建）
   const [view, setView] = useState<Rule | null>(null) // 2.11 规则查看
   const [form] = Form.useForm()
 
@@ -29,7 +30,7 @@ const AlertRules: React.FC = () => {
     const v = await form.validateFields()
     // P0: 契约对齐后端 AlertRule 结构体字段（name/service 而非 rule_name/service_name）。
     // 后端 AlertRule 结构体 json tag 为 name/service，且 service 必填。
-    createAlertRule({
+    const payload = {
       name: v.name,
       service: v.service,
       metric: v.metric,
@@ -44,9 +45,39 @@ const AlertRules: React.FC = () => {
       keyword: v.keyword,
       slo_id: v.slo_id,
       enabled: v.enabled ?? true,
+    }
+    // B3: 编辑走 updateAlertRule（PUT /alerts/rules/{id}），新建走 createAlertRule
+    const req = editing ? updateAlertRule(editing.id, payload) : createAlertRule(payload)
+    req
+      .then(() => { message.success(editing ? '已更新' : '已创建'); setOpen(false); setEditing(null); form.resetFields(); load() })
+      .catch((e) => message.error(e?.response?.data?.error || (editing ? '更新失败' : '创建失败')))
+  }
+
+  // B3: 打开编辑弹窗并预填表单（详情抽屉 → 编辑）
+  const openEdit = (r: Rule) => {
+    setEditing(r)
+    form.setFieldsValue({
+      name: r.name || r.rule_name,
+      service: r.service || r.service_name,
+      metric: r.metric,
+      threshold: r.threshold,
+      severity: r.severity || 'warning',
+      condition: r.condition || '>',
+      duration: r.duration ?? 5,
+      type: r.type || 'threshold',
+      anomaly_method: r.anomaly_method,
+      baseline_seconds: r.baseline_seconds,
+      keyword: r.keyword,
+      slo_id: r.slo_id,
+      enabled: r.enabled ?? true,
     })
-      .then(() => { message.success('已创建'); setOpen(false); load() })
-      .catch((e) => message.error(e?.response?.data?.error || '创建失败'))
+    setOpen(true)
+  }
+
+  const openCreate = () => {
+    setEditing(null)
+    form.resetFields()
+    setOpen(true)
   }
 
   const cols = [
@@ -60,7 +91,10 @@ const AlertRules: React.FC = () => {
         <span style={{ display: 'inline-flex', gap: 4 }}>
           <Button size="small" type="link" onClick={() => setView(r)}>详情</Button>
           <Button size="small" type="link" onClick={() => navigate(`/alerts/events?rule=${encodeURIComponent(r.id || r.name || '')}`)}>历史告警</Button>
-          <Button size="small" type="link" danger onClick={() => deleteAlertRule(String(r.id)).then(() => { message.success('已删除'); load() }).catch(() => message.error('删除失败'))}>删除</Button>
+          <Popconfirm title="确认删除该告警规则？" okText="删除" okButtonProps={{ danger: true }}
+            onConfirm={() => deleteAlertRule(String(r.id)).then(() => { message.success('已删除'); load() }).catch(() => message.error('删除失败'))}>
+            <Button size="small" type="link" danger>删除</Button>
+          </Popconfirm>
         </span>
       ) },
   ]
@@ -69,17 +103,17 @@ const AlertRules: React.FC = () => {
     <div>
       <Breadcrumb items={[{ t: '告警' }, { t: '告警规则' }]} />
       <PageHeader title="告警规则" desc="管理阈值、异常检测、燃烧速率等告警策略"
-        actions={<Button type="primary" onClick={() => setOpen(true)}>新建规则</Button>} />
+        actions={<Button type="primary" onClick={openCreate}>新建规则</Button>} />
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey="id" loading={loading} columns={cols} dataSource={data} size="middle"
           pagination={false} locale={{ emptyText: <Empty text="暂无告警规则" /> }} />
       </div>
 
-      <Modal title="新建告警规则" open={open} onOk={submit} onCancel={() => setOpen(false)} destroyOnClose>
+      <Modal title={editing ? '编辑告警规则' : '新建告警规则'} open={open} onOk={submit} onCancel={() => { setOpen(false); setEditing(null) }} destroyOnClose>
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item name="name" label="规则名称" rules={[{ required: true }]}><Input placeholder="如：order-svc 错误率过高" /></Form.Item>
           <Form.Item name="service" label="服务名称" rules={[{ required: true, message: '服务名称必填' }]}><Input placeholder="如：order-svc" /></Form.Item>
-          <Form.Item name="condition" label="触发条件" initialValue=">"><Select options={[{ value: '>', label: '>' }, { value: '>=', label: '>=' }, { value: '<', label: '<' }, { value: '<=', label: '<=' }]} /></Form.Item>
+          <Form.Item name="condition" label="触发条件" initialValue=">" rules={[{ required: true, message: '触发条件必填' }]}><Select options={[{ value: '>', label: '>' }, { value: '>=', label: '>=' }, { value: '<', label: '<' }, { value: '<=', label: '<=' }]} /></Form.Item>
           <Form.Item name="duration" label="持续时间(分钟)" initialValue={5}><InputNumber style={{ width: '100%' }} min={1} /></Form.Item>
           <Form.Item name="type" label="规则类型" initialValue="threshold">
             <Select options={[
@@ -94,6 +128,9 @@ const AlertRules: React.FC = () => {
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.type !== cur.type}>
             {({ getFieldValue }) => {
               const t = getFieldValue('type') || 'threshold'
+              // B3: 仅需要 metric/threshold 的类型才展示并必填；
+              // burn_rate/log/anomaly 等类型不要求 metric/threshold。
+              const needsMetric = ['threshold', 'trace_error_rate', 'trace_latency', 'middleware_metric', 'metric_raw'].includes(t)
               return (
                 <>
                   {t === 'anomaly' && (
@@ -110,7 +147,7 @@ const AlertRules: React.FC = () => {
                   {t === 'log' && (
                     <Form.Item name="keyword" label="日志关键字"><Input placeholder="如：connection refused" /></Form.Item>
                   )}
-                  {t !== 'anomaly' && (
+                  {needsMetric && (
                     <>
                       <Form.Item name="metric" label="监控指标" rules={[{ required: true }]}><Input placeholder="如：error_rate" /></Form.Item>
                       <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}><InputNumber style={{ width: '100%' }} /></Form.Item>
@@ -128,23 +165,29 @@ const AlertRules: React.FC = () => {
       {/* 2.11 规则查看：完整配置 */}
       <Drawer width={440} open={!!view} onClose={() => setView(null)} title="规则详情" styles={{ body: { padding: 16 } }}>
         {view && (
-          <Table rowKey="k" size="small" pagination={false} showHeader={false}
-            dataSource={[
-              { k: '规则名', v: view.name || view.rule_name || '-' },
-              { k: '服务', v: view.service_name || '-' },
-              { k: '指标', v: view.metric || '-' },
-              { k: '阈值', v: view.threshold != null ? `${view.threshold}` : '-' },
-              { k: '条件', v: view.condition || 'threshold' },
-              { k: '严重度', v: view.severity || 'warning' },
-              { k: '持续时间', v: view.duration != null ? `${view.duration} 分钟` : '-' },
-              { k: '冷却期', v: view.cooldown != null ? `${view.cooldown} 秒` : '-' },
-              { k: '状态', v: view.enabled ? '启用' : '停用' },
-            ]}
-            columns={[
-              { title: '', dataIndex: 'k', key: 'k', width: 100, render: (v: string) => <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{v}</span> },
-              { title: '', dataIndex: 'v', key: 'v', render: (v: string) => <span>{v}</span> },
-            ]}
-          />
+          <>
+            <Table rowKey="k" size="small" pagination={false} showHeader={false}
+              dataSource={[
+                { k: '规则名', v: view.name || view.rule_name || '-' },
+                { k: '服务', v: view.service || view.service_name || '-' },
+                { k: '指标', v: view.metric || '-' },
+                { k: '阈值', v: view.threshold != null ? `${view.threshold}` : '-' },
+                { k: '条件', v: view.condition || 'threshold' },
+                { k: '严重度', v: view.severity || 'warning' },
+                { k: '持续时间', v: view.duration != null ? `${view.duration} 分钟` : '-' },
+                { k: '冷却期', v: view.cooldown != null ? `${view.cooldown} 秒` : '-' },
+                { k: '状态', v: view.enabled ? '启用' : '停用' },
+              ]}
+              columns={[
+                { title: '', dataIndex: 'k', key: 'k', width: 100, render: (v: string) => <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{v}</span> },
+                { title: '', dataIndex: 'v', key: 'v', render: (v: string) => <span>{v}</span> },
+              ]}
+            />
+            {/* B3: 详情抽屉 → 编辑（复用新建表单预填，走 updateAlertRule） */}
+            <div style={{ marginTop: 16, textAlign: 'right' }}>
+              <Button type="primary" onClick={() => { openEdit(view); setView(null) }}>编辑</Button>
+            </div>
+          </>
         )}
       </Drawer>
     </div>

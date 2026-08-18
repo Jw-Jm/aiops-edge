@@ -57,8 +57,19 @@ func (h *Handler) ProxyShellWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized: missing token", http.StatusUnauthorized)
 		return
 	}
-	if _, _, _, ok := validateJWT(userToken); !ok {
+	username, _, _, ok := validateJWT(userToken)
+	if !ok {
 		http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
+		return
+	}
+	// G1 安全加固：WebSocket 路径绕过 AuthMiddleware，此处补做 token 撤销与用户存在性/状态校验，
+	// 防止删除/禁用用户后其 token 仍能建立 WebShell。
+	if isTokenRevoked(userToken, username) {
+		http.Error(w, "unauthorized: token revoked", http.StatusUnauthorized)
+		return
+	}
+	if u, err := (&store.UserDAO{}).GetByUsername(username); err != nil || u == nil || u.Status != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	// 2. 注入内部 token：替换 query 的 token 为 INTERNAL_TOKEN（orchestrator 据此校验）
@@ -105,7 +116,7 @@ type Handler struct {
 	chUser     string // ClickHouse 用户名（经 env 注入，空则不启用认证）
 	chPassword string // ClickHouse 密码（经 Secret 注入，空则不启用认证）
 	client     *http.Client
-	vmURL      string // VictoriaMetrics base URL（经 env 注入，可移植）
+	vmURL      string         // VictoriaMetrics base URL（经 env 注入，可移植）
 	podNS      *podNSResolver // K8s pod→ns 兜底映射（GlobalTopology 对空 ns 服务使用；nil 时不启用）
 }
 
@@ -202,7 +213,7 @@ func chDateWindow(minutes int) string {
 }
 
 // chQuote 对拼入 ClickHouse SQL 的字符串字面量做安全转义，防止 SQL 注入。
-// ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ''，反斜杠转义为 \\。
+// ClickHouse 字符串使用单引号包裹，其中单引号转义为两个单引号 ”，反斜杠转义为 \\。
 // 所有由用户/外部输入拼入 SQL 的值都必须经过本函数后再嵌入。
 func chQuote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
@@ -466,16 +477,16 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	for _, svc := range services {
 		m := meta[svc]
 		item := map[string]interface{}{
-			"service_name":    svc,
-			"owner":           "",
-			"team":            "",
-			"tier":            "standard",
-			"description":     "",
-			"source":          "trace",
-			"calls":           int64(0),
-			"errors":          int64(0),
-			"error_rate":      0.0,
-			"avg_latency_ms":  0.0,
+			"service_name":   svc,
+			"owner":          "",
+			"team":           "",
+			"tier":           "standard",
+			"description":    "",
+			"source":         "trace",
+			"calls":          int64(0),
+			"errors":         int64(0),
+			"error_rate":     0.0,
+			"avg_latency_ms": 0.0,
 			// P1-5：保留 deleted 标记（默认过滤后通常为 false；include_deleted=true 时区分展示）
 			"deleted": isDeletedService(svc),
 		}
@@ -562,8 +573,6 @@ func (h *Handler) loadServiceMetadataForHandler(services []string) map[string]*s
 
 // ServiceDetail handles GET /api/v1/services/{name}
 func (h *Handler) ServiceDetail(w http.ResponseWriter, r *http.Request) {
-	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
 	// Extract service name from URL path: strip "/api/v1/services/" prefix
 	name := strings.TrimPrefix(r.URL.Path, "/api/v1/services/")
 	name = strings.TrimRight(name, "/")
@@ -572,33 +581,18 @@ func (h *Handler) ServiceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sql := fmt.Sprintf(
-		"SELECT toStartOfMinute(start_time) as t, count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s AND service_name=%s AND date >= today()-1 GROUP BY t ORDER BY t",
-		chQuote(tid), clusterClause, scopeServicesClause(r), chQuote(name),
-	)
-
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-
-	body, err := h.queryClickHouse(ctx, sql)
-	if err != nil {
-		log.Printf("ServiceDetail query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
-		return
+	// The service-list drawer renders the topology detail contract (health,
+	// relations, traces, and trend). Redirect rather than maintaining a second,
+	// partial implementation that can drift from the canonical endpoint.
+	query := r.URL.Query()
+	minutes, err := strconv.Atoi(query.Get("minutes"))
+	if err != nil || minutes <= 0 {
+		// `/services/{name}` historically used a 24-hour data window. Keep that
+		// contract for callers that do not supply the detail-window parameter.
+		query.Set("minutes", "1440")
 	}
-
-	rows, err := parseRows(body)
-	if err != nil {
-		log.Printf("ServiceDetail parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"service": name,
-		"data":    rows,
-		"count":   len(rows),
-	})
+	target := "/api/v1/topology/node/" + url.PathEscape(name) + "?" + query.Encode()
+	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
 // ListTraces handles GET /api/v1/traces
@@ -616,6 +610,12 @@ func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 	if o := r.URL.Query().Get("offset"); o != "" {
 		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
 			offset = v
+		}
+	}
+	hoursClause := ""
+	if rawHours := r.URL.Query().Get("hours"); rawHours != "" {
+		if hours, err := strconv.Atoi(rawHours); err == nil && hours >= 1 {
+			hoursClause = fmt.Sprintf(" AND start_time >= now() - INTERVAL %d HOUR", hours)
 		}
 	}
 
@@ -637,8 +637,8 @@ func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s%s %s GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d",
-		chQuote(tid), clusterClause, scopeServicesClause(r), searchClause, serviceClause, limit, offset,
+		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s%s%s %s GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d",
+		chQuote(tid), clusterClause, scopeServicesClause(r), searchClause, serviceClause, hoursClause, limit, offset,
 	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -900,6 +900,16 @@ func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 // DashboardStats handles GET /api/v1/dashboard/stats
 // 聚合服务 RED + 拓扑边数，返回平台总览统计。
 func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
+	// H5 修复（R4）：DashboardStats 聚合 7+ 个 CH 查询，前端每 60s 轮询。
+	// 加 30s TTL 内存缓存（key 含 tenant+path+query，即 cluster_id 维度），
+	// 复用 cache.go 的 appCache（mutex 保护 + 过期清理），降低 CH 压力。
+	ck := cacheKey(r)
+	if cached, ok := appCache.Get(ck); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache", "HIT")
+		w.Write([]byte(cached))
+		return
+	}
 	tid := extractTenantID(r)
 	clusterClause := extractClusterClause(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -1057,7 +1067,12 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	alertEventsMu.RUnlock()
 	stats.AlertStats = biz.AggregateAlerts(alertAgg)
 
-	respondJSON(w, http.StatusOK, stats)
+	// H5 修复（R4）：写入 30s TTL 缓存后返回。
+	data, _ := json.Marshal(stats)
+	appCache.Set(ck, string(data), 30*time.Second)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache", "MISS")
+	w.Write(data)
 }
 
 // nodeTypeInfo 根据服务名推断节点类型、分层 rank 与图标（参考 DeepFlow 分层拓扑）。
@@ -1251,7 +1266,8 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		typ, rank := topologyNodeType(name)
 		errRate := 0.0
 		if calls > 0 {
-			errRate = errs / calls * 100
+			// A2 修复：error_rate 统一为 0-1 小数
+			errRate = errs / calls
 		}
 		latencyMs := avgNs / 1e6 // ns → ms
 		if latencyMs <= 0 {
@@ -1259,15 +1275,15 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		}
 		health := "healthy"
 		healthLevel := "normal"
-		if errRate > 10 {
+		if errRate > 0.10 {
 			health = "error"
 			healthLevel = "severe"
-		} else if errRate > 3 {
+		} else if errRate > 0.03 {
 			health = "warning"
 			healthLevel = "slight"
 		}
-		// 健康评分：基于错误率扣分，满分 100
-		healthScore := 100 - errRate*2
+		// 健康评分：基于错误率扣分，满分 100（errRate 为 0-1，等价于旧的 0-100 口径下 -errRate*2）
+		healthScore := 100 - errRate*200
 		if healthScore < 0 {
 			healthScore = 0
 		}
@@ -1281,7 +1297,7 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 			"calls":        int64(calls),
 			"errs":         int64(errs),
 			"latency_ms":   round1(latencyMs),
-			"error_rate":   round1(errRate),
+			"error_rate":   round3(errRate),
 			"health":       health,
 			"health_level": healthLevel,
 			"health_score": round1(healthScore),
@@ -1317,7 +1333,8 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		}
 		errRate := 0.0
 		if calls > 0 {
-			errRate = errs / calls * 100
+			// A2 修复：error_rate 统一为 0-1 小数
+			errRate = errs / calls
 		}
 		latencyMs := avgNs / 1e6
 		if latencyMs <= 0 {
@@ -1336,7 +1353,7 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 			"calls":          int64(calls),
 			"error_count":    int64(errs),
 			"latency_ms":     round1(latencyMs),
-			"error_rate":     round1(errRate),
+			"error_rate":     round3(errRate),
 			"latency_level":  latencyLevel,
 		})
 	}
@@ -1520,13 +1537,15 @@ func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 	avgMs := toFloat(m["avg_ms"])
 	errRate := 0.0
 	if calls > 0 {
-		errRate = errs / calls * 100
+		// A2 修复：error_rate 统一为 0-1 小数
+		errRate = errs / calls
 	}
-	healthScore := 100 - errRate*2
+	// 健康评分：基于错误率扣分，满分 100（errRate 为 0-1，等价于旧的 0-100 口径下 -errRate*2）
+	healthScore := 100 - errRate*200
 	if healthScore < 0 {
 		healthScore = 0
 	}
-	apdex := 1.0 - errRate/100
+	apdex := 1.0 - errRate
 	if apdex < 0 {
 		apdex = 0
 	}
@@ -1536,7 +1555,7 @@ func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 		"health_score": round1(healthScore),
 		"apdex":        round2(apdex),
 		"latency_ms":   round1(avgMs),
-		"error_rate":   round1(errRate),
+		"error_rate":   round3(errRate),
 		"throughput":   int64(calls),
 		"metrics":      m,
 		"trend":        trendRows,
@@ -1660,6 +1679,11 @@ func toFloat(v interface{}) float64 {
 // round1 保留 1 位小数
 func round1(v float64) float64 {
 	return float64(int(v*10+0.5)) / 10
+}
+
+// round3 保留 3 位小数（A2：0-1 口径 error_rate 用，保留 0.1% 粒度）
+func round3(v float64) float64 {
+	return float64(int(v*1000+0.5)) / 1000
 }
 
 // QueryLogs handles GET /api/v1/logs/query?service={name}&query={text}&minutes=15
@@ -1946,6 +1970,12 @@ func normalizeVictoriaLogsRows(body []byte) []map[string]interface{} {
 	return rows
 }
 
+// maxVLLimit 限制 VictoriaLogs 查询 limit 参数上限（G4/S15 修复），防止无界返回。
+const maxVLLimit = 10000
+
+// maxVLResponse 限制 VictoriaLogs 代理响应体上限（20MB）。
+const maxVLResponse = 20 << 20
+
 // ProxyVictoriaLogs handles GET/POST /api/v1/logs/victorialogs
 func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 	// POST: insert logs
@@ -1962,6 +1992,14 @@ func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 	if limit == "" {
 		limit = "50"
 	}
+	// G4 修复（S15）：limit 参数上限 10000，超限拒绝（防止无界返回拖垮内存/带宽）。
+	if n, err := strconv.Atoi(limit); err != nil || n < 1 {
+		respondError(w, http.StatusBadRequest, "invalid limit")
+		return
+	} else if n > maxVLLimit {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("limit too large (max %d)", maxVLLimit))
+		return
+	}
 
 	vlURL := fmt.Sprintf("http://victoria-logs.observability.svc.cluster.local:9428/select/logsql/query?query=%s&limit=%s",
 		query, limit)
@@ -1975,7 +2013,16 @@ func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	// G4 修复（S15）：响应体大小上限（20MB），超限返回 502。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxVLResponse+1))
+	if err != nil {
+		respondError(w, http.StatusBadGateway, "VictoriaLogs read error: "+err.Error())
+		return
+	}
+	if len(body) > maxVLResponse {
+		respondError(w, http.StatusBadGateway, "VictoriaLogs response too large (>20MB)")
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
@@ -1983,7 +2030,42 @@ func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 
 // ProxyVictoriaLogsInsert handles POST /api/v1/logs/victorialogs
 func (h *Handler) ProxyVictoriaLogsInsert(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
+	// G4 修复（S15）：插入日志是写操作，仅 admin/approver 可调用，普通 user 403。
+	if !hasPrivilegedRole(r) {
+		respondError(w, http.StatusForbidden, "forbidden: admin or approver role required")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxVLResponse+1))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	if len(body) > maxVLResponse {
+		respondError(w, http.StatusRequestEntityTooLarge, "request body too large (>20MB)")
+		return
+	}
+	// G4 修复（S15）：schema 校验——payload 必须是 JSON 数组，且每项为对象并含 _msg 或 msg 字段。
+	var entries []map[string]interface{}
+	if err := json.Unmarshal(body, &entries); err != nil {
+		respondError(w, http.StatusBadRequest, "payload must be a JSON array of objects")
+		return
+	}
+	if len(entries) == 0 {
+		respondError(w, http.StatusBadRequest, "payload must be a non-empty JSON array")
+		return
+	}
+	for i, e := range entries {
+		if e == nil {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("entry %d: must be an object", i))
+			return
+		}
+		if _, ok := e["_msg"]; !ok {
+			if _, ok2 := e["msg"]; !ok2 {
+				respondError(w, http.StatusBadRequest, fmt.Sprintf("entry %d: missing _msg or msg field", i))
+				return
+			}
+		}
+	}
 	req, _ := http.NewRequest("POST",
 		"http://victoria-logs.observability.svc.cluster.local:9428/insert/jsonline",
 		bytes.NewReader(body))

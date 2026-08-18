@@ -2,6 +2,7 @@ package clickhouse
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -34,11 +35,13 @@ type MetricsWriter struct {
 	memSeq uint64
 
 	// 内存/重试上限（防止 ClickHouse 长时间不可用时 OOM）
-	maxBufferEdges  int   // 边缓冲最大条数，超限丢弃最旧
-	maxRetryBatches int   // 重试队列最大批次条数，超限丢弃最旧
+	maxBufferEdges  int // 边缓冲最大条数，超限丢弃最旧
+	maxRetryBatches int // 重试队列最大批次条数，超限丢弃最旧
 
 	// OnEdgesWritten 写入成功回调
 	OnEdgesWritten func(n int)
+	// OnDropped 背压丢弃回调（缓冲满丢最旧边时触发，用于 dropped 计数，可为 nil）
+	OnDropped func(n int)
 }
 
 // NewMetricsWriter creates a new MetricsWriter.
@@ -88,6 +91,10 @@ func (w *MetricsWriter) AddEdge(e *model.TopologyEdge) {
 		w.edgesBuf = w.edgesBuf[:len(w.edgesBuf)-1]
 		w.mu.Unlock()
 		log.Printf("METRICWRITER: buffer full (%d), dropping oldest edge (backpressure)", w.maxBufferEdges)
+		// H3：背压丢弃必须可观测（/metrics 暴露 metrics_dropped 计数）
+		if w.OnDropped != nil {
+			w.OnDropped(1)
+		}
 		return
 	}
 	w.edgesBuf = append(w.edgesBuf, e)
@@ -289,6 +296,34 @@ func (w *MetricsWriter) insertEdges(edges []byte) error {
 		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// Ping 快速探测 ClickHouse 连通性（短超时，供 /health 探针使用，H4）。
+func (w *MetricsWriter) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	u := w.endpoint + "/?" + "query=" + url.QueryEscape("SELECT 1")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// RetryQueueSize 返回当前重试队列批次数（供 /health 与 /metrics 使用）。
+func (w *MetricsWriter) RetryQueueSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.retryPending)
 }
 
 // Close stops the flush loop and performs a final flush.

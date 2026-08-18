@@ -6,6 +6,16 @@ import { listKnowledge, addKnowledge, deleteKnowledge, getRagStats, reloadRagKno
 import { getPlaybooks, getPlaybookContent, PlaybookEntry, PlaybookDoc } from '../../api/playbooks'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 
+// A delimiter elsewhere in the document is valid Markdown; only a complete
+// frontmatter block at the very beginning is metadata rather than content.
+function withoutLeadingFrontmatter(content: string): string {
+  if (!content.startsWith('---')) return content
+  const lines = content.split(/\r?\n/)
+  if (lines[0].trim() !== '---') return content
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
+  return end === -1 ? content : lines.slice(end + 1).join('\n')
+}
+
 const Knowledge: React.FC = () => {
   const [data, setData] = useState<KnowledgeItem[]>([])
   const [total, setTotal] = useState(0)
@@ -130,8 +140,9 @@ const Knowledge: React.FC = () => {
           <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{rag?.cases ?? 0}</div>
         </div>
         <div className="card" style={{ flex: 1, minWidth: 200, marginBottom: 0, padding: 16 }}>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>统一知识库总数（ChromaDB）</div>
-          <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{rag?.total ?? 0}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>故障案例（当前查询）</div>
+          <div style={{ fontSize: 30, fontWeight: 700, marginTop: 4 }}>{total}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>ChromaDB 全库 {rag?.total ?? 0} 条</div>
         </div>
         <div className="card" style={{ flex: 2, minWidth: 320, marginBottom: 0, padding: 16, display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'space-between' }}>
           <div>
@@ -156,7 +167,7 @@ const Knowledge: React.FC = () => {
           <Button onClick={() => load()}>搜索</Button>
         </div>
         <Table rowKey="id" loading={loading} columns={cols} dataSource={data} size="middle"
-          pagination={{ total, pageSize: 50, showTotal: (t) => `共 ${t} 条` }}
+          pagination={{ total, pageSize: 50, showTotal: (t) => `共 ${t} 条`, onChange: (page) => load(page) }}
           locale={{ emptyText: <Empty text={'暂无故障案例，点击右上角「新增案例」录入，或「导入内置案例」'} /> }} />
               </div>
               </>
@@ -291,7 +302,7 @@ const PlaybookTab: React.FC = () => {
               {doc.path}
             </div>
             <div style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--text-secondary)' }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{withoutLeadingFrontmatter(doc.content || '')}</ReactMarkdown>
             </div>
           </>
         ) : (

@@ -3,6 +3,7 @@ import { Alert, Button, Drawer, Input, Modal, Segmented, Space, Table, Tag, mess
 import { listApprovalTasks, approveTask, rejectTask } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty, StatusBadge, type StatusTone } from '../../components/ui/PageKit'
 import { useAuthStore } from '../../store/authStore'
+import { fmtTime } from '../../lib/format'
 import AppIcon from '../../components/AppIcons'
 
 // =====================================================================
@@ -28,15 +29,14 @@ const codeBlockStyle: React.CSSProperties = {
   margin: 0,
 }
 
-// 兼容后端两种风险分格式：0~1（新版）→ 1-5 星；1-5 → 直接；>5（旧版 0~100）→ /20 归一
+// B12: 与后端约定单一风险分格式（0-1），删除原先对 0~1 / 1~5 / 0~100 三格式的猜测。
+// 0-1 小数 → 1-5 星。
 function riskStars(score: any): { stars: number; color: string; level: string; tagColor: string } | null {
   if (score == null || score === '') return null
   const n = Number(score)
-  if (isNaN(n)) return null
-  let stars: number
-  if (n <= 1) stars = Math.max(1, Math.min(5, Math.round(n * 5)))
-  else if (n <= 5) stars = Math.max(1, Math.min(5, Math.round(n)))
-  else stars = Math.max(1, Math.min(5, Math.round(n / 20)))
+  if (isNaN(n) || n < 0) return null
+  const clamped = Math.max(0, Math.min(1, n))
+  const stars = Math.max(1, Math.min(5, Math.round(clamped * 5)))
   const color = stars >= 4 ? 'var(--danger)' : stars >= 3 ? 'var(--warning)' : 'var(--success)'
   const level = stars >= 5 ? '极高风险' : stars >= 4 ? '高风险' : stars >= 3 ? '中风险' : '低风险'
   const tagColor = stars >= 4 ? 'red' : stars >= 3 ? 'orange' : 'green'
@@ -67,13 +67,6 @@ const STATUS_MAP: Record<string, { tone: StatusTone; text: string }> = {
 function statusBadge(s: string) {
   const m = STATUS_MAP[s] || { tone: 'muted' as StatusTone, text: s || '—' }
   return <StatusBadge text={m.text} tone={m.tone} />
-}
-
-const fmtTime = (ts: any) => {
-  if (!ts) return '—'
-  const n = typeof ts === 'number' ? ts * 1000 : (typeof ts === 'string' && !isNaN(Date.parse(ts)) ? Date.parse(ts) : 0)
-  if (!n) return String(ts)
-  return new Date(n).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 type Tab = 'waiting' | 'approved' | 'rejected' | 'all'

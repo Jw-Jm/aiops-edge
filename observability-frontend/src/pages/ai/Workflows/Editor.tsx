@@ -52,6 +52,16 @@ const RUN_STYLE: Record<string, { border: string; bg: string; color: string }> =
   pending: { border: 'var(--text-muted)', bg: 'var(--surface-3)', color: 'var(--text-muted)' },
 }
 
+// B10: 风险阈值常量化（审批弹窗风险分级），替代硬编码 6/3
+const RISK_THRESHOLDS = { high: 6, medium: 3 } as const
+
+// B10: 轮询上限与间隔（5 分钟强制停止，避免无限轮询泄漏定时器）
+const POLL_TIMEOUT_MS = 5 * 60 * 1000
+const POLL_INTERVAL_MS = 1500
+
+// B10: 运行终态（到达即停止轮询）
+const TERMINAL_RUN_STATUSES = ['succeeded', 'failed', 'cancelled', 'skipped']
+
 interface FlowNodeData {
   spec?: NodeSpec
   config: Record<string, unknown>
@@ -166,6 +176,65 @@ const WorkflowEditor: React.FC = () => {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const flowIdRef = useRef(flowId)
   flowIdRef.current = flowId
+  // B10: 未保存修改守卫——dirtyRef 标记是否有未保存改动；flowLoadedRef 标记流程是否已加载
+  // （加载完成前 nodes/edges 的初始化赋值不算"用户修改"）
+  const dirtyRef = useRef(false)
+  const flowLoadedRef = useRef(false)
+
+  // B10: 图校验（保存/运行前）：存在触发器、图连通、必填配置
+  const validateGraph = useCallback((): string | null => {
+    if (nodes.length === 0) return '画布为空，请先添加节点'
+    const triggers = nodes.filter((n) => n.data?.spec?.kind === 'trigger')
+    if (triggers.length === 0) return '缺少触发器节点（trigger），工作流无法启动'
+    // 连通性：从每个触发器 BFS，全部节点必须可达
+    const edgeMap = new Map<string, string[]>()
+    for (const e of edges) {
+      if (!edgeMap.has(e.source)) edgeMap.set(e.source, [])
+      edgeMap.get(e.source)!.push(e.target)
+    }
+    const reachable = new Set<string>()
+    const stack = triggers.map((t) => t.id)
+    while (stack.length) {
+      const id = stack.pop()!
+      if (reachable.has(id)) continue
+      reachable.add(id)
+      for (const t of edgeMap.get(id) || []) stack.push(t)
+    }
+    const unreachable = nodes.filter((n) => !reachable.has(n.id))
+    if (unreachable.length > 0) {
+      const names = unreachable.slice(0, 3).map((n) => n.data?.name || n.id).join('、')
+      return `存在未连通的节点：${names}${unreachable.length > 3 ? ' 等' : ''}`
+    }
+    // 必填配置
+    for (const n of nodes) {
+      const missing = (n.data?.spec?.config_fields || []).filter((f: any) => f.required && !n.data?.config?.[f.name])
+      if (missing.length > 0) {
+        return `节点「${n.data?.name || n.id}」缺少必填配置：${missing.map((f: any) => f.label || f.name).join('、')}`
+      }
+    }
+    return null
+  }, [nodes, edges])
+
+  // B10: 未保存离开守卫——beforeunload（刷新/关闭/浏览器返回）+ 路由内导航确认
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
+
+  // B10: 流程加载完成后，任何节点/边/名称/描述变化都标记为"有未保存修改"
+  useEffect(() => {
+    if (flowLoadedRef.current) dirtyRef.current = true
+  }, [nodes, edges, flowName, flowDesc])
+
+  const tryNavigate = useCallback((to: string) => {
+    if (dirtyRef.current && !window.confirm('当前有未保存的修改，确定离开吗？')) return
+    navigate(to)
+  }, [navigate])
 
   // 加载节点类型（数据驱动面板）
   useEffect(() => {
@@ -207,6 +276,9 @@ const WorkflowEditor: React.FC = () => {
         }))
         setNodes(fnodes)
         setEdges(fedges)
+        // B10: 加载完成后标记为"已加载且无未保存修改"
+        flowLoadedRef.current = true
+        dirtyRef.current = false
       } catch {
         if (!cancelled) message.error('加载流程失败')
       }
@@ -332,6 +404,9 @@ const WorkflowEditor: React.FC = () => {
   }, [nodes, edges, flowName, flowDesc])
 
   const onSave = useCallback(async () => {
+    // B10: 保存前图校验（存在触发器、图连通、必填配置）
+    const err = validateGraph()
+    if (err) { message.warning(err); return }
     setSaving(true)
     try {
       const payload = buildPayload()
@@ -348,12 +423,14 @@ const WorkflowEditor: React.FC = () => {
         }
         message.success('已创建流程')
       }
+      // B10: 保存成功后清除未保存标记
+      dirtyRef.current = false
     } catch (e: any) {
       message.error(e?.response?.data?.detail || e?.response?.data?.error || '保存失败')
     } finally {
       setSaving(false)
     }
-  }, [buildPayload, navigate])
+  }, [buildPayload, navigate, validateGraph])
 
   // ===== 运行态可视化 =====
   const applyRunStatus = useCallback(
@@ -391,14 +468,23 @@ const WorkflowEditor: React.FC = () => {
   const pollRun = useCallback(
     (fid: string, rid: string) => {
       stopPolling()
+      const startedAt = Date.now()
       pollRef.current = setInterval(async () => {
+        // B10: 轮询上限（5 分钟）强制停止，避免无限轮询
+        if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+          stopPolling()
+          setRunning(false)
+          message.warning('轮询超时（5 分钟），请到「运行记录」查看最新状态')
+          return
+        }
         try {
           const r = await getFlowRun(fid, rid)
           const run = r?.data?.run || r?.data
           if (!run) return
           setRunStatus(run.status || '')
           applyRunStatus(run)
-          if (run.status === 'succeeded' || run.status === 'failed') {
+          // B10: 终态检测——到达终态即停止轮询
+          if (TERMINAL_RUN_STATUSES.includes(run.status)) {
             stopPolling()
             setRunning(false)
             return
@@ -413,7 +499,7 @@ const WorkflowEditor: React.FC = () => {
           stopPolling()
           setRunning(false)
         }
-      }, 1500)
+      }, POLL_INTERVAL_MS)
     },
     [applyRunStatus, stopPolling]
   )
@@ -424,6 +510,9 @@ const WorkflowEditor: React.FC = () => {
       message.warning('请先保存流程再运行')
       return
     }
+    // B10: 运行前图校验（存在触发器、图连通、必填配置）
+    const err = validateGraph()
+    if (err) { message.warning(err); return }
     setRunning(true)
     setRunStatus('running')
     setApproval(null)
@@ -439,28 +528,14 @@ const WorkflowEditor: React.FC = () => {
       setRunId(rid)
       setRunResult(JSON.stringify(r?.data, null, 2))
       setRunDrawerOpen(false)
-      const r2 = await getFlowRun(fid, rid)
-      const run = r2?.data?.run || r2?.data
-      if (run) {
-        setRunStatus(run.status || 'running')
-        applyRunStatus(run)
-        if (run.status === 'succeeded' || run.status === 'failed') {
-          setRunning(false)
-          return
-        }
-        if (run.status === 'waiting_approval') {
-          const waitNode = (run.nodes || []).find((rn: any) => rn.node_type === 'wait_approval')
-          setApproval({ runId: rid, output: parseRunOutput(waitNode) ?? null })
-          setRunning(false)
-          return
-        }
-      }
+      // B10: 移除冗余的立即 getFlowRun 双拉取（原 432-458 行），统一依赖 pollRun
+      // （间隔轮询已含终态检测 + 5 分钟上限），避免"运行失败"误报。
       pollRun(fid, rid)
     } catch (e: any) {
       message.error(e?.response?.data?.detail || e?.response?.data?.error || '运行失败')
       setRunning(false)
     }
-  }, [applyRunStatus, pollRun, runMessage, runService])
+  }, [applyRunStatus, pollRun, runMessage, runService, validateGraph])
 
   const onResolveApproval = useCallback(
     async (approved: boolean) => {
@@ -613,7 +688,7 @@ const WorkflowEditor: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 150px)' }}>
-      <Breadcrumb items={[{ t: '智能运维' }, { t: '工作流', href: '/ai/workflows' }, { t: '编辑器' }]} />
+      <Breadcrumb items={[{ t: '智能运维' }, { t: '工作流', href: '/ai/workflows' }, { t: '编辑器' }]} onClick={tryNavigate} />
       <PageHeader title="工作流编辑器" desc={flowDesc || '拖拽节点编排工作流，配置触发器 / 分析 / 审批 / 执行节点'}
         actions={
           <Space wrap>
@@ -821,7 +896,8 @@ const WorkflowEditor: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <Text style={{ color: 'var(--text-muted)', fontSize: 12 }}>风险分</Text>
-              <Tag color={(approval.output.risk_score ?? 0) >= 6 ? 'red' : (approval.output.risk_score ?? 0) >= 3 ? 'orange' : 'green'}>
+              {/* B10: 风险阈值常量化（RISK_THRESHOLDS），替代硬编码 6/3 */}
+              <Tag color={(approval.output.risk_score ?? 0) >= RISK_THRESHOLDS.high ? 'red' : (approval.output.risk_score ?? 0) >= RISK_THRESHOLDS.medium ? 'orange' : 'green'}>
                 {approval.output.risk_score ?? 0}
               </Tag>
               {approval.output.risk_reason && (

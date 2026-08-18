@@ -3,7 +3,6 @@ import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { Dropdown, Spin } from 'antd'
 import { useUIStore } from './store/uiStore'
 import { useAuthStore } from './store/authStore'
-import CommandPalette from './components/CommandPalette'
 import AiDock from './components/AiDock'
 import ClusterSwitcher from './components/ClusterSwitcher'
 import AppIcon, { AppIconName } from './components/AppIcons'
@@ -109,7 +108,6 @@ function AppLayout() {
   const location = useLocation()
   const collapsed = useUIStore((s) => s.collapsed)
   const toggleCollapsed = useUIStore((s) => s.toggleCollapsed)
-  const setCommandOpen = useUIStore((s) => s.setCommandOpen)
   const refreshClusters = useUIStore((s) => s.refreshClusters)
   const logout = useAuthStore((s) => s.logout)
   const [clock, setClock] = useState('')
@@ -243,9 +241,6 @@ function AppLayout() {
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* 顶栏 */}
         <header className="topbar">
-          <div className="search-trigger" onClick={() => setCommandOpen(true)}>
-            <AppIcon name="search" /><span>搜索页面、资源、告警…</span><span className="kbd">⌘ K</span>
-          </div>
           <ClusterSwitcher />
           <div className="topbar__spacer" />
           {currentLabel && <span className="topbar__label" style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>{currentLabel}</span>}
@@ -338,7 +333,6 @@ function AppLayout() {
         </main>
       </div>
 
-      <CommandPalette />
       <AiDock />
     </div>
   )
