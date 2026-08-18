@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 构建 4 个自研服务镜像。
+# 构建全部自研服务镜像。
 # 可移植性：registry 前缀 / tag / 平台 均可通过环境变量注入，不写死本环境。
 #   用法: ./build-images.sh [service]
 #   环境变量:
@@ -11,13 +11,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/version.sh"
 
 REGISTRY="${IMAGE_REGISTRY:-}"
-# 镜像 tag 与 Chart.yaml 的 appVersion 对齐（默认 v1.0.0）。
+# 镜像 tag 与 Chart.yaml 的 appVersion 对齐。
 # 重要：TAG 必须与 values.yaml 的 global.imageTag 一致——CI 中应注入相同的 IMAGE_TAG，
 #       否则 build 出的 tag 与 Helm 期望不一致，本地已有旧镜像时会静默部署旧版本（P0-1 事故根因）。
-# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改 values.yaml 的 global.imageTag ③ 用 IMAGE_TAG=vX.Y.Z 构建。
-TAG="${IMAGE_TAG:-v1.0.0}"
+# 默认版本由 version.sh 根据 Chart.yaml 和本地部署计数生成；手工发布可用 IMAGE_TAG 覆盖。
+TAG="${IMAGE_TAG:-$(resolve_image_tag)}"
 PLATFORM="${BUILD_PLATFORM:-}"
 
 # 本地镜像时（无 registry）不加前缀，K8s 直接用本地镜像；有 registry 时拼前缀
@@ -40,6 +42,7 @@ build() {
   else
     (cd "$ROOT/$dir" && docker build -t "$full" .)
   fi
+  docker image inspect "$full" >/dev/null
   echo ">>> built $full"
 }
 
@@ -51,15 +54,17 @@ case "$TARGET" in
     build ai-apm-query-go query-api
     build ai-apm-ingest-go ingest-pipeline
     build ai-orchestrator ai-orchestrator
+    build ai-event-collector event-collector
     build ipmi-exporter ipmi-exporter
     ;;
   frontend)  build observability-frontend observability-frontend ;;
   query-api) build ai-apm-query-go query-api ;;
   ingest)    build ai-apm-ingest-go ingest-pipeline ;;
   orchestrator) build ai-orchestrator ai-orchestrator ;;
+  event-collector) build ai-event-collector event-collector ;;
   ipmi)      build ipmi-exporter ipmi-exporter ;;
   *)
-    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/ipmi)"
+    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/event-collector/ipmi)"
     exit 1
     ;;
 esac

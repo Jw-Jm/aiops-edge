@@ -80,3 +80,6 @@ gui-test-screenshots/
 
 # 离线依赖缓存（本地构建复用，不入库）
 deploy/offline/
+
+# 本地默认部署的递增版本状态（不进入版本库）
+/.deploy-version

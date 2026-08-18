@@ -8,10 +8,10 @@
 replicaCount: 1
 # 有状态单写组件（mysql/clickhouse）副本数，固定 1（共享 RWO PVC 不可扩副本）。
 statefulReplicaCount: 1
-# 全局镜像 tag：自研服务镜像唯一版本来源，与 build-images.sh 的 IMAGE_TAG 及 Chart.yaml 的 appVersion 对齐。
-# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改此处 ③ 用 IMAGE_TAG=vX.Y.Z 重新构建镜像，保证"代码/版本/部署"一致。
+# 全局镜像 tag：自研服务镜像唯一版本来源。默认部署脚本会自动生成并通过 --set 覆盖，
+# 保留此值作为手工 Helm 部署的基线版本，保证"代码/版本/部署"一致。
 global:
-  imageTag: "v1.1.0"
+  imageTag: "v1.1.1"
 namespace:
   observability: observability
   deepflow: deepflow
@@ -183,8 +183,7 @@ nodeExporterTarget: ""
 
 # ---------------------------------------------------------------------------
 # 自研服务：镜像 tag 统一引用 global.imageTag（唯一版本来源，见文件顶部），
-# 与 build-images.sh 的 IMAGE_TAG 及 Chart.yaml 的 appVersion 对齐。
-# 升级版本时：① 改 Chart.yaml 的 appVersion ② 改 global.imageTag ③ 用 IMAGE_TAG=vX.Y.Z 构建。
+# 默认部署由 version.sh 递增 patch 版本并将同一 tag 传给 Helm；手工构建可用 IMAGE_TAG 覆盖。
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true

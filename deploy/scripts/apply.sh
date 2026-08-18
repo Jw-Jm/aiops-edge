@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
 # 一键部署 AIOps 平台到本机 K8s (OrbStack)
-# 1) 部署 observability（4 自研服务 + 8 中间件）
+# 1) 构建并部署 observability（5 自研服务 + 8 中间件）
 # 2) 部署 deepflow 到独立 deepflow namespace（完整装）
 # 用法: ./apply.sh
+# 默认会从当前项目源码构建带版本号的本地镜像；仅在明确设置 SKIP_IMAGE_BUILD=1 时跳过构建。
 # =============================================================================
 set -euo pipefail
 
 CHART_DIR="$(cd "$(dirname "$0")/../helm/aiops" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/version.sh"
 
 # 确保 deepflow chart 仓库已添加
 helm repo add deepflow https://deepflowio.github.io/deepflow >/dev/null 2>&1 || true
@@ -46,6 +50,14 @@ require_env MYSQL_ROOT_PASSWORD
 require_env INTERNAL_TOKEN
 require_env INGEST_API_KEY
 
+IMAGE_TAG_VAL="$(resolve_image_tag)"
+if [[ "${SKIP_IMAGE_BUILD:-0}" != "1" ]]; then
+  echo "=== [0/2] 构建项目最新镜像 ($IMAGE_TAG_VAL) ==="
+  IMAGE_TAG="$IMAGE_TAG_VAL" "$SCRIPT_DIR/build-images.sh" all
+else
+  echo "=== [0/2] 跳过镜像构建 ($IMAGE_TAG_VAL) ==="
+fi
+
 # 说明：jwtSecret / llmEncryptionKey 必须 >=32 字符（query-api 启动强校验，缺省会拒绝启动）。
 # P0-1 修复(密钥漂移)：若集群中已存在 aiops-secrets（含 LLM_ENCRYPTION_KEY），则复用其值，
 # 不再每次 helm upgrade 随机生成 —— 否则密钥轮换会导致已保存的 LLM API Key 密文无法解密，
@@ -66,6 +78,7 @@ LLM_KEY_VAL="${LLM_ENCRYPTION_KEY:-$(get_or_gen aiops-secrets LLM_ENCRYPTION_KEY
 helm upgrade --install aiops "$CHART_DIR" \
   --namespace observability --create-namespace \
   --set deepflow.enabled=false \
+  --set global.imageTag="${IMAGE_TAG_VAL}" \
   --set secrets.jwtSecret="${JWT_SECRET_VAL}" \
   --set secrets.llmEncryptionKey="${LLM_KEY_VAL}" \
   --set secrets.internalToken="${INTERNAL_TOKEN}" \
@@ -88,5 +101,6 @@ helm upgrade --install deepflow deepflow/deepflow \
   }
 
 echo ""
-echo "部署命令完成。访问: http://localhost:30253"
+record_deployed_version "$IMAGE_TAG_VAL"
+echo "部署命令完成。镜像版本: ${IMAGE_TAG_VAL}。访问: http://localhost:30253"
 echo "验证: kubectl -n observability get pods && kubectl -n deepflow get pods"

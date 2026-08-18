@@ -2,5 +2,5 @@ apiVersion: v2
 name: aiops
 description: AIOps 智能可观测平台 Helm Chart
 type: application
-version: 0.1.0
-appVersion: "1.1.0"
+version: 0.1.1
+appVersion: "1.1.1"
