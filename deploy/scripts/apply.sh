@@ -20,8 +20,9 @@ helm repo update deepflow >/dev/null 2>&1 || true
 echo "=== [1/2] 部署 observability (自研 + 中间件) ==="
 # =============================================================================
 # 凭据注入（G5 安全加固）
-# 生产凭据必须由环境变量注入，禁止在脚本/仓库中提交硬编码默认值。
-# 部署前必须设置以下环境变量（缺失即报错退出，绝不降级为弱默认值）：
+# 生产首次部署的凭据必须由环境变量注入，禁止在脚本/仓库中提交硬编码默认值。
+# 若集群中已有 aiops-secrets，后续升级会优先复用已有值，避免 StatefulSet 数据密码漂移。
+# 首次部署且 Secret 不存在时必须设置以下环境变量：
 #   ADMIN_PASSWORD         admin 初始密码
 #   CLICKHOUSE_PASSWORD    ClickHouse default 用户密码
 #   MYSQL_ROOT_PASSWORD    MySQL root 密码
@@ -30,25 +31,34 @@ echo "=== [1/2] 部署 observability (自研 + 中间件) ==="
 # 可选覆盖（不设置则复用集群中已有 Secret 或生成随机值）：
 #   JWT_SECRET / LLM_ENCRYPTION_KEY（>=32 字符，query-api 启动强校验）
 # =============================================================================
-require_env() {
-  local name="$1"
-  if [ -z "${!name:-}" ]; then
-    echo "错误: 环境变量 $name 未设置。" >&2
-    echo "生产部署必须显式注入凭据，禁止使用硬编码/弱默认值。" >&2
-    echo "请设置后重试，例如:" >&2
-    echo "  export ADMIN_PASSWORD='<强随机值>'" >&2
-    echo "  export CLICKHOUSE_PASSWORD='<强随机值>'" >&2
-    echo "  export MYSQL_ROOT_PASSWORD='<强随机值>'" >&2
-    echo "  export INTERNAL_TOKEN='<强随机值>'" >&2
-    echo "  export INGEST_API_KEY='<强随机值>'" >&2
-    exit 1
-  fi
+secret_value() {
+  local key="$1"
+  kubectl get secret aiops-secrets -n observability -o jsonpath="{.data.${key}}" 2>/dev/null \
+    | base64 -d 2>/dev/null || true
 }
-require_env ADMIN_PASSWORD
-require_env CLICKHOUSE_PASSWORD
-require_env MYSQL_ROOT_PASSWORD
-require_env INTERNAL_TOKEN
-require_env INGEST_API_KEY
+
+resolve_required_secret() {
+  local env_name="$1" secret_key="$2" value
+  value="${!env_name:-}"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  value="$(secret_value "$secret_key")"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  echo "错误: 首次部署必须设置环境变量 $env_name。" >&2
+  echo "请设置强随机值后重试；后续升级会自动复用集群 Secret。" >&2
+  return 1
+}
+
+ADMIN_PASSWORD_VAL="$(resolve_required_secret ADMIN_PASSWORD ADMIN_INITIAL_PASSWORD)"
+CLICKHOUSE_PASSWORD_VAL="$(resolve_required_secret CLICKHOUSE_PASSWORD CLICKHOUSE_PASSWORD)"
+MYSQL_ROOT_PASSWORD_VAL="$(resolve_required_secret MYSQL_ROOT_PASSWORD MYSQL_ROOT_PASSWORD)"
+INTERNAL_TOKEN_VAL="$(resolve_required_secret INTERNAL_TOKEN INTERNAL_TOKEN)"
+INGEST_API_KEY_VAL="$(resolve_required_secret INGEST_API_KEY INGEST_API_KEY)"
 
 IMAGE_TAG_VAL="$(resolve_image_tag)"
 if [[ "${SKIP_IMAGE_BUILD:-0}" != "1" ]]; then
@@ -81,11 +91,11 @@ helm upgrade --install aiops "$CHART_DIR" \
   --set global.imageTag="${IMAGE_TAG_VAL}" \
   --set secrets.jwtSecret="${JWT_SECRET_VAL}" \
   --set secrets.llmEncryptionKey="${LLM_KEY_VAL}" \
-  --set secrets.internalToken="${INTERNAL_TOKEN}" \
-  --set secrets.ingestApiKey="${INGEST_API_KEY}" \
-  --set secrets.adminInitialPassword="${ADMIN_PASSWORD}" \
-  --set secrets.clickhousePassword="${CLICKHOUSE_PASSWORD}" \
-  --set secrets.mysqlRootPassword="${MYSQL_ROOT_PASSWORD}" \
+  --set secrets.internalToken="${INTERNAL_TOKEN_VAL}" \
+  --set secrets.ingestApiKey="${INGEST_API_KEY_VAL}" \
+  --set secrets.adminInitialPassword="${ADMIN_PASSWORD_VAL}" \
+  --set secrets.clickhousePassword="${CLICKHOUSE_PASSWORD_VAL}" \
+  --set secrets.mysqlRootPassword="${MYSQL_ROOT_PASSWORD_VAL}" \
   --wait \
   --timeout 15m
 
