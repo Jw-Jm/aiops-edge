@@ -139,6 +139,22 @@ body {
   color: #fff; font-size: 12px; font-weight: 600; background: var(--primary); }
 .user-chip .text-sm { font-size: 13px; color: var(--text); }
 
+/* 顶栏窄屏自适应：窄屏下收起次要元素，避免横向溢出（修复 /slo /infra/k8s 在 800px 溢出 5-7px） */
+@media (max-width: 960px) {
+  .topbar { gap: 10px; padding: 0 16px; }
+  .search-trigger { width: auto; flex: 0 1 220px; min-width: 120px; }
+  .search-trigger .kbd { display: none; }
+  .topbar__clock { display: none; }
+  .topbar__label { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-chip .text-sm { display: none; }
+  .user-chip { padding: 4px; }
+}
+@media (max-width: 800px) {
+  .topbar { gap: 8px; padding: 0 12px; }
+  .search-trigger { flex-basis: 160px; min-width: 100px; }
+  .topbar__label { display: none; }
+}
+
 /* 命令面板 */
 .cmdk-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.45); backdrop-filter: blur(2px); z-index: 1000;
   display: none; align-items: flex-start; justify-content: center; padding-top: 12vh; }

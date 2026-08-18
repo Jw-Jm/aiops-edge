@@ -63,6 +63,7 @@ const Capacity: React.FC = () => {
 
   useEffect(() => {
     if (!Object.keys(data).length) return
+    const charts: echarts.ECharts[] = []
     METRICS.forEach((m) => {
       const d = data[m.key]
       const el = chartRefs.current[m.key]
@@ -82,8 +83,23 @@ const Capacity: React.FC = () => {
           { name: '阈值', type: 'line', data: d.history.map(() => d.threshold), symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#dc2626' } },
         ],
       })
+      charts.push(ch)
     })
+    // 修复响应式：窗口缩放时三张图表跟随 resize；effect 重跑时移除旧监听，避免重复注册
+    if (!charts.length) return
+    const onResize = () => { charts.forEach((c) => { try { c.resize() } catch { /* ignore */ } }) }
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize) }
   }, [data])
+
+  // 组件卸载时释放所有图表实例，避免内存泄漏
+  useEffect(() => {
+    return () => {
+      Object.values(chartRefs.current).forEach((el) => {
+        if (el) { try { echarts.getInstanceByDom(el)?.dispose() } catch { /* ignore */ } }
+      })
+    }
+  }, [])
 
   return (
     <div>
