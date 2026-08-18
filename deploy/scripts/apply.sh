@@ -17,7 +17,6 @@ source "$SCRIPT_DIR/version.sh"
 helm repo add deepflow https://deepflowio.github.io/deepflow >/dev/null 2>&1 || true
 helm repo update deepflow >/dev/null 2>&1 || true
 
-echo "=== [1/2] 部署 observability (自研 + 中间件) ==="
 # =============================================================================
 # 凭据注入（G5 安全加固）
 # 生产首次部署的凭据必须由环境变量注入，禁止在脚本/仓库中提交硬编码默认值。
@@ -67,6 +66,8 @@ if [[ "${SKIP_IMAGE_BUILD:-0}" != "1" ]]; then
 else
   echo "=== [0/2] 跳过镜像构建 ($IMAGE_TAG_VAL) ==="
 fi
+
+echo "=== [1/2] 部署 observability (自研 + 中间件) ==="
 
 # 说明：jwtSecret / llmEncryptionKey 必须 >=32 字符（query-api 启动强校验，缺省会拒绝启动）。
 # P0-1 修复(密钥漂移)：若集群中已存在 aiops-secrets（含 LLM_ENCRYPTION_KEY），则复用其值，
