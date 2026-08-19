@@ -14,6 +14,8 @@ def _collect(ctx, config):
     它们经 query-api 读 ClickHouse/VictoriaMetrics。query-api 不可达时返回明确错误。
     """
     svc = config.get("service", "")
+    request_context = ctx.get("request_context") if isinstance(ctx, dict) else None
+    cluster_id = str(request_context.cluster_id) if request_context is not None else ""
     try:
         from tools import query_metrics, query_traces, query_topology, get_service_list
     except Exception:
@@ -22,18 +24,27 @@ def _collect(ctx, config):
     # 而是返回错误文本，保证流程可继续（数据源不可用时降级为明确提示）。
     red = ""
     try:
-        red = query_metrics(svc) if svc else get_service_list()
+        red = (
+            query_metrics(svc, cluster_id=cluster_id, request_context=request_context)
+            if svc else get_service_list(
+                cluster_id=cluster_id, request_context=request_context
+            )
+        )
     except Exception as e:
         red = f"(数据源不可用: {e})"
     traces = ""
     if svc:
         try:
-            traces = query_traces(svc)
+            traces = query_traces(
+                svc, cluster_id=cluster_id, request_context=request_context
+            )
         except Exception:
             traces = ""
     topology = ""
     try:
-        topology = query_topology()
+        topology = query_topology(
+            cluster_id=cluster_id, request_context=request_context
+        )
     except Exception:
         topology = ""
     return {"service": svc, "services": red, "red": red, "traces": traces,

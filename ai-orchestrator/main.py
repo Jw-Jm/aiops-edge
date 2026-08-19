@@ -213,6 +213,9 @@ async def _scheduled_anomaly_scan():
     3 算法投票检测。detect() 内部确认异常时会调 _persist_anomaly 写入 MySQL
     anomaly_events 表（best-effort）。此处不调 LLM，避免定时任务产生模型开销。
     """
+    # Background jobs have no user/session/cluster authorization context. They
+    # must not query query-api with a service token or an implicit tenant.
+    return
     try:
         from detector import detector
         from tools import get_service_list
@@ -2029,9 +2032,14 @@ async def scan_anomalies(request: Request):
     from detector import detector
     from tools import get_service_list
     import json as _json
+    request_context = _request_context_from_request(request)
 
     anomalies = []
-    raw = await asyncio.to_thread(get_service_list)
+    raw = await asyncio.to_thread(
+        get_service_list,
+        cluster_id=str(request_context.cluster_id),
+        request_context=request_context,
+    )
     try:
         svc_data = _json.loads(raw)
     except Exception:

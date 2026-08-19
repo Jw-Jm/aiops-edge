@@ -173,6 +173,7 @@ def find_root_by_granger(
     topology: dict[str, list[str]],
     p_threshold: float = 0.05,
     cluster_id: str = "",
+    request_context: RequestContext | None = None,
 ) -> dict:
     """Granger 因果检验: 构建因果 DAG, 入度=0 的节点为根因"""
     # 简化: 比较异常发生时间的先后顺序
@@ -184,7 +185,9 @@ def find_root_by_granger(
     # 简化版: 用服务详情的 avg_ms 作为"时序"代理
     service_delays = {}
     for svc in candidates:
-        raw = _qm(svc, cluster_id=cluster_id)
+        raw = _qm(
+            svc, cluster_id=cluster_id, request_context=request_context
+        )
         try:
             data = json.loads(raw)
             if data and isinstance(data.get("data"), list):
@@ -302,7 +305,10 @@ def diagnose_root_cause(
         candidates = list(topology.keys())
 
     # Layer 2: Granger
-    g_result = find_root_by_granger(candidates, topology, cluster_id=cluster_id)
+    g_result = find_root_by_granger(
+        candidates, topology, cluster_id=cluster_id,
+        request_context=request_context,
+    )
     root = g_result.get("root_cause_service") or (candidates[0] if candidates else None)
 
     # Layer 3: 变更
