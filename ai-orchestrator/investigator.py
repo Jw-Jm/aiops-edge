@@ -19,15 +19,15 @@ import os
 import threading
 import time
 import urllib.parse
-import urllib.request
 import uuid
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import agent_tool
+from contracts import RequestContext
+from internal_query import signed_query_api_request
 
-# 调查报告写回告警事件（query-api 内部接口，X-Internal-Token 认证）
+# 调查报告写回告警事件（query-api 内部接口，服务凭证 + 签名上下文）
 _QUERY_API_URL = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
-_INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
 log = logging.getLogger("investigator")
 
@@ -111,7 +111,12 @@ def _run_worker(persona, prompt: str, run_worker=None,
         return None
 
 
-def _writeback_to_alert_event(rule: str, report: str) -> str:
+def _writeback_to_alert_event(
+    rule: str,
+    report: str,
+    *,
+    request_context: RequestContext | None = None,
+) -> str:
     """把调查报告写回 query-api 告警事件 (investigation 字段)。
 
     流程: GET /alerts/events?rule=<rule> 找 firing/最新事件 → POST
@@ -121,11 +126,11 @@ def _writeback_to_alert_event(rule: str, report: str) -> str:
     try:
         q = urllib.parse.quote(rule)
         url = f"{_QUERY_API_URL.rstrip('/')}/alerts/events?rule={q}"
-        req = urllib.request.Request(url, method="GET")
-        if _INTERNAL_TOKEN:
-            req.add_header("X-Internal-Token", _INTERNAL_TOKEN)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        data = json.loads(
+            signed_query_api_request(url, context=request_context).decode(
+                "utf-8", errors="replace"
+            )
+        )
         events = data.get("data", []) if isinstance(data, dict) else []
         if not isinstance(events, list) or not events:
             return "(未找到匹配告警事件, 调查报告未写回)"
@@ -141,14 +146,13 @@ def _writeback_to_alert_event(rule: str, report: str) -> str:
         if not event_id:
             return "(告警事件缺少 id, 调查报告未写回)"
         body = json.dumps({"investigation": report[:4000]}).encode("utf-8")
-        wreq = urllib.request.Request(
+        signed_query_api_request(
             f"{_QUERY_API_URL.rstrip('/')}/alerts/events/{event_id}/investigation",
-            data=body, method="POST",
-            headers={"Content-Type": "application/json"})
-        if _INTERNAL_TOKEN:
-            wreq.add_header("X-Internal-Token", _INTERNAL_TOKEN)
-        with urllib.request.urlopen(wreq, timeout=10) as resp:
-            resp.read()
+            context=request_context,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         return f"(调查报告已写回告警事件 {event_id})"
     except Exception as e:  # noqa: BLE001
         log.warning("调查报告写回告警事件失败(不影响调查主流程): %s", e)
@@ -189,7 +193,8 @@ def _store_report(rule: str, severity: str, payload: dict | None, report: str) -
 
 
 def maybe_investigate(rule: str, severity: str, payload: dict | None = None,
-                      run_worker=None) -> str | None:
+                      run_worker=None,
+                      request_context: RequestContext | None = None) -> str | None:
     """告警触发自动调查 (incident-investigator)。
 
     门控顺序: 总开关 → rule 非空 → 级别 → 去重 → persona 存在 → 并发 → 执行/超时。
@@ -225,7 +230,9 @@ def maybe_investigate(rule: str, severity: str, payload: dict | None = None,
             return None
         note = _store_report(rule, severity, payload, report)
         # 闭环: 调查报告写回告警事件 investigation 字段（告警详情页可见）
-        note_wb = _writeback_to_alert_event(rule, report)
+        note_wb = _writeback_to_alert_event(
+            rule, report, request_context=request_context
+        )
         return f"{report}\n\n{note}\n{note_wb}"
     except Exception as e:  # noqa: BLE001
         log.exception("maybe_investigate(%s) 异常: %s", rule, e)

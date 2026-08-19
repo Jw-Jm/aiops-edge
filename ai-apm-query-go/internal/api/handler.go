@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"sort"
@@ -43,54 +42,11 @@ func orchestratorBase() string {
 	return firstNonEmpty(os.Getenv("AI_ORCHESTRATOR_URL"), "http://ai-orchestrator.observability.svc.cluster.local:8080")
 }
 
-// ProxyShellWS 代理 WebShell WebSocket 到 ai-orchestrator。
-//
-// 安全设计：WebSocket 无法携带 Authorization header，前端把 JWT 放在 ?token= query 参数。
-// 本 handler 先验证该 JWT（证明是已登录用户），再把 query 的 token 替换为 INTERNAL_TOKEN
-// 后转发给 orchestrator，让 orchestrator 的 shell_ws 校验通过。这样：
-//   - 前端必须携带合法 JWT 才能建立终端（防未授权执行白名单命令）
-//   - orchestrator 只信任经 query-api 代理注入的内部 token（防绕过直连）
+// ProxyShellWS keeps R4 shell outside browser authorization and canonical
+// query-api read/write paths. Manual access is configured directly on the
+// orchestrator and cannot be enabled by JWT or legacy internal headers.
 func (h *Handler) ProxyShellWS(w http.ResponseWriter, r *http.Request) {
-	// 1. 验证前端 JWT（?token=）
-	userToken := r.URL.Query().Get("token")
-	if userToken == "" {
-		http.Error(w, "unauthorized: missing token", http.StatusUnauthorized)
-		return
-	}
-	username, _, _, ok := validateJWT(userToken)
-	if !ok {
-		http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
-		return
-	}
-	// G1 安全加固：WebSocket 路径绕过 AuthMiddleware，此处补做 token 撤销与用户存在性/状态校验，
-	// 防止删除/禁用用户后其 token 仍能建立 WebShell。
-	if isTokenRevoked(userToken, username) {
-		http.Error(w, "unauthorized: token revoked", http.StatusUnauthorized)
-		return
-	}
-	if u, err := (&store.UserDAO{}).GetByUsername(username); err != nil || u == nil || u.Status != 1 {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	// 2. 注入内部 token：替换 query 的 token 为 INTERNAL_TOKEN（orchestrator 据此校验）
-	internal := os.Getenv("INTERNAL_TOKEN")
-	if internal == "" {
-		http.Error(w, "server misconfigured: INTERNAL_TOKEN not set", http.StatusInternalServerError)
-		return
-	}
-	q := r.URL.Query()
-	q.Set("token", internal)
-	r.URL.RawQuery = q.Encode()
-	r.URL.Path = "/api/v1/shell/ws"
-
-	// 3. ReverseProxy 原生支持 WebSocket（自动处理 Upgrade 握手与双向字节流）
-	target, err := url.Parse(orchestratorBase())
-	if err != nil {
-		http.Error(w, "bad orchestrator url", http.StatusInternalServerError)
-		return
-	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.ServeHTTP(w, r)
+	respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 }
 
 // toInt64 将 ClickHouse JSONEachRow 的值安全转换为 int64。

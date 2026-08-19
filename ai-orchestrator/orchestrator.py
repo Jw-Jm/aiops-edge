@@ -1,4 +1,6 @@
 """Brain orchestrator v4 — 15-node LangGraph DAG + ChromaDB RAG + Skill Registry"""
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -17,6 +19,8 @@ from tools import (query_metrics, query_traces, query_logs, get_service_list, qu
 from rag import rag
 from rca import full_rca_analysis
 from skill_registry import ToolRegistry, ExpertRegistry
+from contracts import RequestContext
+from internal_query import signed_query_api_request
 
 QUERY_API_VL = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1") + "/logs/victorialogs"
 
@@ -93,6 +97,7 @@ class AgentState(TypedDict):
     cluster_id: str
     # P1-5: 轻量意图分流标记 —— 信息查询类问题（有哪些服务/列表/总结等）跳过深度诊断链路
     light_query: bool
+    request_context: RequestContext
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -378,52 +383,54 @@ def _parse(raw):
     except: return None
 
 
-def _collect_alerts() -> str:
+def _collect_alerts(
+    *, request_context: RequestContext | None = None
+) -> str:
     """采集告警态势：告警事件（聚合） + 告警规则，供 LLM 分析。"""
-    import urllib.request
     import os as _os
     qa = _os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
-    token = _os.environ.get("INTERNAL_TOKEN", "")
     out = []
 
     # 告警事件（聚合）
     try:
-        req = urllib.request.Request(f"{qa}/alerts/events?limit=15", method="GET")
-        if token:
-            req.add_header("X-Internal-Token", token)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            events = data.get("data", [])
-            if events:
-                lines = ["活跃告警事件:"]
-                for e in events:
-                    lines.append(
-                        f"- [{e.get('severity','')}] {e.get('rule_name','?')} "
-                        f"服务={e.get('service','?')} 触发次数={e.get('count',1)} "
-                        f"最近={str(e.get('last_timestamp',''))[:19]}")
-                out.append("\n".join(lines))
-            else:
-                out.append("活跃告警事件: 无")
+        data = json.loads(
+            signed_query_api_request(
+                f"{qa}/alerts/events?limit=15",
+                context=request_context,
+                timeout=5,
+            )
+        )
+        events = data.get("data", [])
+        if events:
+            lines = ["活跃告警事件:"]
+            for e in events:
+                lines.append(
+                    f"- [{e.get('severity','')}] {e.get('rule_name','?')} "
+                    f"服务={e.get('service','?')} 触发次数={e.get('count',1)} "
+                    f"最近={str(e.get('last_timestamp',''))[:19]}")
+            out.append("\n".join(lines))
+        else:
+            out.append("活跃告警事件: 无")
     except Exception:
         out.append("活跃告警事件: 采集失败")
 
     # 告警规则
     try:
-        req = urllib.request.Request(f"{qa}/alerts/rules", method="GET")
-        if token:
-            req.add_header("X-Internal-Token", token)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            rules = data.get("data", [])
-            if rules:
-                lines = ["告警规则:"]
-                for r in rules:
-                    en = "启用" if r.get("enabled") else "禁用"
-                    lines.append(
-                        f"- [{en}] {r.get('name','?')} 服务={r.get('service','?')} "
-                        f"{r.get('metric','?')} {r.get('condition','>')} {r.get('threshold','?')} "
-                        f"{r.get('severity','')}")
-                out.append("\n".join(lines))
+        data = json.loads(
+            signed_query_api_request(
+                f"{qa}/alerts/rules", context=request_context, timeout=5
+            )
+        )
+        rules = data.get("data", [])
+        if rules:
+            lines = ["告警规则:"]
+            for r in rules:
+                en = "启用" if r.get("enabled") else "禁用"
+                lines.append(
+                    f"- [{en}] {r.get('name','?')} 服务={r.get('service','?')} "
+                    f"{r.get('metric','?')} {r.get('condition','>')} {r.get('threshold','?')} "
+                    f"{r.get('severity','')}")
+            out.append("\n".join(lines))
     except Exception:
         pass
 
@@ -714,7 +721,8 @@ async def node_collect(state: AgentState) -> dict:
     cfg = state.get("llm_config")
     api_key = _LLM_KEY_HOLDER.get("api_key", "")
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
-    cid = state.get("cluster_id", "")  # A-5：集群透传，空/all 表示全部
+    request_context = state.get("request_context")
+    cid = str(request_context.cluster_id) if isinstance(request_context, RequestContext) else ""
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
         data = _parse(await asyncio.to_thread(get_service_list, cluster_id=cid))
@@ -742,7 +750,7 @@ async def node_collect(state: AgentState) -> dict:
     except: pass
     # Alerts — 告警态势（规则 + 事件聚合）
     try:
-        result["alert_data"] = _collect_alerts()
+        result["alert_data"] = _collect_alerts(request_context=request_context)
     except:
         result["alert_data"] = ""
     # RED
@@ -916,7 +924,13 @@ async def node_rca(state: AgentState) -> dict:
             return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
     try:
         # full_rca_analysis 内部多次 query_metrics/trace 是同步阻塞 HTTP，丢线程池避免阻塞 event loop
-        result = await asyncio.to_thread(full_rca_analysis, svc, None, cid)
+        result = await asyncio.to_thread(
+            full_rca_analysis,
+            svc,
+            None,
+            cid,
+            request_context=state.get("request_context"),
+        )
         mode = result.get("mode", "deterministic")
         if mode == "deterministic":
             det = result.get("result", {})
@@ -1734,29 +1748,48 @@ class BrainOrchestrator:
         # 用完即走，避免跨请求/跨会话共享明文 key。
 
     async def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
-                           cluster_id: str = "all", mode: str = "chat") -> str:
+                           cluster_id: str | None = None, mode: str = "chat", *,
+                           request_context: RequestContext | None = None) -> str:
         """Run DAG and return final_response text. (async — 调用方需 await)
 
         P1-2 修复: 默认走 chat_graph（精简图，无 wait_approval interrupt），
         避免非流式 /ai/chat 因 full 图挂在审批中断上而恒返回空报告。
         需要完整运维图请用 execute_sync_full(mode="full")。
         """
-        final = await self._run_dag(intent, service, message, thread_id, cluster_id, mode=mode)
+        final = await self._run_dag(
+            intent, service, message, thread_id, cluster_id, mode=mode,
+            request_context=request_context,
+        )
         return final.get("final_response", "")
 
     async def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default",
-                                cluster_id: str = "all", mode: str = "full") -> dict:
+                                cluster_id: str | None = None, mode: str = "full", *,
+                                request_context: RequestContext | None = None) -> dict:
         """Run full DAG and return complete final state. (async — 调用方需 await)
         /ops/tasks、workflow run 等完整运维链路使用 mode="full"（含审批/执行/验证）。"""
-        return await self._run_dag(intent, service, message, thread_id, cluster_id, mode=mode)
+        return await self._run_dag(
+            intent, service, message, thread_id, cluster_id, mode=mode,
+            request_context=request_context,
+        )
 
     async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default",
-                       cluster_id: str = "all", mode: str = "chat") -> dict:
+                       cluster_id: str | None = None, mode: str = "chat", *,
+                       request_context: RequestContext | None = None) -> dict:
+        if not isinstance(request_context, RequestContext):
+            return {"final_response": "[invalid_context]", "error": "invalid_context"}
+        canonical_cluster = str(request_context.cluster_id)
+        if cluster_id not in (None, "", canonical_cluster):
+            return {"final_response": "[invalid_context]", "error": "invalid_context"}
+        cluster_id = canonical_cluster
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
-        if not service: service = await asyncio.to_thread(self._detect_service, message)
+        if not service:
+            service = await asyncio.to_thread(
+                self._detect_service, message, request_context=request_context
+            )
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
+            "request_context": request_context,
             "llm_config": self.llm_config,
             "services_data": "", "infra_data": "", "infra_error": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
@@ -1788,14 +1821,27 @@ class BrainOrchestrator:
             return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
 
     async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
-                          mode: str = "chat", exec_context: str = "", iteration: int = 1, cluster_id: str = "all"):
+                          mode: str = "chat", exec_context: str = "", iteration: int = 1,
+                          cluster_id: str | None = None, *,
+                          request_context: RequestContext | None = None):
         """异步生成器: async for event in brain.stream_sync(...)。
         节点为 async def，必须用 graph.astream (不能用 sync graph.stream, 会在
         已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
         exec_context: 需求2/3 多轮闭环——上一轮已确认执行的处置脚本的结果，作为下一轮深入分析的上下文。
         """
+        if not isinstance(request_context, RequestContext):
+            yield {"type": "error", "error": "invalid_context", "text": "invalid_context"}
+            return
+        canonical_cluster = str(request_context.cluster_id)
+        if cluster_id not in (None, "", canonical_cluster):
+            yield {"type": "error", "error": "invalid_context", "text": "invalid_context"}
+            return
+        cluster_id = canonical_cluster
         await self._ensure_async_checkpointer()  # 延迟切换 MemorySaver → AsyncSqliteSaver
-        if not service: service = await asyncio.to_thread(self._detect_service, message)
+        if not service:
+            service = await asyncio.to_thread(
+                self._detect_service, message, request_context=request_context
+            )
         # 多轮上下文：读上一轮 checkpoint（user_message + final_response 摘要）注入本轮
         history_context = ""
         try:
@@ -1810,6 +1856,7 @@ class BrainOrchestrator:
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "history_context": history_context,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
+            "request_context": request_context,
             "llm_config": self.llm_config,
             "services_data": "", "infra_data": "", "infra_error": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
@@ -2049,17 +2096,28 @@ class BrainOrchestrator:
         except Exception as e:
             return f"执行异常: {str(e)[:200]}"
 
-    def _detect_service(self, message: str = "") -> str:
+    def _detect_service(
+        self,
+        message: str = "",
+        *,
+        request_context: RequestContext | None = None,
+    ) -> str:
         """推断目标服务名：优先从用户消息中匹配服务列表里的服务名（避免误诊为默认第一个），
         仅在能明确匹配时才返回，否则返回空让 RCA 跳过。
         """
         try:
             # P0-1 补充修复：get_service_list 摘要截断前 10 个服务会漏掉目标服务，
             # 此处直接拉全量服务名列表做匹配。
-            from tools import _get_json, QUERY_API, _cluster_param
-            cp = _cluster_param("")
-            url = f"{QUERY_API}/services" + (("?" + cp) if cp else "")
-            raw = _get_json(url)
+            query_api = os.environ.get(
+                "QUERY_API_URL",
+                "http://query-api.observability.svc.cluster.local:8080/api/v1",
+            )
+            raw = json.loads(
+                signed_query_api_request(
+                    f"{query_api.rstrip('/')}/services",
+                    context=request_context,
+                )
+            )
             if isinstance(raw, dict):
                 items = raw.get("services") or raw.get("data") or []
             else:

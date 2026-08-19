@@ -17,8 +17,6 @@ import urllib.request
 
 from skill_registry import SkillDef, SkillRegistry, ToolRegistry
 
-_INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
-
 # 可读日志目录白名单（env 可配置，换环境无需改代码）。生产默认允许 /var/log、/tmp。
 SAFE_LOG_DIRS = [d for d in os.environ.get("SAFE_LOG_DIRS", "/var/log,/tmp").split(",") if d]
 
@@ -68,9 +66,9 @@ def probe_http(url: str = "", timeout: int = 5):
         if _is_blocked_host(parsed.hostname or ""):
             return "目标地址被安全策略禁止（内网/链路本地/云元数据）"
         start = __import__("time").time()
-        req = urllib.request.Request(url, headers={"X-Tenant-ID": "default"})
-        if _INTERNAL_TOKEN:
-            req.add_header("X-Internal-Token", _INTERNAL_TOKEN)
+        # This is a generic public probe, not a query-api authority path. Never
+        # attach tenant, service, or signed-context credentials to its target.
+        req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read(200).decode(errors="replace")
             cost_ms = int((__import__("time").time() - start) * 1000)

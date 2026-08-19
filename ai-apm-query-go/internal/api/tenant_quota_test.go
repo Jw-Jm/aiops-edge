@@ -32,13 +32,12 @@ func resetQuotaUsage(t *testing.T) {
 func mockOrchHandler(t *testing.T) (*Handler, *int) {
 	t.Helper()
 	forwarded := 0
-	orchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: countingTransport(func(r *http.Request) (*http.Response, error) {
 		forwarded++
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(orchSrv.Close)
-	t.Setenv("AI_ORCHESTRATOR_URL", orchSrv.URL)
-	return &Handler{client: orchSrv.Client()}, &forwarded
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	})}
+	t.Setenv("AI_ORCHESTRATOR_URL", "http://orchestrator.invalid")
+	return &Handler{client: client}, &forwarded
 }
 
 // proxyAIChat 发起一次 /ai/chat 代理请求（带可选 X-Tenant-ID）。

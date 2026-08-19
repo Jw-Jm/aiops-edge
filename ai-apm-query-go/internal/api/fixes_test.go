@@ -385,19 +385,24 @@ func TestQueryMetricsPromQLRateLimit(t *testing.T) {
 
 // ===== ProxyAI 剥离客户端伪造 X-Internal-* 头 =====
 
+type countingTransport func(*http.Request) (*http.Response, error)
+
+func (transport countingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
 // TestProxyAIFailsClosedWithoutNewlySignedContext verifies token-only proxying
 // cannot reach the orchestrator and a forged browser context is never forwarded.
 func TestProxyAIFailsClosedWithoutNewlySignedContext(t *testing.T) {
 	requests := 0
-	orchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: countingTransport(func(r *http.Request) (*http.Response, error) {
 		requests++
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer orchSrv.Close()
-	t.Setenv("AI_ORCHESTRATOR_URL", orchSrv.URL)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+	})}
+	t.Setenv("AI_ORCHESTRATOR_URL", "http://orchestrator.invalid")
 	t.Setenv("INTERNAL_TOKEN", "test-service-token")
 
-	h := &Handler{client: orchSrv.Client()}
+	h := &Handler{client: client}
 
 	// A forged browser context and configured service token must not create a
 	// token-only internal request.
@@ -429,5 +434,18 @@ func TestProxyAIFailsClosedWithoutNewlySignedContext(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("token-only proxy reached orchestrator %d times", requests)
+	}
+}
+
+func TestProxyShellWSRemainsManualAndRejectsBrowserAuthorization(t *testing.T) {
+	t.Setenv("AI_ORCHESTRATOR_URL", "http://orchestrator.invalid")
+	t.Setenv("INTERNAL_TOKEN", "service-token")
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/shell/ws?token=browser-jwt", nil)
+	(&Handler{}).ProxyShellWS(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("ProxyShellWS() status = %d, want fail-closed 403", recorder.Code)
 	}
 }

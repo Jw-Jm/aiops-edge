@@ -1,10 +1,14 @@
 """RCA 引擎 — 确定性3层 + 未知故障假设引擎4步证伪"""
+from __future__ import annotations
+
 import json
 import os
 import time
-import urllib.request
-import urllib.error
 from typing import Optional
+
+from contracts import RequestContext
+from internal_query import signed_query_api_request
+from trusted_context import TrustedContextError
 
 QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
 
@@ -12,18 +16,21 @@ QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.
 #  工具函数
 # ═══════════════════════════════════════════════════════
 
-def _get_json(path: str) -> dict:
+def _get_json(
+    path: str, *, request_context: RequestContext | None = None
+) -> dict:
+    if not isinstance(request_context, RequestContext):
+        return {"error": "invalid_context"}
     try:
-        # 携带 INTERNAL_TOKEN（若有）供 query-api 内部鉴权放行，避免 401 导致拓扑/服务数据拉取失败
-        headers = {"X-Tenant-ID": "default"}
-        it = os.environ.get("INTERNAL_TOKEN", "")
-        if it:
-            headers["X-Internal-Token"] = it
-        req = urllib.request.Request(f"{QUERY_API}{path}", headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read())
-    except:
-        return {}
+        return json.loads(
+            signed_query_api_request(
+                f"{QUERY_API}{path}", context=request_context
+            )
+        )
+    except TrustedContextError as exc:
+        return {"error": exc.error_code}
+    except Exception:
+        return {"error": "query_failed"}
 
 def _now() -> str:
     import datetime
@@ -33,14 +40,19 @@ def _now() -> str:
 #  Layer 0: 宿主机→VM 物理拓扑 (KubeVirt)
 # ═══════════════════════════════════════════════════════
 
-def _fetch_host_vm_topology() -> dict[str, list[str]]:
+def _fetch_host_vm_topology(
+    *, request_context: RequestContext | None = None
+) -> dict[str, list[str]]:
     """
     获取 KubeVirt 物理拓扑: node_name → [vm1, vm2, ...]
     当宿主机异常时，上面所有 VM 都会受影响。
     """
     try:
         # 从 K8s API 获取 VM 列表 (通过 query-api 基础设施端点)
-        data = _get_json("/infrastructure/pods?namespace=&labelSelector=kubevirt.io/vm")
+        data = _get_json(
+            "/infrastructure/pods?namespace=&labelSelector=kubevirt.io/vm",
+            request_context=request_context,
+        )
         pods = data.get("pods", [])
         host_vms: dict[str, list[str]] = {}
         for p in pods:
@@ -57,13 +69,15 @@ def _fetch_host_vm_topology() -> dict[str, list[str]]:
 #  Layer 1: 拓扑反向传播
 # ═══════════════════════════════════════════════════════
 
-def _fetch_topology() -> dict[str, list[str]]:
+def _fetch_topology(
+    *, request_context: RequestContext | None = None
+) -> dict[str, list[str]]:
     """获取服务拓扑: service → [upstream1, upstream2, ...]"""
-    data = _get_json("/topology/global")
+    data = _get_json("/topology/global", request_context=request_context)
     edges = data.get("edges") or data.get("data", {}).get("edges") or []
     if not edges:
         # 回退: 用服务列表构建扁平拓扑
-        svc_data = _get_json("/services")
+        svc_data = _get_json("/services", request_context=request_context)
         svcs = svc_data.get("data", svc_data.get("services", []))
         if isinstance(svcs, list):
             return {s.get("service_name", "?"): [] for s in svcs if s.get("service_name")}
@@ -202,12 +216,20 @@ def find_root_by_granger(
 #  Layer 3: 变更事件关联
 # ═══════════════════════════════════════════════════════
 
-def correlate_changes(root_service: str, lookback_sec: int = 300) -> list[dict]:
+def correlate_changes(
+    root_service: str,
+    lookback_sec: int = 300,
+    *,
+    request_context: RequestContext | None = None,
+) -> list[dict]:
     """查询异常时间点前后的变更事件"""
     events = []
     # K8s Events (通过 query-api)
     try:
-        data = _get_json(f"/infrastructure/pods?namespace=observability")
+        data = _get_json(
+            "/infrastructure/pods?namespace=observability",
+            request_context=request_context,
+        )
         pods = data.get("pods", [])
         for p in pods:
             name = p.get("name", "")
@@ -229,10 +251,15 @@ def correlate_changes(root_service: str, lookback_sec: int = 300) -> list[dict]:
 #  确定性 RCA 主入口
 # ═══════════════════════════════════════════════════════
 
-def diagnose_root_cause(affected_service: str, cluster_id: str = "") -> dict:
+def diagnose_root_cause(
+    affected_service: str,
+    cluster_id: str = "",
+    *,
+    request_context: RequestContext | None = None,
+) -> dict:
     """确定性 RCA: 宿主机拓扑 + 服务拓扑 + Granger + 变更"""
     # Layer 0: 宿主机→VM 拓扑 (KubeVirt)
-    host_vms = _fetch_host_vm_topology()
+    host_vms = _fetch_host_vm_topology(request_context=request_context)
     host_evidence = None
     if host_vms:
         for node, vms in host_vms.items():
@@ -257,7 +284,7 @@ def diagnose_root_cause(affected_service: str, cluster_id: str = "") -> dict:
                     }
 
     # Layer 1: 服务拓扑
-    topology = _fetch_topology()
+    topology = _fetch_topology(request_context=request_context)
     if not topology:
         if host_evidence:
             return {"root_cause_service": affected_service, "confidence": 0.5,
@@ -279,7 +306,9 @@ def diagnose_root_cause(affected_service: str, cluster_id: str = "") -> dict:
     root = g_result.get("root_cause_service") or (candidates[0] if candidates else None)
 
     # Layer 3: 变更
-    change_events = correlate_changes(root) if root else []
+    change_events = (
+        correlate_changes(root, request_context=request_context) if root else []
+    )
 
     # 证据链
     evidence = []
@@ -548,11 +577,17 @@ def hypothesis_falsification_loop(hypotheses: list[dict], service: str, max_iter
 #  统一 RCA 入口
 # ═══════════════════════════════════════════════════════
 
-def full_rca_analysis(affected_service: str, anomaly_event: dict = None, cluster_id: str = "") -> dict:
+def full_rca_analysis(
+    affected_service: str,
+    anomaly_event: dict = None,
+    cluster_id: str = "",
+    *,
+    request_context: RequestContext | None = None,
+) -> dict:
     """统一 RCA: 确定性失败后切换到假设引擎。
 
     anomaly_event 可选：来自告警事件的上下文（rule_name / message / count / severity）。
-    cluster_id：按集群范围采集（A-5 透传，空=全部）。
+    request_context：query-api 调用所需的显式、已授权规范上下文。
     对于 K8s 集群告警（service=kubernetes 或 rule_id 以 k8s- 开头），
     直接以 cluster_check 假设引擎为主，跳过微服务拓扑的确定性分析。
     """
@@ -566,7 +601,11 @@ def full_rca_analysis(affected_service: str, anomaly_event: dict = None, cluster
         return _k8s_rca(affected_service, anomaly_event)
 
     # Phase 1: 确定性（仅对微服务生效）
-    det_result = diagnose_root_cause(affected_service, cluster_id=cluster_id)
+    det_result = diagnose_root_cause(
+        affected_service,
+        cluster_id=cluster_id,
+        request_context=request_context,
+    )
     if det_result.get("confidence", 0) > 0.6:
         return {"mode": "deterministic", "result": det_result}
 
@@ -603,7 +642,6 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
     - 有 LLM：LLM 基于真实告警信号生成 K8s 针对性假设 + cluster_check 证伪；
     - 无 LLM：基于告警类型（Pod 重启/OOM/Deployment 不可用）生成确定性处置方案。
     """
-    from orchestrator import brain
     rule_id = (anomaly_event or {}).get("rule_id", "") or "k8s-alert"
     rule_name = (anomaly_event or {}).get("rule_name", "")
     message = (anomaly_event or {}).get("message", "")
@@ -688,36 +726,10 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
                 break
         if not namespace:
             namespace = "observability"
+    # Canonical RCA never falls back to local kubectl or kubeconfig access.
+    # The commands below remain recommendations for an explicitly initiated R4
+    # manual shell session; authorized cluster reads must come from query-api.
     _real = {}
-    try:
-        # 只采集告警对象相关的 Pod 状态（而非全部命名空间）
-        if _obj_set:
-            obj_or = " ".join(f"-e {o}" for o in _obj_set)
-            _real["abnormal_pods"] = _run_kubectl_safe(
-                f"kubectl get pods -n {namespace} -o wide | grep {obj_or}",
-                15,
-            )
-            # 只采集告警对象相关的事件（而非全部事件）
-            ev = _run_kubectl_safe(
-                f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -60",
-                15,
-            )
-            # 过滤出含告警对象的行
-            if ev and "[不安全" not in ev:
-                lines2 = [l for l in ev.splitlines() if any(o in l for o in _obj_set)]
-                _real["recent_events"] = "\n".join(lines2[-12:]) if lines2 else "(无告警对象相关事件)"
-        else:
-            _real["abnormal_pods"] = _run_kubectl_safe(
-                f"kubectl get pods -n {namespace} -o wide | grep -E 'CrashLoopBackOff|Error|OOMKilled|Pending|ImagePullBackOff'",
-                15,
-            )
-            _real["recent_events"] = _run_kubectl_safe(
-                f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -15",
-                15,
-            )
-        _real["nodes"] = _run_kubectl_safe("kubectl get nodes -o wide", 15)
-    except Exception:
-        _real = {}
     # 记录告警对象，用于 cause 措辞更精确
     obj_label = ", ".join(sorted(_obj_set)) if _obj_set else "相关对象"
     if _real.get("abnormal_pods") and "[不安全" not in _real["abnormal_pods"] and _real["abnormal_pods"].strip():
@@ -732,8 +744,12 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
         plan["cause"] += f"\n最近事件（告警对象 {obj_label}）：\n{_real['recent_events'][:800]}"
 
     # 尝试 LLM 假设引擎（已配置时），让"重新分析"产生新结果
-    from orchestrator import _llm_key_ready
-    if _llm_key_ready():
+    try:
+        from orchestrator import _llm_key_ready
+        llm_ready = _llm_key_ready()
+    except Exception:
+        llm_ready = False
+    if llm_ready:
         try:
             hypotheses = generate_hypotheses({
                 "service": affected_service,
