@@ -104,15 +104,24 @@ func ensureClusterAuthorityMetadata(conn *sql.DB) {
 			_, _ = conn.Exec(column.ddl)
 		}
 	}
-	_, _ = conn.Exec("UPDATE clusters SET cluster_id=LOWER(UUID()) WHERE cluster_id IS NULL OR cluster_id='' ")
-	_, _ = conn.Exec("UPDATE clusters SET tenant_id='default' WHERE tenant_id IS NULL OR tenant_id='' ")
-	_, _ = conn.Exec("UPDATE clusters SET slug=CONCAT('legacy-', id) WHERE slug IS NULL OR slug='' ")
-	_, _ = conn.Exec("UPDATE clusters SET lifecycle_status=CASE status WHEN 'active' THEN 'ready' WHEN 'degraded' THEN 'degraded' WHEN 'down' THEN 'disabled' ELSE 'registered' END WHERE lifecycle_status='registered'")
+	for _, statement := range clusterAuthorityBackfillStatements() {
+		_, _ = conn.Exec(statement)
+	}
 	if !hasIndex(conn, "clusters", "uq_clusters_cluster_id") {
 		_, _ = conn.Exec("ALTER TABLE clusters ADD UNIQUE INDEX uq_clusters_cluster_id (cluster_id)")
 	}
 	if !hasIndex(conn, "clusters", "uq_clusters_slug") {
 		_, _ = conn.Exec("ALTER TABLE clusters ADD UNIQUE INDEX uq_clusters_slug (slug)")
+	}
+}
+
+// clusterAuthorityBackfillStatements only enriches existing cluster metadata. An
+// unmapped tenant remains unset and therefore cannot authorize any request.
+func clusterAuthorityBackfillStatements() []string {
+	return []string{
+		"UPDATE clusters SET cluster_id=LOWER(UUID()) WHERE cluster_id IS NULL OR cluster_id='' ",
+		"UPDATE clusters SET slug=CONCAT('legacy-', id) WHERE slug IS NULL OR slug='' ",
+		"UPDATE clusters SET lifecycle_status=CASE status WHEN 'active' THEN 'ready' WHEN 'degraded' THEN 'degraded' WHEN 'down' THEN 'disabled' ELSE 'registered' END WHERE lifecycle_status='registered'",
 	}
 }
 

@@ -133,3 +133,30 @@ func TestClusterDAOResolveRefRejectsLegacyIntegerAndAllReferences(t *testing.T) 
 		}
 	}
 }
+
+func TestClusterDAOResolveRefRejectsInactiveLifecycleStates(t *testing.T) {
+	for _, status := range []string{"registered", "disabled", "degraded", "deleted"} {
+		t.Run(status, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			prev := GetDB()
+			SetDB(db)
+			t.Cleanup(func() { SetDB(prev) })
+			mock.ExpectQuery("SELECT id, cluster_id, tenant_id, slug, name, environment, region, credential_ref, lifecycle_status").
+				WithArgs(testTenantID, "production").
+				WillReturnRows(sqlmock.NewRows(clusterRegistryColumns).AddRow(
+					int64(42), testClusterID, testTenantID, "production", "orders", "prod", "cn-shanghai", "secret://clusters/orders", status, nil, nil,
+				))
+
+			if _, err := (&ClusterDAO{}).ResolveRef(testTenantID, "production"); !errors.Is(err, ErrClusterNotFound) {
+				t.Fatalf("ResolveRef() error = %v, want ErrClusterNotFound for lifecycle %q", err, status)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

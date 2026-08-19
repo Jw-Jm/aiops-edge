@@ -75,7 +75,7 @@ func (d *ClusterDAO) ResolveRef(tenantID, clusterRef string) (*Cluster, error) {
 		field = "cluster_id"
 	}
 	query := fmt.Sprintf(`SELECT id, cluster_id, tenant_id, slug, name, environment, region, credential_ref, lifecycle_status, created_at, updated_at
-FROM clusters WHERE tenant_id = ? AND %s = ? AND cluster_id IS NOT NULL AND cluster_id != '' AND lifecycle_status != 'deleted'`, field)
+FROM clusters WHERE tenant_id = ? AND %s = ? AND cluster_id IS NOT NULL AND cluster_id != '' AND lifecycle_status IN ('active', 'ready')`, field)
 	rows, err := conn.Query(query, tenantID, clusterRef)
 	if err != nil {
 		return nil, fmt.Errorf("resolve cluster: %w", err)
@@ -91,6 +91,9 @@ FROM clusters WHERE tenant_id = ? AND %s = ? AND cluster_id IS NOT NULL AND clus
 			return nil, fmt.Errorf("scan cluster registry record: %w", err)
 		}
 		c.CredentialRef = credential.String
+		if !isAuthorizedClusterLifecycle(c.Status) {
+			continue
+		}
 		if createdAt.Valid {
 			c.CreatedAt = createdAt.Time
 		}
@@ -110,6 +113,10 @@ FROM clusters WHERE tenant_id = ? AND %s = ? AND cluster_id IS NOT NULL AND clus
 	default:
 		return nil, ErrClusterAmbiguous
 	}
+}
+
+func isAuthorizedClusterLifecycle(status string) bool {
+	return status == "active" || status == "ready"
 }
 
 func isLegacyIntegerRef(ref string) bool {

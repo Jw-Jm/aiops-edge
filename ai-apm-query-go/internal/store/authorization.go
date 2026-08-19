@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 )
 
 var ErrMySQLUnavailable = errors.New("mysql unavailable")
@@ -60,8 +61,9 @@ func (d *AuthorizationDAO) Authorize(ctx AuthorizationQuery) (AuthorizationDecis
 
 	var userID, sessionStatus string
 	var userStatus int
-	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status FROM users u JOIN user_sessions s ON s.user_uuid = u.user_uuid
-WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, ctx.UserID, ctx.SessionID).Scan(&userID, &userStatus, &sessionStatus)
+	var expiresAt, revokedAt sql.NullTime
+	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s ON s.user_uuid = u.user_uuid
+WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, ctx.UserID, ctx.SessionID).Scan(&userID, &userStatus, &sessionStatus, &expiresAt, &revokedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			decision.DenialCode = DenialIdentityNotFound
@@ -74,7 +76,7 @@ WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, ctx.UserID, ctx.SessionID).
 		decision.DenialCode = DenialUserDisabled
 		return decision, nil
 	}
-	if sessionStatus != "active" {
+	if sessionStatus != "active" || !expiresAt.Valid || !expiresAt.Time.After(time.Now()) || (revokedAt.Valid && !revokedAt.Time.IsZero()) {
 		decision.DenialCode = DenialSessionDisabled
 		return decision, nil
 	}
@@ -119,10 +121,12 @@ WHERE ur.user_uuid = ? AND ur.tenant_id = ? AND ur.status = 'active' AND r.statu
 		return decision, err
 	}
 
-	err = conn.QueryRow(`SELECT 1 FROM scope_assignments sa
-JOIN user_roles ur ON ur.role_id = sa.role_id AND ur.tenant_id = sa.tenant_id
-WHERE ur.user_uuid = ? AND sa.tenant_id = ? AND sa.cluster_id = ? AND sa.namespace = ? AND sa.resource_type = ? AND sa.resource_name = ? AND sa.action = ? AND ur.status = 'active' AND sa.status = 'active' LIMIT 1`,
-		userID, tenantID, cluster.ClusterID, ctx.Namespace, ctx.ResourceType, ctx.ResourceName, ctx.Action).Scan(&allowed)
+	err = conn.QueryRow(`SELECT 1 FROM user_roles ur
+JOIN role_permissions rp ON rp.role_id = ur.role_id
+JOIN permissions p ON p.permission_id = rp.permission_id
+JOIN scope_assignments sa ON sa.role_id = ur.role_id AND sa.tenant_id = ur.tenant_id
+WHERE ur.user_uuid = ? AND ur.tenant_id = ? AND sa.cluster_id = ? AND sa.namespace = ? AND sa.resource_type = ? AND sa.resource_name = ? AND p.action = ? AND sa.action = ? AND ur.status = 'active' AND p.status = 'active' AND sa.status = 'active' LIMIT 1`,
+		userID, tenantID, cluster.ClusterID, ctx.Namespace, ctx.ResourceType, ctx.ResourceName, ctx.Action, ctx.Action).Scan(&allowed)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			decision.DenialCode = DenialScopeDenied

@@ -3,6 +3,7 @@ package store
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -27,8 +28,8 @@ func TestAuthorizationDAOAuthorizeAllowsCurrentMySQLState(t *testing.T) {
 	expectCluster(mock, testClusterID)
 	mock.ExpectQuery("SELECT 1 FROM user_roles").WithArgs(testUserID, testTenantID, "kubernetes.read").
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	mock.ExpectQuery("SELECT 1 FROM scope_assignments").
-		WithArgs(testUserID, testTenantID, testClusterID, "production", "deployment", "orders", "kubernetes.read").
+	mock.ExpectQuery("SELECT 1 FROM user_roles ur JOIN role_permissions rp").
+		WithArgs(testUserID, testTenantID, testClusterID, "production", "deployment", "orders", "kubernetes.read", "kubernetes.read").
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 
 	decision, err := (&AuthorizationDAO{}).Authorize(AuthorizationQuery{
@@ -126,8 +127,8 @@ func TestAuthorizationDAOAuthorizeDeniesClusterActionAndScopeMismatches(t *testi
 					if tc.scope {
 						scopeRows.AddRow(1)
 					}
-					mock.ExpectQuery("SELECT 1 FROM scope_assignments").
-						WithArgs(testUserID, testTenantID, testClusterID, "production", "deployment", "orders", "kubernetes.read").
+					mock.ExpectQuery("SELECT 1 FROM user_roles ur JOIN role_permissions rp").
+						WithArgs(testUserID, testTenantID, testClusterID, "production", "deployment", "orders", "kubernetes.read", "kubernetes.read").
 						WillReturnRows(scopeRows)
 				}
 			}
@@ -143,6 +144,73 @@ func TestAuthorizationDAOAuthorizeDeniesClusterActionAndScopeMismatches(t *testi
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestAuthorizationDAOAuthorizeRejectsExpiredAndRevokedSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		expires time.Time
+		revoked interface{}
+	}{
+		{"expired", time.Now().Add(-time.Hour), nil},
+		{"revoked", time.Now().Add(time.Hour), time.Now().Add(-time.Minute)},
+		{"missing expiry", time.Time{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			prev := GetDB()
+			SetDB(db)
+			t.Cleanup(func() { SetDB(prev) })
+			expectIdentityWithSessionTimes(mock, 1, "active", tc.expires, tc.revoked)
+
+			decision, err := (&AuthorizationDAO{}).Authorize(testAuthorizationQuery())
+			if err != nil {
+				t.Fatalf("Authorize() error = %v", err)
+			}
+			if decision.Allowed || decision.DenialCode != DenialSessionDisabled {
+				t.Fatalf("Authorize() = %+v, want expired/revoked session denial", decision)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestAuthorizationDAOAuthorizeDoesNotCombinePermissionAndScopeFromDifferentRoles(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	prev := GetDB()
+	SetDB(db)
+	t.Cleanup(func() { SetDB(prev) })
+	expectIdentity(mock, 1, "active")
+	expectTenantMembership(mock, true)
+	expectCluster(mock, testClusterID)
+	mock.ExpectQuery("SELECT 1 FROM user_roles").WithArgs(testUserID, testTenantID, "kubernetes.read").
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	// Role A can perform the action and role B has the target scope. Neither role
+	// grants both, so the role-bound query must return no authorization row.
+	mock.ExpectQuery("SELECT 1 FROM user_roles ur JOIN role_permissions rp").
+		WithArgs(testUserID, testTenantID, testClusterID, "production", "deployment", "orders", "kubernetes.read", "kubernetes.read").
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
+
+	decision, err := (&AuthorizationDAO{}).Authorize(testAuthorizationQuery())
+	if err != nil {
+		t.Fatalf("Authorize() error = %v", err)
+	}
+	if decision.Allowed || decision.DenialCode != DenialScopeDenied {
+		t.Fatalf("Authorize() = %+v, want role-bound scope denial", decision)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -171,9 +239,13 @@ func testAuthorizationQuery() AuthorizationQuery {
 }
 
 func expectIdentity(mock sqlmock.Sqlmock, userStatus int, sessionStatus string) {
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status FROM users u JOIN user_sessions s").
+	expectIdentityWithSessionTimes(mock, userStatus, sessionStatus, time.Now().Add(time.Hour), nil)
+}
+
+func expectIdentityWithSessionTimes(mock sqlmock.Sqlmock, userStatus int, sessionStatus string, expires time.Time, revoked interface{}) {
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s").
 		WithArgs(testUserID, testSessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status"}).AddRow(testUserID, userStatus, sessionStatus))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at"}).AddRow(testUserID, userStatus, sessionStatus, expires, revoked))
 }
 
 func expectTenantMembership(mock sqlmock.Sqlmock, member bool) {

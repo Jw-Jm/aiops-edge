@@ -11,7 +11,7 @@
 - `user_tenants` records active user-to-tenant membership.
 - `roles`, `permissions`, `user_roles`, and `role_permissions` express role-to-action grants. A role alone grants nothing without a matching permission.
 - `scope_assignments` binds a role to one explicit tenant, canonical cluster UUID, namespace, resource type, resource name, and action. Empty values and implicit `all` scopes are not authorization fallbacks.
-- `clusters` retains existing rows and adds `cluster_id`, `tenant_id`, `slug`, `environment`, `credential_ref`, and `lifecycle_status`. Existing rows receive a UUID, their existing tenant is represented as `default` only when unset, and an unambiguous `legacy-<id>` slug only when unset. Existing `active`, `degraded`, and `down` status values become `ready`, `degraded`, and `disabled` lifecycle metadata respectively.
+- `clusters` retains existing rows and adds `cluster_id`, `tenant_id`, `slug`, `environment`, `credential_ref`, and `lifecycle_status`. Existing rows receive a UUID and an unambiguous `legacy-<id>` slug only when unset. An unmapped `tenant_id` remains unset and cannot authorize requests until explicitly mapped. Existing `active`, `degraded`, and `down` status values become `ready`, `degraded`, and `disabled` lifecycle metadata respectively.
 
 `cluster_id` and `slug` receive unique indexes. The legacy integer `clusters.id` stays during the migration, but new registry resolution accepts only lowercase UUID or slug and always returns `cluster_id` as authority.
 
