@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -630,95 +629,8 @@ const (
 )
 
 func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
-	// Delegated role/approval authority has not migrated to this proxy yet. High
-	// risk legacy proxy paths therefore fail closed instead of accepting JWT claims.
-	if isRestrictedProxyPath(r.URL.Path) && !hasPrivilegedRole(r) {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
-		return
-	}
-	// 用 orchestratorBase()（env 可覆盖），与 ProxyShellWS 一致，便于测试注入 mock。
-	url := orchestratorBase() + r.URL.Path
-	if r.URL.RawQuery != "" {
-		url += "?" + r.URL.RawQuery
-	}
-	// G2 安全加固：请求体大小上限（10MB），超限 413 拒绝，防止超大 body 占内存。
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxProxyBody+1))
-	if err != nil {
-		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "failed to read body"})
-		return
-	}
-	if len(body) > maxProxyBody {
-		respondJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{"error": "request body too large (>10MB)"})
-		return
-	}
-	req, _ := http.NewRequest(r.Method, url, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	// 注入 LLM 配置到被代理请求头。
-	// 安全：不再把解密后的明文 API Key 放进 X-LLM-API-Key 头（避免明文 key 在服务间
-	// HTTP 上传输）。orchestrator 检测不到该 header 时，会通过带 X-Internal-Token 的
-	// 内部接口 /api/v1/settings/llm/internal 自行拉取已保存配置（见 orchestrator
-	// _parse_llm_config / _fetch_saved_llm_config 回退逻辑）。
-	llmCfg := h.GetLLMConfig()
-	if llmCfg.Model != "" {
-		req.Header.Set("X-LLM-Model", llmCfg.Model)
-		req.Header.Set("X-LLM-Base-URL", llmCfg.BaseURL)
-		req.Header.Set("X-LLM-Provider", llmCfg.Provider)
-	}
-
-	// The outbound request starts empty. Explicitly remove historical authority
-	// headers so client input and JWT claims cannot be laundered into an internal
-	// user, role, scope, approval, tenant, or signed-context assertion.
-	for _, header := range []string{
-		"X-Internal-User", "X-Internal-Role", "X-Internal-Approver", "X-Internal-Scope",
-		"X-Trusted-Request-Context", "X-Tenant-ID",
-	} {
-		req.Header.Del(header)
-	}
-	// 注入内部服务共享 token（仅当已配置），供 orchestrator 校验请求确实来自可信的
-	// query-api 代理（该代理已通过 AuthMiddleware 完成 JWT 鉴权与角色注入），
-	// 防止绕过 query-api 直连 orchestrator 伪造 X-Internal-Role/Approver。
-	if it := os.Getenv("INTERNAL_TOKEN"); it != "" {
-		req.Header.Set("X-Internal-Token", it)
-	}
-
-	// QuotaAI 配额检查（P3-2b）：仅对 LLM 调用路径（/ai/chat、/ai/nl2sql、/ai/final_report）
-	// 消耗配额。租户 QuotaAI>0 且当日已用达到上限 → 429 不转发；QuotaAI=0 或租户不存在
-	// （默认 default 恒在）→ 不限。当日计数为进程内内存实现（重启归零，见 tenant_quota.go），
-	// 生产可替换为 Redis/MySQL 计数表。
-	if isLLMProxyPath(r.URL.Path) {
-		tenant := extractTenantID(r)
-		used := quotaUsedToday(tenant)
-		if quota := tenantQuotaAI(tenant); quota > 0 && used >= quota {
-			respondJSON(w, http.StatusTooManyRequests, map[string]interface{}{
-				"error":          "AI 调用已达当日配额上限（quota_ai_calls）",
-				"tenant":         tenant,
-				"quota_ai_calls": quota,
-				"used_today":     used,
-			})
-			return
-		}
-		// 转发前计数 +1
-		quotaIncrementToday(tenant)
-	}
-
-	// Use longer timeout for AI requests (full 14-node DAG with 5 LLM calls = 120-300s)
-	aiClient := &http.Client{Timeout: 300 * time.Second}
-	resp, err := aiClient.Do(req)
-	if err != nil {
-		respondJSON(w, 502, map[string]interface{}{"error": "ai-orchestrator unavailable: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	// G2 安全加固：响应体大小上限（50MB），超限截断，防止超大响应占内存。
-	n, _ := io.Copy(w, io.LimitReader(resp.Body, maxProxyResponse+1))
-	if n > maxProxyResponse {
-		log.Printf("ProxyAI response truncated: path=%s size=%d > %d", r.URL.Path, n, maxProxyResponse)
-	}
+	// Query-api cannot derive an audience-bound, canonical-cluster signed context
+	// for this legacy proxy route yet. Never forward a client context or a
+	// service token alone; Task 4 supplies the signed caller migration.
+	respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 }

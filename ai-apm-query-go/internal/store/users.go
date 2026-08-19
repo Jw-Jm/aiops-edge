@@ -88,11 +88,11 @@ func (d *UserDAO) GetByUsername(username string) (*User, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		"SELECT id, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE username = ?",
+		"SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE username = ?",
 		username)
 	var u User
 	var ap int
-	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
+	if err := row.Scan(&u.ID, &u.UserUUID, &u.Username, &u.PasswordHash, &u.DisplayName,
 		&u.Role, &u.Email, &u.Status, &u.Scope, &ap, &u.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -101,6 +101,22 @@ func (d *UserDAO) GetByUsername(username string) (*User, error) {
 	}
 	u.IsApprover = ap == 1
 	return &u, nil
+}
+
+// CreateSession records the canonical identity/session pair that must exist
+// before a JWT can be accepted by AuthorizationDAO.
+func (d *UserDAO) CreateSession(userUUID, sessionID string, expiresAt time.Time) error {
+	if userUUID == "" || sessionID == "" || expiresAt.IsZero() {
+		return errors.New("invalid session")
+	}
+	conn := GetDB()
+	if conn == nil {
+		return ErrMySQLUnavailable
+	}
+	_, err := conn.Exec(
+		"INSERT INTO user_sessions (session_id, user_uuid, status, expires_at, revoked_at) VALUES (?, ?, 'active', ?, NULL)",
+		sessionID, userUUID, expiresAt.UTC())
+	return err
 }
 
 // GetByID 按 ID 查用户。

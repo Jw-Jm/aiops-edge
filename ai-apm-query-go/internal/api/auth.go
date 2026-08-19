@@ -176,6 +176,10 @@ func generateJWT(username, role, scope string) string {
 }
 
 func generateJWTWithSession(userID, sessionID, _ string, _ string) string {
+	return generateJWTWithSessionExpiry(userID, sessionID, time.Now().Add(24*time.Hour))
+}
+
+func generateJWTWithSessionExpiry(userID, sessionID string, expiresAt time.Time) string {
 	if userID == "" || sessionID == "" {
 		return ""
 	}
@@ -183,7 +187,7 @@ func generateJWTWithSession(userID, sessionID, _ string, _ string) string {
 		"sub": userID,
 		"sid": sessionID,
 		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(24 * time.Hour).Unix(),
+		"exp": expiresAt.Unix(),
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	secret, err := getJWTSecret()
@@ -371,12 +375,29 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. MySQL 优先：查用户 + bcrypt 校验
+	// 1. MySQL identity/session authority: authenticate the password, require a
+	// canonical user UUID, persist an active session, then sign only that UUID
+	// and session ID. Role and scope remain response compatibility data, not JWT
+	// authority.
 	if db := store.GetDB(); db != nil {
 		u, err := (&store.UserDAO{}).GetByUsername(creds.Username)
 		if err == nil && u != nil && u.Status == 1 {
 			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(creds.Password)) == nil {
-				token := generateJWT(u.Username, u.Role, u.Scope)
+				if !canonicalUUID.MatchString(u.UserUUID) {
+					respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
+					return
+				}
+				sessionID := randomSessionID()
+				expiresAt := time.Now().UTC().Add(24 * time.Hour)
+				if sessionID == "" || (&store.UserDAO{}).CreateSession(u.UserUUID, sessionID, expiresAt) != nil {
+					respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
+					return
+				}
+				token := generateJWTWithSessionExpiry(u.UserUUID, sessionID, expiresAt)
+				if token == "" {
+					respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
+					return
+				}
 				respondJSON(w, 200, map[string]interface{}{
 					"token": token, "username": u.Username, "role": u.Role, "display_name": u.DisplayName, "scope": u.Scope,
 				})

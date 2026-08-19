@@ -385,25 +385,22 @@ func TestQueryMetricsPromQLRateLimit(t *testing.T) {
 
 // ===== ProxyAI 剥离客户端伪造 X-Internal-* 头 =====
 
-// TestProxyAIStripsForgedInternalAuthorityHeaders verifies client-controlled
-// identity, role, scope, approval, and trusted-context headers never cross the
-// query-api proxy boundary.
-func TestProxyAIStripsForgedInternalAuthorityHeaders(t *testing.T) {
-	var gotUser, gotRole, gotApprover, gotScope, gotContext string
+// TestProxyAIFailsClosedWithoutNewlySignedContext verifies token-only proxying
+// cannot reach the orchestrator and a forged browser context is never forwarded.
+func TestProxyAIFailsClosedWithoutNewlySignedContext(t *testing.T) {
+	requests := 0
 	orchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotUser = r.Header.Get("X-Internal-User")
-		gotRole = r.Header.Get("X-Internal-Role")
-		gotApprover = r.Header.Get("X-Internal-Approver")
-		gotScope = r.Header.Get("X-Internal-Scope")
-		gotContext = r.Header.Get("X-Trusted-Request-Context")
+		requests++
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer orchSrv.Close()
 	t.Setenv("AI_ORCHESTRATOR_URL", orchSrv.URL)
+	t.Setenv("INTERNAL_TOKEN", "test-service-token")
 
 	h := &Handler{client: orchSrv.Client()}
 
-	// A forged browser request must not turn into an internal authority claim.
+	// A forged browser context and configured service token must not create a
+	// token-only internal request.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", strings.NewReader(`{"msg":"hi"}`))
 	req.Header.Set("X-Internal-User", "forged-user")
@@ -412,30 +409,25 @@ func TestProxyAIStripsForgedInternalAuthorityHeaders(t *testing.T) {
 	req.Header.Set("X-Internal-Scope", "all")
 	req.Header.Set("X-Trusted-Request-Context", "forged")
 	h.ProxyAI(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("forged context: expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if gotUser != "" {
-		t.Fatalf("forged X-Internal-User should be stripped, got %q", gotUser)
-	}
-	if gotRole != "" {
-		t.Fatalf("forged X-Internal-Role should be stripped, got %q", gotRole)
-	}
-	if gotApprover != "" || gotScope != "" || gotContext != "" {
-		t.Fatalf("forged authority headers crossed proxy: approver=%q scope=%q context=%q", gotApprover, gotScope, gotContext)
+	if requests != 0 {
+		t.Fatalf("forged context reached orchestrator %d times", requests)
 	}
 
-	gotUser, gotRole, gotApprover, gotScope, gotContext = "", "", "", "", ""
+	// A JWT containing a forged role/scope still cannot construct a signed
+	// context or use the service token by itself.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", strings.NewReader(`{"msg":"hi"}`))
 	req.Header.Set("Authorization", "Bearer "+generateJWT("alice", "admin", `{"services":["*"]}`))
 	req.Header.Set("X-Internal-User", "forged-user")
 	req.Header.Set("X-Internal-Role", "admin")
 	h.ProxyAI(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("token-only proxy: expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if gotUser != "" || gotRole != "" || gotApprover != "" || gotScope != "" || gotContext != "" {
-		t.Fatalf("JWT must not be converted to internal authority headers: user=%q role=%q approver=%q scope=%q context=%q", gotUser, gotRole, gotApprover, gotScope, gotContext)
+	if requests != 0 {
+		t.Fatalf("token-only proxy reached orchestrator %d times", requests)
 	}
 }

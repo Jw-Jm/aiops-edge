@@ -53,7 +53,8 @@ func proxyAIChat(t *testing.T, h *Handler, tenant string) *httptest.ResponseReco
 	return rec
 }
 
-// QuotaAI=0 → 不限流：连续多次 /ai/chat 均 200 且都转发到 orchestrator。
+// Legacy ProxyAI traffic is denied before quota evaluation until a newly signed
+// canonical context caller exists.
 func TestProxyAIQuotaUnlimited(t *testing.T) {
 	resetQuotaUsage(t)
 	setTestTenant(t, "default", 0) // 显式保证默认租户 QuotaAI=0
@@ -61,16 +62,17 @@ func TestProxyAIQuotaUnlimited(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		rec := proxyAIChat(t, h, "")
-		if rec.Code != http.StatusOK {
-			t.Fatalf("call %d: quota=0 should be unlimited, got %d: %s", i+1, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("call %d: expected fail-closed 403, got %d: %s", i+1, rec.Code, rec.Body.String())
 		}
 	}
-	if *forwarded != 5 {
-		t.Fatalf("forwarded=%d, want 5", *forwarded)
+	if *forwarded != 0 {
+		t.Fatalf("forwarded=%d, want 0", *forwarded)
 	}
 }
 
-// QuotaAI=3 → 第 4 次调用返回 429 且不转发；前 3 次正常转发。
+// A configured tenant quota cannot turn a token-only proxy request into an
+// internal service call.
 func TestProxyAIQuotaExceeded(t *testing.T) {
 	resetQuotaUsage(t)
 	setTestTenant(t, "quota-tenant", 3)
@@ -78,70 +80,48 @@ func TestProxyAIQuotaExceeded(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		rec := proxyAIChat(t, h, "quota-tenant")
-		if i < 3 {
-			if rec.Code != http.StatusOK {
-				t.Fatalf("call %d: expected 200, got %d: %s", i+1, rec.Code, rec.Body.String())
-			}
-		} else {
-			if rec.Code != http.StatusTooManyRequests {
-				t.Fatalf("call %d: expected 429, got %d: %s", i+1, rec.Code, rec.Body.String())
-			}
-			if !strings.Contains(rec.Body.String(), "quota_ai_calls") {
-				t.Fatalf("429 body should carry quota info: %s", rec.Body.String())
-			}
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("call %d: expected fail-closed 403, got %d: %s", i+1, rec.Code, rec.Body.String())
 		}
 	}
-	if *forwarded != 3 {
-		t.Fatalf("forwarded=%d, want 3 (4th+ rejected before forwarding)", *forwarded)
+	if *forwarded != 0 {
+		t.Fatalf("forwarded=%d, want 0", *forwarded)
 	}
 }
 
-// 不同租户独立计数：tenant-a(2) 的第 3 次 429，tenant-b(1) 的第 2 次 429。
+// A requested tenant header cannot bypass the proxy's signed-context boundary.
 func TestProxyAIQuotaPerTenant(t *testing.T) {
 	resetQuotaUsage(t)
 	setTestTenant(t, "tenant-a", 2)
 	setTestTenant(t, "tenant-b", 1)
-	h, _ := mockOrchHandler(t)
+	h, forwarded := mockOrchHandler(t)
 
 	doCall := func(tenant string) int {
 		return proxyAIChat(t, h, tenant).Code
 	}
-	// tenant-a：配额 2，第 3 次 429
-	if code := doCall("tenant-a"); code != http.StatusOK {
-		t.Fatalf("tenant-a call 1: got %d, want 200", code)
+	for _, tenant := range []string{"tenant-a", "tenant-a", "tenant-b", "tenant-b", "tenant-a"} {
+		if code := doCall(tenant); code != http.StatusForbidden {
+			t.Fatalf("%s: got %d, want fail-closed 403", tenant, code)
+		}
 	}
-	if code := doCall("tenant-a"); code != http.StatusOK {
-		t.Fatalf("tenant-a call 2: got %d, want 200", code)
-	}
-	if code := doCall("tenant-a"); code != http.StatusTooManyRequests {
-		t.Fatalf("tenant-a call 3: got %d, want 429", code)
-	}
-	// tenant-b：配额 1，第 2 次 429（计数独立于 tenant-a）
-	if code := doCall("tenant-b"); code != http.StatusOK {
-		t.Fatalf("tenant-b call 1: got %d, want 200 (independent counting)", code)
-	}
-	if code := doCall("tenant-b"); code != http.StatusTooManyRequests {
-		t.Fatalf("tenant-b call 2: got %d, want 429", code)
-	}
-	// tenant-a 计数不受 tenant-b 影响（仍超限）
-	if code := doCall("tenant-a"); code != http.StatusTooManyRequests {
-		t.Fatalf("tenant-a call 4: got %d, want 429", code)
+	if *forwarded != 0 {
+		t.Fatalf("forwarded=%d, want 0", *forwarded)
 	}
 }
 
-// 租户不存在（非 default）→ 按不限处理（unlimited），不 429。
+// An unknown tenant hint cannot create a default or implicit proxy scope.
 func TestProxyAIQuotaUnknownTenantUnlimited(t *testing.T) {
 	resetQuotaUsage(t)
 	h, forwarded := mockOrchHandler(t)
 
 	for i := 0; i < 3; i++ {
 		rec := proxyAIChat(t, h, "ghost-tenant")
-		if rec.Code != http.StatusOK {
-			t.Fatalf("call %d: unknown tenant should be unlimited, got %d: %s", i+1, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("call %d: expected fail-closed 403, got %d: %s", i+1, rec.Code, rec.Body.String())
 		}
 	}
-	if *forwarded != 3 {
-		t.Fatalf("forwarded=%d, want 3", *forwarded)
+	if *forwarded != 0 {
+		t.Fatalf("forwarded=%d, want 0", *forwarded)
 	}
 }
 
