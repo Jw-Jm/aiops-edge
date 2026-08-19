@@ -86,12 +86,12 @@ func (context RequestContext) Validate() error {
 }
 
 type ResourceRef struct {
-	TenantID     string `json:"tenant_id"`
-	ClusterID    string `json:"cluster_id"`
-	ResourceType string `json:"resource_type"`
-	Namespace    string `json:"namespace"`
-	Name         string `json:"name"`
-	ResourceID   string `json:"resource_id"`
+	TenantID     string  `json:"tenant_id"`
+	ClusterID    string  `json:"cluster_id"`
+	ResourceType string  `json:"resource_type"`
+	Namespace    *string `json:"namespace"`
+	Name         string  `json:"name"`
+	ResourceID   string  `json:"resource_id"`
 }
 
 func (resource ResourceRef) Validate() error {
@@ -104,7 +104,10 @@ func (resource ResourceRef) Validate() error {
 	if resource.ResourceType == "" || resource.Name == "" {
 		return errors.New("resource_type and name are required")
 	}
-	namespace := resource.Namespace
+	namespace := ""
+	if resource.Namespace != nil {
+		namespace = *resource.Namespace
+	}
 	if namespace == "" {
 		namespace = "_"
 	}
