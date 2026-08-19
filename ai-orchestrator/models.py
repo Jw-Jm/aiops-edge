@@ -15,7 +15,7 @@ class ChatRequest(BaseModel):
     script: str = ""           # 待确认/已确认执行的处置脚本
     approved: Optional[bool] = None  # None=未知, True=确认执行, False=驳回
     exec_result: str = ""      # 上一轮处置脚本的执行结果（作为下一轮分析上下文）
-    cluster_id: str = "all"    # A-5: 集群范围（all/default/集群 name），透传至查询工具
+    cluster_id: str = ""       # 必须由已授权 TrustedRequestContext 提供 canonical UUID
 
 
 class ShellCheckRequest(BaseModel):
@@ -31,13 +31,13 @@ class TaskCreateRequest(BaseModel):
     source: str = "manual"  # alert | log_anomaly | manual | inspection
     service: str = ""
     context: str = ""
-    cluster_id: str = "all"  # A-5：RCA 按集群范围
+    cluster_id: str = ""     # 必须由已授权 TrustedRequestContext 提供 canonical UUID
 
 
 class AlertRCARequest(BaseModel):
     """告警事件 → RCA 假设引擎联动请求"""
     service: str = "kubernetes"
-    cluster_id: str = "all"  # A-5：RCA 按集群范围
+    cluster_id: str = ""     # 必须由已授权 TrustedRequestContext 提供 canonical UUID
     rule_id: str = ""
     rule_name: str = ""
     severity: str = "warning"

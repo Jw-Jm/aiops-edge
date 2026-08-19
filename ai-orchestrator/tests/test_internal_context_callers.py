@@ -287,6 +287,23 @@ def test_alert_ops_uses_signed_helper_for_reads_and_writes(monkeypatch):
     assert all(call[1].user_id == USER_ID for call in calls)
 
 
+def test_observability_tools_reject_missing_context_and_use_signed_helper(monkeypatch):
+    from tools import query_metrics
+
+    assert query_metrics("orders", cluster_id=str(CLUSTER_ID)) == "查询失败: invalid_context"
+
+    calls = []
+    monkeypatch.setattr(
+        "tools.signed_query_api_request",
+        lambda url, *, context, **kwargs: calls.append((url, context, kwargs))
+        or b'{"data": []}',
+    )
+    assert query_metrics(
+        "orders", cluster_id=str(CLUSTER_ID), request_context=_context()
+    ) == '{\n  "data": []\n}'
+    assert calls and calls[0][1].cluster_id == CLUSTER_ID
+
+
 def test_node_health_query_api_fallback_requires_explicit_context(monkeypatch):
     import node_health
 

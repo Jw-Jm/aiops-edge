@@ -725,7 +725,9 @@ async def node_collect(state: AgentState) -> dict:
     cid = str(request_context.cluster_id) if isinstance(request_context, RequestContext) else ""
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
-        data = _parse(await asyncio.to_thread(get_service_list, cluster_id=cid))
+        data = _parse(await asyncio.to_thread(
+            get_service_list, cluster_id=cid, request_context=request_context
+        ))
         if isinstance(data, list):
             lines = []
             for s in data:
@@ -743,7 +745,9 @@ async def node_collect(state: AgentState) -> dict:
     except: pass
     # Infra
     try:
-        infra_data = (await asyncio.to_thread(get_infrastructure)).replace("## K8s 基础设施\n", "").strip()[:20000]
+        infra_data = (await asyncio.to_thread(
+            get_infrastructure, request_context=request_context
+        )).replace("## K8s 基础设施\n", "").strip()[:20000]
         result["infra_data"] = infra_data
         if "K8s 基础设施数据不可用" in infra_data:
             result["infra_error"] = infra_data
@@ -757,7 +761,9 @@ async def node_collect(state: AgentState) -> dict:
     svc = state.get("service", "")
     if svc:
         try:
-            raw = await asyncio.to_thread(query_metrics, svc, cluster_id=cid)
+            raw = await asyncio.to_thread(
+                query_metrics, svc, cluster_id=cid, request_context=request_context
+            )
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -771,11 +777,15 @@ async def node_collect(state: AgentState) -> dict:
                 result["red_metrics"] = "\n".join(lines)
                 result["before_metrics"] = f"总调用={total_calls} 错误率={err_rate:.2f}% P50延迟={avg_lat:.1f}ms"
         except: pass
-        try: result["trace_data"] = (await asyncio.to_thread(query_traces, svc, cluster_id=cid))[:30000]
+        try: result["trace_data"] = (await asyncio.to_thread(
+            query_traces, svc, cluster_id=cid, request_context=request_context
+        ))[:30000]
         except: pass
     # 日志 — 每次对话无条件采集（结合日志分析）
     try:
-        result["logs_data"] = await asyncio.to_thread(query_logs, svc, 30, cluster_id=cid)
+        result["logs_data"] = await asyncio.to_thread(
+            query_logs, svc, 30, cluster_id=cid, request_context=request_context
+        )
     except:
         result["logs_data"] = ""
     # P1-6: K8sGPT 不再每次对话无条件调用——仅 diagnosis 意图且非信息查询时调用，
@@ -885,11 +895,15 @@ def _friendly_tool_result(node_name: str, node_data: dict) -> str:
     return "已完成"
 
 
-def _top_anomaly_service(cluster_id: str = "") -> str:
+def _top_anomaly_service(
+    cluster_id: str = "", *, request_context: RequestContext | None = None
+) -> str:
     """从全局服务概览中选出最异常的服务（错误率最高），供「未指定服务时默认为所有服务」的 RCA 兜底。
     cluster_id 为空时覆盖全部集群（A-5 补充透传）。"""
     try:
-        data = _parse(get_service_list(cluster_id=cluster_id))
+        data = _parse(get_service_list(
+            cluster_id=cluster_id, request_context=request_context
+        ))
         if not isinstance(data, list) or not data:
             return ""
         best_name, best_rate = "", -1.0
@@ -919,7 +933,10 @@ async def node_rca(state: AgentState) -> dict:
     svc = state.get("service", "")
     cid = state.get("cluster_id", "")  # A-5：RCA 按集群范围
     if not svc:
-        svc = await asyncio.to_thread(_top_anomaly_service, cid)
+        svc = await asyncio.to_thread(
+            _top_anomaly_service, cid,
+            request_context=state.get("request_context"),
+        )
         if not svc:
             return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
     try:
@@ -1290,7 +1307,10 @@ async def node_verify(state: AgentState) -> dict:
         # 二次取样 (间隔 30s 确认非瞬时波动)
         samples = []
         for _ in range(2):
-            raw = await asyncio.to_thread(query_metrics, svc, cluster_id=cid)
+            raw = await asyncio.to_thread(
+                query_metrics, svc, cluster_id=cid,
+                request_context=state.get("request_context"),
+            )
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
                 items = data["data"]
@@ -1316,12 +1336,18 @@ async def node_verify(state: AgentState) -> dict:
         # 副作用检测: 关联服务
         side_effect = False
         try:
-            topo_raw = await asyncio.to_thread(query_topology, cluster_id=cid)
+            topo_raw = await asyncio.to_thread(
+                query_topology, cluster_id=cid,
+                request_context=state.get("request_context"),
+            )
             topo_data = _parse(topo_raw)
             edges = topo_data.get("edges", []) if topo_data else []
             downstreams = [e.get("target_service", e.get("target", "")) for e in edges if e.get("source_service", e.get("source", "")) == svc]
             for ds in downstreams[:3]:
-                ds_data = _parse(await asyncio.to_thread(query_metrics, ds, cluster_id=cid))
+                ds_data = _parse(await asyncio.to_thread(
+                    query_metrics, ds, cluster_id=cid,
+                    request_context=state.get("request_context"),
+                ))
                 if ds_data and isinstance(ds_data.get("data"), list):
                     ds_lat = sum(float(i.get("avg_ms", 0)) for i in ds_data["data"]) / max(len(ds_data["data"]), 1)
                     if ds_lat > before_lat * 1.5 and before_lat > 0:
