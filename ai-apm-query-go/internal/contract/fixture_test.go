@@ -8,13 +8,14 @@ import (
 )
 
 type contractFixture struct {
-	RequestContext RequestContext  `json:"request_context"`
-	Resources      []ResourceRef   `json:"resources"`
-	ToolResult     ToolResult      `json:"tool_result"`
-	Evidence       json.RawMessage `json:"evidence"`
-	Hypothesis     json.RawMessage `json:"hypothesis"`
-	OpsAction      json.RawMessage `json:"ops_action"`
-	Verification   json.RawMessage `json:"verification"`
+	RequestContext              RequestContext  `json:"request_context"`
+	TrustedRequestContextClaims RequestContext  `json:"trusted_request_context_claims"`
+	Resources                   []ResourceRef   `json:"resources"`
+	ToolResult                  ToolResult      `json:"tool_result"`
+	Evidence                    json.RawMessage `json:"evidence"`
+	Hypothesis                  json.RawMessage `json:"hypothesis"`
+	OpsAction                   json.RawMessage `json:"ops_action"`
+	Verification                json.RawMessage `json:"verification"`
 }
 
 func TestSharedContractFixture(t *testing.T) {
@@ -30,6 +31,9 @@ func TestSharedContractFixture(t *testing.T) {
 	}
 	if err := fixture.RequestContext.Validate(); err != nil {
 		t.Fatalf("validate request context: %v", err)
+	}
+	if err := fixture.TrustedRequestContextClaims.Validate(); err != nil {
+		t.Fatalf("validate trusted request context claims: %v", err)
 	}
 	for index := range fixture.Resources {
 		if err := fixture.Resources[index].Validate(); err != nil {
