@@ -6,7 +6,7 @@
 >
 > 基线代码：生成本文时仓库 `main` 分支 `2ce8df5`；正式实施必须在 Phase 0 重新记录实际 SHA，本文中的 SHA 只用于说明本次扫描来源。
 >
-> 文档性质：本文件是后续 Luna 实施该仓库全面重构的文件级执行合同。本次只生成规格书，不在本次任务中实施重构。
+> 文档性质：本文件是 Luna 实施该仓库全面重构的文件级执行合同；实施会话必须按本文和已确认决策执行。
 
 ---
 
@@ -105,6 +105,60 @@ Kubernetes Secret、证书、API Token
 10. Gate 未通过不得进入下一 Phase。
 
 禁止先重写全项目、最后一次性补测试。
+
+## 0.6 已确认实施决策（P0，禁止 Luna 自行改写）
+
+以下决策来自实施前确认，优先于本文中相同主题的未具体化表述；若真实代码与其冲突，必须记录偏差并停在对应 Gate，不得自行选择另一套架构。
+
+### 身份、租户与授权
+
+- 数据模型必须支持多 tenant；当前初始化运行形态为单 tenant，创建一个 `default` tenant。禁止以 `NULL`、硬编码或 singleton 代替 `tenant_id`。
+- 授权模型固定为 `tenant → cluster → namespace → resource → action`，统一使用 `Principal + Role + Permission + ScopeAssignment`；MySQL 是动态授权唯一权威来源。
+- JWT 只保存身份/会话和短期声明，不保存动态 roles、permissions、tenant 或 cluster scope。
+- `cluster_id` 是不可变 UUID；`slug` 全局唯一、可读并可受控重命名；`name` 仅用于展示。数据库外键、Resource Identity、Evidence、Run、审计和执行记录只使用 UUID。
+- 外部 UUID/slug 必须在进入 Planner、Tool、Agent、RCA 或 Execution 前 canonicalize；注销后重建的物理集群必须获得新 UUID。
+
+### Kubernetes 访问与执行边界
+
+- orchestrator 禁止读取、解析、存储或接收 kubeconfig、token、证书、私钥、ServiceAccount token 和 Secret 内容；禁止直接建立目标集群 Kubernetes Client。
+- `credential_ref` 只保存 Kubernetes Secret 引用；每个 cluster 使用独立 Secret，MySQL 不保存凭据明文。
+- query-api 负责 Kubernetes Read Access；Execution Adapter 第一阶段位于 query-api 进程内，但必须是独立安全模块，普通 Query Handler 不得直接写 Kubernetes。
+- 生产写路径只接受结构化 `OpsAction`；Planner 不得生成 raw kubectl/shell 作为 canonical action。受限 Shell 仅作为人工显式触发的 R4 应急通道。
+- 写操作固定经过 `Authorization → Policy/Risk → Approval → Execution Adapter → Verification`；rollback 也是新的 `OpsAction`，V1 默认重新审批。
+
+### 内部服务认证与控制面所有权
+
+- orchestrator → query-api 使用独立 Service Credential 加短时 Ed25519/JWS `TrustedRequestContext`；两者密钥分离、可轮换，Context 有效期 30–60 秒，带 `audience`、时间、`nonce` 并防重放。
+- Context 只表达请求上下文，不携带 roles、permissions、allowed clusters、credential_ref 或 approval 结论；query-api 必须基于 MySQL 当前状态重新授权。
+- 内部 API 固定使用版本化 `/internal/v1/...` 路径和严格 JSON Schema；安全请求默认拒绝未知字段。
+- orchestrator 是 AI Runtime 业务 owner 和 Run 状态机唯一推进者；query-api 的 Control Plane Persistence 模块是数据库唯一写入口。orchestrator 不直接连接 MySQL。
+- VictoriaLogs 是原始日志唯一主存储；ClickHouse 保存派生可观测分析；MySQL 保存控制面和 AI Runtime。
+- 新旧 schema 不长期双写；同一 Phase 内完成停止旧 writer、切换新 schema、切换 reader、验证和删除旧 runtime adapter。
+
+### 运行边界与验收参数
+
+- V1 最低 Tool 集合固定为：`query_metrics`、`query_logs`、`query_traces`、`query_alerts`、`query_topology`、`query_k8s`、`k8sgpt_diagnose`、`knowledge_search`、`query_changes`、`execute_k8s`；`execute_shell` 不属于默认 Planner 工具。
+- Planner 默认预算固定为：初始步骤不超过 12，补充调查不超过 2 轮，总步骤不超过 20；普通 Tool 30 秒、长查询 60 秒、LLM 90 秒、Run 900 秒；LLM 瞬时重试最多 2 次，只读 Tool 最多重试 1 次，写动作不自动重试。
+- RCA 固定权重为 LLM reasoning 35%、Evidence support 30%、source reliability 20%、temporal relation 15%；`confirmed` 至少 0.80 且有高可靠直接证据且无关键反证，`supported` 为 0.60–0.79，其余关键证据不足或低于 0.60 为 `unknown`。
+- R0/R1 自动；R2 用户确认；R3 独立审批；R4 严格审批或默认禁止。R3/R4 默认禁止自审批。
+- Investigation URL 仅支持受权限重新鉴权的 `run_id` 定位，不支持匿名或 signed public link。
+- 镜像体积基线为 Phase 0 同一 SHA、同一正式 Dockerfile 构建的五个自研 runtime image；最终同一口径总和必须不高于基线的 80%。
+- Phase 16 清理默认仅允许本地验收环境，必须先生成 `DATA_DELETION_MANIFEST`；任何 `UNKNOWN` 目标禁止删除，禁止做成 Helm 自动动作。
+- GitHub 同步目标默认是现有仓库 `main`，但必须在 Phase 0 重新验证 remote；若事实冲突，停止并记录。
+
+## 0.7 Phase 0 Blocking Discovery
+
+以下属于必须真实探测的环境事实，不得从 README、Helm values、Docker Compose、配置文件或环境变量存在推导为可用：
+
+```text
+Docker、Helm、Playwright、Go、Python、Node.js、kubectl/API 权限
+现有 Kubernetes 集群和后续 kind cluster 能力
+ClickHouse、VictoriaMetrics、VictoriaLogs、MySQL、ChromaDB、MinIO
+K8sGPT 二进制/容器/endpoint/adapter
+当前有效 LLM provider、model、endpoint、structured-output 能力
+```
+
+探测结果只能记录为 `AVAILABLE`、`UNAVAILABLE` 或 `UNKNOWN`，并保留命令、退出码、版本和失败原因。缺失工具不得偷偷替换验证方式；环境依赖未满足时，对应 Gate 必须标记阻塞。
 
 ---
 
