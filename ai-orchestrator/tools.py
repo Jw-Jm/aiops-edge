@@ -1,63 +1,80 @@
 """Observability tools for AI agents"""
+from __future__ import annotations
 import json
 import os
 import subprocess
-import urllib.request
 import urllib.error
+from uuid import UUID
 
+from contracts import RequestContext
+from internal_query import signed_query_api_request
 from skill_registry import ToolRegistry
 from kg_tools import kg_evidence_tool
+from trusted_context import TrustedContextError
 
 QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
 
-def _api_headers():
-    h = {"X-Tenant-ID": "default"}
-    if INTERNAL_TOKEN:
-        h["X-Internal-Token"] = INTERNAL_TOKEN
-    return h
-
-
-def _get_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers=_api_headers())
+def _get_json(url: str, *, request_context: RequestContext | None = None) -> dict:
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
+        return json.loads(signed_query_api_request(url, context=request_context))
+    except TrustedContextError as e:
+        return {"error": e.error_code}
     except (urllib.error.URLError, json.JSONDecodeError) as e:
         return {"error": str(e)}
 
 
 def _cluster_param(cluster_id: str = "") -> str:
-    """生成 cluster_id 查询参数（空/all 不过滤），供工具 URL 拼接（A-5）。"""
-    cid = cluster_id or os.environ.get("CLUSTER_ID", "")
-    if cid and cid != "all":
-        return f"cluster_id={cid}"
-    return ""
+    """Return only an explicit canonical UUID; broad/implicit scope is invalid."""
+    try:
+        cid = str(UUID(str(cluster_id)))
+    except (ValueError, TypeError, AttributeError):
+        return ""
+    if cid != str(cluster_id).lower():
+        return ""
+    return f"cluster_id={cid}"
 
 
-def query_metrics(service: str, tenant_id: str = "default", cluster_id: str = "") -> str:
+def _context_for_cluster(
+    cluster_id: str, request_context: RequestContext | None
+) -> RequestContext | None:
+    if not isinstance(request_context, RequestContext):
+        return None
+    if str(request_context.cluster_id) != str(cluster_id):
+        return None
+    if not _cluster_param(cluster_id):
+        return None
+    return request_context
+
+
+def query_metrics(service: str, tenant_id: str = "", cluster_id: str = "", *, request_context: RequestContext | None = None) -> str:
     if not service:
         return "未指定服务名称"
     cp = _cluster_param(cluster_id)
-    data = _get_json(f"{QUERY_API}/services/{service}" + (("?" + cp) if cp else ""))
+    context = _context_for_cluster(cluster_id, request_context)
+    if context is None:
+        return "查询失败: invalid_context"
+    data = _get_json(f"{QUERY_API}/services/{service}?{cp}", request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
     return json.dumps(data, indent=2, ensure_ascii=False)[:5000]
 
 
-def query_traces(service: str = "", tenant_id: str = "default", cluster_id: str = "") -> str:
+def query_traces(service: str = "", tenant_id: str = "", cluster_id: str = "", *, request_context: RequestContext | None = None) -> str:
     cp = _cluster_param(cluster_id)
     url = f"{QUERY_API}/traces?limit=5"
-    if cp:
-        url += "&" + cp
-    data = _get_json(url)
+    url += "&" + cp if cp else ""
+    context = _context_for_cluster(cluster_id, request_context)
+    if context is None:
+        return "查询失败: invalid_context"
+    data = _get_json(url, request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
     return json.dumps(data, indent=2, ensure_ascii=False)[:4000]
 
 
-def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "") -> str:
+def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "", *, request_context: RequestContext | None = None) -> str:
     """查询最近 N 分钟日志（ClickHouse log_records，经 query-api）。
     空 service 走全量最近日志。"""
     params = []
@@ -68,7 +85,10 @@ def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "") -> st
     if cp:
         params.append(cp)
     url = f"{QUERY_API}/logs/query?" + "&".join(params)
-    data = _get_json(url)
+    context = _context_for_cluster(cluster_id, request_context)
+    if context is None:
+        return "日志查询失败: invalid_context"
+    data = _get_json(url, request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"日志查询失败: {data['error']}"
     rows = data.get("data", []) if isinstance(data, dict) else []
@@ -82,15 +102,21 @@ def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "") -> st
     return "\n".join(lines)
 
 
-def query_topology(tenant_id: str = "default", cluster_id: str = "") -> str:
+def query_topology(tenant_id: str = "", cluster_id: str = "", *, request_context: RequestContext | None = None) -> str:
     cp = _cluster_param(cluster_id)
-    data = _get_json(f"{QUERY_API}/topology/global" + (("?" + cp) if cp else ""))
+    context = _context_for_cluster(cluster_id, request_context)
+    if context is None:
+        return "查询失败: invalid_context"
+    data = _get_json(f"{QUERY_API}/topology/global?{cp}", request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
     return json.dumps(data, indent=2, ensure_ascii=False)[:3000]
 
 
-def get_service_list(tenant_id: str = "default", cluster_id: str = "") -> str:
+def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_context: RequestContext | None = None) -> str:
+    request_context = _context_for_cluster(cluster_id, request_context)
+    if request_context is None:
+        return "查询失败: invalid_context"
     # 图谱优先：统一口径（自动构建的服务节点，排除 deleted），图谱不可达降级原逻辑
     try:
         from kg_graph import _load_graph, _json_loads
@@ -104,7 +130,7 @@ def get_service_list(tenant_id: str = "default", cluster_id: str = "") -> str:
                 continue
             if cluster_id:
                 props = _json_loads(r.get("props_json"))
-                if str(props.get("cluster_id", "default")) != str(cluster_id):
+                if str(props.get("cluster_id", "")) != str(cluster_id):
                     continue
             svcs.add(name)
         if svcs:
@@ -116,7 +142,7 @@ def get_service_list(tenant_id: str = "default", cluster_id: str = "") -> str:
     cp = _cluster_param(cluster_id)
     if cp:
         url += "?" + cp
-    data = _get_json(url)
+    data = _get_json(url, request_context=request_context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
     # P0-1 修复：/api/v1/services 顶层键为 "services"（非 "data"），兼容两种契约
@@ -192,18 +218,28 @@ def k8sgpt_diagnose(namespace: str = "observability") -> str:
         return f"K8sGPT error: {str(e)}"
 
 
-def deepflow_status() -> str:
-    data = _get_json(f"{QUERY_API}/deepflow/status")
+def deepflow_status(*, request_context: RequestContext | None = None) -> str:
+    data = _get_json(f"{QUERY_API}/deepflow/status", request_context=request_context)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-def get_infrastructure() -> str:
+def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
     """获取K8s基础设施信息"""
     # 修复：查询所有 namespace 的 Pod（namespace=all），并完整展示 name/namespace/status/restarts。
     # 之前写死 namespace=observability 且只取 name/status，导致 LLM 拿不到 deepflow、kube-system
     # 等真实 namespace，处置命令只能用 <ns> 占位符或写死 observability。
-    pods_data = _get_json(f"{QUERY_API}/infrastructure/pods?namespace=all")
-    nodes_data = _get_json(f"{QUERY_API}/infrastructure/nodes")
+    context = _context_for_cluster(
+        str(request_context.cluster_id) if isinstance(request_context, RequestContext) else "",
+        request_context,
+    )
+    if context is None:
+        return "K8s 基础设施数据不可用（invalid_context）"
+    pods_data = _get_json(
+        f"{QUERY_API}/infrastructure/pods?namespace=all", request_context=context
+    )
+    nodes_data = _get_json(
+        f"{QUERY_API}/infrastructure/nodes", request_context=context
+    )
 
     # query-api 在 K8s 不可达/权限不足时返回 HTTP 200 + error 字段，
     # 不能把空列表解释为“0 个资源”，否则诊断会产生虚假的健康结论。

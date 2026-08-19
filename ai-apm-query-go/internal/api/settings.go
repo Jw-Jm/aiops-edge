@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -291,21 +290,12 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	decrypted := decryptAPIKey(llm.APIKey)
 	apiKeySet := decrypted != ""
 	configured := llm.Provider != "" && llm.Model != "" && llm.BaseURL != "" && apiKeySet
-	// 脱敏展示（仅 mask，不清空），避免前端二次脱敏导致显示混乱
-	masked := llm.APIKey
-	if len(masked) > 8 {
-		masked = masked[:4] + "********" + masked[len(masked)-4:]
-	} else if masked != "" {
-		masked = "********"
-	}
+	// This compatibility status endpoint intentionally exposes only readiness.
+	// It does not disclose provider/model topology, endpoint locations, or any
+	// secret-derived field.
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"data": map[string]interface{}{
-			"provider":       llm.Provider,
-			"model":          llm.Model,
-			"base_url":       llm.BaseURL,
-			"configured":     configured,
-			"api_key_set":    apiKeySet,
-			"api_key_masked": masked,
+			"configured": configured,
 		},
 	})
 }
@@ -639,128 +629,8 @@ const (
 )
 
 func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
-	// G2 安全加固：高危代理路径仅限 admin/approver 角色调用，普通 user 403。
-	if isRestrictedProxyPath(r.URL.Path) && !hasPrivilegedRole(r) {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "forbidden: admin or approver role required"})
-		return
-	}
-	// 用 orchestratorBase()（env 可覆盖），与 ProxyShellWS 一致，便于测试注入 mock。
-	url := orchestratorBase() + r.URL.Path
-	if r.URL.RawQuery != "" {
-		url += "?" + r.URL.RawQuery
-	}
-	// G2 安全加固：请求体大小上限（10MB），超限 413 拒绝，防止超大 body 占内存。
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxProxyBody+1))
-	if err != nil {
-		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "failed to read body"})
-		return
-	}
-	if len(body) > maxProxyBody {
-		respondJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{"error": "request body too large (>10MB)"})
-		return
-	}
-	req, _ := http.NewRequest(r.Method, url, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	// 注入 LLM 配置到被代理请求头。
-	// 安全：不再把解密后的明文 API Key 放进 X-LLM-API-Key 头（避免明文 key 在服务间
-	// HTTP 上传输）。orchestrator 检测不到该 header 时，会通过带 X-Internal-Token 的
-	// 内部接口 /api/v1/settings/llm/internal 自行拉取已保存配置（见 orchestrator
-	// _parse_llm_config / _fetch_saved_llm_config 回退逻辑）。
-	llmCfg := h.GetLLMConfig()
-	if llmCfg.Model != "" {
-		req.Header.Set("X-LLM-Model", llmCfg.Model)
-		req.Header.Set("X-LLM-Base-URL", llmCfg.BaseURL)
-		req.Header.Set("X-LLM-Provider", llmCfg.Provider)
-	}
-
-	// 注入审批人身份（从 JWT + MySQL 读取），供 orchestrator 校验 approve/reject 权限
-	if role, approver, ok := requesterApprover(r); ok {
-		req.Header.Set("X-Internal-Role", role)
-		if approver {
-			req.Header.Set("X-Internal-Approver", "1")
-		}
-	}
-	// 注入请求者用户名（JWT sub），供 orchestrator 审计写入使用。
-	// 安全加固：JWT 缺失/无效时显式剥离客户端伪造的 X-Internal-* 头（req 为新建请求、
-	// 默认不拷贝客户端头，此 Del 为纵深防御），防止伪造审计/审批身份。
-	if username, ok := requestUsername(r); ok {
-		req.Header.Set("X-Internal-User", username)
-	} else {
-		req.Header.Del("X-Internal-User")
-		req.Header.Del("X-Internal-Role")
-		req.Header.Del("X-Internal-Approver")
-	}
-	// 注入内部服务共享 token（仅当已配置），供 orchestrator 校验请求确实来自可信的
-	// query-api 代理（该代理已通过 AuthMiddleware 完成 JWT 鉴权与角色注入），
-	// 防止绕过 query-api 直连 orchestrator 伪造 X-Internal-Role/Approver。
-	if it := os.Getenv("INTERNAL_TOKEN"); it != "" {
-		req.Header.Set("X-Internal-Token", it)
-	}
-
-	// QuotaAI 配额检查（P3-2b）：仅对 LLM 调用路径（/ai/chat、/ai/nl2sql、/ai/final_report）
-	// 消耗配额。租户 QuotaAI>0 且当日已用达到上限 → 429 不转发；QuotaAI=0 或租户不存在
-	// （默认 default 恒在）→ 不限。当日计数为进程内内存实现（重启归零，见 tenant_quota.go），
-	// 生产可替换为 Redis/MySQL 计数表。
-	if isLLMProxyPath(r.URL.Path) {
-		tenant := extractTenantID(r)
-		used := quotaUsedToday(tenant)
-		if quota := tenantQuotaAI(tenant); quota > 0 && used >= quota {
-			respondJSON(w, http.StatusTooManyRequests, map[string]interface{}{
-				"error":          "AI 调用已达当日配额上限（quota_ai_calls）",
-				"tenant":         tenant,
-				"quota_ai_calls": quota,
-				"used_today":     used,
-			})
-			return
-		}
-		// 转发前计数 +1
-		quotaIncrementToday(tenant)
-	}
-
-	// Use longer timeout for AI requests (full 14-node DAG with 5 LLM calls = 120-300s)
-	aiClient := &http.Client{Timeout: 300 * time.Second}
-	resp, err := aiClient.Do(req)
-	if err != nil {
-		respondJSON(w, 502, map[string]interface{}{"error": "ai-orchestrator unavailable: " + err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	// G2 安全加固：响应体大小上限（50MB），超限截断，防止超大响应占内存。
-	n, _ := io.Copy(w, io.LimitReader(resp.Body, maxProxyResponse+1))
-	if n > maxProxyResponse {
-		log.Printf("ProxyAI response truncated: path=%s size=%d > %d", r.URL.Path, n, maxProxyResponse)
-	}
-}
-
-// requesterApprover 从请求 JWT 提取请求者 role 与是否审批人（查 MySQL）。
-func requesterApprover(r *http.Request) (string, bool, bool) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, role, _, ok := validateJWT(token)
-	if !ok {
-		return "", false, false
-	}
-	approver := false
-	if role == "admin" {
-		approver = true
-	} else if u, _ := (&store.UserDAO{}).GetByUsername(username); u != nil && u.IsApprover {
-		approver = true
-	}
-	return role, approver, true
-}
-
-// requestUsername 从请求 JWT 提取请求者用户名（sub），供审计注入。
-func requestUsername(r *http.Request) (string, bool) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, _, _, ok := validateJWT(token)
-	if !ok {
-		return "", false
-	}
-	return username, true
+	// Query-api cannot derive an audience-bound, canonical-cluster signed context
+	// for this legacy proxy route yet. Never forward a client context or a
+	// service token alone; Task 4 supplies the signed caller migration.
+	respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 }

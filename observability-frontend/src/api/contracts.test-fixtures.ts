@@ -1,0 +1,123 @@
+import type {
+  Evidence,
+  Hypothesis,
+  OpsAction,
+  RequestContext,
+  ResourceRef,
+  ToolResult,
+  VerificationResult,
+} from "./contracts";
+
+export const requestContextFixture = {
+  version: 1,
+  issuer: "ai-orchestrator",
+  audience: "ai-apm-query-go",
+  request_id: "11111111-1111-4111-8111-111111111111",
+  run_id: "22222222-2222-4222-8222-222222222222",
+  user_id: "33333333-3333-4333-8333-333333333333",
+  session_id: "44444444-4444-4444-8444-444444444444",
+  tenant_id: "55555555-5555-4555-8555-555555555555",
+  cluster_id: "66666666-6666-4666-8666-666666666666",
+  source: "planner",
+  capability: "kubernetes.read",
+  issued_at: "2026-08-19T10:00:00Z",
+  expires_at: "2026-08-19T10:00:30Z",
+  nonce: "77777777-7777-4777-8777-777777777777",
+} satisfies RequestContext;
+
+export const resourcesFixture = [
+  {
+    tenant_id: "55555555-5555-4555-8555-555555555555",
+    cluster_id: "66666666-6666-4666-8666-666666666666",
+    resource_type: "service",
+    namespace: "production",
+    name: "orders",
+    resource_id:
+      "urn:aiops:55555555-5555-4555-8555-555555555555:66666666-6666-4666-8666-666666666666:service:production:orders",
+  },
+  {
+    tenant_id: "55555555-5555-4555-8555-555555555555",
+    cluster_id: "88888888-8888-4888-8888-888888888888",
+    resource_type: "service",
+    namespace: "production",
+    name: "orders",
+    resource_id:
+      "urn:aiops:55555555-5555-4555-8555-555555555555:88888888-8888-4888-8888-888888888888:service:production:orders",
+  },
+] satisfies ResourceRef[];
+
+export const toolResultFixture = {
+  tool_name: "query_k8s",
+  success: true,
+  status: "success",
+  summary: "deployment is healthy",
+  data: { ready_replicas: 3, desired_replicas: 3 },
+  error: null,
+  evidence_ids: ["99999999-9999-4999-8999-999999999999"],
+  started_at: "2026-08-19T10:00:01Z",
+  finished_at: "2026-08-19T10:00:02Z",
+} satisfies ToolResult;
+
+export const evidenceFixture = {
+  id: "99999999-9999-4999-8999-999999999999",
+  run_id: "22222222-2222-4222-8222-222222222222",
+  source: "query_k8s",
+  evidence_type: "k8s_state",
+  resource_id: resourcesFixture[0].resource_id,
+  cluster_id: "66666666-6666-4666-8666-666666666666",
+  namespace: "production",
+  timestamp: "2026-08-19T10:00:02Z",
+  start_time: null,
+  end_time: null,
+  fact: "orders has all desired replicas",
+  confidence: 0.95,
+  severity: "info",
+  trace_id: null,
+  raw_data: { ready_replicas: 3 },
+  metadata: { source_reliability: "high" },
+} satisfies Evidence;
+
+export const hypothesisFixture = {
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  title: "no active deployment failure",
+  description: "The target workload is currently healthy.",
+  supporting_evidence: [evidenceFixture.id],
+  contradicting_evidence: [],
+  missing_evidence: [],
+  confidence: 0.82,
+  status: "confirmed",
+} satisfies Hypothesis;
+
+export const opsActionFixture = {
+  action_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  run_id: "22222222-2222-4222-8222-222222222222",
+  tenant_id: "55555555-5555-4555-8555-555555555555",
+  cluster_id: "66666666-6666-4666-8666-666666666666",
+  action_type: "restart_workload",
+  target: {
+    tenant_id: "55555555-5555-4555-8555-555555555555",
+    cluster_id: "66666666-6666-4666-8666-666666666666",
+    resource_type: "deployment",
+    namespace: "production",
+    name: "orders",
+    resource_id:
+      "urn:aiops:55555555-5555-4555-8555-555555555555:66666666-6666-4666-8666-666666666666:deployment:production:orders",
+  },
+  parameters: {},
+  risk_level: 1,
+  expected_effect: "recreate workload pods",
+  rollback: null,
+} satisfies OpsAction;
+
+export const verificationFixture = {
+  status: "success",
+  before_snapshot: { ready_replicas: 3 },
+  after_snapshot: { ready_replicas: 3 },
+  observation_window_seconds: 60,
+  checks: [{ name: "ready_replicas", passed: true }],
+  summary: "workload remained healthy",
+} satisfies VerificationResult;
+
+export const sameNameDifferentClusters =
+  resourcesFixture[0].name === resourcesFixture[1].name &&
+  resourcesFixture[0].cluster_id !== resourcesFixture[1].cluster_id;

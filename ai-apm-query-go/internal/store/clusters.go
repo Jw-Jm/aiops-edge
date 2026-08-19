@@ -3,20 +3,42 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
 
+var (
+	// ErrInvalidClusterRef means a caller supplied a non-canonical cluster reference.
+	ErrInvalidClusterRef = errors.New("invalid cluster reference")
+	// ErrClusterNotFound means no active canonical registry record matched the reference.
+	ErrClusterNotFound = errors.New("cluster not found")
+	// ErrClusterAmbiguous means corrupt registry data returned more than one canonical record.
+	ErrClusterAmbiguous = errors.New("cluster reference is ambiguous")
+)
+
+var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 // Cluster 集群实体。
 type Cluster struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	Provider   string    `json:"provider"`
-	Region     string    `json:"region"`
-	Version    string    `json:"version"`
-	NodeCount  int       `json:"node_count"`
-	Status     string    `json:"status"`
-	APIServer  string    `json:"api_server"`
-	Kubeconfig string    `json:"kubeconfig,omitempty"`
+	// ID is legacy migration metadata only. New authorization and registry code uses ClusterID.
+	ID            int64  `json:"id,omitempty"`
+	ClusterID     string `json:"cluster_id"`
+	TenantID      string `json:"tenant_id"`
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	Environment   string `json:"environment"`
+	Region        string `json:"region"`
+	CredentialRef string `json:"credential_ref,omitempty"`
+	Status        string `json:"status"`
+	Provider      string `json:"provider,omitempty"`
+	Version       string `json:"version,omitempty"`
+	NodeCount     int    `json:"node_count,omitempty"`
+	APIServer     string `json:"api_server,omitempty"`
+	// Kubeconfig is retained solely for legacy callers pending controlled cutover; it is never serialized.
+	Kubeconfig string    `json:"-"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
@@ -36,6 +58,71 @@ type ClusterNode struct {
 
 // ClusterDAO 集群数据访问对象。
 type ClusterDAO struct{}
+
+// ResolveRef resolves a UUID or readable slug to a single active canonical registry record.
+// It intentionally never reads credential material from the legacy kubeconfig column.
+func (d *ClusterDAO) ResolveRef(tenantID, clusterRef string) (*Cluster, error) {
+	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(clusterRef) == "" || clusterRef == "all" || isLegacyIntegerRef(clusterRef) {
+		return nil, ErrInvalidClusterRef
+	}
+	conn := GetDB()
+	if conn == nil {
+		return nil, ErrMySQLUnavailable
+	}
+
+	field := "slug"
+	if canonicalUUIDPattern.MatchString(clusterRef) {
+		field = "cluster_id"
+	}
+	query := fmt.Sprintf(`SELECT id, cluster_id, tenant_id, slug, name, environment, region, credential_ref, lifecycle_status, created_at, updated_at
+FROM clusters WHERE tenant_id = ? AND %s = ? AND cluster_id IS NOT NULL AND cluster_id != '' AND lifecycle_status IN ('active', 'ready')`, field)
+	rows, err := conn.Query(query, tenantID, clusterRef)
+	if err != nil {
+		return nil, fmt.Errorf("resolve cluster: %w", err)
+	}
+	defer rows.Close()
+
+	var matches []Cluster
+	for rows.Next() {
+		var c Cluster
+		var credential sql.NullString
+		var createdAt, updatedAt sql.NullTime
+		if err := rows.Scan(&c.ID, &c.ClusterID, &c.TenantID, &c.Slug, &c.Name, &c.Environment, &c.Region, &credential, &c.Status, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan cluster registry record: %w", err)
+		}
+		c.CredentialRef = credential.String
+		if !isAuthorizedClusterLifecycle(c.Status) {
+			continue
+		}
+		if createdAt.Valid {
+			c.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			c.UpdatedAt = updatedAt.Time
+		}
+		matches = append(matches, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cluster registry records: %w", err)
+	}
+	switch len(matches) {
+	case 0:
+		return nil, ErrClusterNotFound
+	case 1:
+		return &matches[0], nil
+	default:
+		return nil, ErrClusterAmbiguous
+	}
+}
+
+func isAuthorizedClusterLifecycle(status string) bool {
+	return status == "active" || status == "ready"
+}
+
+func isLegacyIntegerRef(ref string) bool {
+	_, err := strconv.ParseInt(ref, 10, 64)
+	return err == nil
+}
 
 // List 返回集群列表。
 func (d *ClusterDAO) List() ([]Cluster, error) {

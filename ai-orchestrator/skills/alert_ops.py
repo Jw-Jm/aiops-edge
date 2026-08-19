@@ -1,30 +1,34 @@
 """Skill: alert_ops — 告警处置（告警规则/事件查询与分析）"""
+from __future__ import annotations
+
 import json
 import os
 import urllib.request
 import urllib.error
 
+from contracts import RequestContext
+from internal_query import signed_query_api_request
 from skill_registry import SkillDef, SkillRegistry, ToolRegistry
+from trusted_context import TrustedContextError
 
 QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
-INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
 
-def _get_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"X-Tenant-ID": "default"})
-    if INTERNAL_TOKEN:
-        req.add_header("X-Internal-Token", INTERNAL_TOKEN)
+def _get_json(url: str, *, request_context: RequestContext | None = None) -> dict:
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
+        return json.loads(
+            signed_query_api_request(url, context=request_context)
+        )
+    except TrustedContextError as exc:
+        return {"error": exc.error_code}
     except (urllib.error.URLError, json.JSONDecodeError) as e:
         return {"error": str(e)}
 
 
-def alert_rules():
+def alert_rules(*, request_context: RequestContext | None = None):
     """查询全部告警规则"""
     try:
-        data = _get_json(f"{QUERY_API}/alerts/rules")
+        data = _get_json(f"{QUERY_API}/alerts/rules", request_context=request_context)
         rules = data.get("data", [])
         if not rules:
             return "暂无告警规则"
@@ -36,10 +40,13 @@ def alert_rules():
         return f"查询失败: {e}"
 
 
-def alert_events(limit: int = 10):
+def alert_events(limit: int = 10, *, request_context: RequestContext | None = None):
     """查询最近告警事件（聚合）"""
     try:
-        data = _get_json(f"{QUERY_API}/alerts/events?limit={limit}")
+        data = _get_json(
+            f"{QUERY_API}/alerts/events?limit={limit}",
+            request_context=request_context,
+        )
         events = data.get("data", [])
         if not events:
             return "暂无告警事件"
@@ -51,24 +58,37 @@ def alert_events(limit: int = 10):
         return f"查询失败: {e}"
 
 
-def _post(url: str, payload: dict = None):
+def _post(
+    url: str,
+    payload: dict = None,
+    *,
+    request_context: RequestContext | None = None,
+):
     """带鉴权的 POST 请求（用于 ack/resolve/notification）。"""
     data = json.dumps(payload or {}).encode()
-    req = urllib.request.Request(url, data=data, method="POST",
-                                 headers={"Content-Type": "application/json", "X-Tenant-ID": "default"})
-    if INTERNAL_TOKEN:
-        req.add_header("X-Internal-Token", INTERNAL_TOKEN)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
+        return json.loads(
+            signed_query_api_request(
+                url,
+                context=request_context,
+                data=data,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+        )
+    except TrustedContextError as exc:
+        return {"error": exc.error_code}
     except (urllib.error.URLError, json.JSONDecodeError) as e:
         return {"error": str(e)}
 
 
-def incident_query(limit: int = 20):
+def incident_query(limit: int = 20, *, request_context: RequestContext | None = None):
     """查询当前未解决的告警事件（incident，即状态非 resolved 的告警）"""
     try:
-        data = _get_json(f"{QUERY_API}/alerts/events?limit={limit}")
+        data = _get_json(
+            f"{QUERY_API}/alerts/events?limit={limit}",
+            request_context=request_context,
+        )
         events = data.get("data", [])
         open_ones = [e for e in events if e.get("status") != "resolved"]
         if not open_ones:
@@ -81,21 +101,29 @@ def incident_query(limit: int = 20):
         return f"查询失败: {e}"
 
 
-def incident_ack(event_id: str):
+def incident_ack(event_id: str, *, request_context: RequestContext | None = None):
     """确认（ack）一个告警事件 incident，标记为已认领"""
     if not event_id:
         return "缺少 event_id"
-    res = _post(f"{QUERY_API}/alerts/events/{event_id}/ack", {"by": "ai-orchestrator"})
+    res = _post(
+        f"{QUERY_API}/alerts/events/{event_id}/ack",
+        {"by": "ai-orchestrator"},
+        request_context=request_context,
+    )
     if res.get("error"):
         return f"确认失败: {res.get('error')}"
     return f"已确认告警事件 {event_id}（acknowledged）"
 
 
-def incident_resolve(event_id: str):
+def incident_resolve(event_id: str, *, request_context: RequestContext | None = None):
     """解决（resolve）一个告警事件 incident，标记为已恢复"""
     if not event_id:
         return "缺少 event_id"
-    res = _post(f"{QUERY_API}/alerts/events/{event_id}/resolve", {"by": "ai-orchestrator"})
+    res = _post(
+        f"{QUERY_API}/alerts/events/{event_id}/resolve",
+        {"by": "ai-orchestrator"},
+        request_context=request_context,
+    )
     if res.get("error"):
         return f"解决失败: {res.get('error')}"
     return f"已解决告警事件 {event_id}（resolved）"

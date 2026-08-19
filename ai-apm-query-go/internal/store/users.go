@@ -9,6 +9,7 @@ import (
 // User 用户实体。
 type User struct {
 	ID           int64     `json:"id"`
+	UserUUID     string    `json:"user_uuid,omitempty"`
 	Username     string    `json:"username"`
 	PasswordHash string    `json:"-"`
 	DisplayName  string    `json:"display_name"`
@@ -18,6 +19,28 @@ type User struct {
 	Scope        string    `json:"scope"`
 	IsApprover   bool      `json:"is_approver"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+// GetByUUID reads a user by canonical identity for new authorization paths.
+func (d *UserDAO) GetByUUID(userUUID string) (*User, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, ErrMySQLUnavailable
+	}
+	row := conn.QueryRow(
+		"SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE user_uuid = ?",
+		userUUID)
+	var u User
+	var ap int
+	if err := row.Scan(&u.ID, &u.UserUUID, &u.Username, &u.PasswordHash, &u.DisplayName,
+		&u.Role, &u.Email, &u.Status, &u.Scope, &ap, &u.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	u.IsApprover = ap == 1
+	return &u, nil
 }
 
 // UserDAO 用户数据访问对象。
@@ -65,11 +88,11 @@ func (d *UserDAO) GetByUsername(username string) (*User, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		"SELECT id, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE username = ?",
+		"SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE username = ?",
 		username)
 	var u User
 	var ap int
-	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
+	if err := row.Scan(&u.ID, &u.UserUUID, &u.Username, &u.PasswordHash, &u.DisplayName,
 		&u.Role, &u.Email, &u.Status, &u.Scope, &ap, &u.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -78,6 +101,22 @@ func (d *UserDAO) GetByUsername(username string) (*User, error) {
 	}
 	u.IsApprover = ap == 1
 	return &u, nil
+}
+
+// CreateSession records the canonical identity/session pair that must exist
+// before a JWT can be accepted by AuthorizationDAO.
+func (d *UserDAO) CreateSession(userUUID, sessionID string, expiresAt time.Time) error {
+	if userUUID == "" || sessionID == "" || expiresAt.IsZero() {
+		return errors.New("invalid session")
+	}
+	conn := GetDB()
+	if conn == nil {
+		return ErrMySQLUnavailable
+	}
+	_, err := conn.Exec(
+		"INSERT INTO user_sessions (session_id, user_uuid, status, expires_at, revoked_at) VALUES (?, ?, 'active', ?, NULL)",
+		sessionID, userUUID, expiresAt.UTC())
+	return err
 }
 
 // GetByID 按 ID 查用户。
@@ -109,7 +148,7 @@ func (d *UserDAO) Create(u *User) (int64, error) {
 		return 0, errors.New("mysql unavailable")
 	}
 	res, err := conn.Exec(
-		"INSERT INTO users (username, password_hash, display_name, role, email, status, is_approver) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO users (user_uuid, username, password_hash, display_name, role, email, status, is_approver) VALUES (LOWER(UUID()), ?, ?, ?, ?, ?, ?, ?)",
 		u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Email, u.Status, boolToInt(u.IsApprover))
 	if err != nil {
 		return 0, err
@@ -173,7 +212,7 @@ func (d *UserDAO) SeedAdmin(hash string) error {
 		return errors.New("mysql unavailable")
 	}
 	_, err := conn.Exec(
-		"INSERT IGNORE INTO users (username, password_hash, display_name, role) VALUES ('admin', ?, '管理员', 'admin')",
+		"INSERT IGNORE INTO users (user_uuid, username, password_hash, display_name, role) VALUES (LOWER(UUID()), 'admin', ?, '管理员', 'admin')",
 		hash)
 	return err
 }

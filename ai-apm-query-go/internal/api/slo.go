@@ -208,17 +208,10 @@ func (h *Handler) deleteSLO(w http.ResponseWriter, r *http.Request, id string) {
 	respondJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }
 
-// isAdmin 校验当前请求角色为 admin（写权限守卫）。
+// isAdmin fences legacy privileged handlers until they are migrated to a
+// canonical MySQL AuthorizationDAO action and resource scope. It deliberately
+// does not parse a JWT role claim.
 func isAdmin(w http.ResponseWriter, r *http.Request) bool {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	_, role, _, ok := validateJWT(token)
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
-		return false
-	}
-	if role != "admin" {
-		respondError(w, http.StatusForbidden, "admin role required")
-		return false
-	}
-	return true
+	respondError(w, http.StatusForbidden, "permission_denied")
+	return false
 }

@@ -1,5 +1,6 @@
 """AI Orchestrator v5 — FastAPI + LangGraph + arq + ChromaDB + Detector"""
 import json
+import base64
 import os
 import time
 import re
@@ -17,6 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from shell_policy import ShellPolicy
 from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCARequest
+from contracts import RequestContext
 from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
@@ -211,6 +213,9 @@ async def _scheduled_anomaly_scan():
     3 算法投票检测。detect() 内部确认异常时会调 _persist_anomaly 写入 MySQL
     anomaly_events 表（best-effort）。此处不调 LLM，避免定时任务产生模型开销。
     """
+    # Background jobs have no user/session/cluster authorization context. They
+    # must not query query-api with a service token or an implicit tenant.
+    return
     try:
         from detector import detector
         from tools import get_service_list
@@ -420,6 +425,29 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+def _request_context_from_request(request: Request) -> RequestContext:
+    """Decode the already-authenticated query-api delegation context.
+
+    The query-api is the signature-verification and MySQL authorization
+    boundary. The orchestrator still requires the short-lived context to be
+    present and schema-valid before any graph node can call query-api again;
+    it never derives identity, tenant, or cluster values from JWTs or defaults.
+    """
+    token = request.headers.get("X-Trusted-Request-Context", "")
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("invalid context shape")
+        encoded = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(encoded).decode("utf-8"))
+        context = RequestContext.model_validate(payload)
+        if context.issuer != "query-api" or context.audience != "ai-orchestrator":
+            raise ValueError("wrong context audience")
+        return context
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="invalid_context") from exc
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Chat
 # ═══════════════════════════════════════════════════════════════
@@ -427,6 +455,7 @@ async def auth_middleware(request: Request, call_next):
 @app.post("/api/v1/ai/chat")
 async def ai_chat(req: ChatRequest, request: Request):
     _parse_llm_config(request)
+    request_context = _request_context_from_request(request)
     thread_id = req.session_id or uuid.uuid4().hex[:8]
 
     if req.stream:
@@ -448,7 +477,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                         req.intent, req.service or "", req.message, thread_id,
                         mode="dual" if req.dual_agent else "chat",
                         exec_context=req.exec_result, iteration=(req.exec_result and 2 or 1),
-                        cluster_id=req.cluster_id or "all"):
+                        cluster_id=req.cluster_id or str(request_context.cluster_id),
+                        request_context=request_context):
                     # 操作建议不再落任务工作台，直接以 thread_id 作为确认标识发往前端内联审批
                     if event.get("type") == "suggestion":
                         event["thread_id"] = thread_id
@@ -543,7 +573,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                                  headers={"X-Session-Id": thread_id, "Cache-Control": "no-cache"})
     else:
         result = await _get_brain().execute_sync(req.intent, req.service or "", req.message, thread_id,
-                                                cluster_id=req.cluster_id or "all")
+                                                cluster_id=req.cluster_id or str(request_context.cluster_id),
+                                                request_context=request_context)
         # 巡检/诊断报告落盘：持久化到 ClickHouse（历史趋势）并在 MinIO 留档
         try:
             if result and len(result.strip()) > 100:
@@ -757,14 +788,18 @@ async def ai_flow_detail(key: str):
     return describe_graph(mode)
 
 @app.post("/api/v1/ai/flows/{key}/run-legacy")
-async def ai_flow_run(key: str, body: dict = None):
+async def ai_flow_run(key: str, request: Request, body: dict = None):
+    request_context = _request_context_from_request(request)
     mode = "chat" if key.endswith("chat_diagnosis") else "full"
     service = (body or {}).get("service", "")
     message = (body or {}).get("message", "对服务进行完整诊断")
     intent = "chat" if mode == "chat" else "ops"
     brain = _get_brain()
     # execute_sync_full 已改为 async（节点 async def），直接 await（不再 run_in_executor）
-    result = await brain.execute_sync_full(intent, service, message, "workflow-run")
+    result = await brain.execute_sync_full(
+        intent, service, message, "workflow-run",
+        cluster_id=str(request_context.cluster_id), request_context=request_context,
+    )
     return {"run_id": f"run_{int(time.time()*1000)}", "result": result}
 
 class SuggestionRequest(BaseModel):
@@ -1196,7 +1231,9 @@ def _create_chat_suggestion_task(event: dict, req, thread_id: str):
 DIAGNOSIS_TIMEOUT = int(os.environ.get("DIAGNOSIS_TIMEOUT", "600"))
 
 
-def _run_dag_diagnosis(tid: str, svc: str, ctx: str) -> dict:
+def _run_dag_diagnosis(
+    tid: str, svc: str, ctx: str, request_context: RequestContext
+) -> dict:
     """在独立 daemon 线程中执行 execute_sync_full(mode=full) 并等待至多
     DIAGNOSIS_TIMEOUT 秒。超时抛 concurrent.futures.TimeoutError(调用方置 failed);
     线程不可取消但为 daemon, 进程退出不被阻塞。"""
@@ -1208,7 +1245,11 @@ def _run_dag_diagnosis(tid: str, svc: str, ctx: str) -> dict:
 
     def _worker():
         try:
-            final = asyncio.run(_get_brain().execute_sync_full("diagnosis", svc, ctx, tid))
+            final = asyncio.run(_get_brain().execute_sync_full(
+                "diagnosis", svc, ctx, tid,
+                cluster_id=str(request_context.cluster_id),
+                request_context=request_context,
+            ))
             result_q.put(final)
         except BaseException as e:  # noqa: BLE001  — 透传给等待方统一走 failed
             result_q.put(e)
@@ -1225,6 +1266,7 @@ def _run_dag_diagnosis(tid: str, svc: str, ctx: str) -> dict:
 
 @app.post("/api/v1/ops/tasks")
 async def create_task(req: TaskCreateRequest, request: Request):
+    request_context = _request_context_from_request(request)
     if not req.context:
         raise HTTPException(400, "context is required")
     tid = _task_id()
@@ -1253,7 +1295,9 @@ async def create_task(req: TaskCreateRequest, request: Request):
         try:
             # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动。
             # P0: 加硬超时——LLM 挂起/图中断时不永久停在 diagnosing, 超时置 failed。
-            final_state = _run_dag_diagnosis(tid, req.service, req.context)
+            final_state = _run_dag_diagnosis(
+                tid, req.service, req.context, request_context
+            )
             # P0-2: 非交互 full 图初始 approved=False，DAG 在 wait_approval 处中断等待人工审批。
             # 中断态无 final_response，不能误标 done；回填 plan/script/risk 供审批面板展示。
             if final_state.get("__interrupt__"):
@@ -1396,7 +1440,9 @@ async def get_task(tid: str):
     return {"task": _task_store[tid]}
 
 
-def _run_diagnosis(tid: str, svc: str, ctx: str):
+def _run_diagnosis(
+    tid: str, svc: str, ctx: str, request_context: RequestContext
+):
     """在后台线程执行一次 LLM 诊断，并回填任务结果。"""
     import threading
     def _run():
@@ -1404,7 +1450,7 @@ def _run_diagnosis(tid: str, svc: str, ctx: str):
         try:
             # execute_sync_full 已改为 async；线程内无 event loop，用 asyncio.run 驱动。
             # P0: 加硬超时——LLM 挂起/图中断时不永久停在 diagnosing, 超时置 failed。
-            final_state = _run_dag_diagnosis(tid, svc, ctx)
+            final_state = _run_dag_diagnosis(tid, svc, ctx, request_context)
             # P0-2: 非交互 full 图初始 approved=False，DAG 在 wait_approval 处中断等待人工审批。
             # 中断态无 final_response，不能误标 done；回填 plan/script/risk 供审批面板展示。
             if final_state.get("__interrupt__"):
@@ -1435,9 +1481,10 @@ def _run_diagnosis(tid: str, svc: str, ctx: str):
 
 
 @app.post("/api/v1/ops/tasks/{tid}/run")
-async def run_task(tid: str):
+async def run_task(tid: str, request: Request):
     """手动触发任务诊断（LLM）— 前端任务工作台"手动诊断"按钮调用。
     告警 webhook 只登记 queued 任务，由人工在此手动触发，避免每次告警都自动调 LLM。"""
+    request_context = _request_context_from_request(request)
     if tid not in _task_store:
         raise HTTPException(404, "task not found")
     task = _task_store[tid]
@@ -1450,7 +1497,10 @@ async def run_task(tid: str):
         task["diagnosis"] = "LLM API Key 未配置"
         return {"task_id": tid, "status": "failed"}
     task["status"] = "diagnosing"
-    _run_diagnosis(tid, task.get("service", "") or "", task.get("context", "") or "")
+    _run_diagnosis(
+        tid, task.get("service", "") or "", task.get("context", "") or "",
+        request_context,
+    )
     return {"task_id": tid, "status": "diagnosing"}
 
 
@@ -1738,12 +1788,17 @@ async def trigger_decay():
 # ═══════════════════════════════════════════════════════════════
 
 @app.post("/api/v1/ops/rca")
-async def rca_analysis(req: TaskCreateRequest):
+async def rca_analysis(req: TaskCreateRequest, request: Request):
     """独立 RCA 分析 — 不依赖 LLM (确定性模式)"""
     from rca import diagnose_root_cause
     if not req.service:
         raise HTTPException(400, "service is required")
-    return diagnose_root_cause(req.service)
+    request_context = _request_context_from_request(request)
+    return diagnose_root_cause(
+        req.service,
+        cluster_id=str(request_context.cluster_id),
+        request_context=request_context,
+    )
 
 
 @app.post("/api/v1/ops/rca/deep")
@@ -1753,7 +1808,12 @@ async def rca_deep_analysis(req: TaskCreateRequest, request: Request):
     from rca import full_rca_analysis
     if not req.service:
         raise HTTPException(400, "service is required")
-    return full_rca_analysis(req.service, cluster_id=getattr(req, "cluster_id", "all") or "all")
+    request_context = _request_context_from_request(request)
+    return full_rca_analysis(
+        req.service,
+        cluster_id=str(request_context.cluster_id),
+        request_context=request_context,
+    )
 
 
 @app.post("/api/v1/ops/rca/alert")
@@ -1765,6 +1825,7 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
     """
     _parse_llm_config(request)
     from rca import full_rca_analysis
+    request_context = _request_context_from_request(request)
 
     if not req.service and not req.rule_id:
         raise HTTPException(400, "service or rule_id is required")
@@ -1782,8 +1843,12 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
         "object": req.object,
         "namespace": req.namespace,
     }
-    result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event,
-                              cluster_id=getattr(req, "cluster_id", "all") or "all")
+    result = full_rca_analysis(
+        req.service or "kubernetes",
+        anomaly_event=anomaly_event,
+        cluster_id=str(request_context.cluster_id),
+        request_context=request_context,
+    )
     result["alert"] = {
         "rule_id": req.rule_id,
         "rule_name": req.rule_name,
@@ -1875,6 +1940,7 @@ async def rca_alert_export(req: AlertRCARequest, request: Request, format: str =
     """
     _parse_llm_config(request)
     from rca import full_rca_analysis
+    request_context = _request_context_from_request(request)
 
     anomaly_event = {
         "service": req.service,
@@ -1888,8 +1954,12 @@ async def rca_alert_export(req: AlertRCARequest, request: Request, format: str =
         "object": req.object,
         "namespace": req.namespace,
     }
-    result = full_rca_analysis(req.service or "kubernetes", anomaly_event=anomaly_event,
-                              cluster_id=getattr(req, "cluster_id", "all") or "all")
+    result = full_rca_analysis(
+        req.service or "kubernetes",
+        anomaly_event=anomaly_event,
+        cluster_id=str(request_context.cluster_id),
+        request_context=request_context,
+    )
     result["alert"] = {
         "rule_id": req.rule_id,
         "rule_name": req.rule_name,
@@ -1962,9 +2032,14 @@ async def scan_anomalies(request: Request):
     from detector import detector
     from tools import get_service_list
     import json as _json
+    request_context = _request_context_from_request(request)
 
     anomalies = []
-    raw = await asyncio.to_thread(get_service_list)
+    raw = await asyncio.to_thread(
+        get_service_list,
+        cluster_id=str(request_context.cluster_id),
+        request_context=request_context,
+    )
     try:
         svc_data = _json.loads(raw)
     except Exception:

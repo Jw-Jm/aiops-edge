@@ -337,8 +337,9 @@ func TestEvaluateRuleMiddlewareMetric(t *testing.T) {
 	}
 }
 
-// TestCreateMiddlewareMetricRuleRequiresMetric 验证 middleware_metric 规则 metric 为空时创建返回 400。
-func TestCreateMiddlewareMetricRuleRequiresMetric(t *testing.T) {
+// TestCreateMiddlewareMetricRuleRejectsJWTAdminClaim verifies a legacy write
+// fails closed rather than treating a JWT role claim as authority.
+func TestCreateMiddlewareMetricRuleRejectsJWTAdminClaim(t *testing.T) {
 	h := &Handler{client: &http.Client{}}
 	adminToken := generateJWT("admin", "admin", "")
 
@@ -347,12 +348,12 @@ func TestCreateMiddlewareMetricRuleRequiresMetric(t *testing.T) {
 		strings.NewReader(`{"name":"mw-threads","type":"middleware_metric","service":"mysql-01","threshold":50,"duration":5}`))
 	req.Header.Set("Authorization", "Bearer "+adminToken)
 	h.createAlertRule(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for empty metric, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for JWT admin claim, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestAlertRuleByIDPutUpdatesExistingRule(t *testing.T) {
+func TestAlertRuleByIDPutRejectsJWTAdminClaim(t *testing.T) {
 	alertRulesMu.Lock()
 	originalRules := append([]AlertRule(nil), alertRules...)
 	alertRules = []AlertRule{{
@@ -373,14 +374,14 @@ func TestAlertRuleByIDPutUpdatesExistingRule(t *testing.T) {
 
 	(&Handler{}).AlertRuleByID(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected PUT update status 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected PUT denial for JWT admin claim, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	alertRulesMu.RLock()
 	updated := alertRules[0]
 	alertRulesMu.RUnlock()
-	if updated.ID != "rule-to-update" || updated.Name != "checkout errors" || updated.Threshold != 2 || updated.Duration != 10 {
-		t.Fatalf("unexpected updated rule: %+v", updated)
+	if updated.Name != "old name" || updated.Threshold != 5 || updated.Duration != 5 {
+		t.Fatalf("denied request mutated alert rule: %+v", updated)
 	}
 }

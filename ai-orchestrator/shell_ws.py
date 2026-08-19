@@ -6,6 +6,7 @@
 - 会话并发限制、单命令超时、空闲断开
 """
 import asyncio
+import hmac
 import os
 import time
 import subprocess
@@ -52,31 +53,29 @@ def _audit_shell(operator: str, command: str, result: str):
 
 
 def _is_ws_authorized(ws: WebSocket) -> bool:
-    """WebShell 鉴权：必须携带可信的内部 token。
+    """Allow only an explicitly enabled manual shell with service auth.
 
-    仅接受 query-api 代理（完成 JWT 鉴权后）注入的 X-Internal-Token；直接连本服务、
-    不带 token 或 token 不匹配的一律拒绝，防止绕过 query-api 直连执行白名单命令。
-    注：token 经 query 参数传递（websocket 无法自定义 header），由代理端注入。
+    Browser/JWT proxying is intentionally not an authorization path for R4
+    shell. Manual operators must enable the route and use a non-browser client
+    that can provide the service credential as a header.
     """
+    if os.environ.get("SHELL_MANUAL_ENABLED", "").lower() not in {
+        "1", "true", "yes", "on"
+    }:
+        return False
     expected = os.environ.get("INTERNAL_TOKEN", "")
     if not expected:
         return False
-    got = ws.query_params.get("token", "")
-    return got == expected
+    got = ws.headers.get("X-Internal-Token", "")
+    return bool(got) and hmac.compare_digest(got, expected)
 
 
 def _is_ws_privileged(ws: WebSocket) -> bool:
-    """角色校验：WebShell 可执行写命令，仅 admin 或审批人可连接。
-
-    纵深防御（P0-1）：与 main.py _require_approver 同源逻辑——X-Internal-Role=admin
-    或 X-Internal-Approver=1 才放行；经 query 参数或 header 注入（websocket 无法
-    自定义 header，代理两种注入方式均兼容）。
-    """
-    q = ws.query_params
-    h = ws.headers
-    role = q.get("X-Internal-Role") or q.get("role") or h.get("X-Internal-Role") or ""
-    approver = q.get("X-Internal-Approver") or q.get("approver") or h.get("X-Internal-Approver") or "0"
-    return role == "admin" or approver == "1"
+    """Compatibility hook: privilege comes only from the manual deployment gate."""
+    del ws
+    return os.environ.get("SHELL_MANUAL_ENABLED", "").lower() in {
+        "1", "true", "yes", "on"
+    }
 
 
 async def shell_ws(ws: WebSocket):
@@ -85,7 +84,7 @@ async def shell_ws(ws: WebSocket):
         await ws.send_text("❌ 未授权：缺少有效的内部令牌。\n")
         await ws.close(code=1008)
         return
-    # P0-1: WebShell 可执行写命令，仅 admin / 审批人可连接（纵深防御）
+    # R4 shell remains a manually enabled path; role/approver headers are not authority.
     if not _is_ws_privileged(ws):
         await ws.accept()
         await ws.send_text("❌ 权限不足：WebShell 仅限管理员或审批人使用。\n")
@@ -98,8 +97,7 @@ async def shell_ws(ws: WebSocket):
         return
 
     await ws.accept()
-    # 操作者身份（由 query-api 代理时经 query 参数传入，默认 shell-user）
-    _operator = ws.query_params.get("user", "") or "shell-user"
+    _operator = "manual-shell"
     last_activity = time.time()
     try:
         while True:

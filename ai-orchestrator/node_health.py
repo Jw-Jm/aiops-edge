@@ -12,9 +12,11 @@
 P1-3: 真实聚合管道 —— 每 60s 由 main.py 调度器触发 aggregate_all()：
 从 VictoriaMetrics（node-exporter/categraf 指标）拉 OS 层指标，从 MySQL ipmi_sensors
 拉硬件层最新温度/电源状态，按阈值判定并落库 node_component_health。
-VM 访问优先直连 VICTORIA_METRICS_URL，未配置时走 query-api 的
-/metrics/query_range 代理（QUERY_API_URL + INTERNAL_TOKEN）。
+VM 访问优先直连 VICTORIA_METRICS_URL，未配置时仅在收到显式授权上下文后
+走 query-api 的 /metrics/query_range 代理。
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -24,6 +26,8 @@ import urllib.parse
 import urllib.request
 
 import db
+from contracts import RequestContext
+from internal_query import signed_query_api_request
 
 logger = logging.getLogger("node_health")
 
@@ -36,7 +40,6 @@ _DISK_AVAIL_PCT_FAULT = 10  # 磁盘可用率低于该值判 fault
 
 # VM 访问：优先直连 VICTORIA_METRICS_URL；空则走 query-api 代理
 _QUERY_API_URL = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
-_INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 _VM_DIRECT_URL = os.environ.get("VICTORIA_METRICS_URL", "")
 
 # node-exporter 暴露端口（instance 形如 <host>:9100）
@@ -51,11 +54,18 @@ def _parse_float(text):
     return float(m.group(0)) if m else None
 
 
-def _vm_query_range(query: str, start: float, end: float, step: int = 60) -> list:
+def _vm_query_range(
+    query: str,
+    start: float,
+    end: float,
+    step: int = 60,
+    *,
+    request_context: RequestContext | None = None,
+) -> list:
     """查询 VictoriaMetrics 指标序列，返回 VM 原生 result 列表（series）。
 
     优先直连 VICTORIA_METRICS_URL（/api/v1/query_range）；未配置时走
-    query-api 的 /api/v1/metrics/query_range PromQL 代理（带 X-Internal-Token）。
+    query-api 的 /api/v1/metrics/query_range PromQL 代理（服务凭证 + 签名上下文）。
     失败抛异常，由调用方降级。
     """
     q = urllib.parse.quote(query)
@@ -63,13 +73,12 @@ def _vm_query_range(query: str, start: float, end: float, step: int = 60) -> lis
     if _VM_DIRECT_URL:
         url = f"{_VM_DIRECT_URL.rstrip('/')}/api/v1/query_range?{params}"
         req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read()
     else:
         url = f"{_QUERY_API_URL.rstrip('/')}/metrics/query_range?{params}"
-        req = urllib.request.Request(url, method="GET")
-        if _INTERNAL_TOKEN:
-            req.add_header("X-Internal-Token", _INTERNAL_TOKEN)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        body = signed_query_api_request(url, context=request_context)
+    data = json.loads(body.decode("utf-8", errors="replace"))
     result = data.get("data", {}).get("result", [])
     return result if isinstance(result, list) else []
 
@@ -98,10 +107,16 @@ def _series_values(series: list, lo: float = None, hi: float = None) -> list:
     return out
 
 
-def _discover_nodes() -> list:
+def _discover_nodes(*, request_context: RequestContext | None = None) -> list:
     """从 VM node_cpu_seconds_total 的 instance 标签发现节点名列表。"""
     now = time.time()
-    series = _vm_query_range('node_cpu_seconds_total{mode="idle"}', now - 300, now, step=60)
+    series = _vm_query_range(
+        'node_cpu_seconds_total{mode="idle"}',
+        now - 300,
+        now,
+        step=60,
+        request_context=request_context,
+    )
     nodes = set()
     for s in series:
         inst = (s.get("metric") or {}).get("instance", "")
@@ -111,7 +126,9 @@ def _discover_nodes() -> list:
     return sorted(nodes)
 
 
-def _vm_node_metrics(node: str) -> dict:
+def _vm_node_metrics(
+    node: str, *, request_context: RequestContext | None = None
+) -> dict:
     """从 VM 拉取单节点 OS 层指标。返回 {cpu_util, mem_avail_pct, disk_ok, disk_avail_pct}。
 
     node-exporter/categraf 的 instance 标签形如 <host>:9100（端口可用 NODE_EXPORTER_PORT 覆盖）。
@@ -127,7 +144,7 @@ def _vm_node_metrics(node: str) -> dict:
         cpu = _series_values(
             _vm_query_range(
                 f'100 - avg(rate(node_cpu_seconds_total{{mode="idle",{inst}}}[5m])) by (instance) * 100',
-                start, end, step), lo=0.0, hi=100.0)
+                start, end, step, request_context=request_context), lo=0.0, hi=100.0)
         if cpu:
             m["cpu_util"] = round(sum(cpu) / len(cpu), 2)
     except Exception as e:
@@ -139,7 +156,7 @@ def _vm_node_metrics(node: str) -> dict:
             _vm_query_range(
                 f'(avg(node_memory_MemAvailable_bytes{{{inst}}}) by (instance) '
                 f'/ avg(node_memory_MemTotal_bytes{{{inst}}}) by (instance)) * 100',
-                start, end, step), lo=0.0, hi=100.0)
+                start, end, step, request_context=request_context), lo=0.0, hi=100.0)
         if mem:
             m["mem_avail_pct"] = round(sum(mem) / len(mem), 2)
     except Exception as e:
@@ -151,7 +168,7 @@ def _vm_node_metrics(node: str) -> dict:
             _vm_query_range(
                 f'(sum(node_filesystem_avail_bytes{{{inst},fstype!="rootfs",fstype!="tmpfs"}}) by (instance) '
                 f'/ sum(node_filesystem_size_bytes{{{inst},fstype!="rootfs",fstype!="tmpfs"}}) by (instance)) * 100',
-                start, end, step), lo=0.0, hi=100.0)
+                start, end, step, request_context=request_context), lo=0.0, hi=100.0)
         if disk:
             pct = sum(disk) / len(disk)
             m["disk_avail_pct"] = round(pct, 2)
@@ -275,15 +292,22 @@ class NodeHealthAggregator:
             except Exception:
                 pass
 
-    def collect_node_metrics(self, node: str) -> dict:
+    def collect_node_metrics(
+        self, node: str, *, request_context: RequestContext | None = None
+    ) -> dict:
         """采集单节点真实指标：VM（OS 层）+ MySQL ipmi_sensors（硬件层）。"""
-        metrics = _vm_node_metrics(node)
+        metrics = _vm_node_metrics(node, request_context=request_context)
         metrics.update(_ipmi_node_metrics(node))
         # 网络：暂无独立采集源，默认 ok（node_network 可后续接入）
         metrics.setdefault("net_ok", True)
         return metrics
 
-    def aggregate_all(self, nodes: list = None) -> list:
+    def aggregate_all(
+        self,
+        nodes: list = None,
+        *,
+        request_context: RequestContext | None = None,
+    ) -> list:
         """真实聚合管道：从 VM 发现节点（或指定节点），逐节点采集真实指标、
         按阈值判定部件状态、落库 node_component_health，并对异常节点写审计+日志。
 
@@ -292,14 +316,16 @@ class NodeHealthAggregator:
         node_list = [n.strip() for n in (nodes or []) if (n or "").strip()]
         if not node_list:
             try:
-                node_list = _discover_nodes()
+                node_list = _discover_nodes(request_context=request_context)
             except Exception as e:
                 logger.warning("[node_health] 节点发现失败(VM 不可达或空数据): %s", e)
                 node_list = []
         results = []
         for node in node_list:
             try:
-                metrics = self.collect_node_metrics(node)
+                metrics = self.collect_node_metrics(
+                    node, request_context=request_context
+                )
                 detail = {
                     "cpu": (f"util={metrics.get('cpu_util', 0):.1f}% "
                             f"temp={metrics.get('cpu_temp') if metrics.get('cpu_temp') is not None else '-'}"
