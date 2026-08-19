@@ -71,6 +71,51 @@ func hasColumn(conn *sql.DB, table, column string) bool {
 	return rows.Next()
 }
 
+func hasIndex(conn *sql.DB, table, index string) bool {
+	if conn == nil {
+		return false
+	}
+	rows, err := conn.Query(
+		"SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?",
+		table, index)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
+}
+
+// ensureClusterAuthorityMetadata adds canonical registry fields without deleting or
+// reading legacy credential storage. Existing effective cluster configuration receives
+// stable UUID/slug/tenant metadata; historical observability and runtime tables are untouched.
+func ensureClusterAuthorityMetadata(conn *sql.DB) {
+	for _, column := range []struct {
+		name string
+		ddl  string
+	}{
+		{"cluster_id", "ALTER TABLE clusters ADD COLUMN cluster_id CHAR(36) NULL"},
+		{"tenant_id", "ALTER TABLE clusters ADD COLUMN tenant_id VARCHAR(64) NULL"},
+		{"slug", "ALTER TABLE clusters ADD COLUMN slug VARCHAR(128) NULL"},
+		{"environment", "ALTER TABLE clusters ADD COLUMN environment VARCHAR(64) NOT NULL DEFAULT ''"},
+		{"credential_ref", "ALTER TABLE clusters ADD COLUMN credential_ref VARCHAR(512) NOT NULL DEFAULT ''"},
+		{"lifecycle_status", "ALTER TABLE clusters ADD COLUMN lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'registered'"},
+	} {
+		if !hasColumn(conn, "clusters", column.name) {
+			_, _ = conn.Exec(column.ddl)
+		}
+	}
+	_, _ = conn.Exec("UPDATE clusters SET cluster_id=LOWER(UUID()) WHERE cluster_id IS NULL OR cluster_id='' ")
+	_, _ = conn.Exec("UPDATE clusters SET tenant_id='default' WHERE tenant_id IS NULL OR tenant_id='' ")
+	_, _ = conn.Exec("UPDATE clusters SET slug=CONCAT('legacy-', id) WHERE slug IS NULL OR slug='' ")
+	_, _ = conn.Exec("UPDATE clusters SET lifecycle_status=CASE status WHEN 'active' THEN 'ready' WHEN 'degraded' THEN 'degraded' WHEN 'down' THEN 'disabled' ELSE 'registered' END WHERE lifecycle_status='registered'")
+	if !hasIndex(conn, "clusters", "uq_clusters_cluster_id") {
+		_, _ = conn.Exec("ALTER TABLE clusters ADD UNIQUE INDEX uq_clusters_cluster_id (cluster_id)")
+	}
+	if !hasIndex(conn, "clusters", "uq_clusters_slug") {
+		_, _ = conn.Exec("ALTER TABLE clusters ADD UNIQUE INDEX uq_clusters_slug (slug)")
+	}
+}
+
 // EnsureSchema 应用 users 表迁移并种子 admin 用户（幂等）。MySQL 不可达时静默。
 func EnsureSchema() {
 	conn := GetDB()
@@ -80,6 +125,7 @@ func EnsureSchema() {
 	_, _ = conn.Exec(`
 CREATE TABLE IF NOT EXISTS users (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_uuid CHAR(36) NULL UNIQUE,
   username VARCHAR(64) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
   display_name VARCHAR(128) DEFAULT '',
@@ -101,6 +147,12 @@ CREATE TABLE IF NOT EXISTS users (
 	if !hasColumn(conn, "users", "is_approver") {
 		_, _ = conn.Exec("ALTER TABLE users ADD COLUMN is_approver TINYINT DEFAULT 0")
 	}
+	// Canonical user identity is additive: retain the legacy integer key while every
+	// effective user receives a stable UUID for session and authorization records.
+	if !hasColumn(conn, "users", "user_uuid") {
+		_, _ = conn.Exec("ALTER TABLE users ADD COLUMN user_uuid CHAR(36) NULL UNIQUE")
+	}
+	_, _ = conn.Exec("UPDATE users SET user_uuid=LOWER(UUID()) WHERE user_uuid IS NULL OR user_uuid='' ")
 
 	// service_catalog 服务目录
 	_, _ = conn.Exec(`
@@ -154,6 +206,7 @@ CREATE TABLE IF NOT EXISTS clusters (
 	if !hasColumn(conn, "clusters", "kubeconfig") {
 		_, _ = conn.Exec("ALTER TABLE clusters ADD COLUMN kubeconfig TEXT")
 	}
+	ensureClusterAuthorityMetadata(conn)
 
 	// topology_nodes 拓扑顶点（typed property graph）
 	_, _ = conn.Exec(`
@@ -368,6 +421,12 @@ CREATE TABLE IF NOT EXISTS tenants (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+	// Identity/RBAC authority records are owned and written only by query-api.
+	// They contain effective authorization metadata, never observability or AI runtime history.
+	for _, statement := range authorizationSchemaStatements() {
+		_, _ = conn.Exec(statement)
+	}
 
 	// service_metadata: 服务富化元数据（替代 service_catalog 的富化职责）
 	_, _ = conn.Exec(`
