@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/api"
+	trustedauth "github.com/observability-platform/ai-apm-query-go/internal/auth"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -27,6 +30,33 @@ func randomPassword(n int) string {
 		return "admin-" + hex.EncodeToString([]byte(fmt.Sprintf("%d", n)))
 	}
 	return hex.EncodeToString(b)
+}
+
+// trustedContextVerifyConfigFromEnv loads the independently managed service
+// credential and one or more Ed25519 verification keys. Multiple public keys
+// support key rotation; incomplete configuration leaves internal requests
+// fail-closed rather than accepting a service token by itself.
+func trustedContextVerifyConfigFromEnv() (trustedauth.VerifyConfig, error) {
+	serviceToken := strings.TrimSpace(os.Getenv("INTERNAL_TOKEN"))
+	issuer := strings.TrimSpace(os.Getenv("TRUSTED_CONTEXT_ISSUER"))
+	rawKeys := strings.TrimSpace(os.Getenv("TRUSTED_CONTEXT_PUBLIC_KEYS"))
+	if serviceToken == "" || issuer == "" || rawKeys == "" {
+		return trustedauth.VerifyConfig{}, fmt.Errorf("internal signed-context configuration is incomplete")
+	}
+	publicKeys := make(map[string]ed25519.PublicKey)
+	for _, rawKey := range strings.Split(rawKeys, ",") {
+		encoded := strings.TrimSpace(rawKey)
+		publicKey, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil || len(publicKey) != ed25519.PublicKeySize {
+			return trustedauth.VerifyConfig{}, fmt.Errorf("invalid trusted-context public key")
+		}
+		key := ed25519.PublicKey(publicKey)
+		publicKeys[trustedauth.KeyID(key)] = key
+	}
+	return trustedauth.VerifyConfig{
+		Audience: "ai-apm-query-go", Issuer: issuer, PublicKeys: publicKeys,
+		ServiceToken: serviceToken, ReplayCache: trustedauth.NewReplayCache(4096),
+	}, nil
 }
 
 func main() {
@@ -47,6 +77,11 @@ func main() {
 	store.EnsureSchema()
 
 	handler := api.NewHandler(*chHost, *chPort)
+	if config, err := trustedContextVerifyConfigFromEnv(); err != nil {
+		log.Printf("internal signed-context authorization disabled: %v", err)
+	} else {
+		api.ConfigureInternalRequestVerifier(config)
+	}
 	if vmURL := os.Getenv("VICTORIA_METRICS_URL"); vmURL != "" {
 		handler.SetVMURL(vmURL)
 	}
@@ -96,6 +131,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	// Canonical resource resolution is the supported cluster-scoped boundary.
+	mux.HandleFunc("/api/v1/resources/resolve", handler.ResolveResource)
 
 	// Services
 	mux.HandleFunc("/api/v1/services", handler.ListServices)

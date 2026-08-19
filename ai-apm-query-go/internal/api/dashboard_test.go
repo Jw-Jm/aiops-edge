@@ -7,16 +7,17 @@ import (
 	"testing"
 )
 
-// TestPanelCreateRequiresAdmin 验证写面板需 admin 角色（无 token 401，非 admin 403）。
+// TestPanelCreateRequiresAdmin verifies the legacy panel write route fails
+// closed until it has canonical MySQL authorization.
 func TestPanelCreateRequiresAdmin(t *testing.T) {
 	h := &Handler{client: &http.Client{}}
 
-	// 无 token → 401
+	// No token → 403 (no JWT role fallback)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/dashboard/panels", strings.NewReader(`{"title":"rate","query":"sum(rate(x[5m]))"}`))
 	h.DashboardRouter(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: code=%d, want 401", rec.Code)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("no token: code=%d, want 403", rec.Code)
 	}
 
 	// 非 admin token → 403

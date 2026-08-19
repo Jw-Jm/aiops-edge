@@ -6,18 +6,20 @@ import (
 	"testing"
 )
 
-// TestRequireRoleForWrite 验证写操作需 admin、读操作放行的越权修复。
+// TestRequireRoleForWrite verifies a JWT role claim cannot authorize legacy writes.
 func TestRequireRoleForWrite(t *testing.T) {
 	h := &Handler{}
 	called := false
 	next := func(w http.ResponseWriter, r *http.Request) { called = true }
 
-	// GET（读）无需 token，放行
+	// Legacy routes do not have a canonical MySQL authorization action/scope yet,
+	// so even reads fail closed instead of treating a missing or JWT-derived role
+	// as authority.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
 	h.RequireRoleForWrite("admin", next)(rec, req)
-	if !called {
-		t.Fatal("GET should be allowed without token")
+	if rec.Code != http.StatusForbidden || called {
+		t.Fatalf("GET legacy route: got status=%d called=%v, want denied without handler call", rec.Code, called)
 	}
 	called = false
 
@@ -42,26 +44,28 @@ func TestRequireRoleForWrite(t *testing.T) {
 		t.Fatalf("POST as viewer: got %d, want 403", rec.Code)
 	}
 
-	// POST（写）admin token → 放行
+	// A forged/admin JWT claim remains insufficient: current MySQL authorization
+	// is required by the protected request boundary, so this legacy wrapper
+	// fails closed when invoked directly.
 	adminTok := generateJWT("admin1", "admin", "")
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/clusters", nil)
 	req.Header.Set("Authorization", "Bearer "+adminTok)
 	h.RequireRoleForWrite("admin", next)(rec, req)
-	if !called {
-		t.Fatal("POST as admin should be allowed")
+	if rec.Code != http.StatusForbidden || called {
+		t.Fatalf("POST with JWT admin claim: got status=%d called=%v, want denied without handler call", rec.Code, called)
 	}
 }
 
 // TestValidateJWTStandard 验证真实 HS256 JWT 签发与校验。
 func TestValidateJWTStandard(t *testing.T) {
-	token := generateJWT("admin", "admin", "")
-	u, role, _, ok := validateJWT(token)
+	token := generateJWT("admin", "admin", `{"clusters":["all"]}`)
+	u, role, scope, ok := validateJWT(token)
 	if !ok {
 		t.Fatal("valid token rejected")
 	}
-	if u != "admin" || role != "admin" {
-		t.Fatalf("got %s/%s, want admin/admin", u, role)
+	if u != "admin" || role != "" || scope != "" {
+		t.Fatalf("got identity=%q role=%q scope=%q, want identity-only claims", u, role, scope)
 	}
 }
 

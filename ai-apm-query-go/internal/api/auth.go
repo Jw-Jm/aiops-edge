@@ -1,12 +1,17 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,8 +19,76 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 
+	trustedauth "github.com/observability-platform/ai-apm-query-go/internal/auth"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
+
+var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// AuthorizationContext is the request identity and tenant membership verified
+// from the current MySQL state. It intentionally contains no JWT role or scope.
+type AuthorizationContext struct {
+	UserID    string
+	SessionID string
+	TenantID  string
+}
+
+type authorizationError struct{ code string }
+
+func (err *authorizationError) Error() string { return err.code }
+
+func isAuthorizationError(err error, code string) bool {
+	return err != nil && err.Error() == code
+}
+
+func authorizationFailure(code string) error { return &authorizationError{code: code} }
+
+type authorizationContextKey struct{}
+
+var (
+	internalVerifierMu sync.RWMutex
+	internalVerifier   *trustedauth.VerifyConfig
+)
+
+// configureInternalRequestVerifier installs the independent service-token and
+// signed-context verifier. It is kept small so production wiring and tests use
+// exactly the same verification path.
+func configureInternalRequestVerifier(cfg trustedauth.VerifyConfig) func() {
+	internalVerifierMu.Lock()
+	previous := internalVerifier
+	configured := cfg
+	internalVerifier = &configured
+	internalVerifierMu.Unlock()
+	return func() {
+		internalVerifierMu.Lock()
+		internalVerifier = previous
+		internalVerifierMu.Unlock()
+	}
+}
+
+// ConfigureInternalRequestVerifier installs production service authentication
+// and signed-context verification. A missing configuration is intentionally
+// not replaced with a default: internal requests then fail closed.
+func ConfigureInternalRequestVerifier(cfg trustedauth.VerifyConfig) {
+	configureInternalRequestVerifier(cfg)
+}
+
+func internalRequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) {
+	internalVerifierMu.RLock()
+	configured := internalVerifier
+	internalVerifierMu.RUnlock()
+	if configured == nil {
+		return AuthorizationContext{}, authorizationFailure("permission_denied")
+	}
+	if err := trustedauth.VerifyServiceToken(r.Header.Get("X-Internal-Token"), *configured); err != nil {
+		return AuthorizationContext{}, authorizationFailure("permission_denied")
+	}
+	context, err := trustedauth.VerifyTrustedRequestContext(r.Header.Get("X-Trusted-Request-Context"), *configured, time.Now())
+	if err != nil {
+		return AuthorizationContext{}, authorizationFailure("permission_denied")
+	}
+	return resolveMySQLAuthorizationContext(context.UserID, context.SessionID, context.TenantID)
+}
 
 // jwtSecret 签名密钥。必须通过 JWT_SECRET 环境变量显式注入（生产从 Secret/KMS 注入）。
 // 缺失时 panic，绝不使用内置弱密钥（否则任何人都能伪造 admin token）。
@@ -96,13 +169,21 @@ func parseScope(raw string) *Scope {
 	return sc
 }
 
-// generateJWT 生成标准 HS256 JWT，携带 sub(username)、role 与 scope。
+// generateJWT is retained for legacy callers, but its role/scope arguments are
+// deliberately ignored. JWTs now prove only identity and a session handle.
 func generateJWT(username, role, scope string) string {
+	return generateJWTWithSession(username, randomSessionID(), role, scope)
+}
+
+func generateJWTWithSession(userID, sessionID, _ string, _ string) string {
+	if userID == "" || sessionID == "" {
+		return ""
+	}
 	claims := jwt.MapClaims{
-		"sub":   username,
-		"role":  role,
-		"scope": scope,
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
+		"sub": userID,
+		"sid": sessionID,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(24 * time.Hour).Unix(),
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	secret, err := getJWTSecret()
@@ -113,11 +194,28 @@ func generateJWT(username, role, scope string) string {
 	return signed
 }
 
-// validateJWT 校验 JWT，返回 username、role、scope 与是否有效。
+func randomSessionID() string {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return ""
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	hexValue := hex.EncodeToString(bytes)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hexValue[:8], hexValue[8:12], hexValue[12:16], hexValue[16:20], hexValue[20:])
+}
+
+// validateJWT validates the identity/session token. The returned role and
+// scope slots remain empty solely for source compatibility with legacy callers.
 func validateJWT(tokenStr string) (string, string, string, bool) {
+	userID, _, ok := validateJWTIdentity(tokenStr)
+	return userID, "", "", ok
+}
+
+func validateJWTIdentity(tokenStr string) (string, string, bool) {
 	secret, serr := getJWTSecret()
 	if serr != nil {
-		return "", "", "", false
+		return "", "", false
 	}
 	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -126,26 +224,78 @@ func validateJWT(tokenStr string) (string, string, string, bool) {
 		return secret, nil
 	})
 	if err != nil || !t.Valid {
-		return "", "", "", false
+		return "", "", false
 	}
 	claims, ok := t.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", "", "", false
+		return "", "", false
 	}
-	username, _ := claims["sub"].(string)
-	role, _ := claims["role"].(string)
-	scope, _ := claims["scope"].(string)
-	return username, role, scope, true
+	userID, _ := claims["sub"].(string)
+	sessionID, _ := claims["sid"].(string)
+	if userID == "" || sessionID == "" {
+		return "", "", false
+	}
+	return userID, sessionID, true
 }
 
-// currentScope 从请求提取当前用户的数据范围。
+// currentScope deliberately returns no caller-controlled scope. Authorization
+// decisions for new protected routes are made from MySQL in
+// RequestAuthorizationContext and AuthorizationDAO.
 func currentScope(r *http.Request) *Scope {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	_, _, scope, ok := validateJWT(token)
-	if !ok {
-		return &Scope{}
+	return &Scope{}
+}
+
+// RequestAuthorizationContext validates a JWT identity/session and checks the
+// requested compatibility tenant hint against current MySQL identity, session,
+// and membership rows. X-Tenant-ID never becomes trusted until these checks
+// succeed, and is not copied to internal service headers.
+func RequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) {
+	if r.Header.Get("X-Internal-Token") != "" || r.Header.Get("X-Trusted-Request-Context") != "" {
+		return internalRequestAuthorizationContext(r)
 	}
-	return parseScope(scope)
+	var zero AuthorizationContext
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	userID, sessionID, ok := validateJWTIdentity(token)
+	if !ok || isTokenRevoked(token, userID) {
+		return zero, authorizationFailure("permission_denied")
+	}
+	tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+	if tenantID == "" || tenantID == "all" || !canonicalUUID.MatchString(tenantID) {
+		return zero, authorizationFailure("invalid_context")
+	}
+	return resolveMySQLAuthorizationContext(userID, sessionID, tenantID)
+}
+
+func resolveMySQLAuthorizationContext(userID, sessionID, tenantID string) (AuthorizationContext, error) {
+	var zero AuthorizationContext
+	conn := store.GetDB()
+	if conn == nil {
+		return zero, authorizationFailure("cluster_unavailable")
+	}
+	var currentUserID, sessionStatus string
+	var userStatus int
+	var expiresAt, revokedAt sql.NullTime
+	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s ON s.user_uuid = u.user_uuid
+WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, userID, sessionID).Scan(&currentUserID, &userStatus, &sessionStatus, &expiresAt, &revokedAt)
+	if err != nil || currentUserID != userID || userStatus != 1 || sessionStatus != "active" || !expiresAt.Valid || !expiresAt.Time.After(time.Now()) || (revokedAt.Valid && !revokedAt.Time.IsZero()) {
+		return zero, authorizationFailure("permission_denied")
+	}
+	var memberTenantID string
+	err = conn.QueryRow(`SELECT t.id FROM tenants t JOIN user_tenants ut ON ut.tenant_id = t.id
+WHERE ut.user_uuid = ? AND t.id = ? AND t.enabled = 1 AND ut.status = 'active' LIMIT 1`, userID, tenantID).Scan(&memberTenantID)
+	if err != nil || memberTenantID != tenantID {
+		return zero, authorizationFailure("permission_denied")
+	}
+	return AuthorizationContext{UserID: userID, SessionID: sessionID, TenantID: tenantID}, nil
+}
+
+func requestAuthorizationContext(r *http.Request) (AuthorizationContext, bool) {
+	context, ok := r.Context().Value(authorizationContextKey{}).(AuthorizationContext)
+	return context, ok
+}
+
+func withAuthorizationContext(r *http.Request, authorization AuthorizationContext) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), authorizationContextKey{}, authorization))
 }
 
 // ── 登录暴力破解防护（安全 P1-1）──
@@ -244,21 +394,6 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 401, map[string]interface{}{"error": "invalid credentials"})
 }
 
-// isInternalRequest 仅信任带 X-Internal-Token 的服务间调用（已移除 IP 白名单免鉴权）。
-// 安全：只有当 INTERNAL_TOKEN 已显式配置时才启用内部放行分支；未配置时一律返回 false，
-// 避免"空 token == 空 header"的鉴权绕过。
-func isInternalRequest(r *http.Request) bool {
-	internalToken := os.Getenv("INTERNAL_TOKEN")
-	if internalToken == "" {
-		return false
-	}
-	got := r.Header.Get("X-Internal-Token")
-	if got == "" {
-		return false
-	}
-	return got == internalToken
-}
-
 // RequireRole 返回按角色拦截的处理器包装（admin 仅限 admin 角色）。
 func (h *Handler) RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -270,31 +405,18 @@ func (h *Handler) RequireRole(role string, next http.HandlerFunc) http.HandlerFu
 	}
 }
 
-// hasRole 判断请求携带的 JWT 是否具有指定角色（供 handler 内做细粒度权限校验）。
+// hasRole deliberately fails closed while legacy handlers have no canonical
+// AuthorizationDAO action/scope mapping. JWT role claims are never authority.
 func hasRole(r *http.Request, role string) bool {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	_, gotRole, _, ok := validateJWT(token)
-	if !ok {
-		return false
-	}
-	return gotRole == role
+	return false
 }
 
-// RequireRoleForWrite 仅在写方法（POST/PUT/PATCH/DELETE）上要求指定角色，
-// 读方法（GET/HEAD/OPTIONS）放行。用于"读开放、写需 admin"的资源路由
-// （服务目录/设备/集群），避免任意登录用户越权写。
+// RequireRoleForWrite fences legacy routes until each operation is migrated to
+// a canonical AuthorizationDAO action and resource scope. Neither read nor
+// write methods may regain authority from a JWT claim.
 func (h *Handler) RequireRoleForWrite(role string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet, http.MethodHead, http.MethodOptions:
-			next(w, r)
-			return
-		}
-		if !hasRole(r, role) {
-			respondJSON(w, 403, map[string]interface{}{"error": "forbidden: requires admin"})
-			return
-		}
-		next(w, r)
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 	}
 }
 
@@ -338,21 +460,14 @@ func isTokenRevoked(token, username string) bool {
 	return revokedUsers[username]
 }
 
-// hasPrivilegedRole 判断请求者是否为 admin 或审批人（approver）。
-// 后端角色词汇为 admin|user，审批人通过 users.is_approver 标记表达（G2 角色门控）。
+// hasPrivilegedRole deliberately fails closed until privileged legacy paths
+// are mapped to canonical MySQL actions and resource scopes.
 func hasPrivilegedRole(r *http.Request) bool {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, role, _, ok := validateJWT(token)
-	if !ok {
-		return false
-	}
-	if role == "admin" {
-		return true
-	}
-	if u, _ := (&store.UserDAO{}).GetByUsername(username); u != nil && u.IsApprover {
-		return true
-	}
 	return false
+}
+
+func isCanonicalProtectedRoute(path string) bool {
+	return path == "/api/v1/resources/resolve"
 }
 
 // AuthMiddleware 鉴权中间件：公开端点放行；内部服务（X-Internal-Token）放行；其余必须 JWT。
@@ -362,48 +477,34 @@ func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// Public endpoints: health, login, OPTIONS
-		// 仅放行"读取 LLM 配置状态"的 GET /api/v1/settings/llm（返回的是加密后的配置，
-		// 不含明文 key，用于前端判断是否已配置）。所有写操作（POST/PUT 保存）、
-		// 以及敏感子路径（/internal、/providers、/test、/models、/history、rollback）
-		// 一律走 isInternalRequest 或 JWT 鉴权，防止未授权写入 LLM API key。
+		// Public endpoints: health, login, OPTIONS. LLM settings, including
+		// the non-secret status endpoint, require an authorization context.
 		if path == "/health" || path == "/api/v1/health" ||
 			path == "/metrics" || // 自监控：query-api 自身 Prometheus 指标，供 VM 免鉴权抓取
 			path == "/api/v1/auth/login" || path == "/api/v1/login" ||
-			(path == "/api/v1/settings/llm" && r.Method == http.MethodGet) ||
-			// WebShell WebSocket：无自定义 header，token 经 ?token= query 传递，由 ProxyShellWS
-			// 内部验证 JWT（不能在此处拦截，否则 WebSocket 升级请求会被 401 拒绝）。
-			path == "/api/v1/shell/ws" ||
 			r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// 内部服务间调用（X-Internal-Token）
-		if isInternalRequest(r) {
-			next.ServeHTTP(w, r)
+		// Browser and internal service requests resolve current MySQL identity,
+		// session, and requested tenant membership. Internal callers must also
+		// present a signed context; JWT role/scope never grants authority.
+		authorization, err := RequestAuthorizationContext(r)
+		if err != nil {
+			status := http.StatusForbidden
+			if isAuthorizationError(err, "invalid_context") {
+				status = http.StatusBadRequest
+			} else if isAuthorizationError(err, "cluster_unavailable") {
+				status = http.StatusServiceUnavailable
+			}
+			respondJSON(w, status, map[string]interface{}{"error": err.Error()})
 			return
 		}
-
-		// 其余所有请求必须带合法 JWT
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		username, _, _, ok := validateJWT(token)
-		if !ok {
-			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
+		if !isCanonicalProtectedRoute(path) {
+			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 			return
 		}
-		// G1：token 撤销检查（登出/删除/禁用用户后即时失效）
-		if isTokenRevoked(token, username) {
-			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized: token revoked"})
-			return
-		}
-		// G1：用户存在性 + status==1 校验（查库）。MySQL 不可达/用户不存在/被禁用一律 401
-		// （fail-closed：认证后端故障不允许降级放行）。
-		u, err := (&store.UserDAO{}).GetByUsername(username)
-		if err != nil || u == nil || u.Status != 1 {
-			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
-			return
-		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, withAuthorizationContext(r, authorization))
 	})
 }

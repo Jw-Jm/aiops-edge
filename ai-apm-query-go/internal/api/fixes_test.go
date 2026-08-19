@@ -58,7 +58,7 @@ func TestValidateSLOInput(t *testing.T) {
 	}
 }
 
-func TestCreateSLORejectsInvalidBoundaries(t *testing.T) {
+func TestCreateSLORejectsJWTAdminClaim(t *testing.T) {
 	h := &Handler{client: &http.Client{}}
 	adminToken := generateJWT("admin", "admin", "")
 	cases := []string{
@@ -75,8 +75,8 @@ func TestCreateSLORejectsInvalidBoundaries(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/slo", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+adminToken)
 		h.SLORouter(rec, req)
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("body=%s: expected 400, got %d: %s", body, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("body=%s: expected 403, got %d: %s", body, rec.Code, rec.Body.String())
 		}
 	}
 }
@@ -191,12 +191,12 @@ func TestDeleteReturns404ForMissingResource(t *testing.T) {
 
 func TestAlertSilenceCreateRequiresAdmin(t *testing.T) {
 	h := &Handler{client: &http.Client{}}
-	// 无 token → 401
+	// No token → 403: the legacy route has no canonical authorization mapping.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts/silences", strings.NewReader(`{"service":"svc"}`))
 	h.AlertSilences(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: code=%d, want 401", rec.Code)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("no token: code=%d, want 403", rec.Code)
 	}
 	// 非 admin → 403
 	userToken := generateJWT("alice", "user", "")
@@ -213,12 +213,12 @@ func TestAlertSilenceCreateRequiresAdmin(t *testing.T) {
 
 func TestTenantCreateRequiresAdmin(t *testing.T) {
 	h := &Handler{client: &http.Client{}}
-	// 无 token → 401
+	// No token → 403: the legacy route has no canonical authorization mapping.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/tenants", strings.NewReader(`{"id":"t1","name":"T"}`))
 	h.CreateTenant(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: code=%d, want 401", rec.Code)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("no token: code=%d, want 403", rec.Code)
 	}
 	// 非 admin → 403
 	userToken := generateJWT("alice", "user", "")
@@ -385,14 +385,17 @@ func TestQueryMetricsPromQLRateLimit(t *testing.T) {
 
 // ===== ProxyAI 剥离客户端伪造 X-Internal-* 头 =====
 
-// TestProxyAIStripsForgedInternalUserHeader 验证：
-//   - JWT 缺失/无效时，客户端伪造的 X-Internal-User/Role/Approver 头被剥离（不透传）
-//   - JWT 有效时，注入 JWT sub 用户名（覆盖伪造头）
-func TestProxyAIStripsForgedInternalUserHeader(t *testing.T) {
-	var gotUser, gotRole string
+// TestProxyAIStripsForgedInternalAuthorityHeaders verifies client-controlled
+// identity, role, scope, approval, and trusted-context headers never cross the
+// query-api proxy boundary.
+func TestProxyAIStripsForgedInternalAuthorityHeaders(t *testing.T) {
+	var gotUser, gotRole, gotApprover, gotScope, gotContext string
 	orchSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUser = r.Header.Get("X-Internal-User")
 		gotRole = r.Header.Get("X-Internal-Role")
+		gotApprover = r.Header.Get("X-Internal-Approver")
+		gotScope = r.Header.Get("X-Internal-Scope")
+		gotContext = r.Header.Get("X-Trusted-Request-Context")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer orchSrv.Close()
@@ -400,11 +403,14 @@ func TestProxyAIStripsForgedInternalUserHeader(t *testing.T) {
 
 	h := &Handler{client: orchSrv.Client()}
 
-	// 1. 无 JWT（无效）→ 伪造头应被剥离
+	// A forged browser request must not turn into an internal authority claim.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", strings.NewReader(`{"msg":"hi"}`))
 	req.Header.Set("X-Internal-User", "forged-user")
 	req.Header.Set("X-Internal-Role", "admin")
+	req.Header.Set("X-Internal-Approver", "1")
+	req.Header.Set("X-Internal-Scope", "all")
+	req.Header.Set("X-Trusted-Request-Context", "forged")
 	h.ProxyAI(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -415,19 +421,21 @@ func TestProxyAIStripsForgedInternalUserHeader(t *testing.T) {
 	if gotRole != "" {
 		t.Fatalf("forged X-Internal-Role should be stripped, got %q", gotRole)
 	}
-
-	// 2. 有效 JWT → 注入 JWT 用户名（覆盖伪造值）
-	gotUser, gotRole = "", ""
-	token := generateJWT("alice", "user", "")
-	rec2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", strings.NewReader(`{"msg":"hi"}`))
-	req2.Header.Set("Authorization", "Bearer "+token)
-	req2.Header.Set("X-Internal-User", "forged-user")
-	h.ProxyAI(rec2, req2)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec2.Code, rec2.Body.String())
+	if gotApprover != "" || gotScope != "" || gotContext != "" {
+		t.Fatalf("forged authority headers crossed proxy: approver=%q scope=%q context=%q", gotApprover, gotScope, gotContext)
 	}
-	if gotUser != "alice" {
-		t.Fatalf("expected injected user alice, got %q", gotUser)
+
+	gotUser, gotRole, gotApprover, gotScope, gotContext = "", "", "", "", ""
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", strings.NewReader(`{"msg":"hi"}`))
+	req.Header.Set("Authorization", "Bearer "+generateJWT("alice", "admin", `{"services":["*"]}`))
+	req.Header.Set("X-Internal-User", "forged-user")
+	req.Header.Set("X-Internal-Role", "admin")
+	h.ProxyAI(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotUser != "" || gotRole != "" || gotApprover != "" || gotScope != "" || gotContext != "" {
+		t.Fatalf("JWT must not be converted to internal authority headers: user=%q role=%q approver=%q scope=%q context=%q", gotUser, gotRole, gotApprover, gotScope, gotContext)
 	}
 }

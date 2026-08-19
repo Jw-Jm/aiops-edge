@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,8 +58,9 @@ func TestParseNodeMetrics(t *testing.T) {
 	}
 }
 
-// 验证 handler：注入 k8sAPI 分别返回 MetricsList 与 /api/v1/nodes（capacity），assert usage_pct 计算与 200。
-func TestNodesMetricsHandler(t *testing.T) {
+// TestNodesMetricsHandlerRejectsJWTAdminClaim verifies legacy cluster reads do
+// not accept JWT role authority while canonical context migration is pending.
+func TestNodesMetricsHandlerRejectsJWTAdminClaim(t *testing.T) {
 	h := &Handler{}
 	orig := k8sAPIFn
 	k8sAPIFn = func(path string) ([]byte, error) {
@@ -79,29 +79,12 @@ func TestNodesMetricsHandler(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+generateJWT("admin", "admin", ""))
 	w := httptest.NewRecorder()
 	h.NodesMetrics(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var resp map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &resp)
-	nodes := resp["nodes"].([]interface{})
-	if len(nodes) != 1 {
-		t.Fatalf("expected 1 node, got %d", len(nodes))
-	}
-	m := nodes[0].(map[string]interface{})
-	if m["node"] != "orbstack" {
-		t.Fatalf("expected node orbstack, got %v", m["node"])
-	}
-	// usage 250m/2 *100 = 12.5；mem 2Gi/4Gi*100 = 50
-	if pct := m["cpu_usage_pct"].(float64); pct < 12.4 || pct > 12.6 {
-		t.Errorf("cpu_usage_pct=%v want ~12.5", pct)
-	}
-	if pct := m["mem_usage_pct"].(float64); pct < 49.9 || pct > 50.1 {
-		t.Errorf("mem_usage_pct=%v want ~50", pct)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
 	}
 }
 
-func TestNodesMetricsHandlerScopesK8sQueriesByClusterID(t *testing.T) {
+func TestNodesMetricsHandlerRejectsJWTAdminClaimForClusterTarget(t *testing.T) {
 	h := &Handler{}
 	orig := k8sAPIFn
 	t.Cleanup(func() { k8sAPIFn = orig })
@@ -126,8 +109,8 @@ func TestNodesMetricsHandlerScopesK8sQueriesByClusterID(t *testing.T) {
 
 	h.NodesMetrics(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

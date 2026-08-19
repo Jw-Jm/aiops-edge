@@ -7,16 +7,18 @@ import (
 	"testing"
 )
 
-// TestSLOCreateRequiresAdmin 验证写 SLO 需 admin 角色（无 token 应 401，非 admin 应 403）。
+// TestSLOCreateFailsClosedWithoutCanonicalAuthorization verifies the legacy
+// SLO write route cannot use JWT role claims as authority.
 func TestSLOCreateRequiresAdmin(t *testing.T) {
 	h := &Handler{client: &http.Client{}}
 
-	// 无 token → 401
+	// No token and a forged role claim both fail closed until this route gains a
+	// canonical AuthorizationDAO action/scope mapping.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/slo", strings.NewReader(`{"name":"payments","service":"payments"}`))
 	h.SLORouter(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: code=%d, want 401", rec.Code)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("no token: code=%d, want 403", rec.Code)
 	}
 
 	// 非 admin（user 角色）→ 403

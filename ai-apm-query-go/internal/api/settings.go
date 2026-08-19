@@ -291,21 +291,12 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	decrypted := decryptAPIKey(llm.APIKey)
 	apiKeySet := decrypted != ""
 	configured := llm.Provider != "" && llm.Model != "" && llm.BaseURL != "" && apiKeySet
-	// 脱敏展示（仅 mask，不清空），避免前端二次脱敏导致显示混乱
-	masked := llm.APIKey
-	if len(masked) > 8 {
-		masked = masked[:4] + "********" + masked[len(masked)-4:]
-	} else if masked != "" {
-		masked = "********"
-	}
+	// This compatibility status endpoint intentionally exposes only readiness.
+	// It does not disclose provider/model topology, endpoint locations, or any
+	// secret-derived field.
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"data": map[string]interface{}{
-			"provider":       llm.Provider,
-			"model":          llm.Model,
-			"base_url":       llm.BaseURL,
-			"configured":     configured,
-			"api_key_set":    apiKeySet,
-			"api_key_masked": masked,
+			"configured": configured,
 		},
 	})
 }
@@ -639,9 +630,10 @@ const (
 )
 
 func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
-	// G2 安全加固：高危代理路径仅限 admin/approver 角色调用，普通 user 403。
+	// Delegated role/approval authority has not migrated to this proxy yet. High
+	// risk legacy proxy paths therefore fail closed instead of accepting JWT claims.
 	if isRestrictedProxyPath(r.URL.Path) && !hasPrivilegedRole(r) {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "forbidden: admin or approver role required"})
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 		return
 	}
 	// 用 orchestratorBase()（env 可覆盖），与 ProxyShellWS 一致，便于测试注入 mock。
@@ -674,22 +666,14 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("X-LLM-Provider", llmCfg.Provider)
 	}
 
-	// 注入审批人身份（从 JWT + MySQL 读取），供 orchestrator 校验 approve/reject 权限
-	if role, approver, ok := requesterApprover(r); ok {
-		req.Header.Set("X-Internal-Role", role)
-		if approver {
-			req.Header.Set("X-Internal-Approver", "1")
-		}
-	}
-	// 注入请求者用户名（JWT sub），供 orchestrator 审计写入使用。
-	// 安全加固：JWT 缺失/无效时显式剥离客户端伪造的 X-Internal-* 头（req 为新建请求、
-	// 默认不拷贝客户端头，此 Del 为纵深防御），防止伪造审计/审批身份。
-	if username, ok := requestUsername(r); ok {
-		req.Header.Set("X-Internal-User", username)
-	} else {
-		req.Header.Del("X-Internal-User")
-		req.Header.Del("X-Internal-Role")
-		req.Header.Del("X-Internal-Approver")
+	// The outbound request starts empty. Explicitly remove historical authority
+	// headers so client input and JWT claims cannot be laundered into an internal
+	// user, role, scope, approval, tenant, or signed-context assertion.
+	for _, header := range []string{
+		"X-Internal-User", "X-Internal-Role", "X-Internal-Approver", "X-Internal-Scope",
+		"X-Trusted-Request-Context", "X-Tenant-ID",
+	} {
+		req.Header.Del(header)
 	}
 	// 注入内部服务共享 token（仅当已配置），供 orchestrator 校验请求确实来自可信的
 	// query-api 代理（该代理已通过 AuthMiddleware 完成 JWT 鉴权与角色注入），
@@ -737,30 +721,4 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 	if n > maxProxyResponse {
 		log.Printf("ProxyAI response truncated: path=%s size=%d > %d", r.URL.Path, n, maxProxyResponse)
 	}
-}
-
-// requesterApprover 从请求 JWT 提取请求者 role 与是否审批人（查 MySQL）。
-func requesterApprover(r *http.Request) (string, bool, bool) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, role, _, ok := validateJWT(token)
-	if !ok {
-		return "", false, false
-	}
-	approver := false
-	if role == "admin" {
-		approver = true
-	} else if u, _ := (&store.UserDAO{}).GetByUsername(username); u != nil && u.IsApprover {
-		approver = true
-	}
-	return role, approver, true
-}
-
-// requestUsername 从请求 JWT 提取请求者用户名（sub），供审计注入。
-func requestUsername(r *http.Request) (string, bool) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, _, _, ok := validateJWT(token)
-	if !ok {
-		return "", false
-	}
-	return username, true
 }
