@@ -75,3 +75,19 @@ def test_node_collect_skips_k8sgpt_for_info_query(monkeypatch):
         await node_collect(state)
         assert calls["k8sgpt"] == 0, "信息查询/非 diagnosis 意图不应调用 k8sgpt"
     asyncio.run(run())
+
+
+def test_infrastructure_permission_error_is_not_reported_as_zero_resources(monkeypatch):
+    from tools import get_infrastructure
+
+    def unavailable(url):
+        if "/infrastructure/pods" in url:
+            return {"pods": [], "error": "forbidden: admin or approver role required"}
+        return {"nodes": [], "error": "forbidden: admin or approver role required"}
+
+    monkeypatch.setattr("tools._get_json", unavailable)
+    report = get_infrastructure()
+
+    assert "权限" in report or "forbidden" in report
+    assert "数量未知" in report
+    assert "运行中 Pods: 0 个" not in report

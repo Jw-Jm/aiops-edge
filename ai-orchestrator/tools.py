@@ -181,13 +181,15 @@ def k8sgpt_diagnose(namespace: str = "observability") -> str:
             return result.stdout[:3000]
         if result.stderr:
             return f"K8sGPT: {result.stderr[:500]}"
-        return "未发现集群问题"
+        # 空 stdout/无 stderr 不是“集群健康”的证据；保留明确的不可用语义，
+        # 由 orchestrator 映射为 unavailable/error，而不是健康结论。
+        return "K8sGPT unavailable: no diagnostic output"
     except FileNotFoundError:
-        return "K8sGPT 未安装"
+        return "K8sGPT unavailable: not installed"
     except subprocess.TimeoutExpired:
-        return "K8sGPT 诊断超时"
+        return "K8sGPT unavailable: timeout"
     except Exception as e:
-        return f"K8sGPT 诊断失败: {str(e)}"
+        return f"K8sGPT error: {str(e)}"
 
 
 def deepflow_status() -> str:
@@ -202,6 +204,16 @@ def get_infrastructure() -> str:
     # 等真实 namespace，处置命令只能用 <ns> 占位符或写死 observability。
     pods_data = _get_json(f"{QUERY_API}/infrastructure/pods?namespace=all")
     nodes_data = _get_json(f"{QUERY_API}/infrastructure/nodes")
+
+    # query-api 在 K8s 不可达/权限不足时返回 HTTP 200 + error 字段，
+    # 不能把空列表解释为“0 个资源”，否则诊断会产生虚假的健康结论。
+    errors = []
+    if isinstance(pods_data, dict) and pods_data.get("error"):
+        errors.append(f"Pods: {pods_data['error']}")
+    if isinstance(nodes_data, dict) and nodes_data.get("error"):
+        errors.append(f"Nodes: {nodes_data['error']}")
+    if errors:
+        return "K8s 基础设施数据不可用（节点/Pod 数量未知，无法据此判断健康）: " + "; ".join(errors)
 
     pods = pods_data.get("pods", [])
     nodes = nodes_data.get("nodes", [])

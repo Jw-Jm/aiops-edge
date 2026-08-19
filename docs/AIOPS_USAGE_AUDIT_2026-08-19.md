@@ -2,7 +2,7 @@
 
 ## 结论
 
-本次审计覆盖前端路由与组件、Go 查询/采集服务、Python 编排服务、Helm 模板和当前 Orbstack 部署。代码层的核心回归已通过：query-api 全量 Go 测试、ingest 全量 Go 测试、event-collector 全量 Go 测试、Python 全量 340 项测试和前端生产构建均通过。修复后的源码已按项目流程构建并部署到本地集群；`observability` 命名空间的四个自研 Deployment 使用 `v1.1.2-dirty.20260819003611` 镜像并处于 Available。
+本次审计覆盖前端路由与组件、Go 查询/采集服务、Python 编排服务、Helm 模板和当前 Orbstack 部署。代码层的核心回归已通过：query-api 全量 Go 测试、ingest 全量 Go 测试、event-collector 全量 Go 测试、Python 全量 348 项测试和前端生产构建均通过。修复后的源码已按项目流程构建并部署到本地集群；`observability` 命名空间的四个自研 Deployment 当前使用 `v1.1.3-dirty.20260819005955` 并处于 Available。
 
 “通过”仅表示代码/契约和本地部署状态证据，不等同于真实 LLM 已配置、所有数据源都有数据或所有页面已经完成浏览器深度复测。
 
@@ -47,7 +47,7 @@
 - query-api：`go test ./...` 通过；重点回归包括告警规则 PUT、Trace `hours` 起始时间条件、节点指标 `cluster_id` 过滤。
 - ingest：`go test ./...` 通过；WAL ack、writer 和指标测试通过。
 - event-collector：`go test ./...` 通过。
-- Python：Python 3.12 venv 全量 `tests` 为 340 passed；其中会话重载保留 suggestion/execresult 字段、Marketplace 转发 `source_type`、Playbook frontmatter 独立解析均有回归覆盖。
+- Python：Python 3.12 venv 全量 `tests` 为 348 passed；除既有会话重载、Marketplace、Playbook 回归外，新增覆盖组合 K8sGPT+知识库路由、K8sGPT 不可用状态和基础设施权限错误语义。
 - 前端：`npm run build`（tsc + Vite）通过。
 - Helm：`helm lint deploy/helm/aiops` 通过；默认无 Secret 值的 `helm template` 按设计拒绝，避免占位符部署；使用仅用于渲染验证的临时值后成功渲染。
 - 运行时：`apply.sh` 已完成构建与 Helm 升级（AIOps revision 23、DeepFlow revision 8）；observability 的 query-api、orchestrator、frontend、ingest 均为 `v1.1.2-dirty.20260819003611`，Running/Available；本地入口 HTTP 200，未知路由实测显示 404 页面；公开 `/health` 返回 `200 ok`。部署过程复用了既有 Secret，未读取或打印密钥。
@@ -68,7 +68,20 @@
 - RAG 步骤显示“已完成/无相似案例”，正文却称“当前未提供知识库检索接口”，并使用通用 OOMKilled 手册；这不是可追溯的知识库命中证据。
 - K8s 采集结果为运行中 Pod 0、节点 0，并提示 `endpoints` Forbidden；与页面实际运行的 Pod、告警事件和服务数据矛盾，说明 K8s 采集权限/错误状态应显式阻断健康结论。
 
-因此本次真实 LLM 场景判定为 **不通过（P1）**。修复要求：工具不可用时返回 `unavailable` 而不是 `success`；RAG 未检索到结果时不得显示“已完成”，最终报告必须标注数据源、权限错误和不确定性，禁止生成“未发现问题”的结论。
+因此首次真实 LLM 场景判定为 **不通过（P1）**。随后已在源码中完成并通过回归验证的修复包括：
+
+- K8sGPT 空结果、未安装、超时和错误结果统一进入 `unavailable/error` 分支，最终报告明确写出“不可用/无法据此判定健康”，SSE 工具事件不再伪报 `success`。
+- 同一自然语言请求中同时包含 K8sGPT 与知识库关键词时，两条显式工具路由都会执行；知识库无结果/失败会显示“知识库检索不可用”，不再标记为完成并拼接无来源通用答案。
+- K8s 基础设施接口返回 Forbidden/错误时，报告展示“资源数量未知”和不确定性，不再把错误转换为 0 个节点/Pod 或健康结论。
+- 新增回归测试后 Python 全量为 348 passed，前端生产构建和未知路由回归均通过。
+
+代码修复已完成，但必须在重新部署后再次执行同一真实 LLM 场景，确认线上 SSE/UI 轨迹与报告也呈现上述语义；在该次运行时复测完成前，P1 验收状态保持“待复测”，不能宣称真实 LLM 闭环已通过。
+
+### 部署后复测结果（2026-08-19）
+
+- 已使用 `deploy/scripts/apply.sh` 重建并升级 AIOps revision 24，四个自研 Deployment 使用 `v1.1.3-dirty.20260819005955`，均 `1/1 Ready`；编排服务 `/health` 返回 200。
+- 在同一登录会话再次发送上述只读组合问题。浏览器先收到 `k8sgpt_diagnose 运行中`，随后请求显示 `❌ 请求失败：network error`，未收到完整 `tool_end/done` 轨迹。
+- 服务端日志显示请求 HTTP 200、Pod 无重启，但该次流未形成可审计的最终报告，因此不能把它计为修复通过。当前 P1 的代码回归已通过，运行时闭环仍为 **待复测**；下一步需定位 SSE 长耗时/断流（或将工具执行拆为可独立完成的阶段）后再验收。
 
 ### P2/P3 可用性与数据质量
 

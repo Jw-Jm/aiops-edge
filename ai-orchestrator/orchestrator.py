@@ -36,6 +36,7 @@ class AgentState(TypedDict):
     # collected
     services_data: str
     infra_data: str
+    infra_error: str
     alert_data: str
     red_metrics: str
     trace_data: str
@@ -463,11 +464,23 @@ def _explicit_tool_route(question: str) -> Optional[str]:
     This is deliberately deterministic: an LLM should not be able to turn an
     explicit tool request into a generic service-list answer.
     """
+    routes = _explicit_tool_routes(question)
+    return routes[0] if routes else None
+
+
+def _explicit_tool_routes(question: str) -> list[str]:
+    """Return all explicitly requested tools, preserving keyword declaration order.
+
+    A request can legitimately require both K8sGPT and knowledge search.  The
+    singular route helper remains for backwards compatibility with lightweight
+    intent checks, while execution paths use this complete list.
+    """
     q = (question or "").lower()
+    routes = []
     for tool_name, keywords in _EXPLICIT_TOOL_KEYWORDS.items():
         if any(keyword in q for keyword in keywords):
-            return tool_name
-    return None
+            routes.append(tool_name)
+    return routes
 
 
 def _is_info_query(question: str) -> bool:
@@ -484,6 +497,23 @@ def _is_info_query(question: str) -> bool:
     if any(k in q for k in _FAULT_MARKERS):
         return False
     return any(k in q for k in _INFO_QUERY_MARKERS)
+
+
+def _k8sgpt_error_reason(raw: str) -> str:
+    """把 K8sGPT 无输出、不可用、权限/执行错误与真实扫描结果区分开。"""
+    text = (raw or "").strip()
+    low = text.lower()
+    if not text:
+        return "K8sGPT unavailable: empty result"
+    if text == "未发现集群问题":
+        return "K8sGPT unavailable: no verifiable diagnostic result"
+    markers = (
+        "unavailable", "not installed", "not found", "timeout", "timed out",
+        "error", "失败", "未安装", "超时", "权限", "forbidden", "permission denied",
+    )
+    if any(marker in low for marker in markers):
+        return text
+    return ""
 
 
 def _risk_from_evidence(content: str) -> float:
@@ -555,6 +585,7 @@ def _build_info_answer(state: dict) -> str:
     msg = (state.get("user_message", "") or "").strip()
     svc_data = state.get("services_data", "") or ""
     infra = state.get("infra_data", "") or ""
+    infra_error = state.get("infra_error", "") or ""
     alerts = state.get("alert_data", "") or ""
     low = msg.lower()
     parts = [f"**问题**: {msg or '(未提供)'}"]
@@ -576,6 +607,8 @@ def _build_info_answer(state: dict) -> str:
         relevant = ""
         if svc_data:
             relevant = svc_data[:1200]
+        elif infra_error:
+            relevant = f"基础设施证据不确定：{infra_error[:1200]}"
         elif infra:
             relevant = infra[:1200]
         parts.append(f"### 回答\n{relevant if relevant else '（未采集到实时数据，请稍后重试）'}")
@@ -702,7 +735,10 @@ async def node_collect(state: AgentState) -> dict:
     except: pass
     # Infra
     try:
-        result["infra_data"] = (await asyncio.to_thread(get_infrastructure)).replace("## K8s 基础设施\n", "").strip()[:20000]
+        infra_data = (await asyncio.to_thread(get_infrastructure)).replace("## K8s 基础设施\n", "").strip()[:20000]
+        result["infra_data"] = infra_data
+        if "K8s 基础设施数据不可用" in infra_data:
+            result["infra_error"] = infra_data
     except: pass
     # Alerts — 告警态势（规则 + 事件聚合）
     try:
@@ -738,18 +774,19 @@ async def node_collect(state: AgentState) -> dict:
     # 避免聊天/信息查询链路被 k8sgpt analyze 拖慢；显式 k8sgpt 请求始终调用匹配工具。
     import shutil
     is_diag = (state.get("intent") or "").lower() == "diagnosis"
-    explicit_tool = _explicit_tool_route(state.get("user_message", ""))
-    if explicit_tool == "k8sgpt_diagnose":
+    explicit_tools = _explicit_tool_routes(state.get("user_message", ""))
+    if "k8sgpt_diagnose" in explicit_tools:
         try:
             # Use the registered read-only tool so an explicit request is
             # observable and gets the same fallback text as MCP callers.
             raw = await asyncio.to_thread(k8sgpt_diagnose)
-            result["k8sgpt_raw"] = str(raw or "未发现集群问题")[:20000]
-            if any(marker in result["k8sgpt_raw"].lower() for marker in ("未安装", "失败", "超时")):
-                result["k8sgpt_error"] = result["k8sgpt_raw"]
+            raw_text = str(raw or "").strip()[:20000]
+            if (reason := _k8sgpt_error_reason(raw_text)):
+                result["k8sgpt_error"] = reason
+            else:
+                result["k8sgpt_raw"] = raw_text
         except Exception as exc:
-            result["k8sgpt_raw"] = f"K8sGPT 诊断失败: {str(exc)[:300]}"
-            result["k8sgpt_error"] = result["k8sgpt_raw"]
+            result["k8sgpt_error"] = f"K8sGPT error: {str(exc)[:300]}"
     elif is_diag and not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt"):
         try:
             env = dict(os.environ)
@@ -767,9 +804,13 @@ async def node_collect(state: AgentState) -> dict:
                 ["k8sgpt", "analyze", "--explain", "--all-namespaces", "-o", "text"],
                 capture_output=True, text=True, timeout=10, env=env,
             )
-            if r.returncode == 0 and r.stdout.strip() and len(r.stdout.strip()) > 50:
-                result["k8sgpt_raw"] = r.stdout[:20000]
-        except: pass
+            raw_text = (r.stdout or "").strip()[:20000]
+            if r.returncode == 0 and len(raw_text) > 50:
+                result["k8sgpt_raw"] = raw_text
+            else:
+                result["k8sgpt_error"] = f"K8sGPT error: {(r.stderr or 'no diagnostic output').strip()[:500]}"
+        except Exception as exc:
+            result["k8sgpt_error"] = f"K8sGPT error: {str(exc)[:300]}"
     result["messages"] = [f"[{_now()}] 数据采集完成"]
     return result
 
@@ -906,7 +947,7 @@ async def node_rag(state: AgentState) -> dict:
     symptom = state.get("user_message", "")
     svc = state.get("service", "")
     query = f"{svc}: {symptom}" if svc else symptom
-    if _explicit_tool_route(symptom) == "query_knowledge":
+    if "query_knowledge" in _explicit_tool_routes(symptom):
         try:
             # query_knowledge is the explicit knowledge-search tool; keep the
             # result in the normal similar_cases field so downstream reports
@@ -963,7 +1004,10 @@ def _deterministic_diagnosis(state: dict) -> str:
         lines.append(f"- **服务数据**: {svc_data[:800]}")
     # 基础设施
     infra = state.get("infra_data", "")
-    if infra:
+    infra_error = state.get("infra_error", "")
+    if infra_error:
+        lines.append(f"- **基础设施证据不确定**: {infra_error[:1200]}")
+    elif infra:
         lines.append(f"- **基础设施**: {infra[:3000]}")
     # 告警
     alerts = state.get("alert_data", "")
@@ -1407,7 +1451,7 @@ async def node_summarize(state: AgentState) -> dict:
     verify = "✅ 执行成功" if state.get("verify_pass") else "❌ 执行未达预期" if state.get("script") else ""
     plan = state.get("plan", "")
     risk = state.get("risk_score", 0)
-    explicit_tool = _explicit_tool_route(msg)
+    explicit_tools = _explicit_tool_routes(msg)
 
     # P1-5: LLM 超时/错误占位符不得进入最终报告诊断结论 → 降级为确定性诊断段落
     if _is_llm_failure(crewai):
@@ -1429,11 +1473,20 @@ async def node_summarize(state: AgentState) -> dict:
     else:
         parts.append(crewai or "LLM 未配置")
 
-    if explicit_tool == "query_knowledge":
+    if "query_knowledge" in explicit_tools:
         knowledge = state.get("similar_cases", "")
-        parts.append(knowledge[:6000] if knowledge else "### 知识库检索结果\n未检索到相关知识。")
-    if k8sgpt and (intent == "diagnosis" or explicit_tool == "k8sgpt_diagnose"):
+        knowledge_error = state.get("knowledge_tool_error", "")
+        if knowledge_error:
+            parts.append(f"### 知识库检索不可用\n{str(knowledge_error)[:1500]}\n未能据此引用知识库内容。")
+        else:
+            parts.append(knowledge[:6000] if knowledge else "### 知识库检索结果\n未检索到相关知识。")
+    k8sgpt_error = state.get("k8sgpt_error", "")
+    if k8sgpt_error:
+        parts.append(f"### K8sGPT 诊断不可用\n{str(k8sgpt_error)[:1500]}\n未能据此判定集群健康。")
+    elif k8sgpt and (intent == "diagnosis" or "k8sgpt_diagnose" in explicit_tools):
         parts.append(f"### K8sGPT 诊断\n{k8sgpt[:2000]}")
+    if state.get("infra_error"):
+        parts.append(f"### 基础设施证据不确定\n{str(state['infra_error'])[:1500]}\n未能据此判定集群健康。")
 
     # P1-3/P1-5: 统一 0~1 风险分（由诊断结论中的异常证据计算），不再输出 ⭐(1/5) 文本
     risk_score01 = _risk_from_evidence(crewai or "") if (crewai or risk) else 0.0
@@ -1705,7 +1758,7 @@ class BrainOrchestrator:
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
             "llm_config": self.llm_config,
-            "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
+            "services_data": "", "infra_data": "", "infra_error": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
             "similar_cases": "", "knowledge_tool_error": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
@@ -1758,7 +1811,7 @@ class BrainOrchestrator:
             "history_context": history_context,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
             "llm_config": self.llm_config,
-            "services_data": "", "infra_data": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
+            "services_data": "", "infra_data": "", "infra_error": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
             "similar_cases": "", "knowledge_tool_error": "", "crewai_result": "", "holmesgpt_result": "",
             "plan": "", "script": "", "risk_score": 0, "risk_reason": "",
@@ -1796,10 +1849,11 @@ class BrainOrchestrator:
                 label = step_names.get(node_name, node_name)
                 yield {"type": "progress", "node": node_name, "text": f"{label}", "step": min(step_num, 7), "total": 8}
                 # 工具级事件（节点级推断；真实工具级采集为独立后续）
-                explicit_tool = _explicit_tool_route(message)
+                explicit_tools = _explicit_tool_routes(message)
+                explicit_tool = explicit_tools[0] if explicit_tools else None
                 tool_node_map = {"crewai": "CrewAI 分析", "holmes": "Trace 调查", "rca": "RCA 根因分析",
                                  "rag": "RAG 案例匹配", "plan": "生成操作方案"}
-                if explicit_tool == "query_knowledge":
+                if "query_knowledge" in explicit_tools:
                     tool_node_map.pop("rag", None)
                 tool_id = f"tool_{node_name}_{step_num}"
                 if node_name in tool_node_map:
@@ -1810,24 +1864,35 @@ class BrainOrchestrator:
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": tool_node_map[node_name], "status": "success",
                            "arguments": {}, "result": friendly_result}
-                if node_name == "collect" and explicit_tool == "k8sgpt_diagnose":
+                if node_name == "collect" and "k8sgpt_diagnose" in explicit_tools:
                     tool_id = f"tool_k8sgpt_{step_num}"
                     k8sgpt_error = node_data.get("k8sgpt_error", "")
+                    k8sgpt_raw = str(node_data.get("k8sgpt_raw") or "").strip()
+                    error_lower = str(k8sgpt_error).lower()
+                    unavailable_markers = ("unavailable", "not installed", "no verifiable", "not found")
+                    if k8sgpt_error:
+                        k8sgpt_status = "unavailable" if any(marker in error_lower for marker in unavailable_markers) else "error"
+                    elif not k8sgpt_raw:
+                        k8sgpt_status = "unavailable"
+                    else:
+                        k8sgpt_status = "success"
                     yield {"type": "tool_start", "tool_call_id": tool_id,
                            "name": "k8sgpt_diagnose", "status": "pending", "arguments": {}}
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": "k8sgpt_diagnose",
-                           "status": "error" if k8sgpt_error else "success", "arguments": {},
-                           "result": str(k8sgpt_error or node_data.get("k8sgpt_raw") or "未返回 K8sGPT 结果")[:3000]}
-                elif node_name == "rag" and explicit_tool == "query_knowledge":
+                           "status": k8sgpt_status, "arguments": {},
+                           "result": str(k8sgpt_error or k8sgpt_raw or "未返回 K8sGPT 结果")[:3000]}
+                elif node_name == "rag" and "query_knowledge" in explicit_tools:
                     tool_id = f"tool_knowledge_{step_num}"
                     knowledge_error = node_data.get("knowledge_tool_error", "")
+                    knowledge_result = str(node_data.get("similar_cases") or "").strip()
                     yield {"type": "tool_start", "tool_call_id": tool_id,
                            "name": "query_knowledge", "status": "pending", "arguments": {}}
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": "query_knowledge",
-                           "status": "error" if knowledge_error else "success", "arguments": {},
-                           "result": str(knowledge_error or node_data.get("similar_cases") or "未检索到知识库结果")[:3000]}
+                           "status": "error" if knowledge_error else ("unavailable" if not knowledge_result else "success"),
+                           "arguments": {},
+                           "result": str(knowledge_error or knowledge_result or "未检索到知识库结果")[:3000]}
                 # 双层 Agent 节点级事件（批3）：coordinator/subagent/reviewer
                 if node_name == "coordinator":
                     yield {"type": "tool_start", "tool_call_id": tool_id, "name": "Coordinator 拆解",

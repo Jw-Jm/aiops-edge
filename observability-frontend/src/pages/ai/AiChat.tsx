@@ -16,7 +16,7 @@ interface ChatMessage {
 interface ToolActivity {
   id: string
   name: string
-  status: 'running' | 'success' | 'error'
+  status: 'running' | 'success' | 'error' | 'unavailable'
   result?: string
 }
 
@@ -211,8 +211,13 @@ const AiChat: React.FC = () => {
             }
             else if (evName === 'tool_end') {
               const id = String(ev.tool_call_id || '')
+              const status = ev.status === 'error'
+                ? 'error'
+                : ev.status === 'unavailable'
+                  ? 'unavailable'
+                  : 'success'
               setToolActivity((prev) => prev.map((x) => x.id === id
-                ? { ...x, name: String(ev.name || x.name), status: ev.status === 'error' ? 'error' : 'success', result: String(ev.result || '') }
+                ? { ...x, name: String(ev.name || x.name), status, result: String(ev.result || '') }
                 : x))
             }
             else if (evName === 'suggestion') {
@@ -386,8 +391,8 @@ const AiChat: React.FC = () => {
             <div style={{ marginBottom: 12, padding: '8px 10px', borderRadius: 8, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
               {toolActivity.map((tool) => (
                 <div key={tool.id} style={{ fontSize: 12, lineHeight: 1.6 }}>
-                  <span style={{ marginRight: 6 }}>{tool.status === 'running' ? '🔧' : tool.status === 'success' ? '✅' : '❌'}</span>
-                  <b>{tool.name}</b>{tool.status === 'running' ? ' 运行中…' : ' 已完成'}
+                  <span style={{ marginRight: 6 }}>{tool.status === 'running' ? '🔧' : tool.status === 'success' ? '✅' : tool.status === 'unavailable' ? '⚠️' : '❌'}</span>
+                  <b>{tool.name}</b>{tool.status === 'running' ? ' 运行中…' : tool.status === 'success' ? ' 已完成' : tool.status === 'unavailable' ? ' 不可用' : ' 失败'}
                   {tool.result && <div style={{ margin: '3px 0 4px 22px', color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{tool.result}</div>}
                 </div>
               ))}
