@@ -37,6 +37,7 @@ const Grafana = lazy(() => import('./pages/observability/Grafana'))
 const Hardware = lazy(() => import('./pages/infra/Hardware'))
 const Changes = lazy(() => import('./pages/infra/Changes'))
 const KnowledgeGraph = lazy(() => import('./pages/ai/KnowledgeGraph'))
+const NotFound = lazy(() => import('./pages/NotFound'))
 
 // ===== 侧栏导航：7 大板块 =====
 interface NavItem { path: string; label: string; icon: AppIconName; badge?: string }
@@ -327,7 +328,7 @@ function AppLayout() {
               <Route path="/admin/users" element={<AdminUsers />} />
               <Route path="/admin/settings" element={<AdminSettings />} />
               <Route path="/" element={<Overview />} />
-              <Route path="*" element={<Overview />} />
+              <Route path="*" element={<NotFound />} />
             </Routes>
           </Suspense>
         </main>
