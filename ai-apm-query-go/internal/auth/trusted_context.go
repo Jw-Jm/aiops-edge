@@ -39,8 +39,9 @@ type VerifyConfig struct {
 	ClockSkew    time.Duration
 }
 
-// ReplayCache records nonce values until their context expiry. Implementations
-// must reject a nonce that was already recorded and remain bounded.
+// ReplayCache records nonce values until the verifier's acceptance window has
+// closed. Implementations must reject a nonce that was already recorded and
+// remain bounded.
 type ReplayCache interface {
 	CheckAndStore(nonce string, expiresAt, now time.Time) error
 }
@@ -68,7 +69,7 @@ func (cache *InMemoryReplayCache) CheckAndStore(nonce string, expiresAt, now tim
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	for storedNonce, storedExpiry := range cache.nonces {
-		if !storedExpiry.After(now) {
+		if storedExpiry.Before(now) {
 			delete(cache.nonces, storedNonce)
 		}
 	}
@@ -179,7 +180,7 @@ func VerifyTrustedRequestContext(token string, cfg VerifyConfig, now time.Time) 
 	if ctx.IssuedAt.After(now.Add(cfg.ClockSkew)) {
 		return zero, ErrInvalidContext
 	}
-	if err := cfg.ReplayCache.CheckAndStore(ctx.Nonce, ctx.ExpiresAt, now); err != nil {
+	if err := cfg.ReplayCache.CheckAndStore(ctx.Nonce, ctx.ExpiresAt.Add(cfg.ClockSkew), now); err != nil {
 		return zero, err
 	}
 	return ctx, nil

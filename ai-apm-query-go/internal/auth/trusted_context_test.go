@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +137,43 @@ func TestVerifyTrustedRequestContextRejectsReplayAndServiceTokenIsSeparate(t *te
 	}
 	if err := VerifyServiceToken("service-secret", config); err != nil {
 		t.Fatalf("VerifyServiceToken() error = %v", err)
+	}
+}
+
+func TestVerifyTrustedRequestContextRetainsNonceThroughClockSkew(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifiedAt := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+
+	for _, test := range []struct {
+		name      string
+		issuedAt  time.Time
+		expiresAt time.Time
+		replayAt  time.Time
+	}{
+		{"exact expiry", verifiedAt.Add(-30 * time.Second), verifiedAt, verifiedAt.Add(5 * time.Second)},
+		{"expiry accepted by skew", verifiedAt.Add(-31 * time.Second), verifiedAt.Add(-time.Second), verifiedAt.Add(4 * time.Second)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			context := testContext(verifiedAt)
+			context.IssuedAt = test.issuedAt
+			context.ExpiresAt = test.expiresAt
+			token, err := SignTrustedRequestContext(context, privateKey)
+			if err != nil {
+				t.Fatalf("SignTrustedRequestContext() error = %v", err)
+			}
+			config := verifyConfig(publicKey)
+			config.ClockSkew = 5 * time.Second
+
+			if _, err := VerifyTrustedRequestContext(token, config, verifiedAt); err != nil {
+				t.Fatalf("initial verification error = %v", err)
+			}
+			if _, err := VerifyTrustedRequestContext(token, config, test.replayAt); !errors.Is(err, ErrReplayedContext) {
+				t.Fatalf("replay error = %v, want ErrReplayedContext", err)
+			}
+		})
 	}
 }
 
