@@ -60,6 +60,16 @@
 2. 真实 K8sGPT 扫描、RAG 命中和多 Agent 轨迹必须使用运行时 `tool_start/tool_end` 与真实返回证据验收；测试桩不能作为运行时成功证据。
 3. 工作流运行历史代码已持久化到 `flow_runs`/`flow_run_nodes`，但需在浏览器完成运行→审批→终态→历史抽屉的真实链路复测。
 
+### 真实 LLM 只读实测（2026-08-19）
+
+已获授权发送问题：要求使用 K8sGPT 只读诊断当前集群，并检索 OOMKilled 处置手册。SSE/UI 工具轨迹依次显示 `k8sgpt_diagnose`、RCA、RAG 案例匹配和 CrewAI 分析“已完成”。但最终回答暴露出两个 P1 问题：
+
+- K8sGPT 工具结果实际为“未发现名为 k8sgpt 的服务或工具入口”，随后报告仍出现“未发现集群问题”，语义上把“工具不可用”误导成“集群健康”。
+- RAG 步骤显示“已完成/无相似案例”，正文却称“当前未提供知识库检索接口”，并使用通用 OOMKilled 手册；这不是可追溯的知识库命中证据。
+- K8s 采集结果为运行中 Pod 0、节点 0，并提示 `endpoints` Forbidden；与页面实际运行的 Pod、告警事件和服务数据矛盾，说明 K8s 采集权限/错误状态应显式阻断健康结论。
+
+因此本次真实 LLM 场景判定为 **不通过（P1）**。修复要求：工具不可用时返回 `unavailable` 而不是 `success`；RAG 未检索到结果时不得显示“已完成”，最终报告必须标注数据源、权限错误和不确定性，禁止生成“未发现问题”的结论。
+
 ### P2/P3 可用性与数据质量
 
 - 已修复未知路由静默 fallback：`NotFound` 页面会明确提示地址不存在，并可返回工作台；静态回归测试与生产构建均通过。
@@ -73,3 +83,9 @@
 2. 用真实数据执行六个场景：服务错误根因、明确 K8sGPT、知识库检索、纯信息查询、NL2SQL 近 1 小时、处置审批执行。
 3. Playwright 逐路由点击所有 Tab/Drawer/Modal，保存 API/console/截图证据；重点复测上述 P2 缺口。
 4. 使用既有 `deploy/scripts/build-images.sh` + `apply.sh`（仅在管理员确认并提供非占位密钥后），核对 Deployment image、Pod rollout、`/health`、版本标签和回滚路径。
+
+## 历史测试与修复报告
+
+- [2026-08-18 修复方案](</Users/mssc/Documents/Code/agent/aiops/AIOPS_FIX_PLAN_2026-08-18.md>)：A/F 系列数据正确性、AI 路由、分页、SLO、工作流和 UI 修复方案。
+- [2026-08-18 第二轮测试报告](</Users/mssc/Documents/Code/agent/aiops/AIOPS_TEST_REPORT_R2_2026-08-18.md>)：认证授权、采集链路、可靠性和部署安全风险。
+- [2026-08-18 第一轮测试报告](</Users/mssc/Documents/Code/agent/aiops/AIOPS_TEST_REPORT_2026-08-18.md>)：核心页面、API 和闭环测试基线。
