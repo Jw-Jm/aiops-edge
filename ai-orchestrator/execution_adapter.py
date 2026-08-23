@@ -56,9 +56,10 @@ class AdapterResult:
 class ExecutionAdapter:
     """内存 MVP Adapter（不连真实系统）。增强 Execution Infrastructure 安全能力。"""
 
-    def __init__(self, *, adapter_id: str, broker: Optional[CredentialBroker] = None) -> None:
+    def __init__(self, *, adapter_id: str, broker: Optional[CredentialBroker] = None, real_adapter: Optional["K8sAdapter"] = None) -> None:
         self.adapter_id = adapter_id
         self._broker = broker
+        self._real_adapter = real_adapter
         self._executed: Dict[str, AdapterResult] = {}  # R4.1 idempotency 缓存
         self._require_signature = False  # EX.1
         self._approval_verifier: Optional[Callable] = None
@@ -96,6 +97,11 @@ class ExecutionAdapter:
         if self._require_signature or approval_signature is not None:
             if approval_signature is None or not self._verify_signature(approval_signature, contract):
                 return self._denied("Approval Signature 缺失或验签失败")
+        # 真实模式：scope/签名/幂等前置校验通过后委托真实 K8s 适配器（仍二次校验 scope）
+        if self._real_adapter is not None:
+            if request.dry_run:
+                return self._real_adapter.dry_run(request, contract)
+            return self._real_adapter.execute(request, contract)
         # EX.2 Credential Broker：经 Broker 获取 short-lived 凭据
         credential_id = ""
         if self._broker is not None and execution_identity is not None:
