@@ -4,7 +4,7 @@
 set -euo pipefail
 RELEASE="${RELEASE:-aiops}"
 CHART="${CHART:-./deploy/helm/aiops}"
-NS="${NS:-aiops-system}"
+NS="${NS:-observability}"
 kubectl config use-context orbstack
 helm upgrade "${RELEASE}" "${CHART}" -n "${NS}" --reuse-values \
   --set aiOrchestrator.grantK8sWrite=true
