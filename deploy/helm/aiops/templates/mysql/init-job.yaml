@@ -1,35 +1,40 @@
 {{- if .Values.mysql.enabled }}
+# V9.2 Phase 4 P4.8：MySQL schema 迁移 Job（schema-migrator）。
+# 用 aiops_migrator 账号（唯一允许 DDL 的账号）执行版本化迁移，写入
+# aiops_schema_migrations。顺序（P1-4）：MySQL ready → users-init (weight 10)
+# → 本 Job (weight 20) → runtime Deployments (weight 30+)。
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: mysql-init
   namespace: {{ .Values.namespace.observability }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "20"
+    "helm.sh/hook-delete-policy": before-hook-creation
   labels:
     app: mysql-init
 spec:
+  backoffLimit: 5
   template:
-    metadata:
-      name: mysql-init
     spec:
-      restartPolicy: Never
+      restartPolicy: OnFailure
       containers:
-        - name: init-db
-          image: {{ .Values.mysql.image }}
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              echo "waiting for mysql..."
-              until mysqladmin ping -h mysql.{{ .Values.namespace.observability }}.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; do sleep 5; done
-              echo "mysql ready, running migrations..."
-              for f in /migrations/*.sql; do
-                echo "applying $f"
-                mysql -h mysql.{{ .Values.namespace.observability }}.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" < "$f"
-              done
-              echo "migrations done"
+        - name: schema-migrator
+          image: {{ .Values.mysql.migratorImage }}
+          command: ["/schema-migrator"]
           env:
-            - name: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_HOST
+              value: "mysql.{{ .Values.namespace.observability }}.svc.cluster.local"
+            - name: MYSQL_PORT
+              value: "3306"
+            - name: MYSQL_USER
+              value: "aiops_migrator"
+            - name: MYSQL_DB
+              value: "aiops"
+            - name: MYSQL_PASSWORD
               valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_MIGRATOR_PASSWORD }
           volumeMounts:
             - name: migrations
               mountPath: /migrations

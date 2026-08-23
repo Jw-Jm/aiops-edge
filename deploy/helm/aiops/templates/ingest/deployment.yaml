@@ -48,6 +48,16 @@ spec:
             # 多集群纳管：本 ingest 实例所属集群 ID（代码默认 "default"，主集群显式注入保持一致）
             - name: CLUSTER_ID
               value: {{ .Values.ingest.clusterId | default "default" | quote }}
+            # V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已删除，不再注入 LEGACY_WRITER_ENABLED。
+            # telemetry new backend：TELEMETRY_WRITER_MODE=new 启用写链（VM/VLogs）。空值/非法
+            # → NewRuntimeFromEnv fail-closed 拒绝启动；new 未启用时 main 亦拒绝启动（无写路径）。
+            # VICTORIA_*_URL 必须为 base URL（不带 /insert/jsonline，writer 内部追加）。
+            - name: TELEMETRY_WRITER_MODE
+              value: {{ .Values.ingest.telemetryWriterMode | default "new" | quote }}
+            - name: VICTORIA_METRICS_URL
+              value: {{ .Values.ingest.victoriaMetricsUrl | default "" | quote }}
+            - name: VICTORIA_LOGS_URL
+              value: {{ .Values.ingest.victoriaLogsUrl | default "" | quote }}
             - name: INGEST_API_KEY
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INGEST_API_KEY }

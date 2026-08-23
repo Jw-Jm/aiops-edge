@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -15,33 +16,10 @@ import (
 	"time"
 )
 
-// chDDL observability.k8s_events 建表 DDL（组件启动时 CREATE TABLE IF NOT EXISTS 自建）。
-// H1 修复：ReplacingMergeTree 去重键补上 name/message —— 此前仅 (tenant,cluster,ts,involved_object,reason)，
-// 同 ts+object+reason 但内容（name/message）不同的事件会被合并丢失；补全后 dedup 键完整，事件不再有损去重。
-// 注意：已存在的表不会自动迁移。生产升级需手动执行：
-//
-//	ALTER TABLE observability.k8s_events
-//	  MODIFY ORDER BY (tenant_id, cluster_id, ts, involved_object, reason, name, message);
-//
-// 组件启动时 CREATE TABLE IF NOT EXISTS 只对新建表生效，不会改写存量表结构。
-const chDDL = `CREATE TABLE IF NOT EXISTS observability.k8s_events (
-  tenant_id String,
-  cluster_id String DEFAULT 'default',
-  ts DateTime64(9),
-  namespace String,
-  kind String,
-  name String,
-  reason String,
-  type String,
-  message String,
-  involved_object String,
-  source_component String,
-  source String,
-  node String DEFAULT '',
-  time_bucket DateTime
-) ENGINE = ReplacingMergeTree
-ORDER BY (tenant_id, cluster_id, ts, involved_object, reason, name, message)
-TTL time_bucket + INTERVAL 30 DAY`
+// observability.k8s_events 表的 DDL 已迁入 ClickHouse versioned bootstrap
+// （deploy/helm/aiops/files/clickhouse/migrations/*.sql），由 ClickHouse 初始化 Job
+// 在部署时创建。event-collector 作为 runtime 不再执行 CREATE TABLE（V9.2 Phase 4
+// P4.5：runtime 只做只读 schema 兼容校验）。
 
 // Event 一条待写事件（K8s 事件与 IPMI SEL 统一结构）。
 type Event struct {
@@ -69,7 +47,11 @@ type EventWriter struct {
 
 	mu     sync.Mutex
 	buffer []*Event
-	retry  [][]byte // 写入失败待重试批次（序列化后的行）
+	retry  []retryBatch // 写入失败待重试批次
+
+	// wal（Phase 5）：可选崩溃安全持久化。非 nil 时 flush 失败先落盘再入重试，
+	// 成功写入 CH 后 Ack；重启时从未 ack 水位恢复。
+	wal *WAL
 
 	httpClient *http.Client
 	ctx        context.Context
@@ -77,6 +59,13 @@ type EventWriter struct {
 
 	flushed      atomic.Int64 // 累计成功写入行数（日志统计）
 	retryDropped atomic.Int64 // 重试队列满时丢弃的批次总数（/metrics 暴露）
+}
+
+// retryBatch 一条待重试批次。walSeq>0 时对应 WAL 中的条目 seq（成功后需 Ack）；
+// walSeq=0 表示纯内存批次（无 WAL）。
+type retryBatch struct {
+	walSeq uint64
+	rows   []byte
 }
 
 // NewEventWriter 创建写入器并确保 ClickHouse 表存在。
@@ -91,6 +80,29 @@ func NewEventWriter(cfg *Config) (*EventWriter, error) {
 		httpClient: newCHHTTPClient(),
 		ctx:        ctx,
 		cancel:     cancel,
+	}
+	// Phase 5：可选 WAL。配置 WAL_DIR 时启用崩溃安全持久化，并在启动时恢复
+	// 上次未确认写入 CH 的批次到重试队列（跨重启不丢事件）。
+	if cfg.WALDir != "" {
+		wal, err := NewWAL(cfg.WALDir, "events-wal.log")
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("open WAL: %w", err)
+		}
+		w.wal = wal
+		entries, rerr := wal.ReadAll()
+		if rerr != nil {
+			cancel()
+			return nil, fmt.Errorf("replay WAL: %w", rerr)
+		}
+		for _, e := range entries {
+			if v, derr := decodeWALValue(e.Value); derr == nil {
+				w.retry = append(w.retry, retryBatch{walSeq: e.Seq, rows: v})
+			}
+		}
+		if len(entries) > 0 {
+			log.Printf("CH: recovered %d unacked batch(es) from WAL", len(entries))
+		}
 	}
 	if err := w.ensureSchema(); err != nil {
 		cancel()
@@ -118,26 +130,36 @@ func chQueryParams(query string) string {
 	return "query=" + url.QueryEscape(query) + "&wait_end_of_query=1&send_progress_in_http_headers=0"
 }
 
-// ensureSchema 启动时自建 database 与表（幂等）。
+// ensureSchema 只读校验（V9.2 P4.5）：确认 observability 库与 k8s_events 表已由
+// ClickHouse versioned bootstrap 建立。缺失则 fail-closed（不 CREATE，依赖迁移器）。
+// 防止 runtime 在 schema 未就绪时静默写入失败。
 func (w *EventWriter) ensureSchema() error {
-	queries := []string{
-		"CREATE DATABASE IF NOT EXISTS observability",
-		chDDL,
+	exists, err := w.tableExists("k8s_events")
+	if err != nil {
+		return err
 	}
-	for _, q := range queries {
-		u := w.endpoint + "/?" + chQueryParams(q)
-		resp, err := w.httpClient.Post(u, "text/plain", nil)
-		if err != nil {
-			return fmt.Errorf("schema query %q: %w", firstLine(q), err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode >= 300 {
-			return fmt.Errorf("schema query %q failed: %d %s", firstLine(q), resp.StatusCode, strings.TrimSpace(string(body)))
-		}
+	if !exists {
+		return fmt.Errorf("CH schema not ready: observability.k8s_events missing (run ClickHouse bootstrap migration)")
 	}
-	log.Printf("CH: schema ensured (observability.k8s_events)")
+	log.Printf("CH: schema verified (observability.k8s_events)")
 	return nil
+}
+
+// tableExists 只读检查 observability.<table> 是否存在。
+func (w *EventWriter) tableExists(table string) (bool, error) {
+	q := "SELECT count() FROM system.tables WHERE database = 'observability' AND name = '" + table + "'"
+	u := w.endpoint + "/?" + chQueryParams(q)
+	resp, err := w.httpClient.Get(u)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("clickhouse schema check error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return strings.TrimSpace(string(body)) == "1", nil
 }
 
 // Add 追加一条事件到批缓冲；达到 batchSize 立即触发 flush。
@@ -182,23 +204,35 @@ func (w *EventWriter) flush() {
 	rows := w.serializeEvents(batch)
 	if err := w.insertBatch(rows); err != nil {
 		log.Printf("CH: write failed (queued for retry): %v", err)
-		w.enqueueRetry(rows)
+		// 有 WAL 时先持久化再入重试，保证崩溃不丢已落盘事件。
+		var seq uint64
+		if w.wal != nil {
+			if s, werr := w.wal.Append("event", rows); werr == nil {
+				seq = s
+			}
+		}
+		w.enqueueRetry(retryBatch{walSeq: seq, rows: rows})
 		return
 	}
 	w.countFlushed(rows)
 }
 
 // enqueueRetry 将失败批次加入重试队列（上限 100 批，超限丢弃最旧，避免 CH 长时间不可用时内存无界增长）。
-func (w *EventWriter) enqueueRetry(rows []byte) {
+func (w *EventWriter) enqueueRetry(b retryBatch) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	const maxRetryBatches = 100
 	if len(w.retry) >= maxRetryBatches {
+		dropped := w.retry[0]
 		w.retry = w.retry[1:]
+		// 有 WAL 时 Ack 被丢弃批次，使其不再从 WAL 重复恢复。
+		if w.wal != nil && dropped.walSeq > 0 {
+			w.wal.Ack(dropped.walSeq)
+		}
 		w.retryDropped.Add(1)
 		log.Printf("CH: retry queue full (%d), dropping oldest batch", maxRetryBatches)
 	}
-	w.retry = append(w.retry, rows)
+	w.retry = append(w.retry, b)
 }
 
 // retryLoop 周期性重试失败批次，指数退避（1s 起，翻倍至上限 60s）。
@@ -237,23 +271,31 @@ func (w *EventWriter) flushRetry() error {
 	w.retry = nil
 	w.mu.Unlock()
 
-	var failed [][]byte
+	var failed []retryBatch
 	var firstErr error
-	for _, rows := range pending {
-		if err := w.insertBatch(rows); err != nil {
+	for _, b := range pending {
+		if err := w.insertBatch(b.rows); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			failed = append(failed, rows)
+			failed = append(failed, b)
 			continue
 		}
-		w.countFlushed(rows)
+		// 成功写入 CH：有 WAL 时 Ack，不再从 WAL 恢复。
+		if w.wal != nil && b.walSeq > 0 {
+			w.wal.Ack(b.walSeq)
+		}
+		w.countFlushed(b.rows)
 	}
 	if len(failed) > 0 {
 		w.mu.Lock()
 		w.retry = append(failed, w.retry...)
 		w.mu.Unlock()
 		return firstErr
+	}
+	// 全部成功：压缩 WAL，回收已 ack 空间。
+	if w.wal != nil {
+		w.wal.Compact()
 	}
 	return nil
 }
@@ -302,10 +344,17 @@ func (w *EventWriter) insertBatch(rows []byte) error {
 	return nil
 }
 
-// QueryLatestTS 查询指定 source 在 CH 中的最新事件时间戳（断点续采 checkpoint）。
+// latestTSQuery 构造 checkpoint 查询，key 限定 tenant_id + cluster_id + source（V9.2 §71：
+// checkpoint key = tenant+cluster+source）。三个字段缺一不可，避免多租户/多集群串读断点。
+func latestTSQuery(source, tenantID, clusterID string) string {
+	return fmt.Sprintf("SELECT max(ts) FROM observability.k8s_events WHERE source = '%s' AND tenant_id = '%s' AND cluster_id = '%s'", source, tenantID, clusterID)
+}
+
+// QueryLatestTS 查询指定 source 在 CH 中的最新事件时间戳（断点续采 checkpoint），
+// checkpoint key 限定当前 writer 的 tenant+cluster（已由启动时 scope.Validate 强校验）。
 // 无数据返回零值 time.Time。
 func (w *EventWriter) QueryLatestTS(source string) (time.Time, error) {
-	q := fmt.Sprintf("SELECT max(ts) FROM observability.k8s_events WHERE source = '%s' AND cluster_id = '%s'", source, w.clusterID)
+	q := latestTSQuery(source, w.tenantID, w.clusterID)
 	u := w.endpoint + "/?" + chQueryParams(q)
 	resp, err := w.httpClient.Get(u)
 	if err != nil {
@@ -382,11 +431,48 @@ func (w *EventWriter) RetryDroppedTotal() int64 {
 	return w.retryDropped.Load()
 }
 
-// Close 取消后台循环并尽力冲刷缓冲与重试队列。
+// WALPendingRecords 返回 WAL 未 ack 记录数（backlog 观测；未配置 WAL 返回 0）。
+func (w *EventWriter) WALPendingRecords() int64 {
+	if w.wal == nil {
+		return 0
+	}
+	return int64(w.wal.PendingStats().Records)
+}
+
+// WALPendingBytes 返回 WAL 未 ack 记录的 value 字节总数（backlog 观测）。
+func (w *EventWriter) WALPendingBytes() int64 {
+	if w.wal == nil {
+		return 0
+	}
+	return int64(w.wal.PendingStats().Bytes)
+}
+
+// WALOldestPendingAgeSeconds 返回最旧未 ack WAL 记录滞留秒数（backlog 年龄）。
+func (w *EventWriter) WALOldestPendingAgeSeconds() int64 {
+	if w.wal == nil {
+		return 0
+	}
+	return int64(w.wal.OldestAgeSeconds())
+}
+
+// Close 取消后台循环并尽力冲刷缓冲与重试队列，最后关闭 WAL。
 func (w *EventWriter) Close() {
 	w.cancel()
 	w.flush()
 	w.flushRetry()
+	if w.wal != nil {
+		w.wal.Close()
+	}
+}
+
+// decodeWALValue 将 WAL 条目中 base64 编码的批次行解码回原始 bytes。
+// 解码失败返回 err，调用方忽略该条目（corrupt 条目不阻塞恢复）。
+func decodeWALValue(v string) ([]byte, error) {
+	b, err := base64.StdEncoding.DecodeString(v)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // newCHHTTPClient 返回针对 ClickHouse 高频写入优化的 HTTP 客户端。

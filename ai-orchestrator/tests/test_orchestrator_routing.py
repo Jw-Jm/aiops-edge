@@ -193,8 +193,31 @@ def test_k8sgpt_unavailable_is_visible_in_final_report():
     assert "K8sGPT unavailable" in result["final_response"]
 
 
-def test_stream_marks_empty_k8sgpt_and_rag_results_unavailable(monkeypatch):
-    """SSE 工具事件必须保留不可用语义，不能把空结果映射为 completed。"""
+def _valid_context():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    # Legacy AI Chat path: legacy RequestContext wrapped as a ScopeView adapter.
+    legacy = orchestrator.RequestContext(
+        version=1,
+        issuer="query-api",
+        audience="ai-orchestrator",
+        request_id="11111111-1111-4111-8111-111111111111",
+        run_id="22222222-2222-4222-8222-222222222222",
+        user_id="33333333-3333-4333-8333-333333333333",
+        session_id="44444444-4444-4444-8444-444444444444",
+        tenant_id="55555555-5555-4555-8555-555555555555",
+        cluster_id="66666666-6666-4666-8666-666666666666",
+        source="planner",
+        capability="observability.logs.read",
+        issued_at=now,
+        expires_at=now + timedelta(seconds=30),
+        nonce="77777777-7777-4777-8777-777777777777",
+    )
+    return orchestrator.LegacyScopeAdapter(legacy)
+
+
+def test_stream_marks_empty_k8sgpt_and_rag_results_no_data(monkeypatch):
+    """V9.2 §32: tool executed successfully + empty result → no_data (NOT unavailable)."""
 
     class FakeGraph:
         async def astream(self, initial, config):
@@ -206,18 +229,19 @@ def test_stream_marks_empty_k8sgpt_and_rag_results_unavailable(monkeypatch):
     brain.graph = brain.chat_graph
     brain.llm_config = None
     monkeypatch.setattr(brain, "_ensure_async_checkpointer", lambda: asyncio.sleep(0))
-    monkeypatch.setattr(brain, "_detect_service", lambda _: "")
+    monkeypatch.setattr(brain, "_detect_service", lambda _, **kwargs: "")
     monkeypatch.setattr(brain, "get_session_state", lambda _: None)
 
     async def collect_events():
         return [event async for event in brain.stream_sync(
             "diagnosis", "", "请用 k8sgpt 诊断并参考知识库分析当前集群问题",
-            thread_id="test-stream", mode="chat")]
+            thread_id="test-stream", mode="chat",
+            request_context=_valid_context())]
 
     events = asyncio.run(collect_events())
     k8s_end = next(event for event in events
                    if event.get("type") == "tool_end" and event.get("name") == "k8sgpt_diagnose")
     rag_end = next(event for event in events
                    if event.get("type") == "tool_end" and event.get("name") == "query_knowledge")
-    assert k8s_end["status"] == "unavailable"
-    assert rag_end["status"] == "unavailable"
+    assert k8s_end["status"] == "no_data"
+    assert rag_end["status"] == "no_data"

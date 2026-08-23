@@ -2,6 +2,7 @@ package biz
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -39,8 +40,12 @@ func TestResourceResolverResolveCanonicalizesUUIDAndSlug(t *testing.T) {
 			if got.TenantID != resolverTenantID || got.ClusterID != resolverClusterID || got.ResourceType != "deployment" || got.Name != "orders" || got.Namespace == nil || *got.Namespace != "production" {
 				t.Fatalf("Resolve() = %+v, want canonical provenance", got)
 			}
-			if got.ResourceID != "urn:aiops:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:deployment:production:orders" {
+			// V9.2 §10: canonical resource_id does NOT include tenant_id.
+			if got.ResourceID != "deployment:"+resolverClusterID+":production:orders" {
 				t.Fatalf("Resolve() resource id = %q", got.ResourceID)
+			}
+			if strings.Contains(got.ResourceID, resolverTenantID) {
+				t.Fatalf("resource_id must NOT include tenant: %q", got.ResourceID)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)

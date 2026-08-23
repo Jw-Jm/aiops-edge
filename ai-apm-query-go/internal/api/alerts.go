@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -88,44 +89,6 @@ type AlertEvent struct {
 // eventSignature 生成事件指纹（rule+service+detail 维度），用于 dedupe。
 func eventSignature(ruleID, service, detail string) string {
 	return ruleID + ":" + service + ":" + detail
-}
-
-// logMetricQuery 构造日志类规则的 CH 查询。
-// log_error_rate：错误日志占比；log_keyword：关键词命中数。
-// service/keyword 由用户输入拼入 SQL，须转义单引号防注入。
-// service 为空表示所有服务（P0-3：业务默认规则不限定单服务）。
-func logMetricQuery(service, metric, keyword string) string {
-	svcClause := ""
-	if service != "" {
-		svcClause = fmt.Sprintf(" AND service_name=%s", chQuote(service))
-	}
-	if metric == "log_error_rate" {
-		return fmt.Sprintf(
-			"SELECT countIf(severity IN ('ERROR','FATAL')) / count() * 100 FROM observability.log_records WHERE date >= today() AND timestamp >= now() - INTERVAL 5 MINUTE%s",
-			svcClause)
-	}
-	return fmt.Sprintf(
-		"SELECT count() FROM observability.log_records WHERE date >= today() AND body LIKE %s AND timestamp >= now() - INTERVAL 5 MINUTE%s",
-		chLike(keyword), svcClause)
-}
-
-// traceMetricQuery 构造链路类规则的 CH 查询。
-// trace_latency：P99 延迟（ms）；trace_error_rate：错误率。
-// service 由用户输入拼入 SQL，须用 chQuote 转义防注入。
-// service 为空表示所有服务（P0-3：业务默认规则不限定单服务）。
-func traceMetricQuery(service, metric string) string {
-	svcClause := ""
-	if service != "" {
-		svcClause = fmt.Sprintf(" AND service_name=%s", chQuote(service))
-	}
-	if metric == "trace_latency" {
-		return fmt.Sprintf(
-			"SELECT quantile(0.99)(duration_ns)/1000000 FROM observability.trace_spans WHERE date >= today() AND start_time >= now() - INTERVAL 5 MINUTE%s",
-			svcClause)
-	}
-	return fmt.Sprintf(
-		"SELECT countIf(is_error=1) / count() * 100 FROM observability.trace_spans WHERE date >= today() AND start_time >= now() - INTERVAL 5 MINUTE%s",
-		svcClause)
 }
 
 // AggAlertEvent 聚合后的告警事件：按规则聚合，统计触发次数和首次/最近时间。
@@ -282,40 +245,23 @@ func dateVal(d string) string {
 // queryAlertEvents 从 CH 查告警事件；service 非空按服务过滤，limit 限定返回条数。
 // 返回按 last_timestamp 倒序的最新事件（内存态高并发读缓存）。
 func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEvent, error) {
-	where := ""
-	args := []interface{}{}
-	if service != "" {
-		where = " WHERE service = ?"
-		args = append(args, service)
-	}
 	if limit <= 0 {
 		limit = maxAlertEvents
 	}
-	if offset <= 0 {
-		offset = 0
-	}
-	sql := "SELECT id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, cluster_id FROM observability.alert_events FINAL" + where + " ORDER BY last_timestamp DESC LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	body, err := h.queryClickHouse(ctx, sql)
+
+	// P6.2b：统一经 alerts repository（SQL ownership 在 repository）。
+	events, err := h.alertRepo.ListEvents(ctx, service, limit, offset)
 	if err != nil {
+		if qe, ok := err.(*query.QueryError); ok && qe.Code == query.NoDataCode {
+			return []AlertEvent{}, nil
+		}
 		return nil, err
 	}
-	// CH default_format=JSONEachRow：每行一个 JSON 对象（{...}\n{...}），需逐行解析；空结果容忍
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return []AlertEvent{}, nil
-	}
 	var out []AlertEvent
-	for _, line := range bytes.Split(trimmed, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		var r map[string]interface{}
-		if err := json.Unmarshal(line, &r); err != nil {
-			return nil, err
-		}
+	for _, e := range events {
+		r := e.Extra
 		out = append(out, AlertEvent{
 			ID:             str(r["id"]),
 			RuleID:         str(r["rule_id"]),
@@ -1370,25 +1316,6 @@ func appendTimeline(event *AlertEvent, action, by string) {
 	event.Timeline = string(data)
 }
 
-// evalCHQuery 执行 CH 查询并返回第一行第一个非空数值（供 log/trace 类型规则使用）。
-func (h *Handler) evalCHQuery(ctx context.Context, sql string) (float64, error) {
-	body, err := h.queryClickHouse(ctx, sql)
-	if err != nil {
-		return 0, err
-	}
-	rows, err := parseRows(body)
-	if err != nil || len(rows) == 0 {
-		return 0, nil
-	}
-	row := rows[0]
-	for _, v := range row {
-		if f, err := toFloat64(v); err == nil {
-			return f, nil
-		}
-	}
-	return 0, nil
-}
-
 func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -1434,24 +1361,14 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 		return float64(count), nil
 	}
 
-	// log 类型：CH 日志查询（log_error_rate / log_keyword）
+	// log 类型：CH 日志查询（log_error_rate / log_keyword）。P6.2c SQL ownership 在 log repository。
 	if rule.Type == "log" {
-		sql := logMetricQuery(rule.Service, rule.Metric, rule.Keyword)
-		v, err := h.evalCHQuery(ctx, sql)
-		if err != nil {
-			return 0, err
-		}
-		return v, nil
+		return h.logRepo.LogRuleValue(ctx, rule.Service, rule.Metric, rule.Keyword)
 	}
 
-	// trace_latency / trace_error_rate 类型：CH trace 查询
+	// trace_latency / trace_error_rate 类型：CH trace 查询。P6.2c SQL ownership 在 trace repository。
 	if rule.Type == "trace_latency" || rule.Type == "trace_error_rate" {
-		sql := traceMetricQuery(rule.Service, rule.Metric)
-		v, err := h.evalCHQuery(ctx, sql)
-		if err != nil {
-			return 0, err
-		}
-		return v, nil
+		return h.traceRepo.TraceRuleValue(ctx, rule.Service, rule.Metric)
 	}
 
 	// middleware_metric 类型：metric 字段为中间件深度指标 PromQL（mysql/redis/kafka 等），
@@ -1473,128 +1390,14 @@ func (h *Handler) evaluateRule(rule AlertRule) (float64, error) {
 	// 此前服务级 error_rate/calls/latency_p95 等规则走 VM PromQL 或 unknown metric，
 	// 而 trace 数据在 ClickHouse trace_spans，导致规则不触发（内置 trace_error_rate 才生效）。
 	// 这里从 trace_spans 查询该服务最近 duration 分钟的 RED 指标；K8s 规则保持原路径。
+	// P6.2c SQL ownership 在 metrics repository。
 	if rule.Service != "" && rule.Service != "kubernetes" &&
 		(rule.Metric == "error_rate" || rule.Metric == "calls" || rule.Metric == "call_count" ||
 			rule.Metric == "latency_p95" || rule.Metric == "latency_p99") {
-		return h.evalServiceTraceRED(ctx, rule.Service, rule.Metric, duration)
+		return h.metricsRepo.ServiceRuleValue(ctx, rule.Service, rule.Metric, duration)
 	}
 
-	var sql string
-	switch rule.Metric {
-	case "error_rate":
-		sql = fmt.Sprintf(
-			"SELECT countIf(is_error=1) as errors, count() as total FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-			chQuote(rule.Service), duration,
-		)
-	case "latency_p99":
-		sql = fmt.Sprintf(
-			"SELECT quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-			chQuote(rule.Service), duration,
-		)
-	case "call_count":
-		sql = fmt.Sprintf(
-			"SELECT count() as cnt FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-			chQuote(rule.Service), duration,
-		)
-	default:
-		return 0, fmt.Errorf("unknown metric: %s", rule.Metric)
-	}
-
-	body, err := h.queryClickHouse(ctx, sql)
-	if err != nil {
-		return 0, err
-	}
-
-	rows, err := parseRows(body)
-	if err != nil {
-		return 0, err
-	}
-
-	if len(rows) == 0 {
-		return 0, nil
-	}
-
-	row := rows[0]
-	switch rule.Metric {
-	case "error_rate":
-		errors, _ := toFloat64(row["errors"])
-		total, _ := toFloat64(row["total"])
-		if total > 0 {
-			return (errors / total) * 100, nil // percentage
-		}
-		return 0, nil
-	case "latency_p99":
-		val, _ := toFloat64(row["p99_ms"])
-		return val, nil
-	case "call_count":
-		val, _ := toFloat64(row["cnt"])
-		return val, nil
-	default:
-		return 0, fmt.Errorf("unknown metric: %s", rule.Metric)
-	}
-}
-
-// evalServiceTraceRED 从 trace_spans 查询指定服务最近 duration 分钟的 RED 指标，
-// 供服务级 threshold 规则评估（P2-2 修复：calls/latency_p95 等此前走 unknown metric）。
-// service 由用户输入拼入 SQL，须用 chQuote 转义防注入。
-func (h *Handler) evalServiceTraceRED(ctx context.Context, service, metric string, duration int) (float64, error) {
-	var sql string
-	switch metric {
-	case "error_rate":
-		sql = fmt.Sprintf(
-			"SELECT countIf(is_error=1) as errors, count() as total FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-			chQuote(service), duration,
-		)
-	case "calls", "call_count":
-		sql = fmt.Sprintf(
-			"SELECT count() as cnt FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-			chQuote(service), duration,
-		)
-	case "latency_p95":
-		sql = fmt.Sprintf(
-			"SELECT quantile(0.95)(duration_ns)/1000000 as p95_ms FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-			chQuote(service), duration,
-		)
-	case "latency_p99":
-		sql = fmt.Sprintf(
-			"SELECT quantile(0.99)(duration_ns)/1000000 as p99_ms FROM observability.trace_spans WHERE service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-			chQuote(service), duration,
-		)
-	default:
-		return 0, fmt.Errorf("unknown metric: %s", metric)
-	}
-
-	body, err := h.queryClickHouse(ctx, sql)
-	if err != nil {
-		return 0, err
-	}
-	rows, err := parseRows(body)
-	if err != nil {
-		return 0, err
-	}
-	if len(rows) == 0 {
-		return 0, nil
-	}
-	row := rows[0]
-	switch metric {
-	case "error_rate":
-		errors, _ := toFloat64(row["errors"])
-		total, _ := toFloat64(row["total"])
-		if total > 0 {
-			return (errors / total) * 100, nil // percentage
-		}
-		return 0, nil
-	case "calls", "call_count":
-		v, _ := toFloat64(row["cnt"])
-		return v, nil
-	case "latency_p95":
-		v, _ := toFloat64(row["p95_ms"])
-		return v, nil
-	case "latency_p99":
-		v, _ := toFloat64(row["p99_ms"])
-		return v, nil
-	}
-	return 0, fmt.Errorf("unknown metric: %s", metric)
+	return 0, fmt.Errorf("unknown metric: %s", rule.Metric)
 }
 
 // ---- K8s 指标评估 (基于 K8s API) ----

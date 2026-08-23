@@ -5,7 +5,7 @@ ENV GOTOOLCHAIN=local
 ENV GOPROXY=https://goproxy.cn,direct
 COPY go.mod ./
 COPY . .
-RUN CGO_ENABLED=0 go build -o /event-collector .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /event-collector .
 
 FROM alpine:3.21
 # apk 走国内源（阿里云），避免官方源不可达

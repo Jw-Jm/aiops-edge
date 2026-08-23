@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ai-event-collector/internal/leaderelection"
 )
 
 const (
@@ -139,6 +141,12 @@ func NewK8sWatcher(cfg *Config, writer *EventWriter) (*k8sWatcher, error) {
 		dedup:     make(map[string]struct{}),
 		dedupRing: make([]string, 0, maxRecentEventUIDs),
 	}, nil
+}
+
+// leaseClient 构造访问 coordination.k8s.io/v1 Lease 的 client，复用本 watcher 的
+// in-cluster K8s REST 基础（service account token + CA 的 TLS 配置 + baseURL）。
+func (k *k8sWatcher) leaseClient() leaderelection.LeaseClient {
+	return leaderelection.NewLeaseClientWithToken(k.baseURL, k.token, k.client)
 }
 
 // seen 记录事件 UID 并返回是否已见过（重复则跳过写入）。UID 为空时不做去重（放行）。

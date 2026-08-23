@@ -36,6 +36,9 @@ secrets/
 *.pem
 *.key
 
+# 重建备份目录（含 secrets override / deployment 备份 / identity 记录，含敏感值，绝不入库）
+/rebuild-backup/
+
 # 系统与编辑器
 .DS_Store
 .idea/
@@ -45,6 +48,15 @@ secrets/
 # 日志
 *.log
 deploy/helm/aiops/charts/
+
+# Slim 工具目录 + codemap 归档（工具生成，非交付）
+.slim/
+codemap-archive/
+
+# Go 编译二进制（不同路径，勿入库）
+ai-event-collector/ai-event-collector
+deploy/tools/clickhouse-migrator/clickhouse-migrator
+deploy/tools/object-store-bootstrap/object-store-bootstrap
 
 # 隔离 worktree 目录
 /.worktrees/

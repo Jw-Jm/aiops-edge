@@ -198,9 +198,9 @@ func (h *Handler) clusterNodes(w http.ResponseWriter, r *http.Request, id int64)
 		respondJSON(w, 404, map[string]interface{}{"nodes": []store.ClusterNode{}, "error": "cluster not found"})
 		return
 	}
-	// 修复(P2-3)：非默认集群无 kubeconfig 时不静默回退当前 context，
-	// 避免 prod-cluster 误显示 orbstack 节点。默认集群（id=1 或 kubernetes-cluster）保持原回退逻辑。
-	if c.Kubeconfig == "" && c.ID != 1 && c.Name != "kubernetes-cluster" {
+	// P3.8: no id=1 / kubernetes-cluster / current-context fallback (V9.2 §9).
+	// Any cluster without an explicit kubeconfig fails closed.
+	if c.Kubeconfig == "" {
 		respondJSON(w, 200, map[string]interface{}{
 			"nodes": []store.ClusterNode{}, "count": 0,
 			"error": "cluster has no kubeconfig, cannot query nodes",
@@ -284,7 +284,9 @@ func clusterKubeconfig(id int64) (string, error) {
 	if c == nil {
 		return "", errors.New("cluster not found")
 	}
-	if c.Kubeconfig == "" && c.ID != 1 && c.Name != "kubernetes-cluster" {
+	// P3.8: no id=1 / kubernetes-cluster / current-context fallback (V9.2 §9).
+	// Any cluster without an explicit kubeconfig fails closed.
+	if c.Kubeconfig == "" {
 		return "", errNoKubeconfig
 	}
 	return c.Kubeconfig, nil

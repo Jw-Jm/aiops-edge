@@ -7,6 +7,7 @@ import time
 from typing import Optional
 
 from contracts import RequestContext
+from invocation_scope import ScopeView
 from internal_query import signed_query_api_request
 from trusted_context import TrustedContextError
 
@@ -17,9 +18,9 @@ QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.
 # ═══════════════════════════════════════════════════════
 
 def _get_json(
-    path: str, *, request_context: RequestContext | None = None
+    path: str, *, request_context: ScopeView | None = None
 ) -> dict:
-    if not isinstance(request_context, RequestContext):
+    if not isinstance(request_context, ScopeView):
         return {"error": "invalid_context"}
     try:
         return json.loads(

@@ -19,6 +19,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from shell_policy import ShellPolicy
 from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCARequest
 from contracts import RequestContext
+from invocation_scope import LegacyScopeAdapter
+from internal_ingress import build_invocation_scope, verify_run_control_ingress, verify_run_invocation_ingress
 from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from skill_registry import SkillRegistry, ExpertRegistry
@@ -43,6 +45,84 @@ scheduler = AsyncIOScheduler()
 # 优雅关闭时一并停止，避免进程退出后线程泄漏。
 _flow_sched = None
 _kg_sched = None
+
+# P13 真实接线：ManualBoundary 单例（唯一 Run 创建入口人工触发边界，P0-5）
+from manual_boundary import ManualBoundary as _ManualBoundary, ManualTriggerDenied as _ManualTriggerDenied
+_manual_boundary = _ManualBoundary()
+
+# P10/P12 接线：RunStateStore 单例（In-memory MVP；真实持久化属 P10 后续接 MySQL）。
+# 供 ai_runs_api 端点（/api/v1/ai/runs）与 run-invocations 创建链共用。
+from run_persistence import RunStateStore as _RunStateStore
+_run_state_store = _RunStateStore()
+
+# P10 完整闭环（Bugbot P0-1）：PersistentRunRepository 接入生产——配置了 query-api
+# （QUERY_API_URL + TRUSTED_CONTEXT_PRIVATE_KEY + INTERNAL_TOKEN）时，Run 迁移走远端
+# 提交优先（query-api control-plane 为提交权威，内存仅缓存，fail-closed 无 local-first
+# 双写）；未配置（当前 In-memory MVP 环境）则退化为纯内存 store（保留既有行为）。
+# 生产接线属后续真实环境 Integration Gate；此处已把 repository 作为生产后端接入。
+try:
+    from control_plane_client import ControlPlaneClient as _ControlPlaneClient
+    from persistent_run_repository import PersistentRunRepository as _PersistentRunRepository
+    from persistent_run_state_store import PersistentRunStateStore as _PersistentRunStateStore
+    from run_cache import RunCache as _RunCache
+    if os.environ.get("QUERY_API_URL"):
+        _run_cache = _RunCache()
+        _run_repository = _PersistentRunRepository(
+            client=_ControlPlaneClient(), cache=_run_cache)
+        _run_state_store = _PersistentRunStateStore(repository=_run_repository, fallback=_run_state_store)
+except Exception:  # noqa: BLE001 — 配置不完整则保持 In-memory store（fail-closed 到纯内存）
+    pass
+
+# P13 真实接线：AuthorizationMatrix 单例（P0-6，服务端授权）。服务账号角色从
+# SERVICE_ACCOUNT_ROLES（JSON {principal: role}）加载；生产应从 query-api 权威角色 SoT。
+from authorization_matrix import AuthorizationMatrix as _AuthorizationMatrix, AuthzError as _AuthzError, AuthzRule as _AuthzRule
+import json as _json
+_SERVICE_ACCOUNT_ROLES = {}
+try:
+    _raw = os.environ.get("SERVICE_ACCOUNT_ROLES", "")
+    if _raw:
+        _SERVICE_ACCOUNT_ROLES = _json.loads(_raw)
+except Exception:  # noqa: BLE001 — 配置损坏则空映射（fail-closed 到前缀/默认角色）
+    _SERVICE_ACCOUNT_ROLES = {}
+_authz_matrix = _AuthorizationMatrix(service_account_roles=_SERVICE_ACCOUNT_ROLES)
+# 为已配置的服务账号注册「发起调查」规则（ai.investigate，R0 无确认/审批）。
+# 未配置 principal → viewer（无 ai.investigate）→ CAPABILITY_DENIED（fail-closed）。
+for _sa_principal in _SERVICE_ACCOUNT_ROLES:
+    _authz_matrix.add_rule(_AuthzRule(
+        principal=_sa_principal, tenant_id="*", cluster_id="*",
+        capability="ai.investigate", action="create", risk_max="R0",
+        require_confirmation=False, require_approval=False,
+    ))
+    # P19.6：对话型 capability（ai.chat）。对话不建 Run、无确认/审批；只读。
+    _authz_matrix.add_rule(_AuthzRule(
+        principal=_sa_principal, tenant_id="*", cluster_id="*",
+        capability="ai.chat", action="create", risk_max="R0",
+        require_confirmation=False, require_approval=False,
+    ))
+
+
+def _workflow_cron_enabled() -> bool:
+    """workflow cron 是否启用（安全整改 P0，默认 fail-closed 关闭）。
+
+    审计：cron 可后台自动创建并运行 workflow Run，绕过 ManualBoundary
+    （ManualBoundary.allow_auto_new_run() is False）。默认关闭；仅当显式
+    设置 ENABLE_WORKFLOW_CRON=1 且 RUN_CREATION_MODE=auto 才启用。
+    """
+    if os.environ.get("ENABLE_WORKFLOW_CRON", "0").lower() not in ("1", "true", "yes"):
+        return False
+    return os.environ.get("RUN_CREATION_MODE", "").lower() == "auto"
+
+
+def _execution_after_approval_enabled() -> bool:
+    """审批通过后是否自动执行脚本/动作（安全整改 P0，默认 fail-closed 关闭）。
+
+    审计：真实审批链（/api/v1/ops/tasks/{tid}/approve）只依赖共享 INTERNAL_TOKEN
+    与调用方传入的 role/approver header，未绑定 requester/approver/tenant/cluster/
+    risk/action hash/resourceVersion，且审批后直接执行脚本——绕过 Phase 11/13
+    的 ApprovalService/AuthorizationMatrix。在完成真实接线前，默认只记录审批状态、
+    不触发任何真实执行；仅当显式设置 EXECUTION_AFTER_APPROVAL=1 才恢复执行。
+    """
+    return os.environ.get("EXECUTION_AFTER_APPROVAL", "0").lower() in ("1", "true", "yes")
 
 
 @asynccontextmanager
@@ -72,12 +152,10 @@ async def lifespan(app: FastAPI):
                           id='node_health_aggregate', replace_existing=True)
     except Exception as e:  # noqa: BLE001
         print(f"[startup] scheduler add_job(node_health_aggregate) error: {e}", flush=True)
-    # 2. MySQL 迁移 + 知识库自动加载（均可降级，失败不阻塞）
-    try:
-        from db import migrate
-        migrate()
-    except Exception:
-        pass
+    # 2. 知识库自动加载（可降级，失败不阻塞）。
+    # V9.2 Phase 4 (P4.8)：移除 orchestrator 运行时 db.migrate() 直连建表。
+    # MySQL DDL 由 schema-migrator（aiops_migrator 账号）在初始化 Job 中执行；
+    # orchestrator runtime 使用受限账号（aiops_app），只做 DML，不建表。
     try:
         import threading
         threading.Thread(target=_seed_knowledge_bg, daemon=True).start()
@@ -102,23 +180,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         print(f"[startup] k8s tools register error: {e}", flush=True)
     # A2: workflow cron 触发器调度（独立 BackgroundScheduler，30s 对齐 job）
-    try:
-        global _flow_sched
-        from apscheduler.schedulers.background import BackgroundScheduler as _BgSched
-        from flow_engine.trigger_scheduler import CronTriggerManager
-        from flow_api import get_flow_service as _get_flow_service
-        _flow_wsvc = _get_flow_service()
-        _flow_sched = _BgSched(daemon=True)
-        _flow_cron_mgr = CronTriggerManager(
-            _flow_sched,
-            lambda: [f for f in _flow_wsvc.list_flows() if f.get("enabled")],
-            _flow_wsvc.run_flow)
-        _flow_cron_mgr.sync()
-        _flow_sched.add_job(_flow_cron_mgr.sync, 'interval', seconds=30,
-                            id='flow_cron_sync', replace_existing=True)
-        _flow_sched.start()
-    except Exception as e:  # noqa: BLE001
-        print(f"[startup] flow cron scheduler error: {e}", flush=True)
+    # 安全整改(P0)：cron 会后台自动创建并运行 workflow Run，绕过 ManualBoundary
+    # （允许自动 new Run）。默认 fail-closed 关闭；仅显式设置 ENABLE_WORKFLOW_CRON=1
+    # 且 RUN_CREATION_MODE=auto 才启用，且不得在未接入 ManualBoundary 前恢复自动执行。
+    if _workflow_cron_enabled():
+        try:
+            global _flow_sched
+            from apscheduler.schedulers.background import BackgroundScheduler as _BgSched
+            from flow_engine.trigger_scheduler import CronTriggerManager
+            from flow_api import get_flow_service as _get_flow_service
+            _flow_wsvc = _get_flow_service()
+            _flow_sched = _BgSched(daemon=True)
+            _flow_cron_mgr = CronTriggerManager(
+                _flow_sched,
+                lambda: [f for f in _flow_wsvc.list_flows() if f.get("enabled")],
+                _flow_wsvc.run_flow)
+            _flow_cron_mgr.sync()
+            _flow_sched.add_job(_flow_cron_mgr.sync, 'interval', seconds=30,
+                                id='flow_cron_sync', replace_existing=True)
+            _flow_sched.start()
+        except Exception as e:  # noqa: BLE001
+            print(f"[startup] flow cron scheduler error: {e}", flush=True)
     # A3: 知识图谱定时重建（默认 60s；KG_BUILD_INTERVAL_SECONDS 可配，0 关闭）
     try:
         global _kg_sched
@@ -204,6 +286,9 @@ app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_methods=["
 shell_policy = ShellPolicy()
 app.include_router(flow_router)
 app.include_router(kg_router)
+# P12：Run API 端点（/api/v1/ai/runs，前端调查中心数据源）
+from ai_runs_api import router as _ai_runs_router
+app.include_router(_ai_runs_router)
 
 
 async def _scheduled_anomaly_scan():
@@ -409,7 +494,12 @@ async def auth_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
-    expected = os.environ.get("INTERNAL_TOKEN", "")
+    # V9.2 Service Identity (P3.9-B): query-api → orchestrator ingress uses its own
+    # directional service credential; orchestrator → query-api uses INTERNAL_TOKEN.
+    if path.startswith("/internal/v1/"):
+        expected = os.environ.get("QUERY_TO_ORCHESTRATOR_TOKEN", "")
+    else:
+        expected = os.environ.get("INTERNAL_TOKEN", "")
     if not expected:
         # fail-closed：未配置内部 token 时拒绝所有非白名单请求，避免"无 token 即全开"
         return JSONResponse({"error": "authentication required"}, status_code=401)
@@ -426,13 +516,19 @@ async def auth_middleware(request: Request, call_next):
 
 
 def _request_context_from_request(request: Request) -> RequestContext:
-    """Decode the already-authenticated query-api delegation context.
+    """Resolve the query-api delegation context with full signature verification.
 
-    The query-api is the signature-verification and MySQL authorization
-    boundary. The orchestrator still requires the short-lived context to be
-    present and schema-valid before any graph node can call query-api again;
-    it never derives identity, tenant, or cluster values from JWTs or defaults.
+    P0 安全整改：此前该函数只 base64 解码 JWS payload 并检查 issuer/audience，
+    不校验签名/有效期/nonce——持有内部共享 token 的调用方可伪造 tenant/cluster/
+    principal（违反 P13.3）。现改为先复用 internal_ingress 的完整验签
+    （X-Internal-Token + EdDSA JWS typ=AIOPS-CONTEXT + kid/issuer/audience/iat/
+    exp + nonce replay），验签失败 fail-closed（401/403），验签通过后才解码
+    payload 构造 RequestContext/LegacyScopeAdapter，保持旧入口业务逻辑不变。
     """
+    # 完整验签：非法签名 / 过期 / nonce 重放 / 伪造身份 → 拒绝，不再"解码即信任"。
+    from internal_ingress import verify_run_invocation_ingress
+    verify_run_invocation_ingress(request)
+    # 验签通过后解码 payload（此时字段已可信）
     token = request.headers.get("X-Trusted-Request-Context", "")
     try:
         parts = token.split(".")
@@ -443,7 +539,11 @@ def _request_context_from_request(request: Request) -> RequestContext:
         context = RequestContext.model_validate(payload)
         if context.issuer != "query-api" or context.audience != "ai-orchestrator":
             raise ValueError("wrong context audience")
-        return context
+        # P3.9 transition: legacy RequestContext → LegacyScopeAdapter (ScopeView)
+        # so old AI Chat business functions no longer depend on the transport contract.
+        return LegacyScopeAdapter(context)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=403, detail="invalid_context") from exc
 
@@ -451,6 +551,231 @@ def _request_context_from_request(request: Request) -> RequestContext:
 # ═══════════════════════════════════════════════════════════════
 #  Chat
 # ═══════════════════════════════════════════════════════════════
+
+@app.post("/internal/v1/run-invocations")
+async def run_invocations(request: Request):
+    """V9.2 trusted investigation ingress (P3.9-B1).
+
+    Accepts only a verified RunInvocationContext (service credential + EdDSA JWS,
+    typ=AIOPS-CONTEXT + nonce replay). Builds an internal InvocationScope (never a
+    legacy RequestContext) and hands it to the existing AI Chat business
+    implementation. Body tenant/cluster must match the signed context.
+    """
+    claims = verify_run_invocation_ingress(request)
+    body = await request.json() or {}
+    # P0-2：query-api outbox dispatcher 用 system principal 派发已授权 Run（body 带 run_id）。
+    # 这是**已授权 Run 的可信系统握手**，不是"系统创建新 Run"——Run 已在 query-api 公共层由
+    # 原用户 ai.investigate 授权创建。此时跳过"system 不能创建 Run"的 ManualBoundary 拒绝，
+    # 但 ai.investigate 仍由 system principal 的 ROLE_CAPABILITIES 授予（security 不降级）。
+    is_system_dispatch = (claims.get("principal_type") == "system" and bool(body.get("run_id")))
+    if not is_system_dispatch:
+        # P13 真实接线（P0-5）：唯一 Run 创建入口接入 ManualBoundary —— 拒 System Principal /
+        # 自动来源建 Run（后台 cron/webhook 不自动创建 Run）。
+        try:
+            _manual_boundary.require_user_explicit(
+                source="user_explicit",
+                principal_type=claims.get("principal_type", ""),
+            )
+        except _ManualTriggerDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    # P13 真实接线（P0-6）：AuthorizationMatrix 服务端授权（capability=ai.investigate）。
+    # 角色由服务端 ROLE_CAPABILITIES / SERVICE_ACCOUNT_ROLES 判定，忽略前端 role。
+    try:
+        _authz_matrix.authorize(
+            principal=str(claims.get("principal_id", "")),
+            tenant_id=str(claims.get("tenant_id", "")),
+            cluster_id=str((claims.get("cluster_scope") or [""])[0]),
+            capability="ai.investigate",
+            action="create",
+            risk="R0",
+        )
+    except _AuthzError as exc:
+        raise HTTPException(status_code=403, detail=f"{exc.error_code}: {exc}") from exc
+    scope = build_invocation_scope(claims)
+    if body.get("tenant_id") and str(body["tenant_id"]) != scope.tenant_id:
+        raise HTTPException(status_code=403, detail="TENANT_ACCESS_DENIED")
+    if body.get("cluster_id") and str(body["cluster_id"]) != scope.cluster_id:
+        raise HTTPException(status_code=403, detail="CLUSTER_ACCESS_DENIED")
+
+    intent = body.get("intent", "diagnose")
+    service = body.get("service", "")
+    message = body.get("message", "对目标进行诊断")
+    thread_id = body.get("thread_id") or uuid.uuid4().hex[:8]
+
+    events = []
+    brain = _get_brain()
+    async for event in brain.stream_sync(
+        intent, service or "", message, thread_id,
+        mode="chat", request_context=scope,
+    ):
+        events.append(event)
+    return {"run_id": str(claims.get("request_id", "")), "events": events}
+
+
+@app.post("/internal/v1/chat")
+async def internal_chat(request: Request):
+    """P19.6 trusted chat ingress（对话型，SSE 流式）。
+
+    Accepts only a verified RunInvocationContext (service credential + EdDSA JWS,
+    typ=AIOPS-CONTEXT + nonce replay). Capability MUST be ai.chat (对话型，独立于
+    ai.investigate). This endpoint does NOT create an Investigation Run and does
+    NOT invoke ManualBoundary 建 Run 语义 —— 对话仅消费只读工具。
+
+    Body tenant/cluster must match the signed context. Returns SSE stream of
+    brain.stream_sync events, preserving identity binding (principal/tenant/
+    cluster/request_id) throughout.
+    """
+    claims = verify_run_invocation_ingress(request)
+    body = await request.json() or {}
+    # P19.6 fail-closed：system principal 不得用于对话（对话永远是用户显式触发；outbox 派发
+    # 属已授权 Run 的系统握手，走 /internal/v1/run-invocations，不是 chat）。system 无真实会话。
+    if claims.get("principal_type") == "system":
+        raise HTTPException(status_code=403, detail="SYSTEM_PRINCIPAL_DENIED: chat 仅接受用户显式触发")
+    # P19.6 fail-closed：capability 必须显式为 ai.chat（对话）。缺失/为空一律拒绝——
+    # 不允许"默认 ai.chat"或把 ai.investigate 塞进 chat 入口。对话不建 Run、不触发 ManualBoundary。
+    capability = str(claims.get("capability", "") or "")
+    if capability != "ai.chat":
+        raise HTTPException(status_code=403, detail="CAPABILITY_DENIED: chat 入口仅接受显式 ai.chat")
+    # 用户 RBAC 权威 SoT：capability=ai.chat 由 query-api 依据其权威角色校验后签名。
+    # 这里 trust 签名上下文（verify_run_invocation_ingress 已验签），不再依赖
+    # SERVICE_ACCOUNT_ROLES 全域映射重推用户角色（P0 收敛：该机制不成为用户 RBAC 权威来源）。
+    # 仍 fail-closed 校验签名上下文字段完整（principal/tenant/cluster 非空），防畸形上下文。
+    principal = str(claims.get("principal_id", "") or "")
+    tenant = str(claims.get("tenant_id", "") or "")
+    cluster = str((claims.get("cluster_scope") or [""])[0] or "")
+    if not principal or not tenant or not cluster:
+        raise HTTPException(status_code=403, detail="INVALID_CONTEXT: 缺 principal/tenant/cluster")
+    scope = build_invocation_scope(claims)
+    if body.get("tenant_id") and str(body["tenant_id"]) != scope.tenant_id:
+        raise HTTPException(status_code=403, detail="TENANT_ACCESS_DENIED")
+    if body.get("cluster_id") and str(body["cluster_id"]) != scope.cluster_id:
+        raise HTTPException(status_code=403, detail="CLUSTER_ACCESS_DENIED")
+
+    message = body.get("message", "对目标进行诊断")
+    service = body.get("service", "")
+    intent = body.get("intent", "diagnosis")
+    thread_id = body.get("thread_id") or body.get("session_id") or uuid.uuid4().hex[:8]
+    exec_context = body.get("exec_result", "")
+
+    # P19.6：加载真实 LLM 配置（从 query-api 内部接口拉取已保存配置，纯服务端来源，
+    # 禁止请求头覆盖——G3 SSRF 防护）。与旧 /api/v1/ai/chat 一致，否则 brain 走确定性降级。
+    _parse_llm_config(request)
+
+    # SSE 流式：thread + queue 模型，主协程逐帧 flush（复用旧 ai_chat 的断线检测）。
+    import queue
+    import threading
+    import asyncio as _asyncio
+
+    event_queue = queue.Queue()
+    stop_event = threading.Event()
+
+    def _run_stream():
+        async def _astream():
+            streamed_events = []
+            async for event in _get_brain().stream_sync(
+                    intent, service or "", message, thread_id,
+                    mode="chat", exec_context=exec_context, iteration=(exec_context and 2 or 1),
+                    cluster_id=str(scope.cluster_id),
+                    request_context=scope):
+                if event.get("type") == "suggestion":
+                    event["thread_id"] = thread_id
+                    event["exec_context"] = exec_context
+                streamed_events.append(event)
+                if event.get("type") == "done":
+                    _persist_streamed_chat_session(
+                        thread_id, intent, service or "", message, streamed_events)
+                event_queue.put(event)
+        try:
+            _asyncio.run(_astream())
+            event_queue.put(None)
+        except Exception as e:  # noqa: BLE001
+            event_queue.put({"type": "error", "text": str(e)[:200]})
+            event_queue.put(None)
+        finally:
+            stop_event.set()
+
+    thread = threading.Thread(target=_run_stream, daemon=True)
+    thread.start()
+
+    def _format_sse(ev: dict) -> str:
+        etype = ev.get("type", "message")
+        data = json.dumps(ev, ensure_ascii=False)
+        return f"event: {etype}\ndata: {data}\n\n"
+
+    async def generate():
+        _is_disconnected = getattr(request, "is_disconnected", None)
+        while True:
+            if _is_disconnected is not None:
+                try:
+                    if await _is_disconnected():
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                event = await _asyncio.get_event_loop().run_in_executor(None, event_queue.get, True, 0.1)
+            except queue.Empty:
+                if stop_event.is_set():
+                    break
+                await _asyncio.sleep(0.1)
+                continue
+            if event is None:
+                break
+            if event.get("type") == "done":
+                done_text = event.get("text", "")
+                if done_text and len(done_text.strip()) > 100:
+                    svc = (service or "").strip()
+                    if not svc:
+                        svc = _extract_service_from_text(message or "") or _extract_service_from_text(done_text)
+                    try:
+                        _upload_report(thread_id, done_text, service=svc, question=message or "")
+                    except Exception as _e:  # noqa: BLE001
+                        print(f"[internal/chat] 报告持久化失败: {_e}")
+                yield _format_sse({
+                    "type": "done",
+                    "text": done_text,
+                    "assistant_message": {
+                        "id": f"asst_{thread_id}",
+                        "content": done_text,
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    },
+                })
+                break
+            elif event.get("type") == "approval_pending":
+                event["thread_id"] = thread_id
+                yield _format_sse(event)
+            elif event.get("type") == "error":
+                yield _format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
+                break
+            else:
+                yield _format_sse(event)
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"X-Session-Id": thread_id, "Cache-Control": "no-cache"})
+
+
+@app.post("/internal/v1/run-controls/{operation}")
+async def run_controls(operation: str, request: Request):
+    """V9.2 trusted control ingress (P3.9-C1).
+
+    Accepts only a verified RunControlContext. The endpoint's operation is bound
+    by path suffix: /cancel, /stream, /action_decision. A valid context of the
+    wrong operation is rejected (ACTION_NOT_ALLOWED).
+
+    P3.9 defines and verifies the RunControl ingress contract; full run state
+    machine business is activated in Phase 10.
+    """
+    op_map = {"cancel": "cancel", "stream": "stream", "action_decision": "action_decision"}
+    op = operation.lower()
+    if op not in op_map:
+        raise HTTPException(status_code=404, detail="RESOURCE_NOT_FOUND")
+    claims = verify_run_control_ingress(request, expected_operation=op_map[op])
+    return {
+        "run_id": str(claims.get("run_id", "")),
+        "operation": claims.get("operation"),
+        "status": "accepted",
+        "note": "run control business capability active in later Phase",
+    }
+
 
 @app.post("/api/v1/ai/chat")
 async def ai_chat(req: ChatRequest, request: Request):
@@ -786,21 +1111,6 @@ async def ai_flows():
 async def ai_flow_detail(key: str):
     mode = "chat" if key.endswith("chat_diagnosis") else "full"
     return describe_graph(mode)
-
-@app.post("/api/v1/ai/flows/{key}/run-legacy")
-async def ai_flow_run(key: str, request: Request, body: dict = None):
-    request_context = _request_context_from_request(request)
-    mode = "chat" if key.endswith("chat_diagnosis") else "full"
-    service = (body or {}).get("service", "")
-    message = (body or {}).get("message", "对服务进行完整诊断")
-    intent = "chat" if mode == "chat" else "ops"
-    brain = _get_brain()
-    # execute_sync_full 已改为 async（节点 async def），直接 await（不再 run_in_executor）
-    result = await brain.execute_sync_full(
-        intent, service, message, "workflow-run",
-        cluster_id=str(request_context.cluster_id), request_context=request_context,
-    )
-    return {"run_id": f"run_{int(time.time()*1000)}", "result": result}
 
 class SuggestionRequest(BaseModel):
     thread_id: str = ""
@@ -1558,6 +1868,14 @@ def approve_task(tid: str, request: Request):
                    {"source": task.get("source", "")})
     except Exception:
         pass
+    # P0 安全整改：审批后不再无条件执行脚本。真实审批链未绑定 requester/approver/
+    # tenant/cluster/action hash/risk/resourceVersion，且审批后直接执行绕过
+    # Phase 11/13 的 ApprovalService/AuthorizationMatrix。在完成真实接线前默认只
+    # 记录审批状态（approved），不触发任何真实执行；EXECUTION_AFTER_APPROVAL=1 才恢复。
+    if not _execution_after_approval_enabled():
+        task["status"] = "approved_pending_execution"
+        _task_store.persist(tid)
+        return {"task": task, "note": "审批已记录，执行暂停（EXECUTION_AFTER_APPROVAL 未启用）"}
     # 恢复任务: 执行前再次校验恢复命令在白名单内（安全边界）
     if task.get("source") == "recovery":
         script = task.get("script", "")

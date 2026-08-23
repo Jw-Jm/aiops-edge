@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aiops.contracts.bundle.v2.hypothesis",
+  "title": "Hypothesis",
+  "description": "V1 冻结 Hypothesis（对齐 contracts.Hypothesis）。强隔离 run_id/tenant_id/cluster_id 维度。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "hypothesis_id", "run_id", "title", "description",
+    "supporting_evidence", "contradicting_evidence", "missing_evidence",
+    "confidence", "status"
+  ],
+  "properties": {
+    "hypothesis_id": { "type": "string", "format": "uuid" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "supporting_evidence": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+    "contradicting_evidence": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+    "missing_evidence": { "type": "array", "items": { "type": "string" } },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "status": { "type": "string" }
+  },
+  "semantic_invariants_ref": "../invariants.md"
+}

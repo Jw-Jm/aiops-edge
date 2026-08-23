@@ -1,0 +1,9 @@
+# V9.3 Phase 15（P15.2）开发/测试依赖，与生产 runtime 分离。
+# 生产镜像只安装 requirements.txt（或离线 sp.tar.gz site-packages），
+# 本文件仅用于本地/CI 开发环境（pytest 回归、ruff lint、coverage）。
+# 安装：pip install -r requirements.txt -r requirements-dev.txt
+pytest>=7.0
+pytest-asyncio>=0.23
+pytest-timeout>=2.2
+coverage>=7.0
+ruff>=0.4

@@ -1,4 +1,4 @@
-"""Fail-closed orchestrator calls to the query-api trust boundary."""
+"""Fail-closed orchestrator calls to the query-api trust boundary (V9.2)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ from uuid import uuid4
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from contracts import RequestContext
-from trusted_context import TrustedContextError, sign_trusted_request_context
+from contracts import TrustedRequestContext
+from invocation_scope import ScopeView
+from trusted_context import TrustedContextError, sign_trusted_request_context_v2
 
 
 _DEFAULT_TIMEOUT = 10
@@ -36,7 +37,7 @@ _FORBIDDEN_HEADERS = frozenset(
 def signed_query_api_request(
     url: str,
     *,
-    context: RequestContext,
+    context: RequestContext | TrustedRequestContext | dict,
     method: str = "GET",
     data: bytes | None = None,
     headers: Mapping[str, str] | None = None,
@@ -46,11 +47,14 @@ def signed_query_api_request(
 
     ``context`` must be the explicit, already-authorized context received by the
     orchestrator. The helper preserves its authorization scope while minting a
-    fresh audience-bound request ID, nonce, and short validity window.
-    """
+    fresh V9.2 TrustedRequestContext (EdDSA, typ=AIOPS-CONTEXT) for this call.
 
+    P3.9 transition: source context may be a legacy single ``RequestContext`` or
+    the V9.2 ``TrustedRequestContext``. After cutover only ``TrustedRequestContext``
+    is accepted and the legacy branch is removed.
+    """
     now = datetime.now(timezone.utc)
-    source_context = _validated_source_context(context, now)
+    source = _validated_source_context(context, now)
     service_token = os.environ.get("INTERNAL_TOKEN", "")
     if not service_token:
         raise TrustedContextError("invalid_service")
@@ -68,19 +72,26 @@ def signed_query_api_request(
         ):
             raise TrustedContextError("invalid_context")
 
-    delegated_context = source_context.model_copy(
-        update={
-            "issuer": _ISSUER,
-            "audience": _AUDIENCE,
-            "request_id": uuid4(),
-            "issued_at": now,
-            "expires_at": now + _CONTEXT_LIFETIME,
-            "nonce": uuid4(),
-        }
-    )
-    signed_context = sign_trusted_request_context(
-        delegated_context.model_dump(), private_key
-    )
+    delegated_claims = {
+        "version": 1,
+        "context_type": "trusted_request",
+        "issuer": _ISSUER,
+        "audience": _AUDIENCE,
+        "request_id": uuid4(),
+        "run_id": source.get("run_id"),
+        "principal_type": source.get("principal_type", "user"),
+        "principal_id": source.get("principal_id"),
+        "session_id": source.get("session_id"),
+        "tenant_id": source["tenant_id"],
+        "scope_kind": "cluster",
+        "cluster_id": source.get("cluster_id"),
+        "capability": source.get("capability"),
+        "source": source.get("source", "planner"),
+        "issued_at": now,
+        "expires_at": now + _CONTEXT_LIFETIME,
+        "nonce": uuid4(),
+    }
+    signed_context = sign_trusted_request_context_v2(delegated_claims, private_key)
     request_headers = {
         **caller_headers,
         "X-Internal-Token": service_token,
@@ -96,20 +107,67 @@ def signed_query_api_request(
         return response.read()
 
 
-def _validated_source_context(
-    context: RequestContext | None, now: datetime
-) -> RequestContext:
-    if not isinstance(context, RequestContext):
+def _validated_source_context(context: ScopeView | TrustedRequestContext | dict, now: datetime) -> dict:
+    """Normalize the source context to the fields needed for a V9.2
+    TrustedRequestContext. Accepts a ScopeView (InvocationScope or
+    LegacyScopeAdapter for the old AI Chat path) or a V9.2 TrustedRequestContext.
+    The legacy single RequestContext protocol was removed in P3.9. Fails closed
+    on anything else."""
+    if context is None:
         raise TrustedContextError("invalid_context")
-    try:
-        validated = RequestContext.model_validate(context.model_dump())
-    except Exception:
-        raise TrustedContextError("invalid_context") from None
-    if validated.expires_at.astimezone(timezone.utc) <= now:
+
+    if isinstance(context, TrustedRequestContext):
+        data = context.model_dump()
+        return {
+            "run_id": data.get("run_id"),
+            "principal_type": data.get("principal_type", "user"),
+            "principal_id": data.get("principal_id"),
+            "session_id": data.get("session_id"),
+            "tenant_id": data["tenant_id"],
+            "cluster_id": data.get("cluster_id"),
+            "capability": data.get("capability"),
+            "source": data.get("source", "planner"),
+        }
+
+    # ScopeView: InvocationScope (new ingress) or LegacyScopeAdapter (old AI Chat path).
+    if isinstance(context, ScopeView):
+        return {
+            "run_id": str(getattr(context, "run_id", "") or ""),
+            "principal_type": str(getattr(context, "principal_type", "user")),
+            "principal_id": str(context.principal_id or ""),
+            "session_id": str(context.session_id) if context.session_id else None,
+            "tenant_id": str(context.tenant_id or ""),
+            "cluster_id": str(context.cluster_id or ""),
+            "capability": str(getattr(context, "capability", "") or ""),
+            "source": str(getattr(context, "source", "planner")),
+        }
+
+    if isinstance(context, dict):
+        if context.get("context_type") == "trusted_request":
+            try:
+                validated = TrustedRequestContext.model_validate(context)
+            except Exception:
+                raise TrustedContextError("invalid_context") from None
+            _check_lifetime(validated.issued_at, validated.expires_at, now)
+            return {
+                "run_id": validated.run_id,
+                "principal_type": validated.principal_type,
+                "principal_id": validated.principal_id,
+                "session_id": validated.session_id,
+                "tenant_id": validated.tenant_id,
+                "cluster_id": validated.cluster_id,
+                "capability": validated.capability,
+                "source": validated.source,
+            }
+
+    raise TrustedContextError("invalid_context")
+
+
+def _check_lifetime(issued_at, expires_at, now: datetime) -> None:
+    if expires_at.astimezone(timezone.utc) <= now:
         raise TrustedContextError("expired_context")
-    if validated.issued_at.astimezone(timezone.utc) > now:
+    if issued_at.astimezone(timezone.utc) > now:
         raise TrustedContextError("invalid_context")
-    return validated
 
 
 def _load_private_key(encoded: str) -> Ed25519PrivateKey:
@@ -140,5 +198,12 @@ def _validate_query_api_url(url: str) -> None:
     ):
         raise TrustedContextError("invalid_service")
     base_path = base.path.rstrip("/")
+    # internal 路由（/internal/v1/query/*、/internal/v1/control-plane/*）注册在 query-api
+    # 根路径（无 /api/v1 前缀），而 QUERY_API_URL 常含 /api/v1 用于公共 API。因此 internal
+    # 路由的 target.path 应以根 /internal/v1/ 开头，而不是受 QUERY_API_URL 路径前缀约束。
+    # host/port/scheme 校验（上面的 anti-SSRF）仍是安全关键，path 约束对 internal 放宽。
+    is_internal = target.path.startswith("/internal/v1/")
+    if is_internal:
+        return
     if target.path != base_path and not target.path.startswith(base_path + "/"):
         raise TrustedContextError("invalid_service")

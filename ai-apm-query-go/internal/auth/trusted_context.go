@@ -1,4 +1,11 @@
 // Package auth contains standalone internal service authentication primitives.
+//
+// V9.2 Service Identity (INTERNAL-AUTH-P0-011):
+//   - JWS Compact Serialization, EdDSA / Ed25519
+//   - JWS header: alg=EdDSA, typ=AIOPS-CONTEXT, kid=<key-id>
+//   - Each traffic direction uses an independent signing keypair
+//   - The verifier holds only the opposite direction's public key
+//   - nonce + replay protection is unified across all three contexts
 package auth
 
 import (
@@ -18,18 +25,22 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 )
 
+// JWS type for V9.2 contexts. Legacy internal contexts used typ=JWT which is now forbidden.
+const jwsTypeAIOPSContext = "AIOPS-CONTEXT"
+
 var (
-	ErrInvalidService   = errors.New("invalid service token")
-	ErrInvalidSignature = errors.New("invalid trusted context signature")
-	ErrInvalidContext   = errors.New("invalid trusted request context")
-	ErrExpiredContext   = errors.New("expired trusted request context")
-	ErrReplayedContext  = errors.New("replayed trusted request context")
-	ErrReplayCacheFull  = errors.New("trusted request context replay cache is full")
-	ErrWrongAudience    = errors.New("wrong trusted request context audience")
+	ErrInvalidService    = errors.New("invalid service token")
+	ErrInvalidSignature  = errors.New("invalid trusted context signature")
+	ErrInvalidContext    = errors.New("invalid trusted request context")
+	ErrExpiredContext    = errors.New("expired trusted request context")
+	ErrReplayedContext   = errors.New("replayed trusted request context")
+	ErrReplayCacheFull   = errors.New("trusted request context replay cache is full")
+	ErrWrongAudience     = errors.New("wrong trusted request context audience")
+	ErrWrongContextType  = errors.New("wrong trusted request context type")
 )
 
-// VerifyConfig holds the independently managed service credential and signing
-// verification material for TrustedRequestContext tokens.
+// VerifyConfig holds the independently managed service credential and the
+// opposite direction's public verification keys for the V9.2 contexts.
 type VerifyConfig struct {
 	Audience     string
 	Issuer       string
@@ -47,7 +58,7 @@ type ReplayCache interface {
 }
 
 // InMemoryReplayCache is a concurrency-safe bounded cache for short-lived
-// TrustedRequestContext nonces.
+// context nonces.
 type InMemoryReplayCache struct {
 	mu       sync.Mutex
 	maxItems int
@@ -95,29 +106,6 @@ func KeyID(publicKey ed25519.PublicKey) string {
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-// SignTrustedRequestContext produces a strict EdDSA JWS containing only the
-// shared RequestContext contract. Service authentication is deliberately not
-// part of this token.
-func SignTrustedRequestContext(ctx contract.RequestContext, privateKey ed25519.PrivateKey) (string, error) {
-	if err := validateLifetime(ctx); err != nil {
-		return "", err
-	}
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return "", fmt.Errorf("%w: invalid Ed25519 private key", ErrInvalidSignature)
-	}
-	header, err := json.Marshal(protectedHeader{Algorithm: "EdDSA", KeyID: KeyID(privateKey.Public().(ed25519.PublicKey)), Type: "JWT"})
-	if err != nil {
-		return "", fmt.Errorf("%w: encode protected header", ErrInvalidContext)
-	}
-	payload, err := json.Marshal(ctx)
-	if err != nil {
-		return "", fmt.Errorf("%w: encode context", ErrInvalidContext)
-	}
-	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
-	signature := ed25519.Sign(privateKey, []byte(signingInput))
-	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
-}
-
 // VerifyServiceToken checks the separate internal service credential in
 // constant time. It must be called independently from context verification.
 func VerifyServiceToken(provided string, cfg VerifyConfig) error {
@@ -130,71 +118,198 @@ func VerifyServiceToken(provided string, cfg VerifyConfig) error {
 	return nil
 }
 
-// VerifyTrustedRequestContext validates a strict EdDSA JWS, its contract
-// claims, time bounds, configured issuer/audience, and one-time nonce use.
-func VerifyTrustedRequestContext(token string, cfg VerifyConfig, now time.Time) (contract.RequestContext, error) {
-	var zero contract.RequestContext
+// signJWS signs any V9.2 context payload with EdDSA and typ=AIOPS-CONTEXT.
+func signJWS(payload any, privateKey ed25519.PrivateKey) (string, error) {
+	if len(privateKey) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("%w: invalid Ed25519 private key", ErrInvalidSignature)
+	}
+	header, err := json.Marshal(protectedHeader{
+		Algorithm: "EdDSA",
+		KeyID:     KeyID(privateKey.Public().(ed25519.PublicKey)),
+		Type:      jwsTypeAIOPSContext,
+	})
+	if err != nil {
+		return "", fmt.Errorf("%w: encode protected header", ErrInvalidContext)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("%w: encode context", ErrInvalidContext)
+	}
+	signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(body)
+	signature := ed25519.Sign(privateKey, []byte(signingInput))
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+// verifyJWSPayload verifies the JWS envelope (alg=EdDSA, typ=AIOPS-CONTEXT, kid,
+// signature) and returns the raw payload bytes. Time/replay/type checks are done
+// by the caller with the decoded typed context.
+func verifyJWSPayload(token string, cfg VerifyConfig) ([]byte, error) {
 	if cfg.Audience == "" || cfg.Issuer == "" || cfg.ReplayCache == nil || cfg.ClockSkew < 0 {
-		return zero, fmt.Errorf("%w: invalid verifier configuration", ErrInvalidContext)
+		return nil, fmt.Errorf("%w: invalid verifier configuration", ErrInvalidContext)
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return zero, ErrInvalidSignature
+		return nil, ErrInvalidSignature
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return zero, ErrInvalidSignature
+		return nil, ErrInvalidSignature
 	}
 	var header protectedHeader
-	if err := decodeStrict(headerBytes, &header); err != nil || header.Algorithm != "EdDSA" || header.Type != "JWT" || header.KeyID == "" {
-		return zero, ErrInvalidSignature
+	if err := decodeStrict(headerBytes, &header); err != nil || header.Algorithm != "EdDSA" || header.Type != jwsTypeAIOPSContext || header.KeyID == "" {
+		return nil, ErrInvalidSignature
 	}
 	publicKey, exists := cfg.PublicKeys[header.KeyID]
 	if !exists || len(publicKey) != ed25519.PublicKeySize {
-		return zero, ErrInvalidSignature
+		return nil, ErrInvalidSignature
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(publicKey, []byte(parts[0]+"."+parts[1]), signature) {
-		return zero, ErrInvalidSignature
+		return nil, ErrInvalidSignature
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	return base64.RawURLEncoding.DecodeString(parts[1])
+}
+
+// verifyCommonClaims validates issuer, audience, time bounds and nonce replay for
+// a decoded context carrying the shared claims (Issuer/Audience/IssuedAt/ExpiresAt/Nonce).
+func verifyCommonClaims(issuer, audience string, issuedAt, expiresAt time.Time, nonce string, cfg VerifyConfig, now time.Time) error {
+	if issuer != cfg.Issuer {
+		return ErrInvalidContext
+	}
+	if audience != cfg.Audience {
+		return ErrWrongAudience
+	}
+	if expiresAt.Before(now.Add(-cfg.ClockSkew)) {
+		return ErrExpiredContext
+	}
+	if issuedAt.After(now.Add(cfg.ClockSkew)) {
+		return ErrInvalidContext
+	}
+	if err := cfg.ReplayCache.CheckAndStore(nonce, expiresAt.Add(cfg.ClockSkew), now); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// V9.2 three contexts — sign
+// ═══════════════════════════════════════════════════════════════════════
+
+// SignRunInvocationContext signs a RunInvocationContext (query-api → orchestrator).
+func SignRunInvocationContext(ctx contract.RunInvocationContext, privateKey ed25519.PrivateKey) (string, error) {
+	if ctx.ContextType != "run_invocation" {
+		return "", ErrWrongContextType
+	}
+	if err := ctx.Validate(); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidContext, err)
+	}
+	return signJWS(ctx, privateKey)
+}
+
+// SignRunControlContext signs a RunControlContext (query-api → orchestrator).
+func SignRunControlContext(ctx contract.RunControlContext, privateKey ed25519.PrivateKey) (string, error) {
+	if ctx.ContextType != "run_control" {
+		return "", ErrWrongContextType
+	}
+	if err := ctx.Validate(); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidContext, err)
+	}
+	return signJWS(ctx, privateKey)
+}
+
+// SignTrustedRequestContextV2 signs a TrustedRequestContext (orchestrator → query-api).
+func SignTrustedRequestContextV2(ctx contract.TrustedRequestContext, privateKey ed25519.PrivateKey) (string, error) {
+	if ctx.ContextType != "trusted_request" {
+		return "", ErrWrongContextType
+	}
+	if err := ctx.Validate(); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidContext, err)
+	}
+	return signJWS(ctx, privateKey)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// V9.2 three contexts — verify (type-specific, prevents confused-deputy)
+// ═══════════════════════════════════════════════════════════════════════
+
+// VerifyRunInvocationContext verifies a RunInvocationContext token.
+func VerifyRunInvocationContext(token string, cfg VerifyConfig, now time.Time) (contract.RunInvocationContext, error) {
+	var zero contract.RunInvocationContext
+	payload, err := verifyJWSPayload(token, cfg)
 	if err != nil {
-		return zero, ErrInvalidContext
+		return zero, err
 	}
-	var ctx contract.RequestContext
+	// Check context_type before strict decode to return a clean ErrWrongContextType
+	// for a valid token of the wrong type (confused-deputy prevention).
+	var typeProbe struct {
+		ContextType string `json:"context_type"`
+	}
+	if err := json.Unmarshal(payload, &typeProbe); err != nil || typeProbe.ContextType != "run_invocation" {
+		return zero, ErrWrongContextType
+	}
+	var ctx contract.RunInvocationContext
 	if err := contract.DecodeStrict(payload, &ctx); err != nil {
 		return zero, fmt.Errorf("%w: %v", ErrInvalidContext, err)
 	}
-	if err := validateLifetime(ctx); err != nil {
-		return zero, err
+	if err := ctx.Validate(); err != nil {
+		return zero, fmt.Errorf("%w: %v", ErrInvalidContext, err)
 	}
-	if ctx.Issuer != cfg.Issuer {
-		return zero, ErrInvalidContext
-	}
-	if ctx.Audience != cfg.Audience {
-		return zero, ErrWrongAudience
-	}
-	if ctx.ExpiresAt.Before(now.Add(-cfg.ClockSkew)) {
-		return zero, ErrExpiredContext
-	}
-	if ctx.IssuedAt.After(now.Add(cfg.ClockSkew)) {
-		return zero, ErrInvalidContext
-	}
-	if err := cfg.ReplayCache.CheckAndStore(ctx.Nonce, ctx.ExpiresAt.Add(cfg.ClockSkew), now); err != nil {
+	if err := verifyCommonClaims(ctx.Issuer, ctx.Audience, ctx.IssuedAt, ctx.ExpiresAt, ctx.Nonce, cfg, now); err != nil {
 		return zero, err
 	}
 	return ctx, nil
 }
 
-func validateLifetime(ctx contract.RequestContext) error {
+// VerifyRunControlContext verifies a RunControlContext token.
+func VerifyRunControlContext(token string, cfg VerifyConfig, now time.Time) (contract.RunControlContext, error) {
+	var zero contract.RunControlContext
+	payload, err := verifyJWSPayload(token, cfg)
+	if err != nil {
+		return zero, err
+	}
+	var typeProbe struct {
+		ContextType string `json:"context_type"`
+	}
+	if err := json.Unmarshal(payload, &typeProbe); err != nil || typeProbe.ContextType != "run_control" {
+		return zero, ErrWrongContextType
+	}
+	var ctx contract.RunControlContext
+	if err := contract.DecodeStrict(payload, &ctx); err != nil {
+		return zero, fmt.Errorf("%w: %v", ErrInvalidContext, err)
+	}
 	if err := ctx.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidContext, err)
+		return zero, fmt.Errorf("%w: %v", ErrInvalidContext, err)
 	}
-	lifetime := ctx.ExpiresAt.UTC().Sub(ctx.IssuedAt.UTC())
-	if lifetime < 30*time.Second || lifetime > 60*time.Second {
-		return fmt.Errorf("%w: context lifetime must be between 30 and 60 seconds", ErrInvalidContext)
+	if err := verifyCommonClaims(ctx.Issuer, ctx.Audience, ctx.IssuedAt, ctx.ExpiresAt, ctx.Nonce, cfg, now); err != nil {
+		return zero, err
 	}
-	return nil
+	return ctx, nil
+}
+
+// VerifyTrustedRequestContextV2 verifies a TrustedRequestContext token.
+func VerifyTrustedRequestContextV2(token string, cfg VerifyConfig, now time.Time) (contract.TrustedRequestContext, error) {
+	var zero contract.TrustedRequestContext
+	payload, err := verifyJWSPayload(token, cfg)
+	if err != nil {
+		return zero, err
+	}
+	var typeProbe struct {
+		ContextType string `json:"context_type"`
+	}
+	if err := json.Unmarshal(payload, &typeProbe); err != nil || typeProbe.ContextType != "trusted_request" {
+		return zero, ErrWrongContextType
+	}
+	var ctx contract.TrustedRequestContext
+	if err := contract.DecodeStrict(payload, &ctx); err != nil {
+		return zero, fmt.Errorf("%w: %v", ErrInvalidContext, err)
+	}
+	if err := ctx.Validate(); err != nil {
+		return zero, fmt.Errorf("%w: %v", ErrInvalidContext, err)
+	}
+	if err := verifyCommonClaims(ctx.Issuer, ctx.Audience, ctx.IssuedAt, ctx.ExpiresAt, ctx.Nonce, cfg, now); err != nil {
+		return zero, err
+	}
+	return ctx, nil
 }
 
 func decodeStrict(data []byte, target any) error {

@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/observability-platform/ai-apm-ingest-go/internal/clickhouse"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
 )
 
@@ -47,10 +46,12 @@ type edgeValue struct {
 	durationCount uint64
 }
 
-// Pipeline processes OTLP JSON and writes to ClickHouse
+// Pipeline processes OTLP JSON and writes to sinks
 type Pipeline struct {
-	writer        *clickhouse.Writer
-	metricsWriter *clickhouse.MetricsWriter
+	// writer/metricsWriter 为可选 span/edge sink（V9.3 Phase 14 依赖倒置后为中立接口）。
+	// 传 nil（无 sink）合法，使用方必须按 nil 安全跳过。
+	writer        SpanSink
+	metricsWriter EdgeSink
 	clusterID     string // 本 ingest 实例所属集群（多集群纳管打标；空默认 default）
 	mu            sync.Mutex
 	metricsAgg    map[metricsKey]*metricsValue
@@ -59,6 +60,9 @@ type Pipeline struct {
 	doneCh        chan struct{}
 	// onServiceMetric 可选回调：每累加一次服务调用时通知外部（用于喂 Prometheus 服务 RED）。
 	onServiceMetric func(service string, isError bool, durationNs uint64)
+	// redSink 可选回调：flush 时把聚合的 RED 服务指标推给外部（P6.5 用于双写 VictoriaMetrics）。
+	// 为空时跳过，不改变既有 Prometheus 行为。
+	redSink func(m *model.ServiceMetric)
 }
 
 // SetOnServiceMetric 注册服务 RED 回调（可选，用于暴露服务指标到 /metrics）。
@@ -66,8 +70,14 @@ func (p *Pipeline) SetOnServiceMetric(fn func(service string, isError bool, dura
 	p.onServiceMetric = fn
 }
 
-// New creates a new Pipeline with the given span writer and metrics writer
-func New(w *clickhouse.Writer, mw *clickhouse.MetricsWriter) *Pipeline {
+// SetREDSink 注册 RED 服务指标聚合的写回调（可选；P6.5 new 链双写 VictoriaMetrics）。
+// 回调在 flush 时按 (tenant, service, caller, minute) 聚合后调用一次。
+func (p *Pipeline) SetREDSink(fn func(m *model.ServiceMetric)) {
+	p.redSink = fn
+}
+
+// New creates a new Pipeline with the given optional span/edge sinks (may be nil).
+func New(w SpanSink, mw EdgeSink) *Pipeline {
 	p := &Pipeline{
 		writer:        w,
 		metricsWriter: mw,
@@ -80,11 +90,10 @@ func New(w *clickhouse.Writer, mw *clickhouse.MetricsWriter) *Pipeline {
 	return p
 }
 
-// SetClusterID 设置本 ingest 实例所属集群 ID（多集群纳管打标；空默认 default）。
+// SetClusterID 设置本 ingest 实例所属集群 ID（多集群纳管打标）。
+// Phase 5：不再把空 id 兜底为 default；空即保持为空，由调用方（cmd/ingest/main.go）
+// 在启动时校验 CLUSTER_ID 为 canonical UUID 并 fail-closed。
 func (p *Pipeline) SetClusterID(id string) {
-	if id == "" {
-		id = "default"
-	}
 	p.clusterID = id
 }
 
@@ -108,9 +117,29 @@ func (p *Pipeline) flushLoop() {
 func (p *Pipeline) flushMetrics() {
 	p.mu.Lock()
 	edges := p.edgesAgg
+	metrics := p.metricsAgg
 	p.metricsAgg = make(map[metricsKey]*metricsValue)
 	p.edgesAgg = make(map[edgeKey]*edgeValue)
 	p.mu.Unlock()
+
+	// RED 服务指标聚合 → 外部 sink（P6.5 new 链双写 VictoriaMetrics；可选，不影响既有路径）。
+	if p.redSink != nil {
+		for k, v := range metrics {
+			tb, _ := time.Parse("2006-01-02T15:04", k.timeBucket)
+			p.redSink(&model.ServiceMetric{
+				TenantID:      k.tenantID,
+				ClusterID:     p.clusterID,
+				ServiceName:   k.serviceName,
+				CallerService: k.callerService,
+				TimeBucket:    tb,
+				CallCount:     v.callCount,
+				ErrorCount:    v.errorCount,
+				DurationSumNs: v.durationSumNs,
+				DurationCount: v.durationCount,
+				Date:          tb.Format("2006-01-02"),
+			})
+		}
+	}
 
 	for k, v := range edges {
 		tb, _ := time.Parse("2006-01-02T15:04", k.timeBucket)
@@ -119,17 +148,21 @@ func (p *Pipeline) flushMetrics() {
 		if v.durationCount > 0 {
 			avgNs = v.durationSumNs / v.durationCount
 		}
-		p.metricsWriter.AddEdge(&model.TopologyEdge{
-			TenantID:      k.tenantID,
-			ClusterID:     p.clusterID,
-			SourceService: k.sourceService,
-			TargetService: k.targetService,
-			TimeBucket:    tb,
-			CallCount:     v.callCount,
-			ErrorCount:    v.errorCount,
-			AvgDurationNs: avgNs,
-			Date:          date,
-		})
+		// B1：LEGACY_WRITER_ENABLED=false 时 metricsWriter 为 nil，跳过 CH 边写入
+		// （new 链 RED 指标仍经 redSink 写入 VictoriaMetrics）。
+		if p.metricsWriter != nil {
+			p.metricsWriter.AddEdge(&model.TopologyEdge{
+				TenantID:      k.tenantID,
+				ClusterID:     p.clusterID,
+				SourceService: k.sourceService,
+				TargetService: k.targetService,
+				TimeBucket:    tb,
+				CallCount:     v.callCount,
+				ErrorCount:    v.errorCount,
+				AvgDurationNs: avgNs,
+				Date:          date,
+			})
+		}
 	}
 }
 
@@ -182,7 +215,11 @@ func (p *Pipeline) ProcessOTLPTraces(tenantID string, body []byte) (int, error) 
 		for _, ss := range rs.ScopeSpans {
 			for _, s := range ss.Spans {
 				span := p.convertSpan(tenantID, &s, serviceName, resourceAttrs)
-				p.writer.Add(span)
+				// B1：LEGACY_WRITER_ENABLED=false 时 writer 为 nil，跳过 CH span 写入
+				// （RED 聚合与 new 链双写不受影响）。
+				if p.writer != nil {
+					p.writer.Add(span)
+				}
 				count++
 
 				// Track span for metrics

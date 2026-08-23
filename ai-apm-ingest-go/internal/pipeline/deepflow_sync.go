@@ -90,13 +90,16 @@ func clampStartTime(last, now time.Time) time.Time {
 type DeepFlowSyncer struct {
 	dfEndpoint string // DeepFlow ClickHouse HTTP 地址，如 http://host:8123
 	dfClient   *http.Client
-	edgeWriter interface{ AddEdge(*model.TopologyEdge) }
-	spanWriter interface{ Add(*model.Span) }
-	logWriter  interface{ Add(*model.LogRecord) }
-	redMetric  interface{ AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64) }
-	cluster    string // 所属 k8s 环境/集群，RED 指标用 cluster 标签区分
-	tenantID   string
-	interval   time.Duration
+	// 可选 sink（V9.3 Phase 14 依赖倒置）：nil 或 no-op 均合法，调用方按 nil 跳过。
+	edgeWriter EdgeSink
+	spanWriter SpanSink
+	logWriter  LogSink
+	redMetric  interface {
+		AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64)
+	}
+	cluster  string // 所属 k8s 环境/集群，RED 指标用 cluster 标签区分
+	tenantID string
+	interval time.Duration
 	// 抽样率（0~1）：只写入 part 比例的 span，控制 ClickHouse 写入量与存储成本。
 	// 因每条 l7 flow 现在会产出 client+server 两个 span（写入量翻倍），
 	// 抽样率可把最终落库量降回原单 span 水平（如 0.5 = 每 flow 平均 1 span）。
@@ -109,8 +112,11 @@ type DeepFlowSyncer struct {
 }
 
 // NewDeepFlowSyncer 创建 DeepFlow 同步器。edgeWriter 写拓扑边，spanWriter 写 span，logWriter 写日志。
+// 三者可为 nil 或 no-op（V9.3 Phase 14 依赖倒置：只依赖中立 sink 接口，不绑定具体存储实现）。
 // redMetric 可选：若提供，则把同步到的真实服务流量累加为 VM 服务 RED 指标（cluster 为所属环境）。
-func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter interface{ AddEdge(*model.TopologyEdge) }, spanWriter interface{ Add(*model.Span) }, logWriter interface{ Add(*model.LogRecord) }, redMetric interface{ AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64) }) *DeepFlowSyncer {
+func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter EdgeSink, spanWriter SpanSink, logWriter LogSink, redMetric interface {
+	AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64)
+}) *DeepFlowSyncer {
 	s := &DeepFlowSyncer{
 		dfEndpoint: fmt.Sprintf("http://%s:%d", dfCHHost, dfCHPort),
 		dfClient:   &http.Client{Timeout: 30 * time.Second},
@@ -290,20 +296,24 @@ func (s *DeepFlowSyncer) Sync() error {
 		}
 		// DeepFlow 返回的是 Asia/Shanghai 时区；写入时统一转成 UTC 存储（与 observability 一致）
 		tbUTC := tb.In(time.UTC)
-		s.edgeWriter.AddEdge(&model.TopologyEdge{
-			TenantID:        s.tenantID,
-			ClusterID:       s.cluster,
-			SourceService:   src,
-			TargetService:   dst,
-			SourceNamespace: srcNS,
-			TargetNamespace: dstNS,
-			TimeBucket:      tbUTC,
-			CallCount:       calls,
-			ErrorCount:      errs,
-			AvgDurationNs:   0, // application_map 无时长字段，可后续扩展
-			Date:            tbUTC.Format("2006-01-02"),
-		})
-		count++
+		// B1：LEGACY_WRITER_ENABLED=false 时 edgeWriter 为 untyped nil，跳过 CH 拓扑边写入
+		// （span/log 路径已有 nil 保护，见 syncTraces）。
+		if s.edgeWriter != nil {
+			s.edgeWriter.AddEdge(&model.TopologyEdge{
+				TenantID:        s.tenantID,
+				ClusterID:       s.cluster,
+				SourceService:   src,
+				TargetService:   dst,
+				SourceNamespace: srcNS,
+				TargetNamespace: dstNS,
+				TimeBucket:      tbUTC,
+				CallCount:       calls,
+				ErrorCount:      errs,
+				AvgDurationNs:   0, // application_map 无时长字段，可后续扩展
+				Date:            tbUTC.Format("2006-01-02"),
+			})
+			count++
+		}
 	}
 	log.Printf("DeepFlowSyncer: synced %d edges from %d rows (window since %s)", count, len(rows), startStr)
 
@@ -324,10 +334,9 @@ func (s *DeepFlowSyncer) Sync() error {
 
 // syncTraces 从 DeepFlow l7_flow_log 拉取最近的应用层调用，构造 span 写入 trace_spans。
 // l7_flow_log 是每请求一条的真实 HTTP 调用记录（含源/目标服务、请求路径、响应码、时长）。
+// 注意：RED 累加不依赖 spanWriter——LEGACY_WRITER_ENABLED=false 时 spanWriter 为 nil，
+// 仅跳过 legacy ClickHouse span 写入，rows 遍历与 VM RED 累加照常执行。
 func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
-	if s.spanWriter == nil {
-		return nil
-	}
 	// 从增量起点拉取真实调用（控制写入量，取前 2000 条）
 	shanghai, errLoc := time.LoadLocation("Asia/Shanghai")
 	if errLoc != nil {
@@ -405,49 +414,55 @@ func (s *DeepFlowSyncer) syncTraces(windowStart time.Time) error {
 		serverSpanID := hexHash(base+"s", 16)
 		clientDur := durNs + 800000
 		clientSpan := &model.Span{
-			TenantID:      s.tenantID,
-			ClusterID:     s.cluster,
-			TraceID:       traceID,
-			SpanID:        clientSpanID,
-			ParentSpanID:  "",
-			ServiceName:   srcName,
-			OperationName: "HTTP " + operation,
-			SpanKind:      "CLIENT",
-			StatusCode:    uint8(code),
-			StartTime:     ts.In(time.UTC),
-			DurationNs:    clientDur,
-			Attributes:    map[string]string{"http.url": operation, "peer": dst},
-			HTTPMethod:    "GET",
-			HTTPURL:       operation,
-			HTTPStatusCode: uint16(code),
-			IsSlow:        boolToU8(clientDur >= 500000000),
-			IsError:       isErr,
+			TenantID:          s.tenantID,
+			ClusterID:         s.cluster,
+			TraceID:           traceID,
+			SpanID:            clientSpanID,
+			ParentSpanID:      "",
+			ServiceName:       srcName,
+			OperationName:     "HTTP " + operation,
+			SpanKind:          "CLIENT",
+			StatusCode:        uint8(code),
+			StartTime:         ts.In(time.UTC),
+			DurationNs:        clientDur,
+			Attributes:        map[string]string{"http.url": operation, "peer": dst},
+			HTTPMethod:        "GET",
+			HTTPURL:           operation,
+			HTTPStatusCode:    uint16(code),
+			IsSlow:            boolToU8(clientDur >= 500000000),
+			IsError:           isErr,
 			ServiceInstanceID: srcName,
-			K8sNamespace:  srcNS,
+			K8sNamespace:      srcNS,
 		}
-		s.spanWriter.Add(clientSpan)
+		// legacy CH span 写入为可选：spanWriter 为 nil（LEGACY_WRITER_ENABLED=false）
+		// 时跳过，不影响下方 RED 累加。
+		if s.spanWriter != nil {
+			s.spanWriter.Add(clientSpan)
+		}
 		serverSpan := &model.Span{
-			TenantID:      s.tenantID,
-			ClusterID:     s.cluster,
-			TraceID:       traceID,
-			SpanID:        serverSpanID,
-			ParentSpanID:  clientSpanID,
-			ServiceName:   dst,
-			OperationName: operation,
-			SpanKind:      "SERVER",
-			StatusCode:    uint8(code),
-			StartTime:     ts.In(time.UTC),
-			DurationNs:    durNs,
-			Attributes:    map[string]string{"http.url": operation, "source": srcName},
-			HTTPMethod:    "GET",
-			HTTPURL:       operation,
-			HTTPStatusCode: uint16(code),
-			IsSlow:        boolToU8(durNs >= 500000000),
-			IsError:       isErr,
+			TenantID:          s.tenantID,
+			ClusterID:         s.cluster,
+			TraceID:           traceID,
+			SpanID:            serverSpanID,
+			ParentSpanID:      clientSpanID,
+			ServiceName:       dst,
+			OperationName:     operation,
+			SpanKind:          "SERVER",
+			StatusCode:        uint8(code),
+			StartTime:         ts.In(time.UTC),
+			DurationNs:        durNs,
+			Attributes:        map[string]string{"http.url": operation, "source": srcName},
+			HTTPMethod:        "GET",
+			HTTPURL:           operation,
+			HTTPStatusCode:    uint16(code),
+			IsSlow:            boolToU8(durNs >= 500000000),
+			IsError:           isErr,
 			ServiceInstanceID: srcName,
-			K8sNamespace:  dstNS,
+			K8sNamespace:      dstNS,
 		}
-		s.spanWriter.Add(serverSpan)
+		if s.spanWriter != nil {
+			s.spanWriter.Add(serverSpan)
+		}
 
 		// 把真实服务流量累加为 VM 服务 RED 指标（service_requests_total / service_errors_total / 时长）
 		// 供 anomaly 检测 / SLO 烧毁率等规则评估使用。cluster 标签区分多 k8s 环境。
@@ -572,5 +587,3 @@ func toUint(v interface{}) uint64 {
 	}
 	return 0
 }
-
-

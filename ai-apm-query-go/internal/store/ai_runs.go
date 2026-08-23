@@ -1,0 +1,341 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
+)
+
+// ─── AIRun ────────────────────────────────────────────────────
+// AIOps Run 持久化实体（ai_runs 表，query-go migrations 冻结 schema）。
+// 语义：Run 状态机（created→planning→...→终态）+ optimistic state_version。
+// orchestrator 经 query-api 持久化（P0-3：orchestrator 不直连 DB）。
+//
+// 权威映射：与 orchestrator contracts.Run 对齐（P10 Plan A）。
+// 不可变字段（Create 后不得改写）：run_id/request_id/tenant_id/principal_type/
+// principal_id/principal_type/scope_kind/primary_cluster_id/intent/action_mode/
+// target_type/target_resource_id/time_range_start/time_range_end/parent_run_id/created_at。
+
+// AIRun DB 实体。
+type AIRun struct {
+	RunID            string
+	RequestID        string
+	TenantID         string
+	Principal        string // principal_id
+	PrincipalType    string // user|system
+	SessionID        string
+	ScopeKind        string // single_cluster | multi_cluster
+	PrimaryClusterID string
+	Intent           string
+	ActionMode       string
+	TargetType       string
+	TargetResourceID string
+	TimeRangeStart   *time.Time
+	TimeRangeEnd     *time.Time
+	Status           string
+	StateVersion     int64
+	ParentRunID      string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	FinishedAt       *time.Time
+	LastEventSeq     int64
+}
+
+// AIRunDAO 访问 ai_runs 表。
+type AIRunDAO struct{}
+
+// isDuplicateKey 判断是否唯一键冲突（MySQL 1062）。
+func isDuplicateKey(err error) bool {
+	var myErr *mysql.MySQLError
+	if errors.As(err, &myErr) && myErr.Number == 1062 {
+		return true
+	}
+	// sqlmock 不产生真实 MySQL 错误，按字符串匹配兜底。
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate entry")
+}
+
+// Create 幂等创建 Run，返回 created(ok) / existing(!ok)。
+// 唯一域 (tenant_id, request_id)：相同 request_id 不同不可变参数时由调用方判 fail-closed。
+// 绝不通过 ON DUPLICATE KEY UPDATE 改写原 run_id。
+func (d *AIRunDAO) Create(r AIRun) (bool, error) {
+	conn := GetDB()
+	if conn == nil {
+		return false, errors.New("mysql unavailable")
+	}
+	scope := r.ScopeKind
+	if scope == "" {
+		scope = "single_cluster"
+	}
+	status := r.Status
+	if status == "" {
+		status = "created" // 权威起点（对齐 contracts.RunStatus.CREATED，非 pending）
+	}
+	_, err := conn.Exec(
+		`INSERT INTO ai_runs (run_id, request_id, tenant_id, principal, principal_type,
+		   session_id, scope_kind, primary_cluster_id, intent, action_mode,
+		   target_type, target_resource_id, time_range_start, time_range_end,
+		   status, state_version, parent_run_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.RunID, r.RequestID, r.TenantID, r.Principal, r.PrincipalType,
+		nullableStr(r.SessionID), scope, nullableStr(r.PrimaryClusterID), r.Intent, r.ActionMode,
+		nullableStr(r.TargetType), nullableStr(r.TargetResourceID),
+		nullableTime(r.TimeRangeStart), nullableTime(r.TimeRangeEnd),
+		status, r.StateVersion, nullableStr(r.ParentRunID), r.CreatedAt, r.UpdatedAt,
+	)
+	if err != nil {
+		if isDuplicateKey(err) {
+			return false, nil // existing（幂等）
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// CreateWithOutbox 在**同一事务**内创建 Run 并写 outbox（P0-5：outbox 写入失败则回滚，
+// 避免"Run 已建但缺失 outbox → 永不派发"。返回 created(ok)/existing(!ok)）。
+func (d *AIRunDAO) CreateWithOutbox(r AIRun, o AIRunOutbox) (bool, error) {
+	conn := GetDB()
+	if conn == nil {
+		return false, errors.New("mysql unavailable")
+	}
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	scope := r.ScopeKind
+	if scope == "" {
+		scope = "single_cluster"
+	}
+	status := r.Status
+	if status == "" {
+		status = "created"
+	}
+	_, err = tx.Exec(
+		`INSERT INTO ai_runs (run_id, request_id, tenant_id, principal, principal_type,
+		   session_id, scope_kind, primary_cluster_id, intent, action_mode,
+		   target_type, target_resource_id, time_range_start, time_range_end,
+		   status, state_version, parent_run_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.RunID, r.RequestID, r.TenantID, r.Principal, r.PrincipalType,
+		nullableStr(r.SessionID), scope, nullableStr(r.PrimaryClusterID), r.Intent, r.ActionMode,
+		nullableStr(r.TargetType), nullableStr(r.TargetResourceID),
+		nullableTime(r.TimeRangeStart), nullableTime(r.TimeRangeEnd),
+		status, r.StateVersion, nullableStr(r.ParentRunID), r.CreatedAt, r.UpdatedAt,
+	)
+	if err != nil {
+		if isDuplicateKey(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	obs := o.Status
+	if obs == "" {
+		obs = "pending"
+	}
+	if o.CreatedAt.IsZero() {
+		o.CreatedAt = r.CreatedAt
+	}
+	if o.UpdatedAt.IsZero() {
+		o.UpdatedAt = r.UpdatedAt
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO ai_run_outbox (invocation_id, run_id, status, dispatch_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		o.InvocationID, r.RunID, obs, o.DispatchCount, o.CreatedAt, o.UpdatedAt); err != nil {
+		return false, err // outbox 失败 → 回滚 run，不留下"永不派发"的 Run
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Get 按 run_id 读取。
+func (d *AIRunDAO) Get(runID string) (*AIRun, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	row := conn.QueryRow(
+		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
+		   target_resource_id, time_range_start, time_range_end, status, state_version,
+		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence
+		 FROM ai_runs WHERE run_id = ?`, runID)
+	return scanAIRun(row)
+}
+
+// GetTx 在给定事务内按 run_id 读取（供恢复一致性快照，P1-4）。
+func (d *AIRunDAO) GetTx(tx *sql.Tx, runID string) (*AIRun, error) {
+	row := tx.QueryRow(
+		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
+		   target_resource_id, time_range_start, time_range_end, status, state_version,
+		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence
+		 FROM ai_runs WHERE run_id = ?`, runID)
+	return scanAIRun(row)
+}
+
+// List 列出 tenant 的 Run（按 created_at 倒序）。
+func (d *AIRunDAO) List(tenantID string) ([]AIRun, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	rows, err := conn.Query(
+		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
+		   target_resource_id, time_range_start, time_range_end, status, state_version,
+		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence
+		 FROM ai_runs WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AIRun{}
+	for rows.Next() {
+		var r AIRun
+		if err := scanAIRunRow(rows, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Transition 乐观 CAS 状态迁移（state_version 不符则失败）。
+func (d *AIRunDAO) Transition(runID, target string, expectedVersion int64, now time.Time) (bool, error) {
+	conn := GetDB()
+	if conn == nil {
+		return false, errors.New("mysql unavailable")
+	}
+	var finishedAt interface{} = nil
+	if isTerminalStatus(target) {
+		finishedAt = now
+	}
+	res, err := conn.Exec(
+		`UPDATE ai_runs SET status = ?, state_version = state_version + 1, updated_at = ?, finished_at = ?
+		 WHERE run_id = ? AND state_version = ?`,
+		target, now, finishedAt, runID, expectedVersion)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// Cancel 显式 cancel（control action，终态不可再 cancel）。
+func (d *AIRunDAO) Cancel(runID string, expectedVersion int64, now time.Time) (bool, error) {
+	conn := GetDB()
+	if conn == nil {
+		return false, errors.New("mysql unavailable")
+	}
+	res, err := conn.Exec(
+		`UPDATE ai_runs SET status = 'cancelled', state_version = state_version + 1,
+		   updated_at = ?, finished_at = ? WHERE run_id = ? AND state_version = ?
+		   AND status NOT IN ('success','partial','failed','regressed','cancelled')`,
+		now, now, runID, expectedVersion)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// ScanUnfinished 扫描非终态 Run（重启恢复）。终态含 partial。
+func (d *AIRunDAO) ScanUnfinished() ([]AIRun, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	rows, err := conn.Query(
+		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
+		   target_resource_id, time_range_start, time_range_end, status, state_version,
+		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence
+		 FROM ai_runs WHERE status NOT IN ('success','partial','failed','regressed','cancelled')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AIRun{}
+	for rows.Next() {
+		var r AIRun
+		if err := scanAIRunRow(rows, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// isTerminalStatus 判断是否终态。
+func isTerminalStatus(status string) bool {
+	switch status {
+	case "success", "partial", "failed", "regressed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// scanAIRun 扫描单行（QueryRow 版）。
+func scanAIRun(row *sql.Row) (*AIRun, error) {
+	var r AIRun
+	if err := scanAIRunRow(row, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// scanAIRunRow 扫描一行到 AIRun（QueryRow / Rows 共用）。
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanAIRunRow(row rowScanner, r *AIRun) error {
+	var primary, parent, principalType, session, targetType, targetResource sql.NullString
+	var timeStart, timeEnd, finished sql.NullTime
+	if err := row.Scan(&r.RunID, &r.RequestID, &r.TenantID, &r.Principal, &principalType,
+		&session, &r.ScopeKind, &primary, &r.Intent, &r.ActionMode, &targetType,
+		&targetResource, &timeStart, &timeEnd, &r.Status, &r.StateVersion,
+		&parent, &r.CreatedAt, &r.UpdatedAt, &finished, &r.LastEventSeq); err != nil {
+		return err
+	}
+	// 将 Null 列写回结构体（此前漏赋值导致 PrincipalType/SessionID/PrimaryClusterID 为空）。
+	r.PrincipalType = principalType.String
+	r.SessionID = session.String
+	r.PrimaryClusterID = primary.String
+	r.ParentRunID = parent.String
+	r.TargetType = targetType.String
+	r.TargetResourceID = targetResource.String
+	if timeStart.Valid {
+		r.TimeRangeStart = &timeStart.Time
+	}
+	if timeEnd.Valid {
+		r.TimeRangeEnd = &timeEnd.Time
+	}
+	if finished.Valid {
+		r.FinishedAt = &finished.Time
+	}
+	return nil
+}
+
+// nullableStr / nullableTime 辅助。
+func nullableStr(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nullableTime(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return *t
+}

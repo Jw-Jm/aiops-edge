@@ -19,24 +19,20 @@ const VirtualMachines = lazy(() => import('./pages/observability/VirtualMachines
 const AlertEvents = lazy(() => import('./pages/alerts/AlertEvents'))
 const AlertRules = lazy(() => import('./pages/alerts/AlertRules'))
 const AiChat = lazy(() => import('./pages/ai/AiChat'))
-const AiTools = lazy(() => import('./pages/ai/AiTools'))
 const Capacity = lazy(() => import('./pages/capacity/Capacity'))
 const Report = lazy(() => import('./pages/report/Report'))
 const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
 const Approvals = lazy(() => import('./pages/admin/Approvals'))
-const SLO = lazy(() => import('./pages/slo/SLO'))
-const Knowledge = lazy(() => import('./pages/ai/Knowledge'))
 const AdminSettings = lazy(() => import('./pages/admin/AdminSettings'))
-// ongrid 对齐新增页面
-const Workflows = lazy(() => import('./pages/ai/Workflows'))
-const WorkflowsEditor = lazy(() => import('./pages/ai/Workflows/Editor'))
-const WorkflowsDetail = lazy(() => import('./pages/ai/Workflows/Detail'))
 const K8sActions = lazy(() => import('./pages/infra/K8sActions'))
 const Grafana = lazy(() => import('./pages/observability/Grafana'))
-// P2-4 新增页面：硬件健康 / 变更时间线 / 图谱视图
+// P2-4 新增页面：硬件健康 / 变更时间线
 const Hardware = lazy(() => import('./pages/infra/Hardware'))
 const Changes = lazy(() => import('./pages/infra/Changes'))
-const KnowledgeGraph = lazy(() => import('./pages/ai/KnowledgeGraph'))
+// P12：调查中心 / 智能调查 / 发起调查（六大导航收敛，AI Chat 不再顶层）
+const InvestigationCenter = lazy(() => import('./pages/investigation/InvestigationCenter'))
+const IntelligentInvestigation = lazy(() => import('./pages/investigation/IntelligentInvestigation'))
+const NewInvestigation = lazy(() => import('./pages/investigation/NewInvestigation'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 // ===== 侧栏导航：7 大板块 =====
@@ -66,14 +62,10 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    title: '智能运维',
+    title: '智能调查',
     items: [
-      { path: '/ai/chat', label: 'AI 对话', icon: 'chat' },
-      { path: '/kg', label: '图谱视图', icon: 'topology' },
-      { path: '/ai/tools', label: 'AI 工具', icon: 'nl2sql' },
-      { path: '/ai/workflows', label: '工作流', icon: 'workflow' },
-      { path: '/slo', label: 'SLO 目标', icon: 'settings' },
-      { path: '/knowledge', label: '知识库', icon: 'knowledge' },
+      // P12.1：六大导航收敛——AI Chat/Tool/Workflow/Graph 不再作为普通用户顶层主产品
+      { path: '/investigation', label: '调查中心', icon: 'chat' },
     ],
   },
   {
@@ -310,18 +302,15 @@ function AppLayout() {
               <Route path="/alerts/events" element={<AlertEvents />} />
               <Route path="/alerts/rules" element={<AlertRules />} />
               <Route path="/ai/chat" element={<AiChat />} />
+              {/* P12：调查中心 / 智能调查 / 发起调查 */}
+              <Route path="/investigation" element={<InvestigationCenter />} />
+              <Route path="/investigation/new" element={<NewInvestigation />} />
+              <Route path="/investigation/:runId" element={<IntelligentInvestigation />} />
 
-              <Route path="/ai/tools" element={<AiTools />} />
-              <Route path="/ai/workflows" element={<Workflows />} />
-              <Route path="/ai/workflows/editor" element={<WorkflowsEditor />} />
-              <Route path="/ai/workflows/:id" element={<WorkflowsDetail />} />
-              <Route path="/slo" element={<SLO />} />
-              <Route path="/knowledge" element={<Knowledge />} />
               <Route path="/capacity" element={<Capacity />} />
               <Route path="/infra/k8s" element={<K8sActions />} />
               <Route path="/hardware" element={<Hardware />} />
               <Route path="/changes" element={<Changes />} />
-              <Route path="/kg" element={<KnowledgeGraph />} />
               <Route path="/observability/grafana" element={<Grafana />} />
               <Route path="/report" element={<Report />} />
               <Route path="/admin/approvals" element={<Approvals />} />

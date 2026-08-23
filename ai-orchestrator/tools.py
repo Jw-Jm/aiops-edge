@@ -4,9 +4,12 @@ import json
 import os
 import subprocess
 import urllib.error
+import urllib.request
+import uuid as _uuid
 from uuid import UUID
 
 from contracts import RequestContext
+from invocation_scope import ScopeView
 from internal_query import signed_query_api_request
 from skill_registry import ToolRegistry
 from kg_tools import kg_evidence_tool
@@ -25,6 +28,60 @@ def _get_json(url: str, *, request_context: RequestContext | None = None) -> dic
         return {"error": str(e)}
 
 
+# ── P19.7 K8sGPT：按需拉取平台 LLM 配置 + 子进程私有 env 注入 ─────────────
+#
+# 安全约束：
+#  - 禁止 k8sgpt auth add --password、命令行实参、/root/.k8sgpt、镜像层、持久卷写入 key。
+#  - 不修改全局 os.environ；key 仅存在于本次 subprocess.run 的 env 映射（子进程结束即失效）。
+#  - k8sgpt 的 openai backend 支持 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 环境变量，
+#    因此无需 tmpfs 临时文件（仅在 K8sGPT 不支持环境变量时才允许 0600 tmpfs，并在 finally 删除）。
+#  - 拉取失败/provider 未配置/K8sGPT 错误均返回 unavailable，不伪造健康结论。
+#  - 对 argv/stdout/stderr/异常/SSE/审计日志统一做 key 脱敏。
+
+import time as _time
+
+_LLM_CONFIG_CACHE: dict = {"fetched_at": 0.0, "config": None}
+_LLM_CONFIG_TTL = 60.0  # 短时内存缓存，避免每次调用重复拉取
+
+
+def _redact_key(text: str, api_key: str) -> str:
+    """从文本中移除/脱敏 API key（避免子进程错误回显泄露）。"""
+    if not api_key or not text:
+        return text
+    return text.replace(api_key, "***REDACTED***")
+
+
+def _fetch_llm_config_for_k8sgpt() -> dict | None:
+    """按需从 query-api 内部接口拉取当前启用 LLM 配置（含真实 API key），短时缓存。"""
+    now = _time.time()
+    if _LLM_CONFIG_CACHE["config"] and (now - _LLM_CONFIG_CACHE["fetched_at"]) < _LLM_CONFIG_TTL:
+        return _LLM_CONFIG_CACHE["config"]
+    try:
+        req = urllib.request.Request(f"{QUERY_API}/settings/llm/internal", method="GET")
+        req.add_header("X-Internal-Token", INTERNAL_TOKEN)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            cfg = data.get("data", data)
+            api_key = cfg.get("api_key") or cfg.get("apiKey")
+            if not api_key:
+                return None
+            provider = str(cfg.get("provider", "openai") or "openai").lower()
+            # K8sGPT openai backend 兼容 OpenAI 协议（deepseek/其它 OpenAI-compatible 均可）
+            if provider not in ("openai", "deepseek", "azure", "custom", "openai-compatible"):
+                return None
+            result = {
+                "api_key": api_key,
+                "model": str(cfg.get("model") or "gpt-4o"),
+                "base_url": str(cfg.get("base_url") or "https://api.openai.com/v1"),
+            }
+            # 原地更新（不重绑定模块全局，保证外部引用与模块读取同一 dict）
+            _LLM_CONFIG_CACHE["fetched_at"] = now
+            _LLM_CONFIG_CACHE["config"] = result
+            return result
+    except Exception:
+        return None
+
+
 def _cluster_param(cluster_id: str = "") -> str:
     """Return only an explicit canonical UUID; broad/implicit scope is invalid."""
     try:
@@ -37,9 +94,9 @@ def _cluster_param(cluster_id: str = "") -> str:
 
 
 def _context_for_cluster(
-    cluster_id: str, request_context: RequestContext | None
-) -> RequestContext | None:
-    if not isinstance(request_context, RequestContext):
+    cluster_id: str, request_context: ScopeView | None
+) -> ScopeView | None:
+    if not isinstance(request_context, ScopeView):
         return None
     if str(request_context.cluster_id) != str(cluster_id):
         return None
@@ -197,25 +254,100 @@ def execute_shell(command: str, timeout: int = 30) -> str:
         return f"执行失败: {str(e)}"
 
 
-def k8sgpt_diagnose(namespace: str = "observability") -> str:
+_K8SGPT_TMPFS = "/dev/shm"
+
+
+def _run_k8sgpt(cmd, child_env, api_key, timeout=60):
+    """执行 k8sgpt 并统一脱敏 stdout/stderr，返回 (ok, text)。"""
     try:
-        result = subprocess.run(
-            ["k8sgpt", "analyze", "--explain", "-n", namespace, "-o", "text"],
-            capture_output=True, text=True, timeout=60
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout[:3000]
-        if result.stderr:
-            return f"K8sGPT: {result.stderr[:500]}"
-        # 空 stdout/无 stderr 不是“集群健康”的证据；保留明确的不可用语义，
-        # 由 orchestrator 映射为 unavailable/error，而不是健康结论。
-        return "K8sGPT unavailable: no diagnostic output"
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=child_env)
+    except FileNotFoundError:
+        return False, "K8sGPT unavailable: not installed"
+    except subprocess.TimeoutExpired:
+        return False, "K8sGPT unavailable: timeout"
+    stdout = _redact_key(result.stdout[:3000], api_key)
+    stderr = _redact_key(result.stderr[:500], api_key)
+    if result.returncode == 0 and stdout.strip():
+        return True, stdout
+    if stderr:
+        return False, f"K8sGPT unavailable: {stderr}"
+    # 空 stdout/无 stderr 不是“集群健康”的证据；保留明确的不可用语义。
+    return False, "K8sGPT unavailable: no diagnostic output"
+
+
+def k8sgpt_diagnose(namespace: str = "observability") -> str:
+    """按需、子进程私有方式运行 K8sGPT（--explain 用平台 LLM key）。
+
+    P19.7 安全模型：
+      - 按需拉取平台 LLM 配置（短时内存缓存），key 仅为本次子进程使用。
+      - 先尝试子进程 env 注入（无文件）。实测 k8sgpt 0.4.34 的 --explain 仅凭 env
+        无法识别 provider（报 "AI provider not specified"），故 fallback 到
+        tmpfs 中 0600 临时配置文件（k8sgpt 读 $HOME/.config/k8sgpt/k8sgpt.yaml），
+        子进程结束 finally 删除——不写 /root/.k8sgpt、不写镜像/持久卷、无命令行实参。
+      - 不修改全局 os.environ；key 仅存在于本次 child env（HOME 指向 tmpfs）+ 0600 临时文件。
+      - argv 不含 key；stdout/stderr/异常统一脱敏。
+      - 拉取失败 / provider 未配置 / K8sGPT 错误 → unavailable，不伪造健康结论。
+    """
+    api_key = None
+    tmp_home = None
+    try:
+        llm = _fetch_llm_config_for_k8sgpt()
+        if not llm:
+            return "K8sGPT unavailable: LLM provider not configured"
+        api_key = llm["api_key"]
+        base_cmd = ["k8sgpt", "analyze", "--explain", "-n", namespace, "-o", "text"]
+
+        # 尝试 1：纯 env 注入（无文件）。
+        child_env = dict(os.environ)
+        child_env["OPENAI_API_KEY"] = api_key
+        child_env["OPENAI_BASE_URL"] = llm["base_url"]
+        child_env["OPENAI_MODEL"] = llm["model"]
+        ok, text = _run_k8sgpt(base_cmd, child_env, api_key)
+        if ok:
+            return text
+        # k8sgpt 0.4.34 --explain 无法仅凭 env 识别 provider（实测 env 注入返回空输出/no diagnostic
+        # output），失败即 fallback 到 tmpfs 0600 临时配置，确保真实 --explain 可用。
+        import tempfile
+        import shutil
+        tmp_home = tempfile.mkdtemp(prefix="k8sgpt-", dir=_K8SGPT_TMPFS)
+        cfg_dir = os.path.join(tmp_home, ".config", "k8sgpt")
+        os.makedirs(cfg_dir, exist_ok=True)
+        cfg_path = os.path.join(cfg_dir, "k8sgpt.yaml")
+        with os.fdopen(os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            f.write(
+                "ai:\n"
+                "    providers:\n"
+                "        - name: openai\n"
+                "          model: {model}\n"
+                "          password: {key}\n"
+                "          baseurl: {base}\n"
+                "          temperature: 0.7\n"
+                "          topp: 0.5\n"
+                "          topk: 50\n"
+                "          maxtokens: 2048\n"
+                "          customheaders: []\n"
+                "    defaultprovider: openai\n"
+                "kubeconfig: ''\n".format(model=llm["model"], key=api_key, base=llm["base_url"])
+            )
+        os.chmod(cfg_path, 0o600)
+        cfg_env = dict(os.environ)
+        cfg_env["HOME"] = tmp_home  # k8sgpt 读 $HOME/.config/k8sgpt/k8sgpt.yaml（tmpfs）
+        ok2, text2 = _run_k8sgpt(base_cmd, cfg_env, api_key)
+        return text2
     except FileNotFoundError:
         return "K8sGPT unavailable: not installed"
     except subprocess.TimeoutExpired:
         return "K8sGPT unavailable: timeout"
     except Exception as e:
-        return f"K8sGPT error: {str(e)}"
+        # 异常消息脱敏（key 可能出现在异常 repr 中）
+        return f"K8sGPT unavailable: {_redact_key(str(e), api_key) if api_key else str(e)}"
+    finally:
+        if tmp_home:
+            import shutil
+            try:
+                shutil.rmtree(tmp_home, ignore_errors=True)  # 删除 tmpfs 临时配置，含 key
+            except Exception:
+                pass
 
 
 def deepflow_status(*, request_context: RequestContext | None = None) -> str:
@@ -224,35 +356,69 @@ def deepflow_status(*, request_context: RequestContext | None = None) -> str:
 
 
 def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
-    """获取K8s基础设施信息"""
-    # 修复：查询所有 namespace 的 Pod（namespace=all），并完整展示 name/namespace/status/restarts。
-    # 之前写死 namespace=observability 且只取 name/status，导致 LLM 拿不到 deepflow、kube-system
-    # 等真实 namespace，处置命令只能用 <ns> 占位符或写死 observability。
+    """获取K8s基础设施信息（经内部边界路径 /internal/v1/query/kubernetes）。
+
+    P19 修复：此前用特权公开 /infrastructure/* 端点（requirePrivilegedRole 拒 system
+    principal → 403）。改为走内部边界（身份校验 + boundary 只读，system principal 可用），
+    返回 nodes + node_details + pods。空/错误 → unavailable，不伪造健康结论。
+    """
     context = _context_for_cluster(
-        str(request_context.cluster_id) if isinstance(request_context, RequestContext) else "",
+        str(request_context.cluster_id) if isinstance(request_context, ScopeView) else "",
         request_context,
     )
     if context is None:
         return "K8s 基础设施数据不可用（invalid_context）"
-    pods_data = _get_json(
-        f"{QUERY_API}/infrastructure/pods?namespace=all", request_context=context
-    )
-    nodes_data = _get_json(
-        f"{QUERY_API}/infrastructure/nodes", request_context=context
-    )
+    # 内部边界端点 /internal/v1/query/kubernetes 是 POST + body(cluster_id)。
+    # QUERY_API 常含 /api/v1 前缀（公共 API），内部端点必须用 origin 基址（不含 /api/v1），
+    # 否则会拼出 .../api/v1/internal/v1/... 错误路径（P19 真实环境暴露的 URL 接线缺陷）。
+    origin = QUERY_API.rstrip("/").removesuffix("/api/v1")
+    # 用 TrustedContextIssuer 构造 claims（system principal → session_id="")，与
+    # InternalQueryClient 一致（P7.2 已验证）；signed_query_api_request 的 raw claims
+    # 对 system 产生 session_id=None，被 query-api DecodeStrict 拒绝（401 invalid trusted context）。
+    try:
+        from trusted_context_issuer import TrustedContextIssuer
+        from internal_query import _load_private_key
+        from trusted_context import sign_trusted_request_context_v2
+        private_key = _load_private_key(os.environ.get("TRUSTED_CONTEXT_PRIVATE_KEY", ""))
+        claims = TrustedContextIssuer(private_key=private_key).build_claims(
+            tenant_id=str(getattr(context, "tenant_id", "") or ""),
+            cluster_id=str(getattr(context, "cluster_id", "") or ""),
+            capability="kubernetes.resources.read",
+            run_id=str(getattr(context, "run_id", "") or "") or str(_uuid.uuid4()),
+            principal_type="system",
+            principal_id=str(getattr(context, "principal_id", "") or "") or str(_uuid.uuid4()),
+            source="agent",
+        )
+        jws = sign_trusted_request_context_v2(claims, private_key)
+        service_token = os.environ.get("INTERNAL_TOKEN", "")
+        req = urllib.request.Request(
+            f"{origin}/internal/v1/query/kubernetes",
+            data=json.dumps({"cluster_id": str(getattr(context, "cluster_id", "") or "")}).encode(),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": service_token,
+                "X-Trusted-Request-Context": jws,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode())
+    except TrustedContextError as e:
+        data = {"error": e.error_code}
+    except urllib.error.HTTPError as e:
+        data = {"error": "HTTP Error %s: %s" % (e.code, e.read().decode()[:200])}
+    except (urllib.error.URLError, json.JSONDecodeError) as e:
+        data = {"error": str(e)}
+    if not isinstance(data, dict) or data.get("error"):
+        return f"K8s 基础设施数据不可用（节点/Pod 数量未知，无法据此判断健康）: {data.get('error') if isinstance(data, dict) else data}"
 
-    # query-api 在 K8s 不可达/权限不足时返回 HTTP 200 + error 字段，
-    # 不能把空列表解释为“0 个资源”，否则诊断会产生虚假的健康结论。
-    errors = []
-    if isinstance(pods_data, dict) and pods_data.get("error"):
-        errors.append(f"Pods: {pods_data['error']}")
-    if isinstance(nodes_data, dict) and nodes_data.get("error"):
-        errors.append(f"Nodes: {nodes_data['error']}")
-    if errors:
-        return "K8s 基础设施数据不可用（节点/Pod 数量未知，无法据此判断健康）: " + "; ".join(errors)
+    pods = data.get("pods") or []
+    nodes = data.get("node_details") or []
+    node_names = data.get("nodes") or []
 
-    pods = pods_data.get("pods", [])
-    nodes = nodes_data.get("nodes", [])
+    # 空列表不是“0 个资源”的健康证据：若集群有节点但边界未返回，标记 unavailable。
+    if not nodes and not node_names:
+        return "K8s 基础设施数据不可用（未获取到节点信息，无法据此判断健康）"
 
     report = f"运行中 Pods: {len(pods)} 个\n"
     # 完整展示每个 Pod 的名字、命名空间、状态、重启次数，

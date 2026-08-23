@@ -1,0 +1,162 @@
+{
+  "version": "v2.0",
+  "note": "2026-08-21 整改闭环（Bugbot B1/B2/B3）：fingerprint 与 UUIDv5 均按声明输入真实计算；时间/UUID 严格规范化；evidence_id 必须实体存在。FROZEN_EVIDENCE_NAMESPACE=6f1c3a5e-2b8a-4f3e-9d2c-1a0b3c4d5e6f。fingerprint 算法见 ai-orchestrator/contracts_identity.py，三端共享。",
+  "frozen_namespace": "6f1c3a5e-2b8a-4f3e-9d2c-1a0b3c4d5e6f",
+  "frozen_plan_step_namespace": "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+  "plan_step_id_formula": "UUIDv5(FROZEN_PLAN_STEP_NS, 'v1\\u0000' + run_id + '\\u0000' + plan_id + '\\u0000' + label)",
+  "golden_plan_step_id_vectors": [
+    {
+      "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "plan_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "label": "s1",
+      "expected_step_id": "171203c8-6644-5cbc-8b06-3e76acda96f0"
+    },
+    {
+      "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "plan_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "label": "s2",
+      "expected_step_id": "cbee883b-9649-5fb2-b2e1-898980f373c5"
+    },
+    {
+      "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "plan_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "label": "s1",
+      "expected_step_id": "099631ad-5afd-5c97-bcbd-ebe39ed8e6fe"
+    }
+  ],
+  "golden_fingerprint_vectors": [
+    {
+      "name": "v1",
+      "input": {
+        "source": "VM",
+        "query_id": "qry-1",
+        "resource_id": "svc:orders",
+        "time_range_start": "2026-08-19T09:00:00Z",
+        "time_range_end": "2026-08-19T10:00:00Z",
+        "digest": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+        "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      },
+      "expected_fingerprint": "ff958302a0092e9d3dcdb7d3f9439935fbdd7cfa5839cee2a3722aa1098e41f9",
+      "expected_evidence_id": "a0c3fcda-0783-5d4c-85d7-726bfd0f1eda"
+    },
+    {
+      "name": "v2",
+      "input": {
+        "source": "VLogs",
+        "query_id": "",
+        "resource_id": "",
+        "time_range_start": null,
+        "time_range_end": null,
+        "digest": "",
+        "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "run_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      },
+      "expected_fingerprint": "1525bfa17e5e8e7c95fd206734b57b1d0cb6a8abede9d94abc6d2cf276471abf",
+      "expected_evidence_id": "0e9382fa-3b68-5814-a1ba-4b078c47894c"
+    },
+    {
+      "name": "v3",
+      "input": {
+        "source": "k8sgpt",
+        "query_id": "qry-3",
+        "resource_id": "pod:checkout-7f8d",
+        "time_range_start": "2026-08-19T09:00:00Z",
+        "time_range_end": "2026-08-19T10:00:00Z",
+        "digest": "f0e0d0c0b0a090807060504030201000f0e0d0c0b0a090807060504030201000",
+        "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "run_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+      },
+      "expected_fingerprint": "a6fc6623b39bbb505fb7c14f99aa44c0aef93c814e1268277e1df843dc2fd120",
+      "expected_evidence_id": "8a42f29b-1a4b-5947-b3d9-7d2b49defc73"
+    }
+  ],
+  "vectors": {
+    "positive": {
+      "tool_result_success": {
+        "tool_name": "query_logs",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "success": true,
+        "status": "success",
+        "summary": "ok",
+        "data": {"logs": [{"ts": 1}]},
+        "error_code": null,
+        "error_message": null,
+        "retryable": false,
+        "evidence_ids": ["99999999-9999-4999-8999-999999999999"],
+        "source_system": "VLogs",
+        "query_id": "qry-1",
+        "time_range": {"start": "2026-08-19T09:00:00Z", "end": "2026-08-19T10:00:00Z"},
+        "started_at": "2026-08-19T10:00:01Z",
+        "finished_at": "2026-08-19T10:00:02Z"
+      },
+      "evidence_valid": {
+        "evidence_id": "e4bebede-1789-5715-8010-af558222c825",
+        "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "evidence_type": "metric_anomaly",
+        "claim_type": "fact",
+        "source": "VM",
+        "source_reliability": 0.95,
+        "fact": "spike",
+        "resource_id": "svc:orders",
+        "time_range_start": "2026-08-19T09:00:00Z",
+        "time_range_end": "2026-08-19T10:00:00Z",
+        "raw_digest_sha256": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+        "provenance_fingerprint": "b922e0e18806f9b5cea10b53515b21df0c59142ced85d4b3dd31b8c24f9c1191",
+        "created_at": "2026-08-19T10:00:03Z"
+      }
+    },
+    "negative": {
+      "tool_result_bad_status": {
+        "tool_name": "query_logs", "status": "bogus", "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "success": false, "summary": "", "source_system": "VM",
+        "started_at": "2026-08-19T10:00:01Z", "finished_at": "2026-08-19T10:00:02Z"
+      },
+      "tool_result_non_uuid_evidence_ids": {
+        "tool_name": "query_logs", "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "success": true, "status": "success", "summary": "ok", "source_system": "VM",
+        "evidence_ids": ["e1"],
+        "started_at": "2026-08-19T10:00:01Z", "finished_at": "2026-08-19T10:00:02Z"
+      },
+      "evidence_non_uuid_id": {
+        "evidence_id": "e1", "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "evidence_type": "metric_anomaly", "claim_type": "fact", "source": "VM",
+        "source_reliability": 0.95, "fact": "spike", "provenance_fingerprint": "fp"
+      },
+      "evidence_fingerprint_mismatch": {
+        "evidence_id": "e4bebede-1789-5715-8010-af558222c825",
+        "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "evidence_type": "metric_anomaly", "claim_type": "fact", "source": "VM",
+        "source_reliability": 0.95, "fact": "spike", "resource_id": "svc:orders",
+        "query_id": "qry-1",
+        "time_range_start": "2026-08-19T09:00:00Z", "time_range_end": "2026-08-19T10:00:00Z",
+        "raw_digest_sha256": "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+        "provenance_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "evidence_llm_source": {
+        "evidence_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "evidence_type": "metric_anomaly", "claim_type": "fact", "source": "LLM",
+        "source_reliability": 0.95, "fact": "spike", "provenance_fingerprint": "fp"
+      },
+      "unknown_schema_version": { "wire_version": "v99" },
+      "extra_field": {
+        "tool_name": "x", "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        "success": true, "status": "success", "summary": "x", "source_system": "VM",
+        "unexpected_field": 1,
+        "started_at": "2026-08-19T10:00:01Z", "finished_at": "2026-08-19T10:00:02Z"
+      }
+    }
+  }
+}

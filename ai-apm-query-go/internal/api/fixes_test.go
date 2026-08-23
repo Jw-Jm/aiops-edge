@@ -3,12 +3,16 @@ package api
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -236,16 +240,21 @@ func TestTenantCreateRequiresAdmin(t *testing.T) {
 func TestQueryLogsKeywordAlias(t *testing.T) {
 	var lastSQL string
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lastSQL = r.URL.Query().Get("query")
+		// P6.2b：统一 repository 用 POST body 传 SQL。
+		if b, err := io.ReadAll(r.Body); err == nil {
+			lastSQL = string(b)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(""))
 	}))
 	defer chSrv.Close()
 
-	h := &Handler{client: &http.Client{}}
 	host, port := splitHostPort(chSrv.URL)
+	h := &Handler{client: &http.Client{}}
 	h.chHost = host
 	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.logRepo = query.NewLogRepository(&h.repo, nil, query.NewSourceRouter(query.ModeLegacy))
 
 	// keyword 非空、query 为空 → keyword 作为过滤条件
 	rec := httptest.NewRecorder()

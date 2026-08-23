@@ -243,9 +243,9 @@ func expectIdentity(mock sqlmock.Sqlmock, userStatus int, sessionStatus string) 
 }
 
 func expectIdentityWithSessionTimes(mock sqlmock.Sqlmock, userStatus int, sessionStatus string, expires time.Time, revoked interface{}) {
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s").
 		WithArgs(testUserID, testSessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at"}).AddRow(testUserID, userStatus, sessionStatus, expires, revoked))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).AddRow(testUserID, userStatus, sessionStatus, expires, revoked, int64(0)))
 }
 
 func expectTenantMembership(mock sqlmock.Sqlmock, member bool) {

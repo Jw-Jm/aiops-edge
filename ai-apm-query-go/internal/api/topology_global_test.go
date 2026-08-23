@@ -2,11 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 )
 
 // mockGlobalTopologyCH 构造一个按查询内容返回不同 JSONEachRow 的 mock ClickHouse：
@@ -34,10 +37,12 @@ func mockGlobalTopologyCH(t *testing.T, edgeRows, nodeRows, nsRows string) *Hand
 	}))
 	t.Cleanup(srv.Close)
 
+	// P6.2c：GlobalTopology 统一经 topology repository（QueryJSON：GET + query 参数 + JSONEachRow），
+	// 与 mock 服务器协议一致。需注入 h.repo + h.topoRepo。
 	h := &Handler{client: &http.Client{}}
 	host, port := splitHostPort(srv.URL)
-	h.chHost = host
-	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.topoRepo = query.NewTopologyRepository(&h.repo)
 	return h
 }
 
@@ -285,8 +290,8 @@ func TestGlobalTopologyNSQueryDegrades(t *testing.T) {
 
 	h := &Handler{client: &http.Client{}}
 	host, port := splitHostPort(srv.URL)
-	h.chHost = host
-	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.topoRepo = query.NewTopologyRepository(&h.repo)
 
 	resp := callGlobalTopology(t, h, "")
 	nodes := nodeByName(t, resp)

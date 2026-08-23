@@ -18,13 +18,13 @@ func (h *Handler) DashboardResources(w http.ResponseWriter, r *http.Request) {
 		cid = "all"
 	}
 
-	// 节点数：cluster_id=default 映射主集群（id=1），其余按 name 匹配；all 时累加
+	// 节点数：P3.8 移除 default→id=1 映射（V9.2 §9）。仅按 name/slug 匹配，或 all 累加。
 	nodeCount := 0
 	if clusters, err := (&store.ClusterDAO{}).List(); err == nil {
 		for _, c := range clusters {
 			if cid == "all" {
 				nodeCount += c.NodeCount
-			} else if (cid == "default" && c.ID == 1) || c.Name == cid {
+			} else if c.Name == cid || c.Slug == cid {
 				nodeCount = c.NodeCount
 				break
 			}

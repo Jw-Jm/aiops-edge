@@ -1,5 +1,8 @@
 // Package contract contains strict internal JSON contracts shared by the
-// query-api boundary and the Agentic AIOps control plane.
+// query-api boundary and the Agentic AIOps control plane (V9.2).
+//
+// This is the single Go contract mainline. It mirrors
+// ai-orchestrator/contracts.py and observability-frontend/src/api/contracts.ts.
 package contract
 
 import (
@@ -38,6 +41,222 @@ func DecodeStrict(data []byte, target any) error {
 	return nil
 }
 
+func validateUUID(field, value string) error {
+	if strings.ToLower(value) != value || !canonicalUUID.MatchString(value) {
+		return fmt.Errorf("%s must be a lowercase canonical UUID", field)
+	}
+	return nil
+}
+
+func validateOptionalUUID(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	return validateUUID(field, value)
+}
+
+// commonContext holds the shared context claims (V9.2 §11).
+type commonContext struct {
+	Version      int       `json:"version"`
+	ContextType  string    `json:"context_type"`
+	Issuer       string    `json:"issuer"`
+	Audience     string    `json:"audience"`
+	RequestID    string    `json:"request_id"`
+	PrincipalType string   `json:"principal_type"`
+	PrincipalID  string    `json:"principal_id"`
+	SessionID    string    `json:"session_id"`
+	TenantID     string    `json:"tenant_id"`
+	IssuedAt     time.Time `json:"issued_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	Nonce        string    `json:"nonce"`
+}
+
+func (c commonContext) validateCommon() error {
+	if c.Version < 1 {
+		return errors.New("version must be positive")
+	}
+	if c.PrincipalType != "user" && c.PrincipalType != "system" {
+		return errors.New("principal_type must be user or system")
+	}
+	if err := validateUUID("principal_id", c.PrincipalID); err != nil {
+		return err
+	}
+	if err := validateOptionalUUID("session_id", c.SessionID); err != nil {
+		return err
+	}
+	if c.PrincipalType == "user" && c.SessionID == "" {
+		return errors.New("user principal requires session_id")
+	}
+	if c.PrincipalType == "system" && c.SessionID != "" {
+		return errors.New("system principal must have null session_id")
+	}
+	if err := validateUUID("tenant_id", c.TenantID); err != nil {
+		return err
+	}
+	if err := validateUUID("nonce", c.Nonce); err != nil {
+		return err
+	}
+	if c.Issuer == "" || c.Audience == "" {
+		return errors.New("issuer and audience are required")
+	}
+	if c.IssuedAt.IsZero() || c.ExpiresAt.IsZero() {
+		return errors.New("issued_at and expires_at are required")
+	}
+	lifetime := c.ExpiresAt.UTC().Sub(c.IssuedAt.UTC())
+	if lifetime <= 0 || lifetime > 60*time.Second {
+		return errors.New("context lifetime must be between 1 and 60 seconds")
+	}
+	return nil
+}
+
+// RunInvocationContext: query-api → orchestrator, to create a new Run (V9.2 §11.1).
+//
+// P19.6: Capability is a service-side authorized capability carried in the signed
+// context so the orchestrator can distinguish 对话型 (ai.chat) from 调查型
+// (ai.investigate) at the trusted ingress without trusting any client-provided
+// claim. Empty/absent defaults to "ai.investigate" for backward compatibility with
+// the investigation chain.
+type RunInvocationContext struct {
+	commonContext
+	Source      string   `json:"source"`
+	ClusterScope []string `json:"cluster_scope"`
+	Capability  string   `json:"capability,omitempty"`
+}
+
+// NewRunInvocationContext builds a RunInvocationContext from its explicit fields.
+func NewRunInvocationContext(issuer, audience, requestID, principalType, principalID, sessionID, tenantID, source string, clusterScope []string, issuedAt, expiresAt time.Time, nonce string) RunInvocationContext {
+	return RunInvocationContext{
+		commonContext: commonContext{
+			Version: 1, ContextType: "run_invocation", Issuer: issuer, Audience: audience,
+			RequestID: requestID, PrincipalType: principalType, PrincipalID: principalID,
+			SessionID: sessionID, TenantID: tenantID, IssuedAt: issuedAt, ExpiresAt: expiresAt, Nonce: nonce,
+		},
+		Source: source, ClusterScope: clusterScope,
+	}
+}
+
+func (c RunInvocationContext) Validate() error {
+	if err := c.validateCommon(); err != nil {
+		return err
+	}
+	if c.ContextType != "run_invocation" {
+		return errors.New("context_type must be run_invocation")
+	}
+	if c.Source == "" {
+		return errors.New("source is required")
+	}
+	if len(c.ClusterScope) == 0 {
+		return errors.New("cluster_scope must not be empty")
+	}
+	for i, id := range c.ClusterScope {
+		if err := validateUUID(fmt.Sprintf("cluster_scope[%d]", i), id); err != nil {
+			return err
+		}
+	}
+	if c.Capability != "" && c.Capability != "ai.chat" && c.Capability != "ai.investigate" {
+		return errors.New("capability must be one of ai.chat | ai.investigate")
+	}
+	return nil
+}
+
+// RunControlContext: query-api → orchestrator, to control an existing Run (V9.2 §11.2).
+type RunControlContext struct {
+	commonContext
+	RunID      string `json:"run_id"`
+	Operation  string `json:"operation"`
+	ActionID   string `json:"action_id"`
+	DecisionID string `json:"decision_id"`
+}
+
+func (c RunControlContext) Validate() error {
+	if err := c.validateCommon(); err != nil {
+		return err
+	}
+	if c.ContextType != "run_control" {
+		return errors.New("context_type must be run_control")
+	}
+	if err := validateUUID("run_id", c.RunID); err != nil {
+		return err
+	}
+	switch c.Operation {
+	case "cancel", "stream", "action_decision":
+	default:
+		return errors.New("operation must be cancel, stream, or action_decision")
+	}
+	return validateOptionalUUID("action_id", c.ActionID)
+}
+
+// NewRunControlContext builds a RunControlContext from its explicit fields.
+func NewRunControlContext(issuer, audience, requestID, principalType, principalID, sessionID, tenantID, runID, operation string, issuedAt, expiresAt time.Time, nonce string) RunControlContext {
+	return RunControlContext{
+		commonContext: commonContext{
+			Version: 1, ContextType: "run_control", Issuer: issuer, Audience: audience,
+			RequestID: requestID, PrincipalType: principalType, PrincipalID: principalID,
+			SessionID: sessionID, TenantID: tenantID, IssuedAt: issuedAt, ExpiresAt: expiresAt, Nonce: nonce,
+		},
+		RunID: runID, Operation: operation,
+	}
+}
+
+// TrustedRequestContext: orchestrator → query-api, for tool/data access (V9.2 §11.3).
+type TrustedRequestContext struct {
+	commonContext
+	RunID      string    `json:"run_id"`
+	ScopeKind  string    `json:"scope_kind"`
+	ClusterID  string    `json:"cluster_id"`
+	Capability string    `json:"capability"`
+	Source     string    `json:"source"`
+}
+
+func (c TrustedRequestContext) Validate() error {
+	if err := c.validateCommon(); err != nil {
+		return err
+	}
+	if c.ContextType != "trusted_request" {
+		return errors.New("context_type must be trusted_request")
+	}
+	if err := validateUUID("run_id", c.RunID); err != nil {
+		return err
+	}
+	if c.ScopeKind != "cluster" && c.ScopeKind != "run" {
+		return errors.New("scope_kind must be cluster or run")
+	}
+	if c.ScopeKind == "cluster" {
+		if c.ClusterID == "" {
+			return errors.New("cluster scope requires cluster_id")
+		}
+		if err := validateUUID("cluster_id", c.ClusterID); err != nil {
+			return err
+		}
+	} else { // run scope
+		if c.ClusterID != "" {
+			return errors.New("run scope must have null cluster_id")
+		}
+		if !strings.HasPrefix(c.Capability, "control_plane.") {
+			return errors.New("run scope only allows control_plane.* capability")
+		}
+	}
+	if c.Source == "" {
+		return errors.New("source is required")
+	}
+	return nil
+}
+
+// NewTrustedRequestContext builds a TrustedRequestContext from its explicit fields.
+func NewTrustedRequestContext(issuer, audience, requestID, principalType, principalID, sessionID, tenantID, runID, scopeKind, clusterID, capability, source string, issuedAt, expiresAt time.Time, nonce string) TrustedRequestContext {
+	return TrustedRequestContext{
+		commonContext: commonContext{
+			Version: 1, ContextType: "trusted_request", Issuer: issuer, Audience: audience,
+			RequestID: requestID, PrincipalType: principalType, PrincipalID: principalID,
+			SessionID: sessionID, TenantID: tenantID, IssuedAt: issuedAt, ExpiresAt: expiresAt, Nonce: nonce,
+		},
+		RunID: runID, ScopeKind: scopeKind, ClusterID: clusterID, Capability: capability, Source: source,
+	}
+}
+
+// RequestContext is the DEPRECATED legacy single-context compatibility type.
+// It is not a target contract, must not gain new callers, and is removed after
+// Phase 3 production callers switch to the three V9.2 contexts.
 type RequestContext struct {
 	Version    int       `json:"version"`
 	Issuer     string    `json:"issuer"`
@@ -80,24 +299,23 @@ func (context RequestContext) Validate() error {
 	}
 	lifetime := context.ExpiresAt.UTC().Sub(context.IssuedAt.UTC())
 	if lifetime <= 0 || lifetime > 60*time.Second {
-		return errors.New("TrustedRequestContext lifetime must be between 1 and 60 seconds")
+		return errors.New("legacy RequestContext lifetime must be between 1 and 60 seconds")
 	}
 	return nil
 }
 
+// ResourceRef — canonical resource_id does NOT include tenant_id (V9.2 §10).
+// tenant_id is an ownership/isolation dimension, stored separately.
 type ResourceRef struct {
-	TenantID     string  `json:"tenant_id"`
 	ClusterID    string  `json:"cluster_id"`
 	ResourceType string  `json:"resource_type"`
 	Namespace    *string `json:"namespace"`
 	Name         string  `json:"name"`
 	ResourceID   string  `json:"resource_id"`
+	TenantID     string  `json:"tenant_id"`
 }
 
 func (resource ResourceRef) Validate() error {
-	if err := validateUUID("tenant_id", resource.TenantID); err != nil {
-		return err
-	}
 	if err := validateUUID("cluster_id", resource.ClusterID); err != nil {
 		return err
 	}
@@ -111,9 +329,13 @@ func (resource ResourceRef) Validate() error {
 	if namespace == "" {
 		namespace = "_"
 	}
-	expected := fmt.Sprintf("urn:aiops:%s:%s:%s:%s:%s", resource.TenantID, resource.ClusterID, resource.ResourceType, namespace, resource.Name)
+	expected := fmt.Sprintf("%s:%s:%s:%s", resource.ResourceType, resource.ClusterID, namespace, resource.Name)
 	if resource.ResourceID != expected {
-		return errors.New("resource_id must use tenant and immutable canonical cluster UUID")
+		return errors.New("resource_id must be <type>:<cluster_uuid>:<namespace-or->_>:<name> and must NOT include tenant_id")
+	}
+	// tenant_id is required as an isolation dimension but never part of resource_id.
+	if err := validateUUID("tenant_id", resource.TenantID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -126,15 +348,25 @@ type StructuredError struct {
 }
 
 type ToolResult struct {
-	ToolName    string           `json:"tool_name"`
-	Success     bool             `json:"success"`
-	Status      string           `json:"status"`
-	Summary     string           `json:"summary"`
-	Data        any              `json:"data"`
-	Error       *StructuredError `json:"error"`
-	EvidenceIDs []string         `json:"evidence_ids"`
-	StartedAt   time.Time        `json:"started_at"`
-	FinishedAt  time.Time        `json:"finished_at"`
+	ToolName     string           `json:"tool_name"`
+	ClusterID    string           `json:"cluster_id"`
+	Success      bool             `json:"success"`
+	Status       string           `json:"status"`
+	Summary      string           `json:"summary"`
+	Data         any              `json:"data"`
+	ErrorCode    string           `json:"error_code"`
+	ErrorMessage string           `json:"error_message"`
+	Retryable    bool             `json:"retryable"`
+	EvidenceIDs  []string         `json:"evidence_ids"`
+	SourceSystem string           `json:"source_system"`
+	QueryID      string           `json:"query_id"`
+	TimeRange    any `json:"time_range"`
+	// Error 是 Go binding 内部承载结构化错误的结构（经 error_code/error_message 落 wire）。
+	// `json:"-"`：不序列化到 wire，保证三端 wire 严格为 V1 冻结 15 字段（Python/TS/Schema
+	// 均不接受第 16 个 "error" 字段）。R2 方案 B 三端一致性（Bugbot B4/C3）。
+	Error        *StructuredError `json:"-"`
+	StartedAt    time.Time        `json:"started_at"`
+	FinishedAt   time.Time        `json:"finished_at"`
 }
 
 func (result ToolResult) Validate() error {
@@ -145,24 +377,22 @@ func (result ToolResult) Validate() error {
 	if !allowed[result.Status] {
 		return fmt.Errorf("unsupported ToolResult status %q", result.Status)
 	}
+	if err := validateUUID("cluster_id", result.ClusterID); err != nil {
+		return err
+	}
 	if result.FinishedAt.Before(result.StartedAt) {
 		return errors.New("finished_at must not precede started_at")
 	}
-	if result.Success && result.Status != "success" && result.Status != "partial" {
-		return errors.New("successful ToolResult must use success or partial status")
+	// V9.2: "executed successfully" and "has data" are distinct.
+	// success=true is allowed with status in {success, partial, no_data}.
+	if result.Success && result.Status != "success" && result.Status != "partial" && result.Status != "no_data" {
+		return errors.New("successful ToolResult must use success, partial, or no_data")
 	}
-	if !result.Success && (result.Status == "success" || result.Status == "partial") {
+	if !result.Success && (result.Status == "success" || result.Status == "partial" || result.Status == "no_data") {
 		return errors.New("failed ToolResult must use a non-success status")
 	}
-	if result.Status == "permission_denied" && result.Error == nil {
-		return errors.New("permission_denied ToolResult requires a structured error")
-	}
-	return nil
-}
-
-func validateUUID(field, value string) error {
-	if strings.ToLower(value) != value || !canonicalUUID.MatchString(value) {
-		return fmt.Errorf("%s must be a lowercase canonical UUID", field)
+	if result.Status == "permission_denied" && result.ErrorCode == "" {
+		return errors.New("permission_denied ToolResult requires a structured error code")
 	}
 	return nil
 }

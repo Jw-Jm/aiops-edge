@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aiops.contracts.bundle.v2.evidence",
+  "title": "Evidence",
+  "description": "V1 冻结 Evidence（对齐 contracts.Evidence）。evidence_id 为 UUID（实体身份），provenance_fingerprint 为去重键字符串。生命周期（status/reference_status/version）由 EvidenceState 外部管理，不在 Evidence 本体。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evidence_id", "run_id", "tenant_id", "cluster_id",
+    "evidence_type", "claim_type", "source", "source_reliability",
+    "fact", "provenance_fingerprint", "created_at"
+  ],
+  "properties": {
+    "evidence_id": { "type": "string", "format": "uuid" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "cluster_id": { "type": "string", "format": "uuid" },
+    "evidence_type": { "type": "string" },
+    "claim_type": { "type": "string", "enum": ["fact", "inference", "knowledge", "unknown"] },
+    "source": { "type": "string" },
+    "source_reliability": { "type": "number", "minimum": 0, "maximum": 1 },
+    "resource_id": { "type": ["string", "null"] },
+    "namespace": { "type": ["string", "null"] },
+    "service": { "type": ["string", "null"] },
+    "pod": { "type": ["string", "null"] },
+    "node": { "type": ["string", "null"] },
+    "trace_id": { "type": ["string", "null"] },
+    "observed_at": { "type": ["string", "null"], "format": "date-time" },
+    "time_range_start": { "type": ["string", "null"], "format": "date-time" },
+    "time_range_end": { "type": ["string", "null"], "format": "date-time" },
+    "fact": { "type": "string" },
+    "raw_ref": { "type": ["string", "null"] },
+    "raw_digest_sha256": { "type": ["string", "null"] },
+    "metadata": { "type": "object" },
+    "provenance_fingerprint": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "semantic_invariants_ref": "../invariants.md",
+  "conformance_vectors_ref": "../conformance-vectors.json"
+}

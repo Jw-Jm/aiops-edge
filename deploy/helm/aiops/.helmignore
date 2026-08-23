@@ -1,0 +1,4 @@
+# 忽略非模板文档（codemap.md 等占位文档误放 templates/，会触发 helm lint 失败）
+.codemaps/
+codemap.md
+*.md

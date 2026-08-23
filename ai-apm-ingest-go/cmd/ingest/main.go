@@ -16,46 +16,52 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/observability-platform/ai-apm-ingest-go/internal/clickhouse"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/metrics"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/pipeline"
+	"github.com/observability-platform/ai-apm-ingest-go/internal/telemetry"
 )
 
 func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
-	chHost := flag.String("ch-host", "clickhouse.observability.svc.cluster.local", "ClickHouse host")
-	chPort := flag.Int("ch-port", 8123, "ClickHouse HTTP port")
 	flag.Parse()
 
-	// Override CH host from env for local dev
-	if h := os.Getenv("CLICKHOUSE_HOST"); h != "" {
-		*chHost = h
-	}
 	// WAL 持久化目录（生产挂载 PVC 保证数据不丢；空则退化为内存重试）
 	walDir := os.Getenv("INGEST_WAL_DIR")
-	// 多集群纳管：本 ingest 实例所属集群 ID（主集群默认 default；纳管集群采集器注入各自 cluster_id）
+	// 多集群纳管：本 ingest 实例所属集群 ID。
+	// Phase 5 Gate（R2 §71）：cluster_id 是本实例的静态身份，不允许缺失后写空——那既违反
+	// "禁止猜"，也写不出 partial/missing_fields（ClickHouse 列固定无法表达该语义）。因此
+	// 缺失即 fail-closed 拒绝启动（reject 路径，符合"该路径不允许 partial 则直接 reject"）。
+	// 现有部署 clusterId="default"（非空）不受影响；真正缺失时才拒绝。
 	clusterID := os.Getenv("CLUSTER_ID")
 	if clusterID == "" {
-		clusterID = "default"
+		log.Fatalf("CLUSTER_ID not set: ingest instance requires a cluster identity to tag writes; " +
+			"set CLUSTER_ID (deployment clusterId). Refusing to start with empty cluster_id.")
 	}
 
+	// V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已物理删除。写路径唯一为 new 后端
+	// （VictoriaMetrics / VictoriaLogs，由 TELEMETRY_WRITER_MODE 控制）。
 	// 生产化中间件：鉴权 + 限流 + metrics
 	met := metrics.New()
 
-	writer := clickhouse.NewWriter(*chHost, *chPort, walDir)
-	writer.OnWritten = func(n int) { met.AddSpansWritten(int64(n)) }
-	writer.OnDropped = func(n int) { met.AddSpansDropped(int64(n)) } // H3：背压丢弃可观测
-	defer writer.Close()
+	// V9.2 P6.5：new 后端（VictoriaMetrics / VictoriaLogs）生产接线。
+	// 由 TELEMETRY_WRITER_MODE 控制（disabled/"legacy"=停用；new=生产写入）。
+	// 非法 mode 或 ModeNew 缺 backend URL 时 fail-closed 拒绝启动。
+	telRT, err := telemetry.NewRuntimeFromEnv()
+	if err != nil {
+		log.Fatalf("telemetry wiring: %v", err)
+	}
+	if telRT.Enabled() {
+		log.Printf("telemetry new backend ACTIVE (TELEMETRY_WRITER_MODE=new): VM=%v VLogs=%v", telRT.VM != nil, telRT.VLogs != nil)
+	} else {
+		log.Printf("telemetry new backend disabled (TELEMETRY_WRITER_MODE=%q)", os.Getenv("TELEMETRY_WRITER_MODE"))
+	}
 
-	metricsWriter := clickhouse.NewMetricsWriter(*chHost, *chPort, walDir)
-	metricsWriter.OnEdgesWritten = func(n int) { met.AddEdgesWritten(int64(n)) }
-	metricsWriter.OnDropped = func(n int) { met.AddMetricsDropped(int64(n)) } // H3：背压丢弃可观测
-	defer metricsWriter.Close()
-
-	logWriter := clickhouse.NewLogWriter(*chHost, *chPort, walDir)
-	logWriter.OnDropped = func(n int) { met.AddLogsDropped(int64(n)) } // H3：背压丢弃可观测
-	defer logWriter.Close()
+	// fail-closed：new 后端未启用时没有任何写路径，拒绝启动（不许"无数据 sink 静默运行"）。
+	// 不再接受 LEGACY_WRITER_ENABLED 等旧开关（已删除），避免未来误恢复双写。
+	if !telRT.Enabled() {
+		log.Fatalf("no write path active: telemetry new backend disabled; refusing to start with no data sink")
+	}
 
 	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志，
 	// 并累加为 VM 服务 RED 指标。
@@ -63,6 +69,13 @@ func main() {
 	// 兼容旧配置：仅 DEEPFLOW_CH_HOST/DEEPFLOW_CH_PORT 时按单环境 cluster="default" 接入。
 	startDeepFlowSyncers := func() int {
 		n := 0
+		// V9.3 Phase 14：legacy ClickHouse sink 已删除。DeepFlowSyncer 只依赖中立 sink 接口，
+		// 此处显式传 nil（无 CH span/edge/log 落盘），核心链路 DeepFlow→VM RED 指标不受影响。
+		var (
+			dfEdge pipeline.EdgeSink
+			dfSpan pipeline.SpanSink
+			dfLog  pipeline.LogSink
+		)
 		if eps := os.Getenv("DEEPFLOW_CH_ENDPOINTS"); eps != "" {
 			for _, ep := range strings.Split(eps, ",") {
 				ep = strings.TrimSpace(ep)
@@ -81,7 +94,7 @@ func main() {
 				if port == 0 {
 					port = 8123
 				}
-				syncer := pipeline.NewDeepFlowSyncer(host, port, cluster, metricsWriter, writer, logWriter, met)
+				syncer := pipeline.NewDeepFlowSyncer(host, port, cluster, dfEdge, dfSpan, dfLog, met)
 				syncer.Start()
 				n++
 				log.Printf("DeepFlowSyncer enabled (cluster=%s deepflow-ch=%s:%d)", cluster, host, port)
@@ -91,7 +104,7 @@ func main() {
 			if dfPort == 0 {
 				dfPort = 8123
 			}
-			syncer := pipeline.NewDeepFlowSyncer(dfHost, dfPort, "default", metricsWriter, writer, logWriter, met)
+			syncer := pipeline.NewDeepFlowSyncer(dfHost, dfPort, "default", dfEdge, dfSpan, dfLog, met)
 			syncer.Start()
 			n++
 			log.Printf("DeepFlowSyncer enabled (cluster=default deepflow-ch=%s:%d)", dfHost, dfPort)
@@ -103,9 +116,21 @@ func main() {
 	}
 	startDeepFlowSyncers()
 
-	pl := pipeline.New(writer, metricsWriter)
+	// V9.3 Phase 14：无 legacy CH sink，Pipeline 以 nil span/edge sink 构造
+	// （RED 聚合 + new 链 redSink 仍工作）。
+	pl := pipeline.New(nil, nil)
 	pl.SetClusterID(clusterID)               // 多集群纳管：数据打 cluster_id 标
 	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics
+	// P6.5 new 链双写：聚合的 RED 服务指标在 flush 时写 VictoriaMetrics（ModeNew 真实发送）。
+	// 失败仅记日志（可观测），不回退 ClickHouse，也不伪装成功。
+	if telRT.Enabled() {
+		pl.SetREDSink(func(m *model.ServiceMetric) {
+			ts := m.TimeBucket
+			if res := telRT.WriteRED(m.TenantID, m.ClusterID, m.ServiceName, float64(m.CallCount), ts); res.Status != "ok" {
+				log.Printf("VM RED write failed (tenant=%s service=%s): code=%s msg=%s", m.TenantID, m.ServiceName, res.ErrorCode, res.Message)
+			}
+		})
+	}
 	defer pl.Close()
 
 	// DeepFlow data receiver
@@ -118,8 +143,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/traces", func(w http.ResponseWriter, r *http.Request) {
 		tenantID := r.Header.Get("X-Tenant-ID")
+		// Phase 5：X-Tenant-ID 缺失不再静默兜底 "default"，改为 fail-closed 拒绝，
+		// 避免把缺 tenant 身份的 trace 写入共享存储（多租户隔离）。
 		if tenantID == "" {
-			tenantID = "default"
+			http.Error(w, "missing X-Tenant-ID header", http.StatusBadRequest)
+			return
 		}
 
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
@@ -143,8 +171,10 @@ func main() {
 
 	mux.HandleFunc("/v1/logs", func(w http.ResponseWriter, r *http.Request) {
 		tenantID := r.Header.Get("X-Tenant-ID")
+		// Phase 5：X-Tenant-ID 缺失不再静默兜底 "default"，改为 fail-closed 拒绝。
 		if tenantID == "" {
-			tenantID = "default"
+			http.Error(w, "missing X-Tenant-ID header", http.StatusBadRequest)
+			return
 		}
 
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
@@ -195,7 +225,13 @@ func main() {
 						TimeBucket:  ts.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
 						Date:        ts.Format("2006-01-02"),
 					}
-					logWriter.Add(record)
+					// V9.3 Phase 14：legacy CH logWriter 已删除，日志只走 new 链 VictoriaLogs
+					// （ModeNew 真实发送）。失败仅记日志（可观测），不伪装成功。
+					if telRT.Enabled() {
+						if res := telRT.WriteLog(record.TenantID, record.ClusterID, record.ServiceName, record.Severity, record.Body, record.Timestamp); res.Status != "ok" {
+							log.Printf("VLogs write failed (tenant=%s service=%s): code=%s msg=%s", record.TenantID, record.ServiceName, res.ErrorCode, res.Message)
+						}
+					}
 					count++
 				}
 			}
@@ -209,20 +245,10 @@ func main() {
 	// DeepFlow native protocol endpoint
 	mux.HandleFunc("/v1/deepflow", dfReceiver.ServeHTTP)
 
-	// /health 真实健康（H4）：探测 ClickHouse 连通性 + 重试队列水位，
-	// 依赖异常时返回 503 + JSON body，触发重启/告警。CH 探测结果缓存 5s 避免打爆 CH。
-	hc := &healthCache{}
+	// /health 健康端点。V9.3 Phase 14：legacy ClickHouse 探测已删除；
+	// ingest 自身写路径健康由 VM/VLogs 后端侧探针负责，本端点报告进程存活 + new 后端启用。
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		healthy, reason := hc.check(writer, logWriter, metricsWriter)
 		w.Header().Set("Content-Type", "application/json")
-		if !healthy {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status": "unhealthy",
-				"reason": reason,
-			})
-			return
-		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 	})
@@ -279,44 +305,6 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
 	}
-}
-
-// healthCache 缓存 ClickHouse 连通性探测结果，避免每次探针都打 CH（H4）。
-type healthCache struct {
-	mu        sync.Mutex
-	lastCheck time.Time
-	healthy   bool
-	reason    string
-}
-
-// check 返回缓存（5s 内复用）或重新探测的健康状态。
-// 不健康条件：CH 不可达，或任一 writer 重试队列超过高水位阈值。
-func (h *healthCache) check(writer *clickhouse.Writer, logWriter *clickhouse.LogWriter, metricsWriter *clickhouse.MetricsWriter) (bool, string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if time.Since(h.lastCheck) < 5*time.Second {
-		return h.healthy, h.reason
-	}
-	healthy := true
-	reason := ""
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	if err := writer.Ping(ctx); err != nil {
-		healthy = false
-		reason = fmt.Sprintf("clickhouse unreachable: %v", err)
-	}
-	cancel()
-	totalRetry := writer.RetryQueueSize() + logWriter.RetryQueueSize() + metricsWriter.RetryQueueSize()
-	if totalRetry > 500 { // 各 writer 重试上限 500 批，合计 >500 视为严重背压
-		healthy = false
-		if reason != "" {
-			reason += "; "
-		}
-		reason += fmt.Sprintf("retry queue depth %d exceeds threshold", totalRetry)
-	}
-	h.lastCheck = time.Now()
-	h.healthy = healthy
-	h.reason = reason
-	return healthy, reason
 }
 
 // extractAttributes converts OTel attribute list to flat map

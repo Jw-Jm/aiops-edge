@@ -23,6 +23,12 @@ namespace:
 # ---------------------------------------------------------------------------
 networkPolicy:
   enabled: true
+  # P0-P13 审计（P0-4）：egress default-deny + orchestrator 出站白名单（仅 query-api）。
+  # egressDefaultDeny=true 时默认拒绝所有出站，仅放行显式 egress 白名单。
+  egressDefaultDeny: false
+  # allowOrchestratorDbAccess：是否放行 orchestrator 直连 clickhouse/mysql/victoria-metrics。
+  #   默认 false（fail-closed，orchestrator 原则上只经 query-api 访问数据）；过渡期可显式开启。
+  allowOrchestratorDbAccess: false
 
 # ---------------------------------------------------------------------------
 # 密钥（占位，实际用 values 文件 / --set 注入，不提交真实值，不入 git）
@@ -38,6 +44,15 @@ secrets:
   mysqlRootPassword: ""
   # admin 初始密码（query-api 启动种子；未设置时生成随机密码并打印一次性提示，admin 将无法用默认密码登录）
   adminInitialPassword: ""
+  # ── V9.2 Service Identity (INTERNAL-AUTH-P0-011) — four independent credential/key groups ──
+  # orchestrator → query-api direction (service credential + signing keypair)
+  orchestratorToQueryToken: ""
+  orchestratorToQuerySigningKey: ""        # Ed25519 private key, raw 32-byte, base64 (signer: orchestrator only)
+  orchestratorToQueryVerifyKeys: ""        # Ed25519 public key(s), base64, comma-separated (verifier: query-api only)
+  # query-api → orchestrator direction (service credential + signing keypair)
+  queryToOrchestratorToken: ""
+  queryToOrchestratorSigningKey: ""        # Ed25519 private key, raw 32-byte, base64 (signer: query-api only)
+  queryToOrchestratorVerifyKeys: ""        # Ed25519 public key(s), base64, comma-separated (verifier: orchestrator only)
 
 # ---------------------------------------------------------------------------
 # 中间件：enabled=true 由 Chart 内部拉起；enabled=false 走 external 复用已有实例
@@ -90,6 +105,9 @@ mysql:
     host: ""
     port: "3306"
   image: "mysql:8.4"
+  # V9.2 Phase 4 P4.8：schema-migrator 镜像（运行 versioned migrations，aiops_migrator 账号）。
+  # V9.2 Phase6 Final Rebuild：独立构建 schema-migrator:rebuild-20260820（ai-apm-query-go/cmd/schema-migrator）。
+  migratorImage: 'schema-migrator:rebuild-20260820'
   storageClass: ""
   storage: 10Gi
   resources:
@@ -187,7 +205,8 @@ nodeExporterTarget: ""
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true
-  image: "observability-frontend:{{ .Values.global.imageTag }}"
+  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：frontend。
+  image: "observability-frontend:v1.2.0-p20-24b157a0"
   nodePort: 30253
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
@@ -195,7 +214,8 @@ frontend:
 
 queryApi:
   enabled: true
-  image: "query-api:{{ .Values.global.imageTag }}"
+  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：query-api。
+  image: "query-api:v1.2.0-p20-24b157a0"
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -204,17 +224,27 @@ queryApi:
   # K8s 集群 API（in-cluster 自签证书环境需 skip verify）与 VictoriaLogs 采集
   k8sApiUrl: "https://kubernetes.default.svc"
   k8sInsecureSkipVerify: "true"
+  # P6.3.3/P6.4.0: reader 路由（legacy|new）。default=legacy（Phase 6 transition）。
+  # cutover 受控窗口内翻为 new；显式非法值 → startup FAIL（拒绝启动）。
+  queryReaderMode: "new"
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits: { cpu: "1", memory: "1Gi" }
 
 ingest:
   enabled: true
-  image: "ingest-pipeline:{{ .Values.global.imageTag }}"
+  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：ingest。
+  image: "ingest-pipeline:v1.2.0-p20-24b157a0"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
-  # 多集群纳管：本 ingest 实例所属集群 ID（代码默认 "default"；纳管集群采集器注入各自 cluster_id）
-  clusterId: "default"
+  # 多集群纳管：本 ingest 实例所属集群 ID（V9.2 canonical identity，禁止 default）
+  clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
+  # V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已删除，legacyWriterEnabled 开关已移除。
+  # telemetry new backend：TELEMETRY_WRITER_MODE=new 启用 VM/VLogs 写链。
+  # VICTORIA_*_URL 必须为 base URL（不带 /insert/jsonline，writer 内部追加）。
+  telemetryWriterMode: "new"
+  victoriaMetricsUrl: "http://victoria-metrics.observability.svc.cluster.local:8428"
+  victoriaLogsUrl: "http://victoria-logs.observability.svc.cluster.local:9428"
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
   deepflowChHost: "deepflow-clickhouse.deepflow.svc.cluster.local"
   deepflowChPort: "8123"
@@ -229,7 +259,8 @@ ingest:
 
 aiOrchestrator:
   enabled: true
-  image: "ai-orchestrator:{{ .Values.global.imageTag }}"
+  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：orchestrator。
+  image: "ai-orchestrator:v1.2.0-p20-24b157a0"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -238,6 +269,15 @@ aiOrchestrator:
   kgBuildIntervalSeconds: 60
   dataStorageClass: ""
   dataStorage: 5Gi
+  # ── P0-P13 审计紧急隔离（包1）：orchestrator 安全最小化，默认 fail-closed ──
+  # grantK8sWrite：是否授予 orchestrator K8s 集群写权限（workload patch/scale/pod eviction/node patch）。
+  #   审计 P0-3：ClusterRole 集群写权限与 P13.7/F4/F5（orchestrator 无 target K8s 写凭据）冲突。
+  #   默认 false（fail-closed，不授予）；工作流 K8s 动作应由独立执行服务身份按动作临时授权（后续架构）。
+  grantK8sWrite: false
+  # injectDbCredentials：是否向 orchestrator 注入 ClickHouse/MySQL 直连凭据。
+  #   审计 P0-3：orchestrator 不应持有 DB 直连凭据，原则上只访问 query-api。
+  #   默认 false（fail-closed，不注入）。
+  injectDbCredentials: false
   resources:
     requests: { cpu: "500m", memory: "1500Mi" }
     limits: { cpu: "2", memory: "3Gi" }
@@ -253,9 +293,17 @@ deepflow:
 # ---------------------------------------------------------------------------
 eventCollector:
   enabled: true
-  image: "event-collector:{{ .Values.global.imageTag }}"
-  clusterId: "default"
+  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：event-collector。
+  image: "event-collector:v1.2.0-p20-24b157a0"
+  # Phase 5：tenantId/clusterId 必须为 canonical UUID（注册后的集群 UUID）。缺失/非法
+  # 组件 fail-closed 拒绝启动（禁止 default/slug/数值）。Final State：注入 V9.2 canonical identity。
+  tenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
+  clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
   k8sWatchEnabled: "true"
+  # Leader election（V9.2 §71 single leader）：DaemonSet 多副本下仅 Lease holder watch
+  # 集群级 K8s 事件，其余副本只做 SEL。默认启用。
+  leaderElectionEnabled: "true"
+  leaseName: "aiops-event-collector-leader"
   selCollectEnabled: "true"
   selIntervalSeconds: 120
   clickhouseHost: "clickhouse"

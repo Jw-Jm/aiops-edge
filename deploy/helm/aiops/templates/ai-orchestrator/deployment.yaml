@@ -32,15 +32,30 @@ spec:
             - name: INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
+            # V9.2 Service Identity (P3.5 infra). orchestrator signs orchestrator→query
+            # contexts and (from P3.9) verifies query→orchestrator contexts.
+            - name: TRUSTED_CONTEXT_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: ORCHESTRATOR_TO_QUERY_SIGNING_KEY }
+            - name: QUERY_TO_ORCHESTRATOR_VERIFY_KEYS
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_VERIFY_KEYS }
+            - name: QUERY_TO_ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
             - name: CLICKHOUSE_HOST
               value: {{ .Values.aiOrchestrator.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
               value: {{ .Values.aiOrchestrator.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
+            # P0-P13 审计紧急隔离（P0-3）：orchestrator 默认不注入 DB 直连凭据（仅经 query-api 访问）。
+            # injectDbCredentials=true 才注入；默认 false（fail-closed）。
+{{- if .Values.aiOrchestrator.injectDbCredentials }}
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
+{{- end }}
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
             - name: AIOPS_DATA_DIR
@@ -50,10 +65,14 @@ spec:
             - name: MYSQL_PORT
               value: {{ .Values.mysql.port | default 3306 | quote }}
             - name: MYSQL_USER
-              value: {{ .Values.mysql.user | default "root" | quote }}
+              value: {{ .Values.mysql.user | default "aiops_app" | quote }}
+            # P0-P13 审计紧急隔离（P0-3）：默认不注入 MySQL 直连凭据（仅经 query-api 访问）。
+            # injectDbCredentials=true 才注入；默认 false（fail-closed）。
+{{- if .Values.aiOrchestrator.injectDbCredentials }}
             - name: MYSQL_PASSWORD
               valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_APP_PASSWORD }
+{{- end }}
             - name: MYSQL_DB
               value: {{ .Values.mysql.database | default "aiops" | quote }}
             - name: KG_BUILD_INTERVAL_SECONDS

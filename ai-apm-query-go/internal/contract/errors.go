@@ -1,0 +1,69 @@
+// Package contract errors: the canonical Go-side error code surface shared with
+// ai-orchestrator/contracts.py and observability-frontend/src/api/contracts.ts.
+//
+// The Go API historically used literal strings for structured errors; these
+// constants centralize the codes so every layer agrees on the exact token,
+// including the P3.10c-final CLUSTER_IDENTITY_MISMATCH binding conflict.
+package contract
+
+// Unified V9.2 §58 error codes. Keep in sync with contracts.py ErrorCode and
+// contracts.ts ErrorCode.
+const (
+	ErrorCodeAuthRequired          = "AUTH_REQUIRED"
+	ErrorCodeSessionRevoked        = "SESSION_REVOKED"
+	ErrorCodeServiceAuthFailed     = "SERVICE_AUTH_FAILED"
+	ErrorCodeInvalidContext        = "INVALID_CONTEXT"
+	ErrorCodeContextExpired        = "CONTEXT_EXPIRED"
+	ErrorCodeContextReplayed       = "CONTEXT_REPLAYED"
+	ErrorCodeContextScopeMismatch  = "CONTEXT_SCOPE_MISMATCH"
+	ErrorCodeTenantAccessDenied    = "TENANT_ACCESS_DENIED"
+	ErrorCodeClusterAccessDenied   = "CLUSTER_ACCESS_DENIED"
+	ErrorCodeResourceNotFound      = "RESOURCE_NOT_FOUND"
+	ErrorCodeResourceAmbiguous     = "RESOURCE_AMBIGUOUS"
+	ErrorCodeClusterUnavailable    = "CLUSTER_UNAVAILABLE"
+	ErrorCodeClusterIdentityMismatch = "CLUSTER_IDENTITY_MISMATCH"
+	ErrorCodeNoData                = "NO_DATA"
+	ErrorCodeBackendUnavailable    = "BACKEND_UNAVAILABLE"
+	ErrorCodeToolUnavailable       = "TOOL_UNAVAILABLE"
+	ErrorCodeToolTimeout           = "TOOL_TIMEOUT"
+	ErrorCodeValidationFailed      = "VALIDATION_FAILED"
+	ErrorCodeRunStateConflict      = "RUN_STATE_CONFLICT"
+	ErrorCodeRunCancelled          = "RUN_CANCELLED"
+	ErrorCodeActionNotAllowed      = "ACTION_NOT_ALLOWED"
+	ErrorCodeActionConfirmationRequired = "ACTION_CONFIRMATION_REQUIRED"
+	ErrorCodeActionApprovalRequired = "ACTION_APPROVAL_REQUIRED"
+	ErrorCodeApprovalExpired       = "APPROVAL_EXPIRED"
+	ErrorCodeApprovalScopeMismatch = "APPROVAL_SCOPE_MISMATCH"
+	ErrorCodeResourceVersionConflict = "RESOURCE_VERSION_CONFLICT"
+	ErrorCodeMaintenanceMode       = "MAINTENANCE_MODE"
+)
+
+// HTTPStatusCode maps a unified error code to its canonical V9.2 §58 HTTP status.
+// CLUSTER_IDENTITY_MISMATCH is a binding conflict → 409, not a backend outage.
+func HTTPStatusCode(code string) int {
+	switch code {
+	case ErrorCodeAuthRequired, ErrorCodeSessionRevoked, ErrorCodeServiceAuthFailed,
+		ErrorCodeInvalidContext, ErrorCodeContextExpired, ErrorCodeContextReplayed:
+		return 401
+	case ErrorCodeTenantAccessDenied, ErrorCodeClusterAccessDenied:
+		return 403
+	case ErrorCodeResourceNotFound:
+		return 404
+	case ErrorCodeResourceAmbiguous, ErrorCodeContextScopeMismatch,
+		ErrorCodeClusterIdentityMismatch, ErrorCodeRunStateConflict,
+		ErrorCodeRunCancelled, ErrorCodeResourceVersionConflict,
+		ErrorCodeApprovalScopeMismatch:
+		return 409
+	case ErrorCodeValidationFailed, ErrorCodeActionNotAllowed,
+		ErrorCodeActionConfirmationRequired, ErrorCodeActionApprovalRequired,
+		ErrorCodeApprovalExpired:
+		return 422
+	case ErrorCodeClusterUnavailable, ErrorCodeBackendUnavailable,
+		ErrorCodeToolUnavailable, ErrorCodeMaintenanceMode:
+		return 503
+	case ErrorCodeToolTimeout:
+		return 504
+	default:
+		return 500
+	}
+}

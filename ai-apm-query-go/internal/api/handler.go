@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/biz"
+	"github.com/observability-platform/ai-apm-query-go/internal/k8sboundary"
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -74,11 +77,62 @@ type Handler struct {
 	client     *http.Client
 	vmURL      string         // VictoriaMetrics base URL（经 env 注入，可移植）
 	podNS      *podNSResolver // K8s pod→ns 兜底映射（GlobalTopology 对空 ns 服务使用；nil 时不启用）
+
+	// repo 是统一 ClickHouse 事实查询 repository（P6.2）。handler 的 CH 查询经此
+	// 获得统一错误语义（no_data/unavailable/timeout），消除 per-handler 500。
+	repo query.ClickHouseRepo
+
+	// metricsRepo 是 metrics 资源域 domain repository（P6.2b），SQL ownership 在 repository。
+	metricsRepo *query.MetricsRepository
+
+	// logRepo 是 logs 资源域 domain repository（P6.2b），SQL ownership 在 repository。
+	// Raw Logs 走 VLogs（new）/ClickHouse（legacy transition），derived analytics 走 ClickHouse。
+	logRepo *query.LogRepository
+
+	// traceRepo 是 traces 资源域 domain repository（P6.2b），SQL ownership 在 repository。
+	// trace/edge SoT 固定 ClickHouse。
+	traceRepo *query.TraceRepository
+
+	// alertRepo 是 alerts 资源域 domain repository（P6.2b），SQL ownership 在 repository。
+	alertRepo *query.AlertRepository
+
+	// topoRepo 是 topology 资源域 domain repository（P6.2c），SQL ownership 在 repository。
+	// topology SoT 固定 ClickHouse（service_topology / trace_spans）。
+	topoRepo *query.TopologyRepository
+
+	// resourceRepo 是 resource（服务/目录）资源域 domain repository（P6.2c），SQL ownership 在 repository。
+	// 服务发现/指标 SoT 固定 ClickHouse（trace_spans）。
+	resourceRepo *query.ResourceRepository
+
+	// kubeRepo 是 kubernetes 资源域 domain repository（P6.2d），包装既有 K8s Access Boundary。
+	// handler 不直接承担 API URL/资源查询/错误映射。
+	kubeRepo *query.KubernetesRepository
+
+	// changeRepo 是 changes 资源域 domain repository（P6.2d mandatory gap）。
+	// 按冻结 SoT（ClickHouse change_records）查询，不经 ProxyAI。
+	changeRepo *query.ChangeRepository
+
+	// knowledgeRepo 是 knowledge 资源域 domain repository（P6.2d mandatory gap）。
+	// 事实来源 = Chroma vector index + MinIO Knowledge Object；空 = no_data。
+	knowledgeRepo *query.KnowledgeRepository
+
+	// ── P10 (V9.3 Phase 10)：AI Runtime 持久化 owner（query-api Control Plane）──
+	// runDAO 读写 ai_runs；outboxDAO 记录 Run 创建后的可靠派发；
+	// eventDAO 读写 ai_run_events（sequence/幂等）；planDAO/toolDAO/actionDAO/cmdDAO
+	// 读写 Plan/Step/Tool/Action/ControlCommand（重启恢复，Plan C）。
+	runDAO      *store.AIRunDAO
+	outboxDAO   *store.AIRunOutboxDAO
+	eventDAO    *store.AIRunEventDAO
+	planDAO     *store.AIPlanStepDAO
+	toolDAO     *store.AIToolRunDAO
+	actionDAO   *store.AIActionDAO
+	cmdDAO      *store.AIControlCommandDAO
+	approvalDAO *store.AIApprovalDecisionDAO
 }
 
 // NewHandler creates a new Handler.
 func NewHandler(chHost string, chPort int) *Handler {
-	return &Handler{
+	h := &Handler{
 		chHost:     chHost,
 		chPort:     chPort,
 		chUser:     os.Getenv("CLICKHOUSE_USER"),
@@ -87,6 +141,47 @@ func NewHandler(chHost string, chPort int) *Handler {
 		vmURL:      firstNonEmpty(os.Getenv("VICTORIA_METRICS_URL"), "http://victoria-metrics.observability.svc.cluster.local:8428"),
 		podNS:      newPodNSResolver(),
 	}
+	chRepo := query.NewClickHouseRepo(
+		fmt.Sprintf("http://%s:%d", chHost, chPort),
+		&http.Client{Timeout: 30 * time.Second},
+	)
+	// ClickHouse Basic Auth：经 Secret 注入（CLICKHOUSE_USER/PASSWORD）；缺失则无凭据（dev 兼容）。
+	chRepo.WithCHAuth(h.chUser, h.chPassword)
+	h.repo = *chRepo
+	// P6.3.3/P6.4.0：QUERY_READER_MODE=legacy|new 控制 reader 路由；missing→legacy（transition only）。
+	// 显式非法值 → startup FAIL（panic），绝不静默回 legacy（避免"new writer ACTIVE / old reader ACTIVE"）。
+	readerMode, err := readerModeFromEnv()
+	if err != nil {
+		panic(err) // configuration error：拒绝启动，原子切换窗口不允许被旧 reader 掩盖。
+	}
+	h.metricsRepo = query.NewMetricsRepository(&h.repo)
+	h.metricsRepo.WithVMRouter(newVMRReaderFromEnv(), readerMode)
+	h.logRepo = query.NewLogRepository(&h.repo, newVLogsReaderFromEnv(), query.NewSourceRouter(readerMode))
+	h.traceRepo = query.NewTraceRepository(&h.repo)
+	h.alertRepo = query.NewAlertRepository(&h.repo)
+	h.topoRepo = query.NewTopologyRepository(&h.repo)
+	h.resourceRepo = query.NewResourceRepository(&h.repo)
+	// P6.2d：Kubernetes 走既有 K8s Access Boundary（k8sboundary），复用而非重建底层访问。
+	manager := k8sboundary.NewClusterClientManager(
+		k8sboundary.NewSecretResolver(os.Getenv("ADMIN_KUBECONFIG")),
+		k8sboundary.NewKubectlIdentityReader(),
+		&store.ClusterDAO{},
+	)
+	h.kubeRepo = query.NewKubernetesRepository(boundaryAccessor{manager: manager})
+	h.changeRepo = query.NewChangeRepository(&h.repo)
+	// knowledge 后端（Chroma vector index + MinIO Knowledge Object）由 environment 注入；
+	// 未配置时 repository 返回 unavailable（fail-closed），绝不回退 ProxyAI。
+	h.knowledgeRepo = query.NewKnowledgeRepository(newKnowledgeBackendFromEnv())
+	// P10：AI Runtime 持久化 DAO（query-api Control Plane Persistence owner）。
+	h.runDAO = &store.AIRunDAO{}
+	h.outboxDAO = &store.AIRunOutboxDAO{}
+	h.eventDAO = &store.AIRunEventDAO{}
+	h.planDAO = &store.AIPlanStepDAO{}
+	h.toolDAO = &store.AIToolRunDAO{}
+	h.actionDAO = &store.AIActionDAO{}
+	h.cmdDAO = &store.AIControlCommandDAO{}
+	h.approvalDAO = &store.AIApprovalDecisionDAO{}
+	return h
 }
 
 // SetVMURL overrides the VictoriaMetrics base URL (from env).
@@ -125,6 +220,31 @@ func extractClusterID(r *http.Request) string {
 		return "all"
 	}
 	return cid
+}
+
+// extractClusterIDIfSpecific 返回具体 cluster_id 值（供 repository scope 过滤）；
+// 空或 "all"（全集群视图）返回空串（不按集群过滤）。
+func extractClusterIDIfSpecific(r *http.Request) string {
+	cid := r.URL.Query().Get("cluster_id")
+	if cid == "" || cid == "all" {
+		return ""
+	}
+	return cid
+}
+
+// parseCSV 将逗号分隔字符串解析为数组（去空白/去空项）。用于 ?services=a,b,c 参数。
+func parseCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // scopeServicesClause 若 scope.services 非空，返回 " AND service_name IN (...)" SQL 子句；
@@ -193,38 +313,6 @@ func (h *Handler) applyCHAuth(req *http.Request) {
 	if h.chUser != "" && h.chPassword != "" {
 		req.SetBasicAuth(h.chUser, h.chPassword)
 	}
-}
-
-// queryClickHouse sends a SQL query to ClickHouse HTTP interface and returns the raw response body.
-func (h *Handler) queryClickHouse(ctx context.Context, sql string) ([]byte, error) {
-	chURL := fmt.Sprintf("http://%s:%d/", h.chHost, h.chPort)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, chURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	q := req.URL.Query()
-	q.Set("query", sql)
-	q.Set("default_format", "JSONEachRow")
-	req.URL.RawQuery = q.Encode()
-	h.applyCHAuth(req)
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("clickhouse query: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("clickhouse error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	return body, nil
 }
 
 // writeClickHouse 执行 INSERT 等写 SQL（用 POST + body，ClickHouse 要求修改查询用 POST）
@@ -323,21 +411,17 @@ func respondError(w http.ResponseWriter, status int, message string) {
 	respondJSON(w, status, map[string]string{"error": message})
 }
 
-// parseRows parses ClickHouse JSONEachRow response into []map[string]interface{}.
-func parseRows(body []byte) ([]map[string]interface{}, error) {
-	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-	var rows []map[string]interface{}
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		var row map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			return nil, fmt.Errorf("parse row: %w", err)
-		}
-		rows = append(rows, row)
+// respondQueryError 统一渲染 query 包的 QueryError（P6.2），保证
+// no_data(200) / permission_denied(403) / unavailable(503) / timeout(504) 语义一致，
+// 避免各处回退 generic 500。非 QueryError 一律按内部错误(500)处理。
+func respondQueryError(w http.ResponseWriter, err error) {
+	var qe *query.QueryError
+	if errors.As(err, &qe) {
+		respondJSON(w, qe.HTTPStatus(), map[string]string{"error": string(qe.Code), "message": qe.Message})
+		return
 	}
-	return rows, nil
+	log.Printf("query error (generic): %v", err)
+	respondError(w, http.StatusInternalServerError, "query failed")
 }
 
 // ListServices handles GET /api/v1/services
@@ -349,39 +433,36 @@ func parseRows(body []byte) ([]map[string]interface{}, error) {
 // 传 include_deleted=true 可放开（此时条目带 deleted:true 标记供前端区分）。
 func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	// 数据(P0-1)：trace_spans 有 tenant_id 列，必须按租户过滤（原注释"无 tenant_id 列"有误）
-	tenantClause := " AND tenant_id=" + chQuote(tid)
-	scopeClause := scopeServicesClause(r)    // 安全(P1-2)：scope.services 非空时按服务范围过滤
-	clusterClause := extractClusterClause(r) // A-3 修复：服务列表按集群过滤
 	// P1-5：默认过滤 deleted 残留服务；include_deleted=true 时放开
 	includeDeleted := r.URL.Query().Get("include_deleted") == "true"
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	// 1. 从 ClickHouse 拿动态服务列表（P1-5：近 24h 有 trace 的活跃服务，与 stats 口径一致）
-	chSQL := `SELECT DISTINCT service_name
-              FROM observability.trace_spans
-              WHERE date >= today()-1` + tenantClause + clusterClause + scopeClause + `
-                AND service_name != ''
-              ORDER BY service_name`
-	body, err := h.queryClickHouse(ctx, chSQL)
-	if err != nil {
-		log.Printf("ListServices CH query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
-		return
+	scope := query.ResourceScope{
+		TenantID:  tid,
+		ClusterID: extractClusterIDIfSpecific(r),
+		Services:  currentScope(r).Services,
 	}
-	rows, err := parseRows(body)
+
+	// 1. 从 ClickHouse 拿动态服务列表（P1-5：近 24h 有 trace 的活跃服务，与 stats 口径一致）。
+	//    P6.2c：SQL ownership 在 resource repository。
+	//    no_data（空 trace_spans）→ 空列表，语义=合法空结果（HTTP 200），非故障。
+	svcNames, err := h.resourceRepo.ActiveServices(ctx, scope, includeDeleted)
 	if err != nil {
-		log.Printf("ListServices parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
+		if qe, ok := err.(*query.QueryError); ok && qe.Code == query.NoDataCode {
+			svcNames = nil
+		} else {
+			log.Printf("ListServices CH query error: %v", err)
+			respondQueryError(w, err)
+			return
+		}
 	}
 
 	// 提取服务名列表（剔除 deleted 残留，除非 include_deleted=true）
-	services := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if name, ok := row["service_name"].(string); ok && name != "" {
+	services := make([]string, 0, len(svcNames))
+	for _, name := range svcNames {
+		if name != "" {
 			if !includeDeleted && isDeletedService(name) {
 				continue
 			}
@@ -389,38 +470,23 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. 从 ClickHouse 拿各服务指标聚合（调用量/错误数/平均延迟，近 24h）
-	//    解决服务列表三项指标(calls/errors/avg_latency_ms)恒为 0 的问题。
-	metricsSQL := `SELECT service_name AS service, count() AS calls,
-	                     countIf(is_error=1) AS errs, avg(duration_ns)/1000000 AS avg_ms
-	              FROM observability.trace_spans
-	              WHERE date >= today()-1` + tenantClause + clusterClause + scopeClause + `
-	              GROUP BY service_name`
-	metricsBody, err := h.queryClickHouse(ctx, metricsSQL)
-	if err != nil {
-		log.Printf("ListServices CH metrics query error: %v", err)
-	}
+	// 2. 从 ClickHouse 拿各服务指标聚合（调用量/错误数/平均延迟，近 24h）。
+	//    P6.2c：SQL ownership 在 resource repository。
 	metrics := make(map[string]map[string]interface{})
-	if mrows, perr := parseRows(metricsBody); perr == nil {
-		for _, row := range mrows {
-			svc, _ := row["service"].(string)
-			if svc == "" {
+	if mets, merr := h.resourceRepo.ServiceMetrics(ctx, scope); merr == nil {
+		for _, sm := range mets {
+			if sm.Service == "" {
 				continue
 			}
-			// count()/countIf() 在 ClickHouse JSONEachRow 中可能返回字符串（如 "3579"），
-			// 用 toFloat 兼容数字/字符串两种类型，避免类型断言失败导致 calls/errors 为 0。
-			calls := toFloat(row["calls"])
-			errs := toFloat(row["errs"])
-			avgMS := toFloat(row["avg_ms"])
 			errorRate := 0.0
-			if calls > 0 {
-				errorRate = errs / calls
+			if sm.Calls > 0 {
+				errorRate = float64(sm.Errors) / float64(sm.Calls)
 			}
-			metrics[svc] = map[string]interface{}{
-				"calls":          int64(calls),
-				"errors":         int64(errs),
+			metrics[sm.Service] = map[string]interface{}{
+				"calls":          sm.Calls,
+				"errors":         sm.Errors,
 				"error_rate":     errorRate,
-				"avg_latency_ms": round2(avgMS),
+				"avg_latency_ms": round2(sm.AvgMS),
 			}
 		}
 	}
@@ -554,10 +620,12 @@ func (h *Handler) ServiceDetail(w http.ResponseWriter, r *http.Request) {
 // ListTraces handles GET /api/v1/traces
 func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
+	cid := extractClusterID(r)
+	if cid == "all" {
+		cid = ""
+	}
 	limit := 20
 	offset := 0
-
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if v, err := strconv.Atoi(l); err == nil && v > 0 {
 			limit = v
@@ -568,61 +636,46 @@ func (h *Handler) ListTraces(w http.ResponseWriter, r *http.Request) {
 			offset = v
 		}
 	}
-	hoursClause := ""
+	hours := 0
 	if rawHours := r.URL.Query().Get("hours"); rawHours != "" {
-		if hours, err := strconv.Atoi(rawHours); err == nil && hours >= 1 {
-			hoursClause = fmt.Sprintf(" AND start_time >= now() - INTERVAL %d HOUR", hours)
+		if v, err := strconv.Atoi(rawHours); err == nil && v >= 1 {
+			hours = v
 		}
 	}
-
-	serviceFilter := r.URL.Query().Get("service")
-	serviceClause := ""
-	if serviceFilter != "" {
-		serviceClause = fmt.Sprintf("AND service_name=%s", chQuote(serviceFilter))
-	}
-
-	// 2.7 搜索框：支持按 trace_id / operation / http_url 文本搜索。
-	// P3-6 修复：keyword 与 search 等价，keyword 优先（向后兼容 search 参数）。
-	searchClause := ""
 	searchKeyword := r.URL.Query().Get("keyword")
 	if searchKeyword == "" {
 		searchKeyword = r.URL.Query().Get("search")
 	}
-	if searchKeyword != "" {
-		searchClause = fmt.Sprintf(" AND (trace_id LIKE %s OR operation_name LIKE %s OR http_url LIKE %s)", chLike(searchKeyword), chLike(searchKeyword), chLike(searchKeyword))
-	}
 
-	sql := fmt.Sprintf(
-		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s%s%s %s GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d",
-		chQuote(tid), clusterClause, scopeServicesClause(r), searchClause, serviceClause, hoursClause, limit, offset,
-	)
-
+	// P6.2b：统一经 traces repository（SQL ownership 在 repository）。
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	body, err := h.queryClickHouse(ctx, sql)
+	summaries, err := h.traceRepo.FindTraces(ctx, query.TraceQuery{
+		TenantID:  tid,
+		ClusterID: cid,
+		Service:   r.URL.Query().Get("service"),
+		Services:  parseCSV(r.URL.Query().Get("services")),
+		Keyword:   searchKeyword,
+		Hours:     hours,
+		Limit:     limit,
+		Offset:    offset,
+	})
 	if err != nil {
-		log.Printf("ListTraces query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
+		respondQueryError(w, err)
 		return
 	}
 
-	rows, err := parseRows(body)
-	if err != nil {
-		log.Printf("ListTraces parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
-	}
-
-	// P1-6 修复：count()/count(DISTINCT) 经 CH JSON 输出可能是字符串或数字，
-	// 统一转换为 int，避免前端收到字符串类型（"2"）。
-	for _, row := range rows {
-		if v, ok := toInt64(row["spans"]); ok {
-			row["spans"] = int(v)
-		}
-		if v, ok := toInt64(row["services"]); ok {
-			row["services"] = int(v)
-		}
+	rows := make([]map[string]interface{}, 0, len(summaries))
+	for _, ts := range summaries {
+		rows = append(rows, map[string]interface{}{
+			"trace_id": ts.TraceID,
+			"start":    ts.Start.Format("2006-01-02 15:04:05"),
+			"end":      ts.End.Format("2006-01-02 15:04:05"),
+			"spans":    ts.Spans,
+			"services": ts.Services,
+			"max_ms":   ts.MaxMS,
+		})
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -645,7 +698,6 @@ func (h *Handler) TraceRouter(w http.ResponseWriter, r *http.Request) {
 // TraceDetail handles GET /api/v1/traces/{id}
 func (h *Handler) TraceDetail(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
 	traceID := strings.TrimPrefix(r.URL.Path, "/api/v1/traces/")
 	traceID = strings.TrimRight(traceID, "/")
 	if traceID == "" {
@@ -653,26 +705,32 @@ func (h *Handler) TraceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sql := fmt.Sprintf(
-		"SELECT span_id, parent_span_id, service_name, operation_name, span_kind, start_time, duration_ns/1000000 as ms, is_error FROM observability.trace_spans WHERE tenant_id=%s%s AND trace_id=%s ORDER BY start_time",
-		chQuote(tid), clusterClause, chQuote(traceID),
-	)
-
+	cid := extractClusterID(r)
+	if cid == "all" {
+		cid = ""
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	body, err := h.queryClickHouse(ctx, sql)
+	// P6.2b：统一经 traces repository（SQL ownership 在 repository）。
+	spans, err := h.traceRepo.FindSpans(ctx, tid, cid, traceID)
 	if err != nil {
-		log.Printf("TraceDetail query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
+		respondQueryError(w, err)
 		return
 	}
 
-	rows, err := parseRows(body)
-	if err != nil {
-		log.Printf("TraceDetail parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
+	rows := make([]map[string]interface{}, 0, len(spans))
+	for _, sp := range spans {
+		rows = append(rows, map[string]interface{}{
+			"span_id":        sp.SpanID,
+			"parent_span_id": sp.ParentSpanID,
+			"service_name":   sp.ServiceName,
+			"operation_name": sp.OperationName,
+			"span_kind":      sp.SpanKind,
+			"start_time":     sp.StartTime.Format("2006-01-02 15:04:05"),
+			"ms":             sp.MS,
+			"is_error":       sp.IsError,
+		})
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -686,7 +744,6 @@ func (h *Handler) TraceDetail(w http.ResponseWriter, r *http.Request) {
 // 数据血缘闭环：返回该 trace 关联的日志(log_records by trace_id) + 服务时段指标 + 关联告警
 func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/traces/")
 	path = strings.TrimRight(path, "/")
 	traceID := strings.TrimSuffix(path, "/context")
@@ -698,31 +755,24 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	// 1. 获取该 trace 涉及的服务
-	svcSQL := fmt.Sprintf(
-		"SELECT DISTINCT service_name FROM observability.trace_spans WHERE tenant_id=%s%s AND trace_id=%s LIMIT 1",
-		chQuote(tid), clusterClause, chQuote(traceID),
-	)
-	svcBody, err := h.queryClickHouse(ctx, svcSQL)
-	if err != nil {
-		log.Printf("TraceContext service query error: %v", err)
-	}
-	svcRows, _ := parseRows(svcBody)
+	// 1. 获取该 trace 涉及的服务（P6.2c：SQL ownership 在 trace repository）
 	serviceName := ""
-	if len(svcRows) > 0 {
-		serviceName, _ = svcRows[0]["service_name"].(string)
+	if s, serr := h.traceRepo.TraceService(ctx, tid, extractClusterIDIfSpecific(r), traceID); serr == nil {
+		serviceName = s
 	}
 
-	// 2. 关联日志 (ClickHouse log_records by trace_id)
+	// 2. 关联日志 (ClickHouse log_records by trace_id)。P6.2c：SQL ownership 在 log repository。
 	logs := []map[string]interface{}{}
 	if traceID != "" {
-		logSQL := fmt.Sprintf(
-			"SELECT timestamp, service_name, severity, body FROM observability.log_records WHERE tenant_id=%s%s AND trace_id=%s ORDER BY timestamp DESC LIMIT 50",
-			chQuote(tid), clusterClause, chQuote(traceID),
-		)
-		logBody, err := h.queryClickHouse(ctx, logSQL)
-		if err == nil {
-			logs, _ = parseRows(logBody)
+		if recs, lerr := h.logRepo.TraceLogs(ctx, tid, extractClusterIDIfSpecific(r), traceID); lerr == nil {
+			for _, rec := range recs {
+				logs = append(logs, map[string]interface{}{
+					"timestamp":    rec.Timestamp,
+					"service_name": rec.ServiceName,
+					"severity":     rec.Severity,
+					"body":         rec.Body,
+				})
+			}
 		}
 	}
 
@@ -751,15 +801,26 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. 该服务近 30 分钟指标
+	// 4. 该服务近 30 分钟指标（P6.2b：统一经 metrics repository，SQL ownership 在 repository）
 	metrics := []map[string]interface{}{}
 	if serviceName != "" {
-		mSQL := fmt.Sprintf(
-			"SELECT toStartOfMinute(start_time) as t, count() as call_count, countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL 30 MINUTE GROUP BY t ORDER BY t",
-			chQuote(tid), clusterClause, chQuote(serviceName),
-		)
-		if mBody, err := h.queryClickHouse(ctx, mSQL); err == nil {
-			metrics, _ = parseRows(mBody)
+		cid := extractClusterID(r)
+		if cid == "all" {
+			cid = "" // 未限定 cluster
+		}
+		points, err := h.metricsRepo.ServiceRED(ctx, query.Scope{
+			TenantID:  tid,
+			ClusterID: cid,
+		}, serviceName, 30)
+		if err == nil {
+			for _, p := range points {
+				metrics = append(metrics, map[string]interface{}{
+					"t":           p.T.Format("2006-01-02 15:04:05"),
+					"call_count":  p.CallCount,
+					"error_count": p.ErrorCount,
+					"avg_ms":      p.AvgMS,
+				})
+			}
 		}
 	}
 
@@ -802,48 +863,53 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 // 安全（文档化已知限制）：PromQL 透传路径无租户/cluster 隔离（见 proxyVMInstantQuery），
 // 已由 AuthMiddleware 强制 JWT 鉴权，需配合网络层隔离控制可达性。
 func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("query")
+	promql := r.URL.Query().Get("query")
 	service := r.URL.Query().Get("service")
 
-	if query != "" && service == "" {
-		h.proxyVMInstantQuery(w, r, query)
+	if promql != "" && service == "" {
+		h.proxyVMInstantQuery(w, r, promql)
 		return
 	}
 
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
-
-	serviceClause := ""
-	if service != "" {
-		serviceClause = fmt.Sprintf(" AND service_name=%s", chQuote(service))
+	cid := extractClusterID(r)
+	if cid == "all" {
+		cid = ""
 	}
-
-	sql := fmt.Sprintf(
-		"SELECT toStartOfMinute(start_time) as t, count() as call_count, "+
-			"countIf(is_error=1) as error_count, avg(duration_ns)/1000000 as avg_ms, "+
-			"quantile(0.50)(duration_ns)/1000000 as p50_ms, "+
-			"quantile(0.95)(duration_ns)/1000000 as p95_ms, "+
-			"quantile(0.99)(duration_ns)/1000000 as p99_ms "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s%s%s AND date >= today()-1 "+
-			"GROUP BY t ORDER BY t",
-		chQuote(tid), clusterClause, scopeServicesClause(r), serviceClause,
-	)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	body, err := h.queryClickHouse(ctx, sql)
+	// P6.2b：统一经 metrics repository（SQL ownership 在 repository）。
+	points, err := h.metricsRepo.ServiceREDDetailed(ctx, query.Scope{
+		TenantID:  tid,
+		ClusterID: cid,
+	}, service, parseCSV(r.URL.Query().Get("services")))
 	if err != nil {
-		log.Printf("QueryMetrics query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
+		// no_data → 200 空列表（与旧行为兼容）；unavailable → 503；timeout → 504。
+		if qe, ok := err.(*query.QueryError); ok && qe.Code == query.NoDataCode {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"service": service,
+				"data":    []map[string]interface{}{},
+				"count":   0,
+			})
+			return
+		}
+		respondQueryError(w, err)
 		return
 	}
 
-	rows, err := parseRows(body)
-	if err != nil {
-		log.Printf("QueryMetrics parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
+	rows := make([]map[string]interface{}, 0, len(points))
+	for _, p := range points {
+		rows = append(rows, map[string]interface{}{
+			"t":           p.T.Format("2006-01-02 15:04:05"),
+			"call_count":  p.CallCount,
+			"error_count": p.ErrorCount,
+			"avg_ms":      p.AvgMS,
+			"p50_ms":      p.P50MS,
+			"p95_ms":      p.P95MS,
+			"p99_ms":      p.P99MS,
+		})
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -867,43 +933,40 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	sql := fmt.Sprintf(
-		"SELECT service_name, count() as calls, countIf(is_error=1) as errors, sum(duration_ns) as lat_sum FROM observability.trace_spans WHERE tenant_id=%s%s%s AND service_name != '' AND date >= today()-1 GROUP BY service_name ORDER BY calls DESC LIMIT 50",
-		chQuote(tid), clusterClause, scopeServicesClause(r),
-	)
-	body, err := h.queryClickHouse(ctx, sql)
-	if err != nil {
-		log.Printf("DashboardStats query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
-		return
+	scope := query.TopologyScope{
+		TenantID:  tid,
+		ClusterID: extractClusterIDIfSpecific(r),
+		Services:  currentScope(r).Services,
 	}
-	rows, err := parseRows(body)
+
+	// P6.2c：统一经 topology repository（SQL ownership 在 repository）。
+	// no_data（空 trace_spans）→ 空统计，语义=合法空结果（HTTP 200），非故障。
+	svcStats, err := h.topoRepo.ServiceREDStats(ctx, scope)
 	if err != nil {
-		log.Printf("DashboardStats parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
+		if qe, ok := err.(*query.QueryError); ok && qe.Code == query.NoDataCode {
+			svcStats = nil
+		} else {
+			log.Printf("DashboardStats query error: %v", err)
+			respondQueryError(w, err)
+			return
+		}
 	}
 
 	var items []biz.StatsItem
-	for _, row := range rows {
-		svc, _ := row["service_name"].(string)
+	for _, st := range svcStats {
 		// P1-5 服务口径统一：与 ListServices 同款过滤，剔除 "(deleted)" 残留服务，
 		// 保证 stats.services 与 /services 活跃服务数一致。
-		if isDeletedService(svc) {
+		if isDeletedService(st.Service) {
 			continue
 		}
-		calls, _ := toInt64(row["calls"])
-		errors, _ := toInt64(row["errors"])
-		latSum, _ := toInt64(row["lat_sum"])
 		items = append(items, biz.StatsItem{
-			Service:  svc,
-			Calls:    calls,
-			Errors:   errors,
-			LatSumNs: latSum,
+			Service:  st.Service,
+			Calls:    st.Calls,
+			Errors:   st.Errors,
+			LatSumNs: st.LatSumNs,
 		})
 	}
 	stats := biz.AggregateStats(items)
@@ -912,24 +975,18 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// services 数 = 仅 trace_spans 中出现的服务（与 ListServices 同口径，真实服务数）；
 	// topology_services = 含 service_topology 目录中无 trace 服务的总数（前端展示用）。
 	// P1-5：topology_services 亦剔除 "(deleted)" 残留服务（与 GlobalTopology 剔除 deleted 节点一致）。
-	topologySQL := fmt.Sprintf(
-		"SELECT DISTINCT source_service AS s FROM observability.service_topology WHERE tenant_id=%s%s%s AND s != '' UNION DISTINCT SELECT DISTINCT target_service AS s FROM observability.service_topology WHERE tenant_id=%s%s%s AND s != ''",
-		chQuote(tid), clusterClause, scopeEdgeClause(r), chQuote(tid), clusterClause, scopeEdgeClause(r),
-	)
 	topologyServices := 0
-	if tb, err := h.queryClickHouse(ctx, topologySQL); err == nil {
-		if tr, perr := parseRows(tb); perr == nil && len(tr) > 0 {
-			svcSet := map[string]bool{}
-			for _, it := range items {
-				svcSet[it.Service] = true
-			}
-			for _, row := range tr {
-				if s, _ := row["s"].(string); s != "" && !isDeletedService(s) {
-					svcSet[s] = true
-				}
-			}
-			topologyServices = len(svcSet)
+	if dist, derr := h.topoRepo.DistinctTopologyServices(ctx, scope); derr == nil && len(dist) > 0 {
+		svcSet := map[string]bool{}
+		for _, it := range items {
+			svcSet[it.Service] = true
 		}
+		for _, s := range dist {
+			if s != "" && !isDeletedService(s) {
+				svcSet[s] = true
+			}
+		}
+		topologyServices = len(svcSet)
 	}
 	if topologyServices > 0 {
 		stats.TopologyServices = topologyServices
@@ -937,17 +994,9 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 
 	// 拓扑边数（与 GlobalTopology 同口径：service_topology 近 1440 分钟、
 	// source!=target 去重后的边数，自环不计入）。
-	edgeCount := int64(0)
-	edgeSQL := fmt.Sprintf(
-		"SELECT count() AS cnt FROM (SELECT source_service, target_service FROM observability.service_topology WHERE tenant_id=%s%s%s AND date >= today()-1 AND time_bucket >= now() - INTERVAL 1440 MINUTE AND source_service != '' AND target_service != '' AND source_service != target_service GROUP BY source_service, target_service)",
-		chQuote(tid), clusterClause, scopeEdgeClause(r),
-	)
-	if eb, err := h.queryClickHouse(ctx, edgeSQL); err == nil {
-		if er, perr := parseRows(eb); perr == nil && len(er) > 0 {
-			if n, ok := toInt64(er[0]["cnt"]); ok {
-				edgeCount = n
-			}
-		}
+	edgeCount, eerr := h.topoRepo.EdgeCount(ctx, scope)
+	if eerr != nil {
+		edgeCount = 0
 	}
 	if edgeCount > 0 {
 		stats.Edges = edgeCount
@@ -959,45 +1008,24 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// P95 延迟（给聚合列加别名，避免 ClickHouse 将 / 规范化为 divide() 导致 key 匹配失败）
-	p95SQL := fmt.Sprintf("SELECT round(quantile(0.95)(duration_ns)/1000000, 2) AS p95_ms FROM observability.trace_spans WHERE tenant_id=%s%s%s AND date >= today()-1", chQuote(tid), clusterClause, scopeServicesClause(r))
-	if pb, err := h.queryClickHouse(ctx, p95SQL); err == nil {
-		if pr, perr := parseRows(pb); perr == nil && len(pr) > 0 {
-			if v, ferr := toFloat64(pr[0]["p95_ms"]); ferr == nil {
-				stats.LatencyP95 = v
-			}
-		}
+	// P95 延迟（SQL ownership 在 repository）
+	if v, perr := h.topoRepo.P95Latency(ctx, scope); perr == nil {
+		stats.LatencyP95 = v
 	}
 
-	// 近 24h 调用/错误趋势（按小时）
-	trendSQL := fmt.Sprintf(
-		"SELECT toString(toStartOfHour(start_time)) AS t, count() AS calls, countIf(is_error=1) AS errors "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s%s AND date >= today()-1 "+
-			"GROUP BY t ORDER BY t LIMIT 24", chQuote(tid), clusterClause, scopeServicesClause(r))
-	if tb, err := h.queryClickHouse(ctx, trendSQL); err == nil {
-		if tr, perr := parseRows(tb); perr == nil {
-			for _, row := range tr {
-				tv, _ := row["t"].(string)
-				calls, _ := toInt64(row["calls"])
-				errs, _ := toInt64(row["errors"])
-				stats.Trend = append(stats.Trend, biz.TrendPoint{T: tv, Calls: calls, Errors: errs})
-			}
-			// P1-3：检测缺失小时窗口（采集中断），供前端展示缺口提示
-			stats.DataGaps = detectTrendGaps(tr, 24)
+	// 近 24h 调用/错误趋势（按小时，SQL ownership 在 repository）
+	if tr, terr := h.topoRepo.HourlyTrend(ctx, scope); terr == nil {
+		for _, pt := range tr {
+			stats.Trend = append(stats.Trend, biz.TrendPoint{T: pt.T, Calls: pt.Calls, Errors: pt.Errors})
 		}
+		// P1-3：检测缺失小时窗口（采集中断），供前端展示缺口提示
+		stats.DataGaps = detectTrendGapsFromPoints(tr, 24)
 	}
 
-	// TOP 错误服务分布
-	teSQL := fmt.Sprintf(
-		"SELECT service_name AS s, countIf(is_error=1) AS errors FROM observability.trace_spans "+
-			"WHERE tenant_id=%s%s%s AND date >= today()-1 AND is_error=1 GROUP BY s ORDER BY errors DESC LIMIT 10", chQuote(tid), clusterClause, scopeServicesClause(r))
-	if tb, err := h.queryClickHouse(ctx, teSQL); err == nil {
-		if tr, perr := parseRows(tb); perr == nil {
-			for _, row := range tr {
-				svc, _ := row["s"].(string)
-				errs, _ := toInt64(row["errors"])
-				stats.TopErrors = append(stats.TopErrors, biz.ErrorItem{Service: svc, Errors: errs})
-			}
+	// TOP 错误服务分布（SQL ownership 在 repository）
+	if te, teerr := h.topoRepo.TopErrors(ctx, scope, 10); teerr == nil {
+		for _, it := range te {
+			stats.TopErrors = append(stats.TopErrors, biz.ErrorItem{Service: it.Service, Errors: it.Errors})
 		}
 	}
 
@@ -1063,7 +1091,6 @@ func topologyNodeType(name string) (typ string, rank int) {
 // 前端参考 DeepFlow 风格（从左到右分层、节点卡片含图标+延迟+请求量、连线带箭头与颜色）
 func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
 	// ns 过滤（契约）：namespace 参数省略 = 全部；指定时返回该 ns 节点 + 外部邻居节点
 	namespaceFilter := r.URL.Query().Get("namespace")
 
@@ -1074,51 +1101,26 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 			minutes = v
 		}
 	}
-	timeCond := fmt.Sprintf(" AND start_time >= now() - INTERVAL %d MINUTE", minutes)
-	// 数据(P1-4/P1-5)：时间窗口查询补 date 分区谓词，避免全分区扫描
-	dateCond := " AND " + chDateWindow(minutes)
-	aliasDateCond := fmt.Sprintf(" AND s1.%s AND s2.%s", chDateWindow(minutes), chDateWindow(minutes))
-	edgeScope := scopeEdgeClause(r) // 安全(P1-2)：scope.services 非空时边两端都要在授权范围
-
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	// 边聚合：优先 service_topology（真实调用边），无数据时回退到 trace_spans 按服务对聚合
-	// service_topology 用 time_bucket 列做时间过滤
-	edgeCond := fmt.Sprintf(" AND time_bucket >= now() - INTERVAL %d MINUTE", minutes)
-	edgeSQL := fmt.Sprintf(
-		"SELECT source_service, target_service, sum(call_count) AS calls, sum(error_count) AS errs, avg(avg_duration_ns) AS avg_ns "+
-			"FROM observability.service_topology WHERE tenant_id=%s%s%s%s%s "+
-			"GROUP BY source_service, target_service ORDER BY calls DESC LIMIT 200",
-		chQuote(tid), clusterClause, edgeCond, dateCond, edgeScope,
-	)
-	edgeBody, err := h.queryClickHouse(ctx, edgeSQL)
-	if err != nil {
-		log.Printf("GlobalTopology edge query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
-		return
+	scope := query.TopologyScope{
+		TenantID:  tid,
+		ClusterID: extractClusterIDIfSpecific(r),
+		Services:  currentScope(r).Services,
 	}
-	edgeRows, err := parseRows(edgeBody)
-	if err != nil {
-		log.Printf("GlobalTopology edge parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
+
+	// P6.2c：边聚合统一经 topology repository（SQL ownership 在 repository）。
+	// 优先 service_topology（真实调用边），无数据时回退到 trace_spans 按服务对聚合。
+	edgeRows := []map[string]interface{}{}
+	if edges, eerr := h.topoRepo.GlobalEdges(ctx, scope, minutes); eerr == nil && len(edges) > 0 {
+		edgeRows = topologyEdgesToRows(edges)
 	}
 	// P0-2: 若 service_topology 无调用边，回退到 trace_spans 按 trace 内相邻 span 的服务对聚合（尽力而为）
 	if len(edgeRows) == 0 {
 		// 第一级：parent_span_id self-join（最准确，依赖完整调用链）
-		fallbackSQL := fmt.Sprintf(
-			"SELECT s1.service_name AS source_service, s2.service_name AS target_service, count() AS calls, 0 AS errs, avg(s2.duration_ns) AS avg_ns "+
-				"FROM observability.trace_spans AS s1 "+
-				"JOIN observability.trace_spans AS s2 ON s1.trace_id = s2.trace_id AND s1.span_id = s2.parent_span_id "+
-				"WHERE s1.tenant_id=%s%s%s%s%s AND s1.start_time >= now() - INTERVAL %d MINUTE "+
-				"GROUP BY s1.service_name, s2.service_name ORDER BY calls DESC LIMIT 200",
-			chQuote(tid), clusterClause, scopeINClause(r, "s1."), scopeINClause(r, "s2."), aliasDateCond, minutes,
-		)
-		if fb, err := h.queryClickHouse(ctx, fallbackSQL); err == nil {
-			if fr, perr := parseRows(fb); perr == nil && len(fr) > 0 {
-				edgeRows = fr
-			}
+		if fb, ferr := h.topoRepo.ParentSpanEdges(ctx, scope, minutes); ferr == nil && len(fb) > 0 {
+			edgeRows = topologyEdgesToRows(fb)
 		}
 	}
 	// P0-2b: 若仍无边（数据无 parent_span_id 关联），改用 trace 内服务时序的相邻调用统计。
@@ -1126,25 +1128,8 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	// 能反映真实的服务间调用关系与调用量。
 	// 注：用 lagInFrame 窗口函数（neighbor 在 ClickHouse 24.8 已弃用会报错）。
 	if len(edgeRows) == 0 {
-		seqSQL := fmt.Sprintf(
-			"SELECT source_service, target_service, count() AS calls, 0 AS errs, avg(target_dur_ns) AS avg_ns FROM ( "+
-				"  SELECT service_name AS target_service, "+
-				"         lagInFrame(service_name, 1, '') OVER (ORDER BY trace_id, rn) AS source_service, "+
-				"         duration_ns AS target_dur_ns "+
-				"  FROM ( "+
-				"    SELECT trace_id, service_name, duration_ns, "+
-				"           row_number() OVER (PARTITION BY trace_id ORDER BY start_time) AS rn "+
-				"    FROM observability.trace_spans "+
-				"    WHERE tenant_id=%s%s%s%s AND start_time >= now() - INTERVAL %d MINUTE "+
-				"  ) "+
-				") WHERE source_service != '' AND source_service != target_service "+
-				"GROUP BY source_service, target_service ORDER BY calls DESC LIMIT 200",
-			chQuote(tid), clusterClause, scopeServicesClause(r), dateCond, minutes,
-		)
-		if fb, err := h.queryClickHouse(ctx, seqSQL); err == nil {
-			if fr, perr := parseRows(fb); perr == nil && len(fr) > 0 {
-				edgeRows = fr
-			}
+		if fb, ferr := h.topoRepo.SequenceEdges(ctx, scope, minutes); ferr == nil && len(fb) > 0 {
+			edgeRows = topologyEdgesToRows(fb)
 		}
 	}
 	// P0-2: 若 ClickHouse 仍无边（service_topology 为空且 trace 无 parent_span_id），
@@ -1157,53 +1142,25 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 节点聚合（真实 trace）：按 service_name 聚合调用量、错误、平均延迟
-	nodeSQL := fmt.Sprintf(
-		"SELECT service_name AS service, count() AS calls, countIf(is_error=1) AS errs, avg(duration_ns) AS avg_ns "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s%s%s%s GROUP BY service_name ORDER BY calls DESC LIMIT 200",
-		chQuote(tid), clusterClause, timeCond, dateCond, scopeServicesClause(r),
-	)
-	nodeBody, err := h.queryClickHouse(ctx, nodeSQL)
-	if err != nil {
-		log.Printf("GlobalTopology node query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	nodeRows, err := parseRows(nodeBody)
-	if err != nil {
-		log.Printf("GlobalTopology node parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
+	// 节点聚合（真实 trace）：按 service_name 聚合调用量、错误、平均延迟（P6.2c repository）
+	nodeRows := []map[string]interface{}{}
+	if nodes, nerr := h.topoRepo.GlobalNodes(ctx, scope, minutes); nerr == nil {
+		for _, n := range nodes {
+			nodeRows = append(nodeRows, map[string]interface{}{
+				"service": n.Service,
+				"calls":   float64(n.Calls),
+				"errs":    float64(n.Errors),
+				"avg_ns":  n.AvgNs,
+			})
+		}
 	}
 
 	// ns 聚合（契约2/3）：窗口内 trace_spans 按 service 取调用量最大的 k8s_namespace，
 	// 生成 服务→namespace 映射。k8s_namespace 为可选列，查询/解析失败时降级为空映射
 	// （拓扑主视图仍可渲染，仅 namespaces 列表与节点 ns 标注为空），与其他可选富化查询一致。
 	serviceNS := map[string]string{}
-	nsSQL := fmt.Sprintf(
-		"SELECT service_name AS service, k8s_namespace AS ns, count() AS calls "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s%s%s%s "+
-			"GROUP BY service_name, k8s_namespace ORDER BY calls DESC",
-		chQuote(tid), clusterClause, timeCond, dateCond, scopeServicesClause(r),
-	)
-	if nsBody, qerr := h.queryClickHouse(ctx, nsSQL); qerr == nil {
-		if nsRows, perr := parseRows(nsBody); perr == nil {
-			best := map[string]int64{} // service → 该 ns 组合的最大调用量
-			for _, nr := range nsRows {
-				svc, _ := nr["service"].(string)
-				ns, _ := nr["ns"].(string)
-				calls, _ := toInt64(nr["calls"])
-				if svc == "" {
-					continue
-				}
-				if prev, ok := best[svc]; !ok || calls > prev {
-					best[svc] = calls
-					serviceNS[svc] = ns
-				}
-			}
-		} else {
-			log.Printf("GlobalTopology ns parse error: %v", perr)
-		}
+	if nsMap, qerr := h.topoRepo.GlobalServiceNS(ctx, scope, minutes); qerr == nil {
+		serviceNS = nsMap
 	} else {
 		log.Printf("GlobalTopology ns query error: %v", qerr)
 	}
@@ -1403,6 +1360,23 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadTopologyEdgesFromMySQL 从 MySQL topology_relations（关联 topology_nodes）读取真实调用边。
+// topologyEdgesToRows 把 topology repository 返回的类型化边转成下游拓扑构建逻辑
+// 期望的同构 map 切片（source_service/target_service/calls/errs/avg_ns）。
+// SQL ownership 在 repository；此转换仅是视图层适配，不持有 SQL。
+func topologyEdgesToRows(edges []query.TopologyEdge) []map[string]interface{} {
+	rows := make([]map[string]interface{}, 0, len(edges))
+	for _, e := range edges {
+		rows = append(rows, map[string]interface{}{
+			"source_service": e.Source,
+			"target_service": e.Target,
+			"calls":          float64(e.Calls),
+			"errs":           float64(e.Errors),
+			"avg_ns":         e.AvgNs,
+		})
+	}
+	return rows
+}
+
 // 返回与 ClickHouse 边行同构的 map 切片（source_service/target_service/calls/errs/avg_ns），
 // 供 GlobalTopology 复用统一边构建逻辑。数据由 SyncTopologyCatalog 按 trace 内服务时序生成。
 func loadTopologyEdgesFromMySQL() []map[string]interface{} {
@@ -1463,7 +1437,6 @@ func buildSyntheticNode(name, namespace string) map[string]interface{} {
 // 当请求时间窗（minutes）内无 trace 数据时，自动放宽到最近 7 天，确保抽屉始终有内容
 func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
-	clusterClause := extractClusterClause(r)
 	name := strings.TrimPrefix(r.URL.Path, "/api/v1/topology/node/")
 	if name == "" {
 		respondError(w, http.StatusBadRequest, "node name required")
@@ -1481,11 +1454,43 @@ func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// 先按请求时间窗查询
-	m, trendRows, traceRows, spanRows := h.queryNodeDetail(ctx, tid, name, minutes, clusterClause)
+	// 先按请求时间窗查询（P6.2c：SQL ownership 在 topology repository）
+	scope := query.TopologyScope{
+		TenantID:  tid,
+		ClusterID: extractClusterIDIfSpecific(r),
+		Services:  currentScope(r).Services,
+	}
+	d := h.nodeDetailFromRepo(ctx, scope, name, minutes)
 	// 若趋势与调用链都为空（数据已过期），自动放宽到最近 7 天
-	if len(trendRows) == 0 && len(traceRows) == 0 {
-		m, trendRows, traceRows, spanRows = h.queryNodeDetail(ctx, tid, name, 60*24*7, clusterClause)
+	if len(d.Trend) == 0 && len(d.Traces) == 0 {
+		d = h.nodeDetailFromRepo(ctx, scope, name, 60*24*7)
+	}
+	m := map[string]interface{}{
+		"calls":  float64(d.Metrics.Calls),
+		"errors": float64(d.Metrics.Errors),
+		"avg_ms": d.Metrics.AvgMS,
+		"max_ms": d.Metrics.MaxMS,
+	}
+	trendRows := make([]map[string]interface{}, 0, len(d.Trend))
+	for _, tp := range d.Trend {
+		trendRows = append(trendRows, map[string]interface{}{
+			"t": tp.T, "calls": float64(tp.Calls), "errors": float64(tp.Errors), "avg_ms": tp.AvgMS,
+		})
+	}
+	traceRows := make([]map[string]interface{}, 0, len(d.Traces))
+	for _, tc := range d.Traces {
+		traceRows = append(traceRows, map[string]interface{}{
+			"trace_id": tc.TraceID, "start": tc.Start, "end": tc.End,
+			"spans": float64(tc.Spans), "max_ms": tc.MaxMS, "errors": float64(tc.Errors),
+		})
+	}
+	spanRows := make([]map[string]interface{}, 0, len(d.Spans))
+	for _, sp := range d.Spans {
+		spanRows = append(spanRows, map[string]interface{}{
+			"span_id": sp.SpanID, "trace_id": sp.TraceID, "start_time": sp.StartTime,
+			"service_name": sp.ServiceName, "operation_name": sp.OperationName,
+			"ms": sp.MS, "is_error": float64(sp.IsError), "http_url": sp.HTTPURL,
+		})
 	}
 
 	calls := toFloat(m["calls"])
@@ -1520,90 +1525,14 @@ func (h *Handler) TopologyNodeDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// queryNodeDetail 按给定时间窗（分钟）聚合节点的指标、趋势、调用链与 span 明细
-func (h *Handler) queryNodeDetail(ctx context.Context, tid, name string, minutes int, clusterClause string) (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}) {
-	empty := func() (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}) {
-		return map[string]interface{}{}, nil, nil, nil
-	}
-
-	// 1. 指标卡：从 trace_spans 聚合（用 start_time 过滤更精确，兼容历史 date 数据）
-	metricSQL := fmt.Sprintf(
-		"SELECT count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms, max(duration_ns)/1000000 as max_ms "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE",
-		chQuote(tid), clusterClause, chQuote(name), minutes,
-	)
-	metricBody, err := h.queryClickHouse(ctx, metricSQL)
+// nodeDetailFromRepo 按给定时间窗（分钟）经 topology repository 聚合节点详情。
+// SQL ownership 在 repository；此处仅做 typed→view map 适配，不持有 SQL。
+func (h *Handler) nodeDetailFromRepo(ctx context.Context, scope query.TopologyScope, name string, minutes int) query.NodeDetail {
+	d, err := h.topoRepo.NodeDetail(ctx, scope, name, minutes)
 	if err != nil {
-		log.Printf("TopologyNodeDetail metric query error: %v", err)
-		return empty()
+		log.Printf("TopologyNodeDetail repository query error: %v", err)
 	}
-	metricRows, err := parseRows(metricBody)
-	if err != nil {
-		log.Printf("TopologyNodeDetail metric parse error: %v", err)
-		return empty()
-	}
-	m := map[string]interface{}{}
-	if len(metricRows) > 0 {
-		m = metricRows[0]
-	}
-
-	// 2. 趋势：按分钟聚合
-	trendSQL := fmt.Sprintf(
-		"SELECT toStartOfMinute(start_time) as t, count() as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
-			"GROUP BY t ORDER BY t",
-		chQuote(tid), clusterClause, chQuote(name), minutes,
-	)
-	trendBody, err := h.queryClickHouse(ctx, trendSQL)
-	if err != nil {
-		log.Printf("TopologyNodeDetail trend query error: %v", err)
-		return empty()
-	}
-	trendRows, err := parseRows(trendBody)
-	if err != nil {
-		log.Printf("TopologyNodeDetail trend parse error: %v", err)
-		return empty()
-	}
-
-	// 3. 调用链列表
-	traceSQL := fmt.Sprintf(
-		"SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, "+
-			"max(duration_ns)/1000000 as max_ms, sum(is_error) as errors "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
-			"GROUP BY trace_id ORDER BY start DESC LIMIT 20",
-		chQuote(tid), clusterClause, chQuote(name), minutes,
-	)
-	traceBody, err := h.queryClickHouse(ctx, traceSQL)
-	if err != nil {
-		log.Printf("TopologyNodeDetail trace query error: %v", err)
-		return empty()
-	}
-	traceRows, err := parseRows(traceBody)
-	if err != nil {
-		log.Printf("TopologyNodeDetail trace parse error: %v", err)
-		return empty()
-	}
-
-	// 4. 最近 5 条 span 明细（用于表格展示），统一用 start_time 过滤
-	// Issue4: 补充 service_name/span_id/trace_id 字段，前端 span 明细表"服务"列及行 key 才有值
-	spanSQL := fmt.Sprintf(
-		"SELECT span_id, trace_id, start_time, service_name, operation_name, duration_ns/1000000 as ms, is_error, http_url "+
-			"FROM observability.trace_spans WHERE tenant_id=%s%s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE "+
-			"ORDER BY start_time DESC LIMIT 5",
-		chQuote(tid), clusterClause, chQuote(name), minutes,
-	)
-	spanBody, err := h.queryClickHouse(ctx, spanSQL)
-	if err != nil {
-		log.Printf("TopologyNodeDetail span query error: %v", err)
-		return empty()
-	}
-	spanRows, err := parseRows(spanBody)
-	if err != nil {
-		log.Printf("TopologyNodeDetail span parse error: %v", err)
-		return empty()
-	}
-
-	return m, trendRows, traceRows, spanRows
+	return d
 }
 
 // round2 保留 2 位小数
@@ -1685,60 +1614,46 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build WHERE clause dynamically
-	var conditions []string
-	conditions = append(conditions, fmt.Sprintf("tenant_id=%s", chQuote(tid)))
-
-	// 多集群过滤：cluster_id 为空或 all 时不追加（查询所有集群）
-	if cc := extractClusterClause(r); cc != "" {
-		conditions = append(conditions, strings.TrimPrefix(cc, " AND "))
+	// P6.2b：统一经 logs repository（SQL ownership 在 repository；legacy transition path）。
+	cid := extractClusterID(r)
+	if cid == "all" {
+		cid = ""
 	}
-
-	if service != "" {
-		conditions = append(conditions, fmt.Sprintf("service_name LIKE %s", chLike(service)))
-	}
-	if queryText != "" {
-		// Search in body field for log text
-		conditions = append(conditions, fmt.Sprintf("body LIKE %s", chLike(queryText)))
-	}
-	// 修复(P2-3)：exclude_health=1 时过滤健康检查/探针噪音日志（/health、/ready、/v1/query）
-	if r.URL.Query().Get("exclude_health") == "true" || r.URL.Query().Get("exclude_health") == "1" {
-		conditions = append(conditions,
-			"(body NOT LIKE '%/health%' AND body NOT LIKE '%/ready%' AND body NOT LIKE '%/v1/query%' AND body NOT LIKE '%metrics%')")
-	}
-
-	// 安全(P1-2)：scope.services 非空时追加服务范围过滤
-	if sc := scopeServicesClause(r); sc != "" {
-		conditions = append(conditions, strings.TrimPrefix(sc, " AND "))
-	}
-
-	// Time filter: last N minutes（用 timestamp 精确过滤，而非天粒度 date）
-	conditions = append(conditions, fmt.Sprintf("timestamp >= now() - INTERVAL %d MINUTE", minutes))
-	// 数据(P1-4)：补 date 分区谓词，避免全分区扫描（与分钟窗口对齐）
-	conditions = append(conditions, chDateWindow(minutes))
-
-	whereClause := strings.Join(conditions, " AND ")
-
-	sql := fmt.Sprintf(
-		"SELECT timestamp, service_name, severity, body, trace_id FROM observability.log_records WHERE %s ORDER BY timestamp DESC LIMIT 100",
-		whereClause,
-	)
-
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	body, err := h.queryClickHouse(ctx, sql)
+	records, err := h.logRepo.SearchRawLogs(ctx, query.LogQuery{
+		TenantID:      tid,
+		ClusterID:     cid,
+		Service:       service,
+		Query:         queryText,
+		Services:      parseCSV(r.URL.Query().Get("services")),
+		Minutes:       minutes,
+		ExcludeHealth: r.URL.Query().Get("exclude_health") == "true" || r.URL.Query().Get("exclude_health") == "1",
+	})
 	if err != nil {
-		log.Printf("QueryLogs query error: %v", err)
-		respondError(w, http.StatusInternalServerError, "query failed")
+		// no_data → 200 空列表（与旧行为一致）；unavailable → 503；timeout → 504。
+		if qe, ok := err.(*query.QueryError); ok && qe.Code == query.NoDataCode {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"data":    []map[string]interface{}{},
+				"count":   0,
+				"minutes": minutes,
+			})
+			return
+		}
+		respondQueryError(w, err)
 		return
 	}
 
-	rows, err := parseRows(body)
-	if err != nil {
-		log.Printf("QueryLogs parse error: %v", err)
-		respondError(w, http.StatusInternalServerError, "parse failed")
-		return
+	rows := make([]map[string]interface{}, 0, len(records))
+	for _, rec := range records {
+		rows = append(rows, map[string]interface{}{
+			"timestamp":    rec.Timestamp.Format("2006-01-02 15:04:05"),
+			"service_name": rec.ServiceName,
+			"severity":     rec.Severity,
+			"body":         rec.Body,
+			"trace_id":     rec.TraceID,
+		})
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -1771,74 +1686,54 @@ func (h *Handler) LogAggregate(w http.ResponseWriter, r *http.Request) {
 			interval = n
 		}
 	}
-	conditions := []string{fmt.Sprintf("tenant_id=%s", chQuote(tid))}
-	// 多集群过滤：cluster_id 为空或 all 时不追加（查询所有集群）
-	if cc := extractClusterClause(r); cc != "" {
-		conditions = append(conditions, strings.TrimPrefix(cc, " AND "))
+	cid := extractClusterID(r)
+	if cid == "all" {
+		cid = ""
 	}
-	if service != "" {
-		conditions = append(conditions, fmt.Sprintf("service_name LIKE %s", chLike(service)))
+	lq := query.LogQuery{
+		TenantID:  tid,
+		ClusterID: cid,
+		Service:   service,
+		Query:     queryText,
+		Services:  parseCSV(r.URL.Query().Get("services")),
+		Minutes:   minutes,
 	}
-	if queryText != "" {
-		conditions = append(conditions, fmt.Sprintf("body LIKE %s", chLike(queryText)))
-	}
-	// 安全(P1-2)：scope.services 非空时追加服务范围过滤
-	if sc := scopeServicesClause(r); sc != "" {
-		conditions = append(conditions, strings.TrimPrefix(sc, " AND "))
-	}
-	conditions = append(conditions, fmt.Sprintf("timestamp >= now() - INTERVAL %d MINUTE", minutes))
-	// 数据(P1-4)：补 date 分区谓词，避免全分区扫描（与分钟窗口对齐）
-	conditions = append(conditions, chDateWindow(minutes))
-	whereClause := strings.Join(conditions, " AND ")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
+	// P6.2b：统一经 logs repository（derived analytics，SQL ownership 在 repository）。
 	// 1. 时间序列（每 interval 的日志量）
-	trendSQL := fmt.Sprintf(
-		"SELECT toStartOfInterval(timestamp, INTERVAL %d MINUTE) AS bucket, count() AS cnt FROM observability.log_records WHERE %s GROUP BY bucket ORDER BY bucket",
-		interval, whereClause)
-	trendBody, err := h.queryClickHouse(ctx, trendSQL)
+	trendBuckets, err := h.logRepo.AggregateTrend(ctx, lq, interval)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "aggregate failed")
+		respondQueryError(w, err)
 		return
 	}
-	trendRows, _ := parseRows(trendBody)
-	trend := []map[string]interface{}{}
-	for _, row := range trendRows {
-		trend = append(trend, map[string]interface{}{
-			"bucket": row["bucket"], "count": row["cnt"],
-		})
+	trend := make([]map[string]interface{}, 0, len(trendBuckets))
+	for _, b := range trendBuckets {
+		trend = append(trend, map[string]interface{}{"bucket": b.Bucket.Format("2006-01-02 15:04:05"), "count": b.Count})
 	}
 
 	// 2. 级别分布
-	levelSQL := fmt.Sprintf(
-		"SELECT severity AS level, count() AS cnt FROM observability.log_records WHERE %s GROUP BY severity ORDER BY cnt DESC",
-		whereClause)
-	levelBody, err := h.queryClickHouse(ctx, levelSQL)
+	levelCounts, err := h.logRepo.AggregateLevels(ctx, lq)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "aggregate failed")
+		respondQueryError(w, err)
 		return
 	}
-	levelRows, _ := parseRows(levelBody)
-	levels := []map[string]interface{}{}
-	for _, row := range levelRows {
-		levels = append(levels, map[string]interface{}{"level": row["level"], "count": row["cnt"]})
+	levels := make([]map[string]interface{}, 0, len(levelCounts))
+	for _, l := range levelCounts {
+		levels = append(levels, map[string]interface{}{"level": l.Level, "count": l.Count})
 	}
 
 	// 3. 服务 TOP
-	svcSQL := fmt.Sprintf(
-		"SELECT service_name AS service, count() AS cnt FROM observability.log_records WHERE %s GROUP BY service_name ORDER BY cnt DESC LIMIT 10",
-		whereClause)
-	svcBody, err := h.queryClickHouse(ctx, svcSQL)
+	svcCounts, err := h.logRepo.AggregateServices(ctx, lq, 10)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "aggregate failed")
+		respondQueryError(w, err)
 		return
 	}
-	svcRows, _ := parseRows(svcBody)
-	services := []map[string]interface{}{}
-	for _, row := range svcRows {
-		services = append(services, map[string]interface{}{"service": row["service"], "count": row["cnt"]})
+	services := make([]map[string]interface{}, 0, len(svcCounts))
+	for _, s := range svcCounts {
+		services = append(services, map[string]interface{}{"service": s.Service, "count": s.Count})
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -2049,14 +1944,15 @@ var logCursors = struct {
 // detectTrendGaps 基于"近 hours 小时应有点"检测 trend 缺失小时，返回缺口描述列表。
 // rows 的 t 字段格式 "2006-01-02 15:04:05"（toString(toStartOfHour(...))）。
 // 返回形如 "08-12 15:00 ~ 08-12 23:00" 的连续缺失区间（P1-3）。
-func detectTrendGaps(rows []map[string]interface{}, hours int) []string {
+// detectTrendGapsFromPoints 检测近 hours 小时缺失的小时窗口（采集中断，供前端展示缺口提示）。
+// 输入为 topology repository 返回的 []query.TrendPoint（P6.2c 迁移后 handler 不持有 map 行）。
+// 逻辑与旧 detectTrendGaps 一致（时间解析失败的行视为缺失）。
+func detectTrendGapsFromPoints(points []query.TrendPoint, hours int) []string {
 	now := time.Now().Truncate(time.Hour)
 	got := map[int64]bool{}
-	for _, r := range rows {
-		if ts, ok := r["t"].(string); ok {
-			if t, err := time.ParseInLocation("2006-01-02 15:04:05", ts, time.Local); err == nil {
-				got[t.Unix()] = true
-			}
+	for _, p := range points {
+		if t, err := time.ParseInLocation("2006-01-02 15:04:05", p.T, time.Local); err == nil {
+			got[t.Unix()] = true
 		}
 	}
 	var gaps []string

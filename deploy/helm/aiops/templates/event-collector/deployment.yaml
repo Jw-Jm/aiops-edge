@@ -25,15 +25,29 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            # 集群 ID（多集群：每集群部署时改为对应集群 ID）
+            # 租户/集群 ID（Phase 5：必须 canonical UUID，缺失/非法将 fail-closed 拒绝启动；
+            # 部署侧需注入注册后的集群 canonical UUID，而非 default/slug）
+            - name: TENANT_ID
+              value: {{ .Values.eventCollector.tenantId | quote }}
             - name: CLUSTER_ID
               value: {{ .Values.eventCollector.clusterId | default "default" | quote }}
-            # K8s 事件采集（每节点 DaemonSet 只需一实例 watch 全集群事件，其余实例自动待命——
-            # 事件是集群级资源，多副本 watch 会重复；实际部署建议 replicas=1 的 Deployment 或
-            # DaemonSet + leader 选举。本模板用 DaemonSet 保证 SEL 本地采集，K8s watch 由
-            # 组件内部去重（同一事件多条副本写入 CH 由 ReplacingMergeTree 去重兜底）。
+            # WAL 持久化（Phase 5）：写入 CH 前落盘，崩溃/重启恢复未确认批次
+            - name: WAL_DIR
+              value: "/var/lib/aiops/wal"
+            # DaemonSet 用于每节点 SEL 采集（天然按节点隔离，无跨节点竞争）。
+            # cluster-wide Kubernetes Event watch 使用 coordination.k8s.io/v1 Lease 进行
+            # leader election：同一时刻仅 Lease holder 启动集群级 watch，其余副本只做 SEL。
+            # dedup / ReplacingMergeTree 仅作为 replay/reconnect/leader 转换的防重保护，
+            # 不得作为多 active writer 的正常运行机制（V9.2 §71 single leader）。
             - name: K8S_WATCH_ENABLED
               value: {{ .Values.eventCollector.k8sWatchEnabled | default "true" | quote }}
+            # Leader election（默认启用）。DaemonSet 多副本时仅 Lease holder watch 集群事件。
+            - name: LEADER_ELECTION_ENABLED
+              value: {{ .Values.eventCollector.leaderElectionEnabled | default "true" | quote }}
+            - name: LEASE_NAME
+              value: {{ .Values.eventCollector.leaseName | default "aiops-event-collector-leader" | quote }}
+            - name: LEASE_NAMESPACE
+              value: {{ .Values.namespace.observability | quote }}
             # IPMI SEL 采集：本地 KCS（/dev/ipmi0）每节点采集；无 BMC 节点自动跳过
             - name: SEL_COLLECT_ENABLED
               value: {{ .Values.eventCollector.selCollectEnabled | default "true" | quote }}
@@ -64,6 +78,9 @@ spec:
             # IPMI 本地 KCS 接口（无 /dev/ipmi0 的节点组件自动跳过 SEL 采集）
             - name: dev-ipmi
               mountPath: /dev/ipmi0
+            # WAL 持久化目录（hostPath：每节点本地，供崩溃恢复；仅 leader 写其节点 WAL）
+            - name: wal
+              mountPath: /var/lib/aiops/wal
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 10
@@ -76,4 +93,8 @@ spec:
         - name: dev-ipmi
           hostPath:
             path: /dev/ipmi0
+        - name: wal
+          hostPath:
+            path: /var/lib/aiops/event-collector-wal
+            type: DirectoryOrCreate
 {{- end }}

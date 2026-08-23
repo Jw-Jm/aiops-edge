@@ -15,6 +15,12 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 
+# V9.2 Phase 4 P4.7：collection 契约常量（docs/contracts/chroma-collection-contract.md）。
+# collection 的创建/校验由 rag_bootstrap.py 在 bootstrap 阶段完成；runtime 只 get。
+CASE_COLLECTION = "ops_cases"
+PLAYBOOK_COLLECTION = "ops_playbooks"
+EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+
 
 def _get_ef():
     """加载 embedding 模型，完全离线模式，绝不联网、绝不长时间阻塞。
@@ -112,14 +118,10 @@ class RAGStore:
                 self.client = chromadb.PersistentClient(
                     path=self._persist_dir, settings=Settings(anonymized_telemetry=False))
                 ef = _get_ef()
-                try:
-                    self.collection = self.client.get_collection(
-                        "ops_cases", embedding_function=ef)
-                except Exception:
-                    ef = _get_ef()
-                    self.collection = self.client.create_collection(
-                        "ops_cases", embedding_function=ef,
-                        metadata={"hnsw:space": "cosine"})
+                # V9.2 Phase 4 P4.7：runtime 只 get_collection（缺失 → readiness FAIL），
+                # 不再 get_or_create（collection 由 rag_bootstrap.py 在 bootstrap 阶段创建）。
+                self.collection = self.client.get_collection(
+                    CASE_COLLECTION, embedding_function=ef)
                 result["ok"] = True
                 self._ready = True
                 print(f"[RAG] ChromaDB 初始化成功, 当前案例数: {self.collection.count()}")

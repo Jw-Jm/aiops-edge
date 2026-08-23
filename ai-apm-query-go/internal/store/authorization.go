@@ -62,8 +62,10 @@ func (d *AuthorizationDAO) Authorize(ctx AuthorizationQuery) (AuthorizationDecis
 	var userID, sessionStatus string
 	var userStatus int
 	var expiresAt, revokedAt sql.NullTime
-	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s ON s.user_uuid = u.user_uuid
-WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, ctx.UserID, ctx.SessionID).Scan(&userID, &userStatus, &sessionStatus, &expiresAt, &revokedAt)
+	var storedVersion int64
+	// Consistent with resolveMySQLAuthorizationContext: read token_version (V9.2 §8).
+	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s ON s.user_uuid = u.user_uuid
+WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, ctx.UserID, ctx.SessionID).Scan(&userID, &userStatus, &sessionStatus, &expiresAt, &revokedAt, &storedVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			decision.DenialCode = DenialIdentityNotFound
@@ -211,6 +213,16 @@ func authorizationSchemaStatements() []string {
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_scope_assignments_lookup (tenant_id, cluster_id, action, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		// tenant_clusters expresses explicit Tenant 1:N Cluster ownership (V9.2 §6.3).
+		// UNIQUE(cluster_id) guarantees a cluster has exactly one owning tenant.
+		`CREATE TABLE IF NOT EXISTS tenant_clusters (
+  tenant_id VARCHAR(64) NOT NULL,
+  cluster_id CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (tenant_id, cluster_id),
+  UNIQUE KEY uq_tenant_clusters_cluster (cluster_id),
+  INDEX idx_tenant_clusters_tenant (tenant_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 }

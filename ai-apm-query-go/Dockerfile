@@ -6,7 +6,7 @@ WORKDIR /app
 COPY go.mod go.sum* ./
 COPY vendor ./vendor
 COPY . .
-RUN CGO_ENABLED=0 go build -mod=vendor -o /api ./cmd/api/
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /api ./cmd/api/
 
 FROM alpine:3.21
 # query-api 需要 kubectl 与集群交互（clusters/infrastructure/system 模块 exec kubectl）。

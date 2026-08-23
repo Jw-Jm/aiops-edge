@@ -1,0 +1,191 @@
+"""V9.3 Phase 10 (P10 完整闭环 Plan B) — ControlPlaneClient。
+
+orchestrator（system principal）经 /internal/v1/control-plane/* 让 query-api
+（persistence owner）做 CAS + 持久化 Run/Event。
+
+capability 为独立内部服务能力域（control_plane.*），**不进入** Tool Registry
+KNOWN_CAPABILITIES（D1），故不使用 TrustedContextIssuer.build_claims（其会拒绝
+control_plane.* 能力），而直接构造 claims + sign_trusted_request_context_v2 签发。
+
+调用方向：orchestrator（issuer=ai-orchestrator）→ query-api（audience=ai-apm-query-go）。
+"""
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Mapping, Optional
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from trusted_context import TrustedContextError, sign_trusted_request_context_v2
+
+# ── control-plane 独立内部服务能力域（D1，不进 Tool Registry）─────────────
+CP_RUNS_MUTATE = "control_plane.runs.mutate"
+CP_RUNS_RECOVER = "control_plane.runs.recover"
+CP_EVENTS_APPEND = "control_plane.events.append"
+CP_EVENTS_REPLAY = "control_plane.events.replay"
+
+# orchestrator system principal 的固定 canonical UUID（非用户/Agent）。
+SYSTEM_PRINCIPAL_ID = "f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c"
+_CP_LIFETIME_SECONDS = 30
+_DEFAULT_TIMEOUT = 10
+
+
+class ControlPlaneError(TrustedContextError):
+    """control-plane 边界错误。kind 对应 HTTP 语义（RUN_STATE_CONFLICT 等）。"""
+
+    def __init__(self, kind: str, http_status: int, message: str = ""):
+        self.kind = kind
+        self.http_status = http_status
+        super().__init__(kind)
+
+
+def _default_http(
+    path: str,
+    *,
+    context_claims: Mapping[str, Any],
+    method: str = "POST",
+    data: Optional[bytes] = None,
+    headers: Optional[Mapping[str, str]] = None,
+) -> tuple:
+    """把 claims 签成 EdDSA JWS 并发到 query-api control-plane 端点。"""
+    from internal_query import _load_private_key, _validate_query_api_url
+
+    private_key = _load_private_key(os.environ.get("TRUSTED_CONTEXT_PRIVATE_KEY", ""))
+    token = sign_trusted_request_context_v2(dict(context_claims), private_key)
+    service_token = os.environ.get("INTERNAL_TOKEN", "")
+    if not service_token:
+        raise TrustedContextError("invalid_service")
+    base = os.environ.get("QUERY_API_URL", "").rstrip("/")
+    # URL 接线修复（真实环境验证 Phase A）：QUERY_API_URL 常含 /api/v1（用于公共 API），
+    # 而 control-plane 路由注册在根 /internal/v1/control-plane/*。剥掉 base 路径，保留
+    # scheme://host:port，使 internal 路由落在根路径（_validate_query_api_url 已放行 /internal/v1/）。
+    from urllib.parse import urlparse
+    parsed = urlparse(base)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    url = origin + path
+    _validate_query_api_url(url)
+    request_headers = {
+        **(dict(headers) if headers else {}),
+        "X-Internal-Token": service_token,
+        "X-Trusted-Request-Context": token,
+    }
+    request = Request(url, data=data, method=method.upper(), headers=request_headers)
+    try:
+        with urlopen(request, timeout=_DEFAULT_TIMEOUT) as response:
+            return response.status, response.read()
+    except HTTPError as e:
+        try:
+            body = e.read()
+        except Exception:
+            body = b"{}"
+        return e.code, body
+
+
+class ControlPlaneClient:
+    """orchestrator → query-api control-plane 持久化客户端（system principal）。"""
+
+    def __init__(self, *, issuer: str = "ai-orchestrator", audience: str = "ai-apm-query-go",
+                 http: Optional[Callable] = None) -> None:
+        self._issuer = issuer
+        self._audience = audience
+        self._http = http or _default_http
+
+    # ── claims 构造（system principal，scope_kind=run）────────────────────
+    def _claims(self, *, run_id: str, capability: str, tenant_id: str,
+                request_id: Optional[str] = None) -> dict:
+        now = datetime.now(timezone.utc)
+        return {
+            "version": 1,
+            "context_type": "trusted_request",
+            "issuer": self._issuer,
+            "audience": self._audience,
+            "request_id": request_id or str(uuid.uuid4()),
+            "run_id": run_id,
+            "principal_type": "system",
+            "principal_id": SYSTEM_PRINCIPAL_ID,
+            "session_id": "",  # system principal 必须空 session
+            "tenant_id": tenant_id,
+            "scope_kind": "run",
+            "cluster_id": "",
+            "capability": capability,
+            "source": "control-plane",
+            "issued_at": now,
+            "expires_at": now + timedelta(seconds=_CP_LIFETIME_SECONDS),
+            "nonce": str(uuid.uuid4()),
+        }
+
+    def _post(self, path: str, claims: dict, body: dict) -> dict:
+        status, raw = self._http(
+            path,
+            context_claims=claims,
+            method="POST",
+            data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        parsed = self._parse(status, raw)
+        if status not in (200, 201):
+            raise self._error(status, parsed)
+        return parsed
+
+    def _get(self, path: str, claims: dict) -> dict:
+        status, raw = self._http(path, context_claims=claims, method="GET")
+        parsed = self._parse(status, raw)
+        if status != 200:
+            raise self._error(status, parsed)
+        return parsed
+
+    @staticmethod
+    def _parse(status: int, raw: bytes) -> dict:
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            body = {}
+        return body if isinstance(body, dict) else {}
+
+    def _error(self, status: int, body: dict) -> ControlPlaneError:
+        kind = {
+            401: "service_auth_failed",
+            403: "permission_denied",
+            404: "not_found",
+            409: body.get("error") or "run_state_conflict",
+            422: "validation_failed",
+            503: "unavailable",
+        }.get(status, "internal")
+        return ControlPlaneError(kind=kind, http_status=status, message=str(body.get("error", "")))
+
+    # ── runs ─────────────────────────────────────────────────────────────
+    def transition(self, *, run_id: str, target: str, expected_version: int,
+                   tenant_id: str, command_id: str) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id,
+                              request_id=command_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/transition", claims, {
+            "target": target, "expected_version": expected_version, "command_id": command_id,
+        })
+
+    def cancel(self, *, run_id: str, tenant_id: str) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/cancel", claims, {})
+
+    def get(self, *, run_id: str, tenant_id: str) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_RECOVER, tenant_id=tenant_id)
+        return self._get(f"/internal/v1/control-plane/runs/{run_id}", claims)
+
+    def list_unfinished(self, *, tenant_id: str) -> list:
+        claims = self._claims(run_id=str(uuid.uuid4()), capability=CP_RUNS_RECOVER, tenant_id=tenant_id)
+        return self._get("/internal/v1/control-plane/runs/unfinished", claims).get("runs", [])
+
+    # ── events ───────────────────────────────────────────────────────────
+    def append_event(self, *, run_id: str, tenant_id: str, event_id: str,
+                     event_type: str, payload: Mapping[str, Any]) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_EVENTS_APPEND, tenant_id=tenant_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/events", claims, {
+            "event_id": event_id, "event_type": event_type, "payload": dict(payload or {}),
+        })
+
+    def replay(self, *, run_id: str, tenant_id: str, after_sequence: int = 0) -> list:
+        claims = self._claims(run_id=run_id, capability=CP_EVENTS_REPLAY, tenant_id=tenant_id)
+        path = f"/internal/v1/control-plane/runs/{run_id}/events?after_sequence={after_sequence}"
+        return self._get(path, claims).get("events", [])

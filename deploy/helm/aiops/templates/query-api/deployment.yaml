@@ -37,6 +37,10 @@ spec:
               value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
             - name: VICTORIA_LOGS_URL
               value: {{ .Values.queryApi.victoriaLogsUrl }}/insert/jsonline
+            # P6.3.3/P6.4.0: reader 路由。default=legacy（Phase 6 transition，未切生产）；
+            # cutover 受控窗口内翻为 new。显式非法值 → startup FAIL（拒绝启动，绝不静默回 legacy）。
+            - name: QUERY_READER_MODE
+              value: {{ .Values.queryApi.queryReaderMode | default "legacy" | quote }}
             - name: K8S_API_URL
               value: {{ .Values.queryApi.k8sApiUrl | quote }}
             - name: K8S_INSECURE_SKIP_VERIFY
@@ -50,15 +54,28 @@ spec:
             - name: INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
+            # V9.2 Service Identity (P3.5 infra). query-api verifies orchestrator→query
+            # signed contexts and (from P3.9) signs query→orchestrator contexts.
+            - name: TRUSTED_CONTEXT_ISSUER
+              value: "ai-orchestrator"
+            - name: TRUSTED_CONTEXT_PUBLIC_KEYS
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: ORCHESTRATOR_TO_QUERY_VERIFY_KEYS }
+            - name: QUERY_TO_ORCHESTRATOR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_SIGNING_KEY }
+            - name: QUERY_TO_ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
             - name: MYSQL_HOST
               value: {{ .Values.queryApi.mysqlHost | default "mysql" | quote }}
             - name: MYSQL_PORT
               value: {{ .Values.queryApi.mysqlPort | default "3306" | quote }}
             - name: MYSQL_USER
-              value: {{ .Values.queryApi.mysqlUser | default "root" | quote }}
+              value: {{ .Values.queryApi.mysqlUser | default "aiops_app" | quote }}
             - name: MYSQL_PASSWORD
               valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_APP_PASSWORD }
             - name: MYSQL_DB
               value: {{ .Values.queryApi.mysqlDb | default "aiops" | quote }}
             - name: ADMIN_INITIAL_PASSWORD

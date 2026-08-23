@@ -1,0 +1,10 @@
+# V9.3 Phase 15（P15.5）Docker build context 精简。
+.git
+*.log
+*.test
+coverage.out
+**_test.go
+/bin
+/tmp
+# 部署脚本（非构建产物）
+/deploy

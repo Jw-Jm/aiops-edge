@@ -20,6 +20,7 @@ from rag import rag
 from rca import full_rca_analysis
 from skill_registry import ToolRegistry, ExpertRegistry
 from contracts import RequestContext
+from invocation_scope import InvocationScope, LegacyScopeAdapter, ScopeView
 from internal_query import signed_query_api_request
 
 QUERY_API_VL = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1") + "/logs/victorialogs"
@@ -97,7 +98,9 @@ class AgentState(TypedDict):
     cluster_id: str
     # P1-5: 轻量意图分流标记 —— 信息查询类问题（有哪些服务/列表/总结等）跳过深度诊断链路
     light_query: bool
-    request_context: RequestContext
+    # LEGACY_FIELD_NAME_ONLY: keeps old field name but the type is now the internal
+    # ScopeView (InvocationScope or LegacyScopeAdapter), not the HTTP transport contract.
+    request_context: ScopeView
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -384,10 +387,13 @@ def _parse(raw):
 
 
 def _collect_alerts(
-    *, request_context: RequestContext | None = None
+    *, request_context: ScopeView | None = None
 ) -> str:
     """采集告警态势：告警事件（聚合） + 告警规则，供 LLM 分析。"""
     import os as _os
+    # V9.2: context must be explicit; do not fall back or issue queries without one.
+    if request_context is None:
+        return "采集失败"
     qa = _os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
     out = []
 
@@ -722,7 +728,7 @@ async def node_collect(state: AgentState) -> dict:
     api_key = _LLM_KEY_HOLDER.get("api_key", "")
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
     request_context = state.get("request_context")
-    cid = str(request_context.cluster_id) if isinstance(request_context, RequestContext) else ""
+    cid = str(request_context.cluster_id) if isinstance(request_context, ScopeView) else ""
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
         data = _parse(await asyncio.to_thread(
@@ -806,27 +812,15 @@ async def node_collect(state: AgentState) -> dict:
         except Exception as exc:
             result["k8sgpt_error"] = f"K8sGPT error: {str(exc)[:300]}"
     elif is_diag and not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt"):
+        # P19.7：统一走 k8sgpt_diagnose（安全注入版）——按需拉取平台 LLM key 子进程私有 env 注入，
+        # 不写 /root/.k8sgpt、不用 --all-namespaces（该 flag 在当前 k8sgpt 版本无效）。
         try:
-            env = dict(os.environ)
-            if api_key:
-                env["OPENAI_API_KEY"] = api_key
-            if cfg:
-                backend = cfg.get("backend", "openai")
-                await asyncio.to_thread(
-                    subprocess.run,
-                    ["k8sgpt", "auth", "add", "-b", backend, "-m", cfg.get("model", "gpt-4o")],
-                    capture_output=True, text=True, timeout=5, env=env,
-                )
-            r = await asyncio.to_thread(
-                subprocess.run,
-                ["k8sgpt", "analyze", "--explain", "--all-namespaces", "-o", "text"],
-                capture_output=True, text=True, timeout=10, env=env,
-            )
-            raw_text = (r.stdout or "").strip()[:20000]
-            if r.returncode == 0 and len(raw_text) > 50:
-                result["k8sgpt_raw"] = raw_text
+            raw = await asyncio.to_thread(k8sgpt_diagnose, "observability")
+            raw_text = str(raw or "").strip()[:20000]
+            if (reason := _k8sgpt_error_reason(raw_text)):
+                result["k8sgpt_error"] = reason
             else:
-                result["k8sgpt_error"] = f"K8sGPT error: {(r.stderr or 'no diagnostic output').strip()[:500]}"
+                result["k8sgpt_raw"] = raw_text
         except Exception as exc:
             result["k8sgpt_error"] = f"K8sGPT error: {str(exc)[:300]}"
     result["messages"] = [f"[{_now()}] 数据采集完成"]
@@ -896,7 +890,7 @@ def _friendly_tool_result(node_name: str, node_data: dict) -> str:
 
 
 def _top_anomaly_service(
-    cluster_id: str = "", *, request_context: RequestContext | None = None
+    cluster_id: str = "", *, request_context: ScopeView | None = None
 ) -> str:
     """从全局服务概览中选出最异常的服务（错误率最高），供「未指定服务时默认为所有服务」的 RCA 兜底。
     cluster_id 为空时覆盖全部集群（A-5 补充透传）。"""
@@ -1775,7 +1769,7 @@ class BrainOrchestrator:
 
     async def execute_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
                            cluster_id: str | None = None, mode: str = "chat", *,
-                           request_context: RequestContext | None = None) -> str:
+                           request_context: ScopeView | None = None) -> str:
         """Run DAG and return final_response text. (async — 调用方需 await)
 
         P1-2 修复: 默认走 chat_graph（精简图，无 wait_approval interrupt），
@@ -1790,7 +1784,7 @@ class BrainOrchestrator:
 
     async def execute_sync_full(self, intent: str, service: str, message: str, thread_id: str = "default",
                                 cluster_id: str | None = None, mode: str = "full", *,
-                                request_context: RequestContext | None = None) -> dict:
+                                request_context: ScopeView | None = None) -> dict:
         """Run full DAG and return complete final state. (async — 调用方需 await)
         /ops/tasks、workflow run 等完整运维链路使用 mode="full"（含审批/执行/验证）。"""
         return await self._run_dag(
@@ -1800,8 +1794,8 @@ class BrainOrchestrator:
 
     async def _run_dag(self, intent: str, service: str, message: str, thread_id: str = "default",
                        cluster_id: str | None = None, mode: str = "chat", *,
-                       request_context: RequestContext | None = None) -> dict:
-        if not isinstance(request_context, RequestContext):
+                       request_context: ScopeView | None = None) -> dict:
+        if not isinstance(request_context, ScopeView):
             return {"final_response": "[invalid_context]", "error": "invalid_context"}
         canonical_cluster = str(request_context.cluster_id)
         if cluster_id not in (None, "", canonical_cluster):
@@ -1849,13 +1843,13 @@ class BrainOrchestrator:
     async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
                           mode: str = "chat", exec_context: str = "", iteration: int = 1,
                           cluster_id: str | None = None, *,
-                          request_context: RequestContext | None = None):
+                          request_context: ScopeView | None = None):
         """异步生成器: async for event in brain.stream_sync(...)。
         节点为 async def，必须用 graph.astream (不能用 sync graph.stream, 会在
         已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
         exec_context: 需求2/3 多轮闭环——上一轮已确认执行的处置脚本的结果，作为下一轮深入分析的上下文。
         """
-        if not isinstance(request_context, RequestContext):
+        if not isinstance(request_context, ScopeView):
             yield {"type": "error", "error": "invalid_context", "text": "invalid_context"}
             return
         canonical_cluster = str(request_context.cluster_id)
@@ -1944,9 +1938,11 @@ class BrainOrchestrator:
                     error_lower = str(k8sgpt_error).lower()
                     unavailable_markers = ("unavailable", "not installed", "no verifiable", "not found")
                     if k8sgpt_error:
-                        k8sgpt_status = "unavailable" if any(marker in error_lower for marker in unavailable_markers) else "error"
+                        # V9.2 §32: dependency missing / backend unreachable → unavailable; other error → failed
+                        k8sgpt_status = "unavailable" if any(marker in error_lower for marker in unavailable_markers) else "failed"
                     elif not k8sgpt_raw:
-                        k8sgpt_status = "unavailable"
+                        # V9.2 §32: tool executed successfully + empty result → no_data (NOT unavailable)
+                        k8sgpt_status = "no_data"
                     else:
                         k8sgpt_status = "success"
                     yield {"type": "tool_start", "tool_call_id": tool_id,
@@ -1963,7 +1959,8 @@ class BrainOrchestrator:
                            "name": "query_knowledge", "status": "pending", "arguments": {}}
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": "query_knowledge",
-                           "status": "error" if knowledge_error else ("unavailable" if not knowledge_result else "success"),
+                           # V9.2 §32: backend error → failed; successful+empty → no_data (NOT unavailable)
+                           "status": "failed" if knowledge_error else ("no_data" if not knowledge_result else "success"),
                            "arguments": {},
                            "result": str(knowledge_error or knowledge_result or "未检索到知识库结果")[:3000]}
                 # 双层 Agent 节点级事件（批3）：coordinator/subagent/reviewer
@@ -2126,7 +2123,7 @@ class BrainOrchestrator:
         self,
         message: str = "",
         *,
-        request_context: RequestContext | None = None,
+        request_context: ScopeView | None = None,
     ) -> str:
         """推断目标服务名：优先从用户消息中匹配服务列表里的服务名（避免误诊为默认第一个），
         仅在能明确匹配时才返回，否则返回空让 RCA 跳过。

@@ -4,56 +4,160 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
-// TestRequireRoleForWrite verifies a JWT role claim cannot authorize legacy writes.
+// TestRequireRoleForWrite verifies write-protection: GET reads pass through to the
+// read handler, while POST writes require the authoritative MySQL admin role
+// (JWT role claims are never authority).
 func TestRequireRoleForWrite(t *testing.T) {
 	h := &Handler{}
 	called := false
 	next := func(w http.ResponseWriter, r *http.Request) { called = true }
 
-	// Legacy routes do not have a canonical MySQL authorization action/scope yet,
-	// so even reads fail closed instead of treating a missing or JWT-derived role
-	// as authority.
+	// GET/HEAD（读）→ 放行给只读 handler（写保护只约束写方法）
+	called = false
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
 	h.RequireRoleForWrite("admin", next)(rec, req)
-	if rec.Code != http.StatusForbidden || called {
-		t.Fatalf("GET legacy route: got status=%d called=%v, want denied without handler call", rec.Code, called)
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("GET should pass through to read handler, got 403")
 	}
-	called = false
+	if !called {
+		t.Fatalf("GET should invoke read handler")
+	}
 
-	// POST（写）无 token → 403
+	// POST（写）无鉴权上下文 → 403（无 AuthorizationContext → hasRole false）
+	called = false
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/clusters", nil)
 	h.RequireRoleForWrite("admin", next)(rec, req)
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("POST without token: got %d, want 403", rec.Code)
+		t.Fatalf("POST without auth context: got %d, want 403", rec.Code)
 	}
 	if called {
 		t.Fatal("handler should not be called for unauthorized POST")
 	}
 
-	// POST（写）普通用户 token → 403
-	userTok := generateJWT("user1", "viewer", "")
+	// POST（写）带 viewer 角色的鉴权上下文 → 403（viewer != admin）
+	called = false
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/clusters", nil)
-	req.Header.Set("Authorization", "Bearer "+userTok)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "viewer-1", TenantID: "t"})
 	h.RequireRoleForWrite("admin", next)(rec, req)
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("POST as viewer: got %d, want 403", rec.Code)
+		t.Fatalf("POST as viewer context: got %d, want 403", rec.Code)
 	}
 
-	// A forged/admin JWT claim remains insufficient: current MySQL authorization
-	// is required by the protected request boundary, so this legacy wrapper
-	// fails closed when invoked directly.
-	adminTok := generateJWT("admin1", "admin", "")
+	// POST（写）带 admin 角色的鉴权上下文 + MySQL 返回 admin → 放行 handler
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	prev := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(prev) })
+	mock.ExpectQuery("SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE user_uuid = \\?").
+		WithArgs("admin-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "username", "password_hash", "display_name", "role", "email", "status", "scope", "is_approver", "created_at"}).
+			AddRow(1, "admin-1", "admin", "x", "admin", "admin", "", 1, "", 0, time.Now()))
+	called = false
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/clusters", nil)
-	req.Header.Set("Authorization", "Bearer "+adminTok)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "admin-1", TenantID: "t"})
 	h.RequireRoleForWrite("admin", next)(rec, req)
-	if rec.Code != http.StatusForbidden || called {
-		t.Fatalf("POST with JWT admin claim: got status=%d called=%v, want denied without handler call", rec.Code, called)
+	if rec.Code == http.StatusForbidden || !called {
+		t.Fatalf("POST as authoritative admin: got status=%d called=%v, want handler called", rec.Code, called)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIsCanonicalProtectedRouteQueryEndpoints 验证 P12 AUTH 修复：只读查询端点纳入
+// canonical-protected route（消除 legacy 端点一律 403 的 AUTH BLOCKER），写端点保持 fail-closed。
+func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
+	allowed := []string{
+		"/api/v1/resources/resolve",
+		"/api/v1/services",
+		"/api/v1/clusters", // P19 前端集群选择器数据源（只读，JWT+canonical tenant）
+		"/api/v1/traces",
+		"/api/v1/topology/global",
+		"/api/v1/topology/nodes",
+		"/api/v1/alerts/rules",
+		"/api/v1/alerts/events",
+		"/api/v1/logs/query",
+		"/api/v1/logs/aggregate",
+		"/api/v1/dashboard/stats",
+		"/api/v1/dashboard/resources",
+		"/api/v1/capacity/forecast",
+		"/api/v1/capacity/instances",
+		"/api/v1/ai/runs",
+		"/api/v1/ai/chat", // P19.6：对话型 canonical-protected（JWT+tenant+cluster 解析 + ai.chat）
+		// P19 LLM 设置：读/写/测试/models 均由 canonical-protected（JWT+canonical tenant+成员），
+		// admin 角色由 handler RequireRole/RequireRoleForWrite（MySQL 权威角色）校验。
+		"/api/v1/settings/llm",
+		"/api/v1/settings/llm/test",
+		"/api/v1/settings/llm/models",
+		"/api/v1/settings/llm/history",
+		"/api/v1/settings/llm/providers",
+		"/api/v1/settings/llm/providers/1",
+		"/api/v1/settings/llm/providers/1/enable",
+		"/api/v1/settings/llm/history/1/rollback",
+	}
+	for _, p := range allowed {
+		if !isCanonicalProtectedRoute(p) {
+			t.Fatalf("query endpoint %s should be canonical-protected", p)
+		}
+	}
+	// 写端点/未迁移端点保持 fail-closed（不纳入 canonical-protected）
+	denied := []string{
+		"/api/v1/topology/sync-catalog",
+		"/api/v1/alerts/rules/create",
+		"/api/v1/dashboard/panels",
+		"/api/v1/capacity/instances/create",
+		"/api/v1/unknown",
+	}
+	for _, p := range denied {
+		if isCanonicalProtectedRoute(p) {
+			t.Fatalf("write/unmigrated endpoint %s should NOT be canonical-protected", p)
+		}
+	}
+}
+
+// TestAIChatIsCanonicalProtectedNotPublic 验证 P19.6：/api/v1/ai/chat 是 canonical-protected
+// 而非公开放行——未带 JWT/tenant 的请求必须被 AuthMiddleware 拒绝（403/400），不能直通 handler。
+func TestAIChatIsCanonicalProtectedNotPublic(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true; w.WriteHeader(200) })
+	mw := AuthMiddleware(next)
+
+	// 无 JWT 无 tenant → 403（不是公开端点，不放行）
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", nil)
+	mw.ServeHTTP(rec, req)
+	if called {
+		t.Fatal("/api/v1/ai/chat must NOT be a public endpoint (handler reached without auth)")
+	}
+	if rec.Code == http.StatusOK {
+		t.Fatalf("/api/v1/ai/chat without auth should not be 200, got %d", rec.Code)
+	}
+	// 有 JWT 但 tenant 非 canonical → 400 invalid_context（仍被 AuthMiddleware 拦截，非 200）
+	called = false
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai/chat", nil)
+	req.Header.Set("Authorization", "Bearer "+generateJWT("admin", "admin", `{}`))
+	req.Header.Set("X-Tenant-ID", "default")
+	mw.ServeHTTP(rec, req)
+	if called {
+		t.Fatal("non-canonical tenant must not reach handler")
+	}
+	if rec.Code == http.StatusOK {
+		t.Fatalf("non-canonical tenant should not be 200, got %d", rec.Code)
 	}
 }
 

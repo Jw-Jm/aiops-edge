@@ -1,0 +1,53 @@
+{{- if .Values.mysql.enabled }}
+# V9.2 Phase 4 P4.8：MySQL 受限账号初始化 Job。
+# 用 root 创建 aiops_app（DML only）与 aiops_migrator（DDL）双账号。
+# 顺序（P1-4）：MySQL ready → 本 Job → schema-migrator Job → runtime Deployments。
+# 密码来自 Kubernetes Secret（env/mount），禁止写入 ConfigMap/日志/migration SQL。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mysql-users-init
+  namespace: {{ .Values.namespace.observability }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mysql-users-init
+          image: {{ .Values.mysql.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              # 独立 hook Job（非 MySQL sidecar）：连 MySQL Headless Service，不能连本机 127.0.0.1。
+              # 注意：heredoc 必须用不带引号的 <<SQL，才能让 shell 展开 $MYSQL_* 密码变量；
+              # 用 <<'SQL'（quoted heredoc）会把 $MYSQL_* 当字面量，密码被设成 "$MYSQL_..." 而非真实值，
+              # 导致 schema-migrator/query-api 用 secret 密码连接时 Access denied。
+              mysql -h mysql.observability.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" <<SQL
+              CREATE USER IF NOT EXISTS 'aiops_app'@'%' IDENTIFIED BY '$MYSQL_APP_PASSWORD';
+              ALTER USER 'aiops_app'@'%' IDENTIFIED BY '$MYSQL_APP_PASSWORD';
+              GRANT SELECT, INSERT, UPDATE, DELETE ON aiops.* TO 'aiops_app'@'%';
+
+              CREATE USER IF NOT EXISTS 'aiops_migrator'@'%' IDENTIFIED BY '$MYSQL_MIGRATOR_PASSWORD';
+              ALTER USER 'aiops_migrator'@'%' IDENTIFIED BY '$MYSQL_MIGRATOR_PASSWORD';
+              GRANT CREATE, ALTER, DROP, INDEX, SELECT, INSERT, UPDATE, DELETE ON aiops.* TO 'aiops_migrator'@'%';
+              FLUSH PRIVILEGES;
+              SQL
+              echo "mysql users (aiops_app / aiops_migrator) ready"
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+            - name: MYSQL_APP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_APP_PASSWORD }
+            - name: MYSQL_MIGRATOR_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_MIGRATOR_PASSWORD }
+{{- end }}

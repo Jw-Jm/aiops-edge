@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aiops.contracts.bundle.v2.tool_result",
+  "title": "ToolResult",
+  "description": "V1 冻结 ToolResult（15 字段，对齐 Python contracts.ToolResult / TS contracts.ToolResult；Go binding 另含 error 字段，wire 为 null/省略）。禁止 V2 草案字段混入。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tool_name", "cluster_id", "success", "status", "summary",
+    "source_system", "started_at", "finished_at"
+  ],
+  "properties": {
+    "tool_name": { "type": "string" },
+    "cluster_id": { "type": "string", "format": "uuid" },
+    "success": { "type": "boolean" },
+    "status": {
+      "type": "string",
+      "enum": ["success", "partial", "no_data", "failed", "timeout", "unavailable", "permission_denied"]
+    },
+    "summary": { "type": "string" },
+    "data": {
+      "description": "Python 为 Any，Go 为 any，均接受任意标量/容器；此处用空 schema 表示任意类型",
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    },
+    "error_code": { "type": ["string", "null"] },
+    "error_message": { "type": ["string", "null"] },
+    "retryable": { "type": "boolean" },
+    "evidence_ids": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "source_system": { "type": "string" },
+    "query_id": { "type": ["string", "null"] },
+    "time_range": { "type": ["object", "null"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" }
+  },
+  "semantic_invariants_ref": "../invariants.md",
+  "conformance_vectors_ref": "../conformance-vectors.json"
+}

@@ -4,11 +4,12 @@ from uuid import UUID
 import pytest
 
 from contracts import RequestContext
+from invocation_scope import LegacyScopeAdapter
 
 
-def _context():
+def _context() -> LegacyScopeAdapter:
     now = datetime.now(timezone.utc)
-    return RequestContext(
+    legacy = RequestContext(
         issuer="ai-orchestrator", audience="ai-apm-query-go",
         request_id=UUID("11111111-1111-4111-8111-111111111111"),
         run_id=UUID("22222222-2222-4222-8222-222222222222"),
@@ -20,6 +21,8 @@ def _context():
         expires_at=now + timedelta(seconds=30),
         nonce=UUID("77777777-7777-4777-8777-777777777777"),
     )
+    # Old AI Chat path: legacy RequestContext wrapped as a ScopeView adapter.
+    return LegacyScopeAdapter(legacy)
 
 def test_query_logs_returns_text(monkeypatch):
     from tools import query_logs

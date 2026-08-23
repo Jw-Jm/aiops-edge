@@ -1,88 +1,91 @@
-# AIOps Agentic 数据模型重设计（Phase 1 冻结）
+# AIOps V9.2 — Data Model Redesign (frozen target)
 
-## 标识与隔离
+Status: **FROZEN TARGET / NOT_YET_IMPLEMENTED** (Phase 2 freezes; new schema lands Phase 4).
 
-所有受 tenant 或 cluster 影响的表必须显式保存：
-
-```text
-tenant_id       UUID / canonical tenant key
-cluster_id      immutable UUID, never slug/name
-```
-
-资源身份必须使用 canonical cluster UUID：
+## Storage responsibilities (V9.2 §21)
 
 ```text
-<kind>:<cluster_uuid>:<namespace>:<name>
+VictoriaMetrics   = raw metrics Source of Truth
+VictoriaLogs      = raw logs Source of Truth
+ClickHouse        = Trace/Span + RED + Topology + Alert + Resource Event + Change + LogPattern/derived
+MySQL             = Users/Sessions/RBAC + Tenant/Cluster registry + Platform config + AI Runtime
+MinIO             = large evidence object + knowledge object
+ChromaDB          = knowledge vector index
 ```
 
-Cluster Registry 的最低字段：
+Forbidden: raw logs full copy to VictoriaLogs + ClickHouse; moving all metrics/logs to a single DB.
+
+## Identity model (V9.2 §6-10, §12)
+
+- Tenant: true multi-tenant schema, one initialized tenant (UUID, slug=`default`). No `tenant_id=1`, no fallback, no singleton.
+- User ↔ Tenant: many-to-many via `user_tenants` / `role_scope_assignments`. User identity global unique.
+- Cluster: single-tenant ownership (tenant 1:N cluster), canonical immutable UUID; slug human-readable; name display.
+- Resource: canonical Resource ID does NOT include tenant; tenant is isolation dimension.
+
+## Target tables
+
+**Auth/control plane (MySQL):**
+```text
+users, sessions(auth_sessions), roles, permissions, user_tenants, role_permissions,
+role_scope_assignments, tenants, tenant_clusters, clusters, system_config, internal_request_nonces
+```
+
+**AI runtime (MySQL, Phase 4):**
+```text
+ai_runs, ai_run_clusters, ai_plan_steps, ai_tool_runs, ai_evidence, ai_hypotheses,
+ai_actions, ai_verifications, ai_approval_decisions, ai_run_events, ai_audit_events
+platform_audit_events (query-api-owned, independent)
+```
+
+**ClickHouse (Phase 4):**
+```text
+observability.trace_spans, service_topology, alert_events, k8s_events,
+log_patterns/derived analytics
+```
+Raw logs stay in VictoriaLogs; raw metrics in VictoriaMetrics.
+
+## Key columns / constraints
+
+- `ai_runs`: run_id, request_id, tenant_id, principal, scope_kind, primary_cluster_id, intent, action_mode, target, time_range, status, state_version (BIGINT), parent_run_id, timestamps.
+- `ai_run_clusters`: (run_id, cluster_id) unique.
+- Multi-cluster isolation: ai_tool_runs/ai_evidence/ai_hypotheses/ai_actions/ai_verifications carry cluster_id NOT NULL. PlanStep aggregate nullable, tool-exec NOT NULL.
+- `ai_evidence`: large payload → MinIO; MySQL stores raw_ref/digest/summary/metadata. provenance_fingerprint for dedup.
+- Optimistic CAS on `state_version` (no last-write-wins).
+
+## Schema versioning & initialization (V9.2 §70)
+
+Unified schema init; runtime accounts without DDL permission can start; schema version recorded; second init idempotent. Phase 4 builds new structures without physically deleting old history. Raw Logs only to VictoriaLogs.
+
+## History data principle (V9.2 §91)
+
+NO migration/conversion/legacy adapter. NO physical delete before Phase 17 authorization. After Phase 6, old physical data may exist but old reader/writer must not.
+
+## Implementation status
 
 ```text
-cluster_id       immutable UUID primary key
-slug             globally unique, lowercase DNS-like reference
-name             mutable display name
-tenant_id        owning tenant
-credential_ref   Secret/Vault reference only
-status           registered/ready/degraded/disabled/deleted
-created_at
-updated_at
-deleted_at       lifecycle tombstone; UUID never reused
+New schema init:      PLANNED (Phase 4)
+Writer refactor:      PLANNED (Phase 5)
+Reader/query layer:   PLANNED (Phase 6)
 ```
 
-外部可传 UUID 或 slug，但在 API 边界立即 canonicalize；内部 DTO 使用 `ClusterRef` 与 `ClusterID` 两个不同概念。
+---
 
-## 控制面核心实体
+# 更新：V9.3 当前实现状态（Phase 21 P21.1，2026-08-23）
 
-### `ai_runs`
+## 已实现（与真实运行代码一致）
+- **MySQL `aiops`（52 表）**：Authorization/审计/配置/catalog/Run/Approval 权威 SoT。关键表：users/sessions(auth_sessions)/roles/permissions/user_tenants/role_permissions/role_scope_assignments/tenants/tenant_clusters/clusters/system_config/internal_request_nonces + AI runtime 表（ai_runs/ai_run_clusters/ai_plan_steps/ai_tool_runs/ai_evidence/ai_hypotheses/ai_actions/ai_verifications/ai_approval_decisions/ai_run_events/ai_audit_events/platform_audit_events）。
+- **VictoriaMetrics** = raw metrics SoT（new writer ACTIVE）。
+- **VictoriaLogs** = raw logs SoT（new writer ACTIVE）。
+- **ClickHouse `observability`** = k8s_events/alert_events/log_records/trace_spans/service_topology（legacy 数据保留，只停流量不删数据）。
+- **Chroma** = knowledge vector index（orchestrator ops-cases，2 collections）。
+- **MinIO**：本实现未使用（large evidence object 未接入；Chroma 承载 knowledge）。
 
-保存一次调查/诊断运行的生命周期：`run_id`、`tenant_id`、`cluster_id`、`user_id`、intent、action_mode、status、budget、started_at、ended_at、failure_code、correlation fields。状态只能由 Run 状态机推进，所有变更可审计。
+## 已实现关键约束
+- `ai_runs` CAS（state_version BIGINT）生效；`ai_run_clusters` (run_id,cluster_id) unique。
+- 多 cluster 隔离：tool/evidence/hypothesis/action/verification 带 cluster_id NOT NULL；EvidenceScopeMismatch 阻断跨 cluster。
+- provenance_fingerprint 去重生效。
+- schema 迁移（aiops_schema_migrations，5 迁移）幂等 + checksum。
 
-### `ai_plan_steps`
-
-保存 Investigation DAG 的节点、依赖、attempt、tool capability、status、timeout、started/ended time 和 structured error。必须禁止跨 run 依赖和隐式 cluster。
-
-### `ai_tool_runs`
-
-保存 Tool 输入摘要、schema version、`ToolResult`、错误、证据引用、耗时和调用者上下文。不得保存 Kubernetes 凭据或 Secret 内容；原始敏感字段必须脱敏/哈希。
-
-### `ai_evidence`
-
-保存标准证据引用：`evidence_id`、tenant/cluster、run/step、source_type、resource_ref、observed_at、content_ref/content_hash、reliability、supports/contradicts hypothesis。Evidence 不直接假设 slug 永久不变。
-
-### `ops_actions` / `approval_tasks` / `verification_runs`
-
-`OpsAction` 是结构化写操作的唯一 canonical contract；审批与执行必须记录 policy/risk/approver/resourceVersion/verification/rollback relation。rollback 使用新的 action id，不能覆盖原动作。
-
-## 观测数据模型
-
-统一的 Metrics、Logs、Traces、Events、Topology 记录必须包含：
-
-```text
-tenant_id
-cluster_id
-resource_identity
-observed_at / timestamp
-source
-correlation_id（可选但必须能回溯）
-```
-
-raw logs 写入 VictoriaLogs；ClickHouse 的 `log_records`、`trace_spans`、`service_topology`、`alert_events` 是派生查询模型。所有数据源必须在 ingest/adapter 边界补齐 canonical UUID，缺失或无法解析时拒绝写入并返回结构化错误；不得退回字符串 `default`。
-
-## 授权模型
-
-```text
-Principal(user/service)
-  → Role
-  → Permission(action)
-  → ScopeAssignment(tenant/cluster/namespace/resource)
-```
-
-授权决策按最具体 scope 匹配，权限不足即拒绝。JWT 和 TrustedRequestContext 不保存授权事实；它们只提供需要重新验证的身份/委托上下文。
-
-## 生命周期与迁移
-
-- Phase 1 不做历史运行数据迁移。
-- 新 schema 上线时同一 Phase 停止旧 writer/reader；不建立长期双写。
-- 删除/重建 cluster 产生新 UUID；旧数据保留生命周期归属，slug 可复用但不改变历史关联。
-- 数据清理必须由 Phase 0 manifest 驱动，目标路径逐项确认，UNKNOWN 不删除。
-
+## 边界
+- 真实系统接入（MinIO 大对象）未实施（In-memory/Chroma 承载）；执行 Production Execution NOT APPROVED。
+- GIT_ACTION=NONE。

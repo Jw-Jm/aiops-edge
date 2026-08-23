@@ -99,6 +99,16 @@ func ensureClusterAuthorityMetadata(conn *sql.DB) {
 		{"environment", "ALTER TABLE clusters ADD COLUMN environment VARCHAR(64) NOT NULL DEFAULT ''"},
 		{"credential_ref", "ALTER TABLE clusters ADD COLUMN credential_ref VARCHAR(512) NOT NULL DEFAULT ''"},
 		{"lifecycle_status", "ALTER TABLE clusters ADD COLUMN lifecycle_status VARCHAR(32) NOT NULL DEFAULT 'registered'"},
+		// V9.2 §9 minimum cluster fields: type, capabilities, labels, deleted_at (soft delete)
+		{"type", "ALTER TABLE clusters ADD COLUMN type VARCHAR(64) NOT NULL DEFAULT ''"},
+		{"capabilities", "ALTER TABLE clusters ADD COLUMN capabilities VARCHAR(512) NOT NULL DEFAULT ''"},
+		{"labels", "ALTER TABLE clusters ADD COLUMN labels TEXT"},
+		{"deleted_at", "ALTER TABLE clusters ADD COLUMN deleted_at DATETIME NULL"},
+		// V9.2 P3.10c-final: authoritative Kubernetes cluster identity =
+		// kube-system Namespace metadata.uid observed at registration time.
+		// Distinct from the AIOps canonical cluster_id; used to fail closed when a
+		// resolved credential points at the wrong physical Kubernetes cluster.
+		{"kubernetes_identity_uid", "ALTER TABLE clusters ADD COLUMN kubernetes_identity_uid VARCHAR(128) NULL"},
 	} {
 		if !hasColumn(conn, "clusters", column.name) {
 			_, _ = conn.Exec(column.ddl)

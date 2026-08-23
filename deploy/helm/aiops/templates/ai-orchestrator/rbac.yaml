@@ -24,6 +24,10 @@ metadata:
   labels:
     app: ai-orchestrator
 rules:
+# P0-P13 审计紧急隔离（P0-3）：orchestrator 集群写权限默认 fail-closed。
+# grantK8sWrite=true 才授予 workload patch/scale、pod eviction、node patch（工作流 K8s 动作）；
+# 默认 false（不授予），与 P13.7/F4/F5（orchestrator 无 target K8s 写凭据）一致。
+{{- if .Values.aiOrchestrator.grantK8sWrite }}
 # rollout restart / rollout undo / scale（apps 工作负载）
 - apiGroups: ["apps"]
   resources: ["deployments", "statefulsets", "daemonsets"]
@@ -31,18 +35,19 @@ rules:
 - apiGroups: ["apps"]
   resources: ["deployments/scale", "statefulsets/scale"]
   verbs: ["get", "patch"]
-# pod 只读（删除已移除，G5）
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
 # pod 驱逐（drain 依赖 pods/eviction）
 - apiGroups: [""]
   resources: ["pods/eviction"]
   verbs: ["create"]
-# cordon / uncordon / drain：节点调度状态变更（G5：保留，工作流 drain 动作必需）
+# cordon / uncordon / drain：节点调度状态变更
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["get", "list", "watch", "patch"]
+{{- end }}
+# pod 只读（分析/证据采集必需，始终保留）
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
 # drain 判定 workload 归属所需控制器只读
 - apiGroups: ["apps"]
   resources: ["replicasets", "replicationcontrollers"]

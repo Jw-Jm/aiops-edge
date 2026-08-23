@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -587,7 +588,11 @@ func (h *Handler) ModelsLLM(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 200, map[string]interface{}{"models": models, "provider": baseURL})
 		return
 	}
-	respondJSON(w, 200, map[string]interface{}{"models": []string{}, "raw": string(data)[:500]})
+	raw := string(data)
+	if len(raw) > 500 {
+		raw = raw[:500]
+	}
+	respondJSON(w, 200, map[string]interface{}{"models": []string{}, "raw": raw})
 }
 
 // GetLLMConfig returns the full (decrypted) LLM configuration for internal use.
@@ -628,9 +633,212 @@ const (
 	maxProxyResponse = 50 << 20 // 响应体上限 50MB
 )
 
+// ProxyAI is the browser-facing AI proxy boundary (V9.2 §P3.9-B3).
+//
+// P19.6: /api/v1/ai/chat 已拆分为独立的 ProxyChat（对话型，ai.chat capability，
+// SSE 流式经 query-api canonical-protected 透传 orchestrator /internal/v1/chat）。
+// 此处 ProxyAI 仅处理 Run API 只读/创建记录代理，其余 legacy 路由一律 fail-closed。
+//
+// Every other legacy proxy route remains fail-closed; it is not an investigation
+// entry and is not given a signed RunInvocationContext. The browser can never
+// supply the final tenant/cluster; query-api re-resolves, authorizes and
+// canonicalizes it, then signs the canonical cluster UUID into the context.
 func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
-	// Query-api cannot derive an audience-bound, canonical-cluster signed context
-	// for this legacy proxy route yet. Never forward a client context or a
-	// service token alone; Task 4 supplies the signed caller migration.
+	// P12：Run API 代理（GET 列表/详情、POST 创建记录）→ orchestrator。
+	// query-api 校验 JWT + tenant，注入方向凭据 X-Internal-Token 后转发；orchestrator 校验 token。
+	// 注意：POST 仅创建 Run 记录（不触发调查链；真实调查触发走 /internal/v1/run-invocations 含授权）。
+	if (r.URL.Path == "/api/v1/ai/runs" || strings.HasPrefix(r.URL.Path, "/api/v1/ai/runs/")) &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost) {
+		h.proxyRunList(w, r)
+		return
+	}
+	// Not the investigation entry; keep fail-closed (no unsigned privileged call).
 	respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+}
+
+// ProxyChat handles the browser-facing dialogue entry /api/v1/ai/chat (P19.6).
+//
+// This is a canonical-protected, dialogue-only path with capability=ai.chat:
+//   - JWT + MySQL authorization (authoritative identity/tenant) — no client override.
+//   - canonical cluster resolution + single-tenant ownership.
+//   - capability=ai.chat signed into the RunInvocationContext (NOT ai.investigate):
+//     dialogue never creates an Investigation Run and never triggers ManualBoundary
+//     run-creation semantics.
+//   - forwards to orchestrator /internal/v1/chat and STREAMS the SSE response back
+//     (no buffering) so streaming/disconnect/reconnect keep identity binding.
+//
+// Fail-closed matrix: missing/expired/replayed context, body tenant/cluster mismatch,
+// cross-cluster, no capability, system principal abuse → all rejected.
+func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
+	issuer := currentRunInvocationIssuer()
+	if issuer == nil {
+		// Issuer not provisioned → fail closed rather than produce unsigned calls.
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+
+	// 1. JWT + MySQL real-time authorization (authoritative identity/tenant).
+	authCtx, err := RequestAuthorizationContext(r)
+	if err != nil {
+		respondAuthorizationError(w, err)
+		return
+	}
+
+	// 2. Read requested body scope. The browser provides a requested cluster ref
+	//    (slug/name/UUID) which is re-resolved; it is never signed as-is.
+	var body map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "VALIDATION_FAILED"})
+		return
+	}
+	// 兼容前端两种字段：调查入口用 cluster（slug/name/UUID），AiChat 对话用 cluster_id（canonical UUID）。
+	// 两者都只是"请求的 cluster 引用"，最终 canonical cluster 由服务端 ResolveRef 决定，绝不直接签名。
+	requestedCluster, _ := body["cluster"].(string)
+	if strings.TrimSpace(requestedCluster) == "" {
+		requestedCluster, _ = body["cluster_id"].(string)
+	}
+	if strings.TrimSpace(requestedCluster) == "" || requestedCluster == "all" {
+		// missing cluster → fail closed (V9.2: no default/current-cluster fallback)
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "CLUSTER_ACCESS_DENIED"})
+		return
+	}
+
+	// 3. Canonical cluster resolution + single-tenant ownership.
+	cluster, err := (&store.ClusterDAO{}).ResolveRef(authCtx.TenantID, requestedCluster)
+	if err != nil {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "CLUSTER_ACCESS_DENIED"})
+		return
+	}
+	owner, err := (&store.ClusterDAO{}).TenantClustersForCluster(cluster.ClusterID)
+	if err != nil || owner != authCtx.TenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "CLUSTER_ACCESS_DENIED"})
+		return
+	}
+
+	// 4. 用户 RBAC 权威 SoT：query-api 从 MySQL 读取用户权威角色，校验其授予 ai.chat
+	//    （对话型只读）。授权通过才签发 capability=ai.chat；否则 fail-closed。
+	//    绝不把前端 role / SERVICE_ACCOUNT_ROLES 全域映射当作用户 RBAC 权威来源。
+	if !authorizeUserChatCapability(authCtx.UserID) {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+
+	// 5. Sign RunInvocationContext with capability=ai.chat (对话型，非 ai.investigate)。
+	signed, err := issuer.SignRunInvocation(
+		"user", authCtx.UserID, authCtx.SessionID, authCtx.TenantID, "frontend",
+		[]string{cluster.ClusterID}, time.Now(), "ai.chat")
+	if err != nil {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+
+	// 5. Forward to orchestrator trusted streaming ingress with directional credentials,
+	//    then stream the SSE response back to the browser without buffering.
+	target := orchestratorBase() + "/internal/v1/chat"
+	payload, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(payload))
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", issuer.ServiceToken())
+	req.Header.Set("X-Trusted-Request-Context", signed)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// 透传 orchestrator 的 SSE 头（Content-Type: text/event-stream）+ 状态码。
+	for _, header := range []string{"Content-Type", "X-Session-Id", "Cache-Control"} {
+		if v := resp.Header.Get(header); v != "" {
+			w.Header().Set(header, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	// 逐块 Flush 透传，不缓冲（对齐 P10 公共 SSE proxy WriteTimeout=0 的长连接语义）。
+	if flusher, ok := w.(http.Flusher); ok {
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+					return
+				}
+				flusher.Flush()
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}
+	// 不支持 Flusher 的响应容器：退化为一次性复制（普通测试 recorder 场景）。
+	io.Copy(w, resp.Body)
+}
+
+// roleGrantsAIChat：服务端权威角色 → ai.chat（对话只读）授权映射。
+// 与 orchestrator ROLE_CAPABILITIES 对齐：所有已验证角色均可对话（对话内部 Agent
+// 查询工具仍需各自 observability.*.read capability，由 Tool Registry 层约束）。
+var roleGrantsAIChat = map[string]bool{
+	"admin": true, "engineer": true, "operator": true, "viewer": true,
+}
+
+// authorizeUserChatCapability：用户 RBAC 权威 SoT —— 从 MySQL 读取用户权威角色，
+// 校验其授予 ai.chat。返回 false 时调用方必须 fail-closed（不签发 ai.chat 上下文）。
+// 这是 query-api 作为权威能力源的实现：orchestrator 不再依赖 SERVICE_ACCOUNT_ROLES 全域映射。
+func authorizeUserChatCapability(userID string) bool {
+	if db := store.GetDB(); db != nil {
+		if u, err := (&store.UserDAO{}).GetByUUID(userID); err == nil && u != nil && u.Status == 1 {
+			return roleGrantsAIChat[u.Role]
+		}
+	}
+	return false
+}
+
+// internalServiceToken：orchestrator 方向凭据（INTERNAL_TOKEN，与 orchestrator auth_middleware 校验一致）。
+func internalServiceToken() string {
+	return os.Getenv("INTERNAL_TOKEN")
+}
+
+// proxyRunList：GET/POST /api/v1/ai/runs(/...) 代理 → orchestrator。
+// query-api 校验 JWT + MySQL 授权（权威 tenant），注入方向凭据 X-Internal-Token 转发；
+// orchestrator auth_middleware 校验该 token（INTERNAL_TOKEN）后由 ai_runs_api 处理。
+func (h *Handler) proxyRunList(w http.ResponseWriter, r *http.Request) {
+	authCtx, err := RequestAuthorizationContext(r)
+	if err != nil {
+		respondAuthorizationError(w, err)
+		return
+	}
+	// 转发到 orchestrator 的 Run API（保留 path/query/method/body，注入方向凭据）。
+	target := orchestratorBase() + r.URL.Path
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	var bodyReader io.Reader
+	if r.Method == http.MethodPost && r.Body != nil {
+		bodyReader = r.Body
+	}
+	req, err := http.NewRequest(r.Method, target, bodyReader)
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
+		return
+	}
+	if r.Method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Internal-Token", internalServiceToken())
+	req.Header.Set("X-Tenant-ID", authCtx.TenantID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
 }

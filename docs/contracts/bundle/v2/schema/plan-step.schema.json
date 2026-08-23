@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aiops.contracts.bundle.v2.plan_step",
+  "title": "PlanStep",
+  "description": "V1 冻结 PlanStep（对齐 contracts.PlanStep）。预算固化由 PlannerState 承载（不在此模型）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "run_id", "agent", "action", "parameters",
+    "depends_on", "required", "status"
+  ],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "agent": { "type": "string" },
+    "action": { "type": "string" },
+    "parameters": { "type": "object" },
+    "depends_on": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+    "required": { "type": "boolean" },
+    "cluster_id": { "type": ["string", "null"], "format": "uuid" },
+    "status": { "type": "string" }
+  },
+  "semantic_invariants_ref": "../invariants.md"
+}

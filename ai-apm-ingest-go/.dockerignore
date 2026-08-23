@@ -1,0 +1,11 @@
+# V9.3 Phase 15（P15.5）Docker build context 精简：
+# 排除测试、版本控制、本地构建产物，减小 build context 与镜像层。
+.git
+*.log
+*.test
+coverage.out
+# Go 测试文件不影响 runtime 构建（builder 阶段 COPY . . 会带上），
+# 但排除它们可减小 build context 传输；若需在容器内跑测试则注释掉下面两行。
+**_test.go
+/bin
+/tmp

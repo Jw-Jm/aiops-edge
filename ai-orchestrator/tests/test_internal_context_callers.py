@@ -7,6 +7,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from contracts import RequestContext
+from invocation_scope import LegacyScopeAdapter
 from trusted_context import TrustedContextError
 
 
@@ -17,9 +18,9 @@ CLUSTER_ID = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
 RUN_ID = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
 
 
-def _context() -> RequestContext:
+def _context() -> LegacyScopeAdapter:
     now = datetime.now(timezone.utc)
-    return RequestContext(
+    legacy = RequestContext(
         issuer="query-api",
         audience="ai-orchestrator",
         request_id=UUID("ffffffff-ffff-4fff-8fff-ffffffffffff"),
@@ -34,6 +35,8 @@ def _context() -> RequestContext:
         expires_at=now + timedelta(seconds=30),
         nonce=UUID("11111111-1111-4111-8111-111111111111"),
     )
+    # Old AI Chat path: legacy RequestContext wrapped as a ScopeView adapter.
+    return LegacyScopeAdapter(legacy)
 
 
 def _configure(monkeypatch) -> Ed25519PrivateKey:
@@ -95,9 +98,13 @@ def test_signed_query_api_request_sends_only_service_and_fresh_canonical_context
         assert forbidden not in headers
 
     claims = _decode_claims(headers["x-trusted-request-context"])
-    assert claims["user_id"] == str(USER_ID)
+    # V9.2 TrustedRequestContext claims (P3.9-A): principal + scope, not user_id.
+    assert claims["context_type"] == "trusted_request"
+    assert claims["principal_type"] == "user"
+    assert claims["principal_id"] == str(USER_ID)
     assert claims["session_id"] == str(SESSION_ID)
     assert claims["tenant_id"] == str(TENANT_ID)
+    assert claims["scope_kind"] == "cluster"
     assert claims["cluster_id"] == str(CLUSTER_ID)
     assert claims["run_id"] == str(RUN_ID)
     assert claims["audience"] == "ai-apm-query-go"

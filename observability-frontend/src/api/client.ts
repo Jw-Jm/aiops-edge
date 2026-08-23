@@ -45,6 +45,7 @@ const GLOBAL_PATHS = [
   '/ai/sessions',
   '/ai/session',
   '/ai/knowledge',
+  '/ai/runs',
   '/ai/skills',
   '/ai/workflows',
   '/ai/flows',
@@ -91,6 +92,26 @@ export const getTraceDetail = (id: string) => api.get(`/traces/${id}`)
 export const getTraceContext = (id: string) => api.get(`/traces/${id}/context`)
 export const getTopology = (params?: Record<string, unknown>) => api.get('/topology/global', { params })
 export const getTopologyNodeDetail = (name: string, params?: Record<string, unknown>) => api.get(`/topology/node/${encodeURIComponent(name)}`, { params })
+
+// ===== Run 调查（P12：智能调查中心数据源）=====
+export interface RunSummary {
+  run_id: string
+  request_id: string
+  status: string
+  tenant_id?: string
+  primary_cluster_id?: string | null
+  intent?: string
+  action_mode?: string
+  created_at?: string | null
+  root_cause?: string | null
+  confidence?: number | null
+}
+export interface RunListResponse { runs: RunSummary[] }
+export const listRuns = (params?: Record<string, unknown>) =>
+  api.get<RunListResponse>('/ai/runs', { params })
+export const getRun = (runId: string) => api.get<{ run: RunSummary }>(`/ai/runs/${encodeURIComponent(runId)}`)
+export const createRun = (data: Record<string, unknown>) =>
+  api.post<{ run: RunSummary }>('/ai/runs', data)
 
 // ===== Chat Sessions =====
 export const getSession = (sid: string) => api.get(`/ai/session/${sid}`)

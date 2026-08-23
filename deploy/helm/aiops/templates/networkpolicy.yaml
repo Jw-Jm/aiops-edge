@@ -21,6 +21,39 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: ["Ingress"]
+{{- if .Values.networkPolicy.egressDefaultDeny }}
+---
+# 1b) 默认拒绝所有出站流量（P0-P13 审计 P0-4：补 egress default-deny）。
+# 各组件出站白名单见下方 egress 规则；未显式放行的出站一律拒绝（fail-closed）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+---
+# 1c) orchestrator 出站白名单：仅访问 query-api（P0-P13 审计：orchestrator 原则上只经 query-api 访问数据）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-orchestrator-egress-to-query-api
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-orchestrator
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: query-api
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
 ---
 # 2) frontend 为公共入口（NodePort/Ingress），放行任意来源访问
 apiVersion: networking.k8s.io/v1
@@ -190,6 +223,9 @@ spec:
               app: event-collector
 ---
 # 12) ai-orchestrator → clickhouse
+#     P0-P13 审计（P0-4）：orchestrator 默认不直连 DB（仅经 query-api）。
+#     allowOrchestratorDbAccess=true 才放行（过渡期/显式启用），默认 false（fail-closed）。
+{{- if .Values.networkPolicy.allowOrchestratorDbAccess }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -239,6 +275,7 @@ spec:
         - podSelector:
             matchLabels:
               app: ai-orchestrator
+{{- end }}
 ---
 # 15) ai-orchestrator → query-api（QUERY_API_URL 调用）
 apiVersion: networking.k8s.io/v1

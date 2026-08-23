@@ -36,6 +36,10 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO user_sessions (session_id, user_uuid, status, expires_at, revoked_at) VALUES (?, ?, 'active', ?, NULL)")).
 		WithArgs(sqlmock.AnyArg(), canonicalUserID, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// JWT issuance reads the authoritative token_version from user_sessions (V9.2 §8).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT token_version FROM user_sessions WHERE session_id = ?")).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"token_version"}).AddRow(int64(0)))
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"alice","password":"correct-password"}`))
@@ -54,10 +58,10 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 		t.Fatalf("Login() token identity = %q/%q valid=%v, want canonical user UUID and persisted session ID", userID, sessionID, ok)
 	}
 
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s").
 		WithArgs(canonicalUserID, sessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at"}).
-			AddRow(canonicalUserID, 1, "active", time.Now().Add(time.Hour), nil))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(canonicalUserID, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
 	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
 		WithArgs(canonicalUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))

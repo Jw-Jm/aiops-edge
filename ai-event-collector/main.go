@@ -51,6 +51,12 @@ func (h *healthCache) check(writer *EventWriter) (bool, string) {
 
 func main() {
 	cfg := loadConfig()
+	// Phase 5：启动即校验 tenant/cluster 为 canonical UUID。非法/缺失（含 default/slug/数值）
+	// 直接 fail-closed 退出，禁止带非法身份采集写入。
+	scope := EventScope{TenantID: cfg.TenantID, ClusterID: cfg.ClusterID}
+	if err := scope.Validate(); err != nil {
+		log.Fatalf("invalid event scope (TENANT_ID/CLUSTER_ID must be canonical UUID): %v", err)
+	}
 	log.Printf("ai-event-collector starting (tenant=%s cluster=%s k8sWatch=%v selCollect=%v ch=%s:%d batch=%d flush=%ds)",
 		cfg.TenantID, cfg.ClusterID, cfg.K8SWatchEnabled, cfg.SELCollectEnabled,
 		cfg.CHHost, cfg.CHPort, cfg.BatchSize, cfg.FlushInterval)
@@ -68,7 +74,12 @@ func main() {
 		kw, err := NewK8sWatcher(cfg, writer)
 		if err != nil {
 			log.Printf("K8S event watch disabled: %v", err)
+		} else if cfg.LeaderElectionEnabled {
+			// V9.2 §71 single leader：DaemonSet 多副本下仅 Lease holder 执行集群级 K8s watch，
+			// follower 只做 SEL。Lease 丢失即停止 watch（fail-safe，避免双 writer）。
+			go runWatchWithLeaderElection(cfg, kw, ctx)
 		} else {
+			log.Printf("K8S event watch: leader election disabled (LEADER_ELECTION_ENABLED=false), running directly")
 			go kw.Run(ctx)
 		}
 	} else {
@@ -101,7 +112,8 @@ func main() {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 	})
 
-	// Prometheus 文本格式指标端点（H6）：暴露 flushed 计数与重试/丢弃计数。
+	// Prometheus 文本格式指标端点（H6）：暴露 flushed 计数、重试/丢弃计数，
+	// 以及（配置 WAL 时）WAL backlog 观测指标（Gate 5 "backlog observable"）。
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		body := fmt.Sprintf(
@@ -113,8 +125,18 @@ func main() {
 				"ai_event_collector_retry_queue_batches %d\n"+
 				"# HELP ai_event_collector_retry_dropped_batches_total Total batches dropped from retry queue.\n"+
 				"# TYPE ai_event_collector_retry_dropped_batches_total counter\n"+
-				"ai_event_collector_retry_dropped_batches_total %d\n",
-			writer.FlushedTotal(), writer.RetryQueueSize(), writer.RetryDroppedTotal())
+				"ai_event_collector_retry_dropped_batches_total %d\n"+
+				"# HELP ai_event_collector_wal_pending_records Current unacked WAL records (backlog).\n"+
+				"# TYPE ai_event_collector_wal_pending_records gauge\n"+
+				"ai_event_collector_wal_pending_records %d\n"+
+				"# HELP ai_event_collector_wal_pending_bytes Current unacked WAL bytes (backlog).\n"+
+				"# TYPE ai_event_collector_wal_pending_bytes gauge\n"+
+				"ai_event_collector_wal_pending_bytes %d\n"+
+				"# HELP ai_event_collector_wal_oldest_pending_age_seconds Age of oldest unacked WAL record.\n"+
+				"# TYPE ai_event_collector_wal_oldest_pending_age_seconds gauge\n"+
+				"ai_event_collector_wal_oldest_pending_age_seconds %d\n",
+			writer.FlushedTotal(), writer.RetryQueueSize(), writer.RetryDroppedTotal(),
+			writer.WALPendingRecords(), writer.WALPendingBytes(), writer.WALOldestPendingAgeSeconds())
 		_, _ = w.Write([]byte(body))
 	})
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)

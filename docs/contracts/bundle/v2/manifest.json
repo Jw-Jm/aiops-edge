@@ -1,0 +1,50 @@
+{
+  "bundle_version": "v2.0",
+  "description": "AIOps 跨语言版本化 Contract Bundle v2（R2 合同收敛，方案 B）",
+  "wire_version": "v1",
+  "schema": {
+    "tool_result": "schema/tool-result.schema.json",
+    "evidence": "schema/evidence.schema.json",
+    "hypothesis": "schema/hypothesis.schema.json",
+    "plan_step": "schema/plan-step.schema.json"
+  },
+  "invariants": "invariants.md",
+  "conformance_vectors": "conformance-vectors.json",
+  "tools": {
+    "python": {
+      "name": "datamodel-codegen",
+      "version": "0.25.0",
+      "output": "ai-orchestrator/contracts.py",
+      "note": "覆盖既有唯一权威 binding，禁止新建第二合同层（contracts.py 是唯一权威源）"
+    },
+    "go": {
+      "name": "go-generate",
+      "version": "1.25",
+      "output": "ai-apm-query-go/internal/contract/context.go",
+      "note": "覆盖既有 binding；strict decoder required (was json.RawMessage)；ToolResult.Error 需 omitempty 对齐（Task5 生成 Gate）"
+    },
+    "ts": {
+      "name": "quicktype",
+      "version": "23.0.0",
+      "output": "observability-frontend/src/api/contracts.ts",
+      "note": "覆盖既有 binding，禁止新建目录"
+    }
+  },
+  "checksum": "8e79353af442cb98e34dd862863e64e963ef12aa35f4558d5416f6d69d736459",
+  "checksum_method": "SHA256(concat conformance-vectors.json + invariants.md + schema/*.json 字母序)，不含 manifest 自指",
+  "models": ["ToolResult", "Evidence", "Hypothesis", "PlanStep"],
+  "v1_frozen": {
+    "note": "V1 wire 冻结字段类型不可改；V2 只加不改；删字段走 wire_version 大版本",
+    "tool_result_fields": 15,
+    "fields": [
+      "tool_name", "cluster_id", "success", "status", "summary", "data",
+      "error_code", "error_message", "retryable", "evidence_ids",
+      "source_system", "query_id", "time_range", "started_at", "finished_at"
+    ],
+    "go_extra": "Error *StructuredError（wire 为 null/省略；需 omitempty，Task5 对齐）",
+    "forbidden": ["tenant_id", "tool_id", "request_id", "retry_policy", "evidence_required",
+                  "duration_ms", "provenance", "partial_reason", "denied_scope"],
+    "context_unsigned": ["TrustedRequestContext", "RunContext", "OpsIntent", "OpsAction", "Verification"]
+  },
+  "regeneration_gate": "重新生成三端 binding 后，git diff 必须零变化（deterministic regeneration）"
+}

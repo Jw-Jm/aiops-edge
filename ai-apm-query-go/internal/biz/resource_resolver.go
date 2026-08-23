@@ -59,7 +59,8 @@ func (resolver ResourceResolver) Resolve(query ResourceQuery) (contract.Resource
 	if resource.Namespace != nil {
 		namespace = *resource.Namespace
 	}
-	resource.ResourceID = fmt.Sprintf("urn:aiops:%s:%s:%s:%s:%s", resource.TenantID, resource.ClusterID, resource.ResourceType, namespace, resource.Name)
+	// V9.2 §10: canonical resource_id does NOT include tenant_id.
+	resource.ResourceID = fmt.Sprintf("%s:%s:%s:%s", resource.ResourceType, resource.ClusterID, namespace, resource.Name)
 	if err := resource.Validate(); err != nil {
 		return zero, fmt.Errorf("invalid resolved resource: %w", err)
 	}

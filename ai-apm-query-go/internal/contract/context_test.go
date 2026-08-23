@@ -4,27 +4,45 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestRequestContextRoundTripAndValidation(t *testing.T) {
+func mustTime(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
+
+const (
+	clusterA = "66666666-6666-4666-8666-666666666666"
+	clusterB = "88888888-8888-4888-8888-888888888888"
+	tenantID = "55555555-5555-4555-8555-555555555555"
+)
+
+func TestTrustedRequestContextClusterScope(t *testing.T) {
 	payload := []byte(`{
         "version":1,
+        "context_type":"trusted_request",
         "issuer":"ai-orchestrator",
         "audience":"ai-apm-query-go",
         "request_id":"11111111-1111-4111-8111-111111111111",
         "run_id":"22222222-2222-4222-8222-222222222222",
-        "user_id":"33333333-3333-4333-8333-333333333333",
+        "principal_type":"user",
+        "principal_id":"33333333-3333-4333-8333-333333333333",
         "session_id":"44444444-4444-4444-8444-444444444444",
-        "tenant_id":"55555555-5555-4555-8555-555555555555",
-        "cluster_id":"66666666-6666-4666-8666-666666666666",
-        "source":"planner",
-        "capability":"kubernetes.read",
+        "tenant_id":"` + tenantID + `",
+        "scope_kind":"cluster",
+        "cluster_id":"` + clusterA + `",
+        "capability":"observability.logs.read",
+        "source":"log_agent",
         "issued_at":"2026-08-19T10:00:00Z",
         "expires_at":"2026-08-19T10:00:30Z",
         "nonce":"77777777-7777-4777-8777-777777777777"
     }`)
 
-	var context RequestContext
+	var context TrustedRequestContext
 	if err := DecodeStrict(payload, &context); err != nil {
 		t.Fatalf("DecodeStrict() error = %v", err)
 	}
@@ -36,22 +54,139 @@ func TestRequestContextRoundTripAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
-	if !strings.Contains(string(roundTrip), `"cluster_id":"66666666-6666-4666-8666-666666666666"`) {
+	if !strings.Contains(string(roundTrip), `"cluster_id":"`+clusterA+`"`) {
 		t.Fatalf("round trip lost canonical cluster_id: %s", roundTrip)
 	}
 }
 
-func TestRequestContextRejectsClientAuthClaimsAndNonUUIDCluster(t *testing.T) {
-	base := `{"version":1,"issuer":"ai-orchestrator","audience":"ai-apm-query-go","request_id":"11111111-1111-4111-8111-111111111111","run_id":"22222222-2222-4222-8222-222222222222","user_id":"33333333-3333-4333-8333-333333333333","session_id":"44444444-4444-4444-8444-444444444444","tenant_id":"55555555-5555-4555-8555-555555555555","cluster_id":"66666666-6666-4666-8666-666666666666","source":"planner","capability":"kubernetes.read","issued_at":"2026-08-19T10:00:00Z","expires_at":"2026-08-19T10:00:30Z","nonce":"77777777-7777-4777-8777-777777777777"}`
+func TestTrustedRequestContextRejectsAuthClaimsAndNonUUIDCluster(t *testing.T) {
+	base := `{"version":1,"context_type":"trusted_request","issuer":"ai-orchestrator","audience":"ai-apm-query-go","request_id":"11111111-1111-4111-8111-111111111111","run_id":"22222222-2222-4222-8222-222222222222","principal_type":"user","principal_id":"33333333-3333-4333-8333-333333333333","session_id":"44444444-4444-4444-8444-444444444444","tenant_id":"` + tenantID + `","scope_kind":"cluster","cluster_id":"` + clusterA + `","capability":"observability.logs.read","source":"log_agent","issued_at":"2026-08-19T10:00:00Z","expires_at":"2026-08-19T10:00:30Z","nonce":"77777777-7777-4777-8777-777777777777"}`
 
-	var context RequestContext
+	var context TrustedRequestContext
 	withRoles := strings.TrimSuffix(base, "}") + `,"roles":["admin"]}`
 	if err := DecodeStrict([]byte(withRoles), &context); err == nil {
 		t.Fatal("DecodeStrict() accepted roles in TrustedRequestContext")
 	}
 
-	withSlug := strings.Replace(base, `"cluster_id":"66666666-6666-4666-8666-666666666666"`, `"cluster_id":"prod-sg-01"`, 1)
+	withSlug := strings.Replace(base, `"cluster_id":"`+clusterA+`"`, `"cluster_id":"prod-sg-01"`, 1)
 	if err := DecodeStrict([]byte(withSlug), &context); err == nil {
 		t.Fatal("DecodeStrict() accepted slug as canonical cluster_id")
+	}
+}
+
+func TestTrustedRequestRunScopeForbidsClusterAndNonControlPlane(t *testing.T) {
+	base := `{"version":1,"context_type":"trusted_request","issuer":"ai-orchestrator","audience":"ai-apm-query-go","request_id":"11111111-1111-4111-8111-111111111111","run_id":"22222222-2222-4222-8222-222222222222","principal_type":"user","principal_id":"33333333-3333-4333-8333-333333333333","session_id":"44444444-4444-4444-8444-444444444444","tenant_id":"` + tenantID + `","scope_kind":"run","cluster_id":"","capability":"control_plane.run.read","source":"orchestrator","issued_at":"2026-08-19T10:00:00Z","expires_at":"2026-08-19T10:00:30Z","nonce":"77777777-7777-4777-8777-777777777777"}`
+
+	var context TrustedRequestContext
+	if err := DecodeStrict([]byte(base), &context); err != nil {
+		t.Fatalf("run scope control_plane should validate: %v", err)
+	}
+
+	withNonControl := strings.Replace(base, `"capability":"control_plane.run.read"`, `"capability":"observability.logs.read"`, 1)
+	if err := DecodeStrict([]byte(withNonControl), &context); err == nil {
+		t.Fatal("run scope with non-control-plane capability must reject")
+	}
+
+	withCluster := strings.Replace(base, `"cluster_id":""`, `"cluster_id":"`+clusterA+`"`, 1)
+	if err := DecodeStrict([]byte(withCluster), &context); err == nil {
+		t.Fatal("run scope with cluster_id must reject")
+	}
+}
+
+func TestResourceRefDoesNotIncludeTenant(t *testing.T) {
+	ns := "production"
+	ref := ResourceRef{
+		ClusterID:    clusterA,
+		ResourceType: "service",
+		Namespace:    &ns,
+		Name:         "orders",
+		ResourceID:   "service:" + clusterA + ":production:orders",
+		TenantID:     tenantID,
+	}
+	if err := ref.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if strings.Contains(ref.ResourceID, tenantID) {
+		t.Fatal("resource_id must NOT include tenant_id")
+	}
+}
+
+func TestResourceRefRejectsTenantInIdAndSlug(t *testing.T) {
+	ns := "production"
+	withTenant := ResourceRef{
+		ClusterID:    clusterA,
+		ResourceType: "service",
+		Namespace:    &ns,
+		Name:         "orders",
+		ResourceID:   "urn:aiops:" + tenantID + ":" + clusterA + ":service:production:orders",
+		TenantID:     tenantID,
+	}
+	if err := withTenant.Validate(); err == nil {
+		t.Fatal("resource_id with tenant must reject")
+	}
+
+	withSlug := ResourceRef{
+		ClusterID:    clusterA,
+		ResourceType: "service",
+		Namespace:    &ns,
+		Name:         "orders",
+		ResourceID:   "service:prod-sg-01:production:orders",
+		TenantID:     tenantID,
+	}
+	if err := withSlug.Validate(); err == nil {
+		t.Fatal("resource_id with slug must reject")
+	}
+}
+
+func TestToolResultSuccessEmptyIsNoData(t *testing.T) {
+	empty := ToolResult{
+		ToolName:  "k8sgpt_diagnose",
+		ClusterID: clusterA,
+		Success:   true,
+		Status:    "no_data",
+		Summary:   "k8sgpt executed successfully but produced no diagnostics",
+		StartedAt: mustTime("2026-08-19T10:00:01Z"),
+		FinishedAt: mustTime("2026-08-19T10:00:02Z"),
+	}
+	if err := empty.Validate(); err != nil {
+		t.Fatalf("success=true status=no_data should validate: %v", err)
+	}
+
+	bad := ToolResult{
+		ToolName:  "k8sgpt_diagnose",
+		ClusterID: clusterA,
+		Success:   true,
+		Status:    "failed",
+		StartedAt: mustTime("2026-08-19T10:00:01Z"),
+		FinishedAt: mustTime("2026-08-19T10:00:02Z"),
+	}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("success=true status=failed must reject")
+	}
+}
+
+func TestToolResultErrorNotOnWire(t *testing.T) {
+	// Bugbot C3：Go 非空 Error 也不得输出第 16 个 "error" 字段，三端 wire 严格 15 字段。
+	tr := ToolResult{
+		ToolName:  "query_logs",
+		ClusterID: clusterA,
+		Success:   false,
+		Status:    "failed",
+		Summary:   "boom",
+		ErrorCode: "INTERNAL_ERROR",
+		ErrorMessage: "structured failure",
+		Error: &StructuredError{
+			ErrorCode: "INTERNAL_ERROR",
+			Message:   "structured failure",
+		},
+		StartedAt:  mustTime("2026-08-19T10:00:01Z"),
+		FinishedAt: mustTime("2026-08-19T10:00:02Z"),
+	}
+	raw, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatalf("json.Marshal error = %v", err)
+	}
+	if strings.Contains(string(raw), `"error":`) {
+		t.Fatalf("wire 上不得出现第 16 个 'error' 字段（三端 15 字段对齐），got: %s", raw)
 	}
 }

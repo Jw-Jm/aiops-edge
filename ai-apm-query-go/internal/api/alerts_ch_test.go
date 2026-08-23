@@ -1,10 +1,14 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 )
 
 // insertAlertEvents 生成的 INSERT 应包含正确字段与转义（单引号/反斜杠），且 version 使 ReplacingMergeTree 保留新版本。
@@ -71,6 +75,8 @@ func TestQueryAlertEventsParses(t *testing.T) {
 	host, port := splitHostPort(srv.URL)
 	h.chHost = host
 	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.alertRepo = query.NewAlertRepository(&h.repo)
 
 	rows, err := h.queryAlertEvents("", 0, 100)
 	if err != nil {

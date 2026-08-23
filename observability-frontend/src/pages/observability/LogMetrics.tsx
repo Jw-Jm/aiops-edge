@@ -88,12 +88,12 @@ const LogMetrics: React.FC = () => {
   return (
     <div>
       <Breadcrumb items={[{ t: '可观测' }, { t: '日志与指标' }]} />
-      <PageHeader title="日志与指标" desc="跨数据源检索日志 / 按服务聚合统计" />
+      <PageHeader title="日志与指标" desc="原始日志（SoT）与异常模式（derived analytics）分开展示" />
 
       <div className="card" style={{ padding: 16 }}>
         <Space wrap style={{ width: '100%' }}>
           <Segmented value={mode} onChange={(v) => { const m = v as any; setMode(m); setRows([]); setAggs([]); search(m) }}
-            options={[{ label: '日志检索', value: 'logs' }, { label: '聚合统计', value: 'aggregate' }]} />
+            options={[{ label: '原始日志', value: 'logs' }, { label: '异常模式', value: 'aggregate' }]} />
           <Tooltip title="ClickHouse 为平台默认日志存储；VictoriaLogs 可选">
             {/* A7: 切换数据源自动重新查询 */}
             <Select value={source} onChange={(v) => { const ns = v as any; setSource(ns); search(undefined, { source: ns }) }} style={{ width: 140 }}

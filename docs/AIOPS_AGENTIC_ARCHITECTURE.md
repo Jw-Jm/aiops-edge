@@ -1,84 +1,104 @@
-# AIOps Agentic 目标架构（Phase 1 冻结）
+# AIOps — Agentic Architecture (V9.3 reconciled)
 
-本文将 `aiops-agentic.md` 中已经确认的决策落到可实现的代码边界。它是实施约束，不是对当前代码状态的描述；当前状态以 Phase 0 maps 和 `BEFORE_BASELINE.md` 为准。
+Status: **IMPLEMENTED**（Phase 21 P21.1 Architecture Reconciliation，与真实运行代码一致）
+Date: 2026-08-23
+GIT_ACTION: NONE
 
-## 请求与信任边界
+本文档是 AIOps 平台最终架构，与真实运行代码一致。覆盖 V9.2（P1-P6）+ V9.3（P7-P21）当前实现状态。
 
-```text
-Browser / Alert
-      │ JWT: user_id + session_id + short-lived claims
-      ▼
-query-api
-  ├─ MySQL: current user/session/tenant/cluster/action authorization
-  ├─ Cluster Resolver: UUID or slug → immutable canonical cluster_id
-  ├─ Kubernetes Read Access Boundary
-  └─ Control Plane Persistence
-          ▲
-          │ /internal/v1 + Service Credential + signed TrustedRequestContext
-          ▼
-ai-orchestrator
-  ├─ Intent / Planner / Investigation DAG
-  ├─ Tool Registry / Agents / RCA
-  └─ Risk / Approval / structured OpsAction request
-```
+## 产品端态（Journey A/B）
 
-orchestrator 只能持有 `user_id`、`session_id`、`tenant_id`、canonical `cluster_id`、`run_id` 和 capability 上下文，不得持有 Kubernetes credential、kubeconfig、Secret 内容，也不得直连 MySQL。
+- **Journey A（问题→根因）**：user/alert/page → tenant → canonical cluster → resource → time range → Intent → Planner → Investigation DAG → Domain Agents → Tools → ToolResult → Evidence → Hypothesis → Contradiction → Missing Evidence → Follow-up → Root Cause Ranking → Confidence → Unknowns。
+- **Journey B（根因→恢复）**：Root Cause → Structured OpsAction → Authoritative Risk → Current Authorization → Confirmation/Approval → Precheck → Execute → Observation Window → Verification → success/partial/failed/regressed → Incident Candidate。
 
-## 身份、认证与授权
+用户从不手动选择 K8sGPT/RAG/Tool/Agent/Workflow/LangGraph/MCP。
 
-- MySQL 是用户、角色、权限、Tenant、Cluster 授权和 session 状态的唯一动态权威。
-- JWT 证明“谁”和“哪个 session”，不承载 roles、permissions、tenant_ids、cluster_ids 或管理员结论。
-- 服务间认证由独立 Service Credential 完成；委托上下文由短时签名 `TrustedRequestContext` 完成。两者密钥分离、可轮换、必须校验 issuer/audience/iat/exp/nonce/replay。
-- TrustedRequestContext 不是授权凭证。query-api 每次接收内部请求仍需按 MySQL 当前状态验证 user/session/tenant/cluster/action。
-- Tenant、Cluster、Namespace、Resource、Action 是授权 scope 层级；拒绝或缺少具体授权不得因 broad role 自动扩权。
-
-## Cluster Registry 与 Kubernetes Access Boundary
+## 单一生产主链（真实实现）
 
 ```text
-cluster_ref (UUID or slug)
-        │
-        ▼
-Cluster Registry → immutable UUID cluster_id
-        │ credential_ref only
-        ▼
-Kubernetes Access Boundary → Secret/Vault → per-cluster client
+Browser → JWT Identity → query-api → MySQL Real-time Authorization
+→ Tenant Scope → Canonical Cluster Resolution → RunInvocationContext
+→ ai-orchestrator → Intent → Planner → Investigation DAG → Domain Agents
+→ Tool Registry → TrustedRequestContext → query-api Trusted Data Boundary
+→ ToolResult → Evidence Hub → Hypothesis RCA → Missing Evidence Investigation
+→ Root Cause Ranking → Structured OpsAction → Authoritative Risk Evaluation
+→ MySQL Real-time Authorization → Confirmation/Approval → Execution Adapter
+→ Verification → Incident Candidate / Learning
 ```
 
-- `cluster_id` 是不可变 UUID；`slug` 唯一可读且可受控重命名；`name` 只展示。
-- 所有持久化 observability、Evidence、Run、Audit、Execution 和权限数据只以 UUID 关联。
-- 每个 cluster 使用独立 Secret；MySQL 只存 `credential_ref`。
-- Kubernetes client/cache 必须以 canonical UUID 为 key，凭据轮换必须失效旧 client。
-- 读取路径经过 query-api 的 Kubernetes Read Adapter；写入路径经过 Execution Adapter。
-- LLM、Planner、Agent、Tool 不得生成或提交裸 `kubectl`/shell 作为 canonical action。
+**不得共存**：旧 AI Chat 主路径、prompt-only RCA、旧 Tool Router、旧 Workflow investigation、旧 Session/Checkpoint、旧 Schema Adapter、default tenant/cluster fallback、JWT role/scope authority、client tenant/cluster authorization。
 
-## Read Plane / Write Plane
+## 控制面职责（真实实现）
 
-Read Plane 允许标准化 `get/list/watch/describe/logs/events/status` 等只读 capability，返回带 `tenant_id`、`cluster_id`、resource identity、observed_at 和结构化错误的结果。
+| 组件 | 职责（当前实现） |
+|---|---|
+| **query-api** | 外部信任边界；JWT 身份 + MySQL 实时授权；canonical cluster/resource 解析；AI 代理（RunInvocationContext/RunControlContext）；Trusted Data Boundary；Execution Policy Engine；MySQL 持久化 owner（ai_runs/ai_actions/ai_evidence 等）；SSE 公共代理/replay；浏览器唯一入口；`/internal/v1/query/*` 内部边界（internalScopeAuthorized 校验 cluster 属 tenant） |
+| **ai-orchestrator** | Run 状态机 owner；SSE event 语义 owner；sequence allocator；Intent/Planner/Agents/Tool Registry；Evidence Hub；Hypothesis RCA（RcaEngine 单一编排）；remediation（approval/execution 链）；**不持有 kubeconfig/credential 内容** |
+| **ingest / event-collector** | 写 new-schema 可观测 + 资源事件（VM/VLogs/CH）；TelemetryWriterMode=new |
+| **frontend** | 任务驱动 IA；调查工作台；evidence deep links；无直接 orchestrator 访问 |
 
-Write Plane 只接收结构化 `OpsAction`，执行顺序固定为：
+## 三个内部上下文（真实实现）
+
+- `RunInvocationContext`（query-api → orchestrator）：create Run。
+- `RunControlContext`（query-api → orchestrator）：control 既有 Run。
+- `TrustedRequestContext`（orchestrator → query-api）：tool/data 访问，scope_kind cluster 或 run。
+
+**服务身份 — EdDSA**：每方向独立 Ed25519 keypair；verifier 只持对向公钥。JWS Compact Serialization，alg=EdDSA，typ=AIOPS-CONTEXT，kid=key-id。Replay 保护（nonce+replay cache）统一三上下文。Service Credential（X-Internal-Token）与 context signing 分离。
+
+## V9.3 关键组件（真实实现）
+
+### 可信分析（P7）
+Tool Registry → InternalQueryClient → TrustedRequestContext → query-api `/internal/v1/query/*`（唯一事实路径，禁 direct DB/K8s）。
+
+### 七类 Agent + Resource Graph（P8）
+Observability/Log/Trace/K8s/Change/Knowledge/Infra 七类 Agent，统一 AgentRuntimeFramework 执行 PlanStep；Agent=Evidence collection+Insight generation，**≠ Execution**。Resource Graph V1 经 query-api 采集 typed graph。
+
+### 执行基础设施（Execution Infra + Production Enablement）
+ExecutionContract（一次性许可证）+ ExecutionIdentity + ExecutionAdapter（restricted_shell/patch allowlist）+ Policy Engine（Context 来源冻结）+ ExecutionPreview + Approval Signature（Ed25519）+ Credential Broker + Rollback + AuthorizationSoTProvider + RBAC mapper + GrayRollout + ProductionApproval。
+
+### Phase 9-11
+- P9 Hypothesis RCA：RcaEngine 单一编排（Snapshot→Hypothesis→Support→Contradiction→Missing→Scoring→Ranker→Timeline→Unknown-safe）；跨 cluster EvidenceScopeMismatch 阻断。
+- P10 Run Persistence/SSE/Recovery：PersistentRunRepository 远端提交优先（HTTP 失败 fail-closed 不推进）；SSE tenant 校验；进程重启恢复。
+- P11 Remediation：ApprovalService 接 query-api 权威 SoT；verification 用 SLI 非 exit code；regression stop；rollback 新 action。
+
+### Phase 13-20
+- P13 服务端安全加固：AuthorizationMatrix fail-closed + role tamper 服务端忽略。
+- P18 部署：5 镜像（query-api/ingest/collector/orchestrator/frontend）。
+- P19 真实环境 + 多集群：kind-02 接入（Cluster Registry + 中央凭据 + 受控 OTLP generator + 隔离 Gate `internalScopeAuthorized`）。
+- P20 缺陷收口 + 最终构建：`v1.2.0-p20-24b157a0`（source_tree_hash `24b157a08a02f6b469dffa3bdc0008264c2f72cdbb95f0adf0abb32361d3b866`）。
+
+## 存储 SoT（真实实现）
+
+- **MySQL**（`aiops`）：授权/审计/配置/catalog/Run/Approval 权威 SoT（52 表）。
+- **VictoriaMetrics**（VM）：metrics 权威 SoT（new writer ACTIVE）。
+- **VictoriaLogs**（VLogs）：logs 权威 SoT（new writer ACTIVE）。
+- **ClickHouse**（`observability`）：k8s_events/alert_events/log_records/trace_spans/service_topology（legacy 数据保留，只停流量不删数据）。
+- **Chroma**：orchestrator 知识库（ops-cases，2 collections）。
+
+## 多集群架构（Phase 19 真实接入）
+
+- 中心数据面（VM/VLogs/CH 共享），kind-02 不建第二套 SoT。
+- Cluster Registry：kind-02 `84f7e5a3`（identity_uid `ea994341`）注册 ready；canonical cluster `91771a6e`。
+- 隔离 Gate：`/internal/v1/query/*` 错误 tenant/cluster → 403；已授权空 → no_data；跨 cluster RCA `EvidenceScopeMismatch` 阻断。
+
+## 边界与红线（当前保持）
+
+- **红线 F1-F5**：F1 Human signature / F2 三+一身份 / F3 Secret 不落 Evidence / F4 Planner 不直连执行 / F5 不触发真实业务执行。
+- **Execution Production Execution = NOT YET APPROVED**（Phase 11 只验证审批/执行链路 dry-run，不落地真实 K8s/OpenStack 变更）。
+- **Agent ≠ Execution**：Agent 无 execute/self_execute/credential/kubeconfig。
+- **不得把未实现的 Incident/Detection/Edge Autonomy/Autonomy Level 写成正式架构**（未实现）。
+- GIT_ACTION = NONE；Phase 21 后状态 = `WAITING_USER_AUTHORIZATION_FOR_GIT_COMMIT_AND_PUSH`。
+
+## 实现状态总览
 
 ```text
-Intent → Plan → Risk → current Authorization → Approval → Execution Adapter → Verification
+V9.2 Phase 1-6:  COMPLETE（P6 cutover 完成，new SoT ACTIVE，legacy 只停流量）
+V9.3 Phase 7:    COMPLETE（可信分析 10 组件）
+V9.3 Phase 8:    COMPLETE（七类 Agent + Resource Graph + ARI）
+V9.3 Phase 9-11: COMPLETE（Hypothesis RCA / Run Persistence / Remediation）
+V9.3 Phase 12-17: COMPLETE（前端收敛 / 权限 / 删旧 / 依赖 / 测试 / 数据重置）
+V9.3 Phase 18-19: COMPLETE（构建部署 / 真实环境 + 多集群）
+V9.3 Phase 20:   COMPLETE（缺陷收口 + 最终构建 v1.2.0-p20）
+V9.3 Phase 21:   IN_PROGRESS（文档 + Git 准备）
+Execution Production Execution: NOT YET APPROVED
 ```
-
-回滚是新的 OpsAction；R3/R4 回滚在 V1 必须重新授权和审批，并重新绑定目标 `resourceVersion`。R4 shell 仅作为人工显式、严格 allow/deny、审计和超时限制的应急通道。
-
-## AI Runtime 与控制面持久化
-
-- orchestrator 负责 Intent、Planner、DAG、Tool 调度、RCA 和运行状态机的业务决策。
-- query-api Control Plane Persistence 是 MySQL 的唯一物理写入边界；orchestrator 通过内部 API 写 `ai_runs`、`ai_plan_steps`、`ai_tool_runs`、`ai_evidence`、approval/execution/audit 等控制面记录。
-- SSE 的 sequence、持久化和 replay 由 orchestrator 负责生成/消费语义，但落库仍经控制面接口；事件必须可按 `run_id + sequence` 恢复。
-- Tool 返回统一 `ToolResult`/`StructuredError`；失败必须可区分权限拒绝、参数错误、超时、上游不可用、证据为空和内部错误。
-
-## 存储职责
-
-- VictoriaLogs 是 raw logs 主存储。
-- ClickHouse 保存 logs/traces/topology/events 的派生查询模型。
-- VictoriaMetrics 保存 metrics 时序查询路径。
-- MySQL 保存身份、授权、Cluster Registry、配置、AI Runtime、审批、执行、审计和有效知识资产。
-- 旧运行历史不迁移，Phase 16 只按 manifest 在本机验收环境清理，UNKNOWN 资产不得删除。
-
-## Phase 1 边界
-
-Phase 1 只冻结 ownership、数据模型和跨语言契约，新增类型、fixture 和验证；不切换生产路由、不启用新 writer、不删除旧 schema/页面/依赖、不接触真实凭据。后续 Phase 必须以本文和 contract fixture 为输入。
-

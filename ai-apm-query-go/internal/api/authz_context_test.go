@@ -42,10 +42,10 @@ func TestRequestAuthorizationContextDoesNotUseJWTClaimsAsAuthority(t *testing.T)
 	previous := store.GetDB()
 	store.SetDB(db)
 	t.Cleanup(func() { store.SetDB(previous) })
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s").
 		WithArgs(authzUserID, authzSessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at"}).
-			AddRow(authzUserID, 1, "active", time.Now().Add(time.Hour), nil))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
 	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
 		WithArgs(authzUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
@@ -105,8 +105,8 @@ func TestResolveResourceReturnsCanonicalReferenceOnlyAfterAuthorization(t *testi
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Data.TenantID != authzTenantID || response.Data.ClusterID != "dddddddd-dddd-4ddd-8ddd-dddddddddddd" || response.Data.Resource != "urn:aiops:cccccccc-cccc-4ccc-8ccc-cccccccccccc:dddddddd-dddd-4ddd-8ddd-dddddddddddd:deployment:production:orders" {
-		t.Fatalf("ResolveResource() = %+v, want canonical resource reference", response.Data)
+	if response.Data.TenantID != authzTenantID || response.Data.ClusterID != "dddddddd-dddd-4ddd-8ddd-dddddddddddd" || response.Data.Resource != "deployment:dddddddd-dddd-4ddd-8ddd-dddddddddddd:production:orders" {
+		t.Fatalf("ResolveResource() = %+v, want canonical resource reference (without tenant)", response.Data)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestRequestAuthorizationContextRequiresSignedInternalContext(t *testing.T) 
 	t.Cleanup(func() { store.SetDB(previous) })
 	expectRequestIdentityAndTenant(mock)
 
-	token, err := trustedauth.SignTrustedRequestContext(testTrustedRequestContext("ai-apm-query-go"), privateKey)
+	token, err := trustedauth.SignTrustedRequestContextV2(testTrustedRequestContext("ai-apm-query-go"), privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestRequestAuthorizationContextRequiresSignedInternalContext(t *testing.T) 
 		t.Fatalf("replayed signed context error = %v, want permission_denied", err)
 	}
 
-	wrongAudience, err := trustedauth.SignTrustedRequestContext(testTrustedRequestContext("another-api"), privateKey)
+	wrongAudience, err := trustedauth.SignTrustedRequestContextV2(testTrustedRequestContext("another-api"), privateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,8 @@ func TestAuthMiddlewareFailsClosedForLegacyRoute(t *testing.T) {
 	handler := AuthMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		called = true
 	}))
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+	// 使用仍未迁移/未纳入 canonical-protected 的写端点（/api/v1/clusters 已改为 canonical-protected 只读）
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/topology/sync-catalog", nil)
 	request.Header.Set("Authorization", "Bearer "+generateJWTWithSession(authzUserID, authzSessionID, "admin", `{"clusters":["all"]}`))
 	request.Header.Set("X-Tenant-ID", authzTenantID)
 	recorder := httptest.NewRecorder()
@@ -254,21 +255,20 @@ func TestAuthMiddlewareFailsClosedForLegacyRoute(t *testing.T) {
 	}
 }
 
-func testTrustedRequestContext(audience string) contract.RequestContext {
+func testTrustedRequestContext(audience string) contract.TrustedRequestContext {
 	now := time.Now().UTC()
-	return contract.RequestContext{
-		Version: 1, Issuer: "ai-orchestrator", Audience: audience,
-		RequestID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", RunID: "ffffffff-ffff-4fff-8fff-ffffffffffff",
-		UserID: authzUserID, SessionID: authzSessionID, TenantID: authzTenantID, ClusterID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-		Source: "planner", Capability: "kubernetes.read", IssuedAt: now, ExpiresAt: now.Add(30 * time.Second), Nonce: "11111111-1111-4111-8111-111111111111",
-	}
+	return contract.NewTrustedRequestContext(
+		"ai-orchestrator", audience, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "user", authzUserID, authzSessionID,
+		authzTenantID, "ffffffff-ffff-4fff-8fff-ffffffffffff", "cluster", "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		"kubernetes.read", "planner", now, now.Add(30*time.Second), "11111111-1111-4111-8111-111111111111",
+	)
 }
 
 func expectRequestIdentityAndTenant(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at FROM users u JOIN user_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s").
 		WithArgs(authzUserID, authzSessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at"}).
-			AddRow(authzUserID, 1, "active", time.Now().Add(time.Hour), nil))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
 	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
 		WithArgs(authzUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))

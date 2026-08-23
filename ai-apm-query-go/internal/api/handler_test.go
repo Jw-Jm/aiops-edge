@@ -3,12 +3,16 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -45,8 +49,8 @@ func TestListServicesReturnsCHServicesWithMetadata(t *testing.T) {
 
 	h := &Handler{client: &http.Client{}}
 	host, port := splitHostPort(chSrv.URL)
-	h.chHost = host
-	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.resourceRepo = query.NewResourceRepository(&h.repo)
 
 	// 2. MySQL 富化数据：可达时插入测试行，不可达则跳过富化断言
 	db := store.GetDB()
@@ -142,8 +146,8 @@ func TestListServicesReturnsCHServicesWithMetadata(t *testing.T) {
 	}
 }
 
-// TestListServicesCHErrorReturns500 验证 ClickHouse 查询失败时返回 500。
-func TestListServicesCHErrorReturns500(t *testing.T) {
+// TestListServicesCHError 验证 ClickHouse 查询失败时返回统一错误码（P6.2c：经 repository 映射为 503 unavailable）。
+func TestListServicesCHError(t *testing.T) {
 	// Mock CH 返回 500 错误
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -153,15 +157,16 @@ func TestListServicesCHErrorReturns500(t *testing.T) {
 
 	h := &Handler{client: &http.Client{}}
 	host, port := splitHostPort(chSrv.URL)
-	h.chHost = host
-	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.resourceRepo = query.NewResourceRepository(&h.repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/services", nil)
 	w := httptest.NewRecorder()
 	h.ListServices(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500 on CH error, got %d", w.Code)
+	// CH unavailable → 503（repository 统一错误语义，替代旧的裸 500）
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 on CH unavailable, got %d, body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -182,6 +187,14 @@ func newTestHandler(t *testing.T) *Handler {
 	host, port := splitHostPort(chSrv.URL)
 	h.chHost = host
 	h.chPort = port
+	// P6.2：统一 CH repository 指向 mock server（与 NewHandler 一致），否则 h.repo 为零值。
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.metricsRepo = query.NewMetricsRepository(&h.repo)
+	h.logRepo = query.NewLogRepository(&h.repo, nil, query.NewSourceRouter(query.ModeLegacy))
+	h.traceRepo = query.NewTraceRepository(&h.repo)
+	h.alertRepo = query.NewAlertRepository(&h.repo)
+	h.topoRepo = query.NewTopologyRepository(&h.repo)
+	h.resourceRepo = query.NewResourceRepository(&h.repo)
 	return h
 }
 
@@ -259,8 +272,8 @@ func TestListServicesEmptyResult(t *testing.T) {
 
 	h := &Handler{client: &http.Client{}}
 	host, port := splitHostPort(chSrv.URL)
-	h.chHost = host
-	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.resourceRepo = query.NewResourceRepository(&h.repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/services", nil)
 	w := httptest.NewRecorder()
@@ -413,14 +426,15 @@ func TestBuildVictoriaLogsSQL(t *testing.T) {
 // ===== P1-1: DashboardStats 边数在 service_topology 为空时回退到 MySQL topology_relations =====
 
 func TestDashboardStatsEdgesFallsBackToMySQL(t *testing.T) {
-	// Mock ClickHouse：service_topology count=0（无边数据）
+	// Mock ClickHouse：service_topology count=0（无边数据）。P6.2c DashboardStats 经
+	// topology repository（QueryJSON：GET + query 参数 + JSONEachRow）。
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		q := r.URL.Query().Get("query")
 		switch {
 		case strings.Contains(q, "FROM observability.service_topology"):
-			// 返回 count=0
-			_, _ = w.Write([]byte(`{"count()":"0"}` + "\n"))
+			// 返回边数 cnt=0（EdgeCount 解析 cnt 键）
+			_, _ = w.Write([]byte(`{"cnt":0}` + "\n"))
 		case strings.Contains(q, "FROM observability.trace_spans"):
 			// 服务调用 / P95 聚合：给一条空结果即可
 			_, _ = w.Write([]byte(""))
@@ -432,8 +446,8 @@ func TestDashboardStatsEdgesFallsBackToMySQL(t *testing.T) {
 
 	h := &Handler{client: &http.Client{}}
 	host, port := splitHostPort(chSrv.URL)
-	h.chHost = host
-	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.topoRepo = query.NewTopologyRepository(&h.repo)
 
 	req := httptest.NewRequest("GET", "/api/v1/dashboard/stats", nil)
 	rr := httptest.NewRecorder()
@@ -447,16 +461,21 @@ func TestDashboardStatsEdgesFallsBackToMySQL(t *testing.T) {
 }
 
 func TestListTracesHoursAddsStartTimePredicate(t *testing.T) {
-	var query string
+	var gotSQL string
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		query = r.URL.Query().Get("query")
+		// P6.2b：统一 repository 用 POST body 传 SQL。
+		if b, err := io.ReadAll(r.Body); err == nil {
+			gotSQL = string(b)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(""))
 	}))
 	defer chSrv.Close()
 
+	host, port := splitHostPort(chSrv.URL)
 	h := &Handler{client: &http.Client{}}
-	h.chHost, h.chPort = splitHostPort(chSrv.URL)
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.traceRepo = query.NewTraceRepository(&h.repo)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/traces?hours=6", nil)
 	rec := httptest.NewRecorder()
 
@@ -465,7 +484,7 @@ func TestListTracesHoursAddsStartTimePredicate(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(query, "start_time >= now() - INTERVAL 6 HOUR") {
-		t.Fatalf("expected six-hour start_time predicate, got query: %s", query)
+	if !strings.Contains(gotSQL, "start_time >= now() - INTERVAL 6 HOUR") {
+		t.Fatalf("expected six-hour start_time predicate, got query: %s", gotSQL)
 	}
 }

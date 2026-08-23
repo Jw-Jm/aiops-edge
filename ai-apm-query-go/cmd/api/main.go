@@ -21,6 +21,7 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/api"
 	trustedauth "github.com/observability-platform/ai-apm-query-go/internal/auth"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
+	"github.com/observability-platform/ai-apm-query-go/internal/store/migrations"
 )
 
 // randomPassword 用 crypto/rand 生成 n 字节的十六进制随机密码（n*2 个字符）。
@@ -59,6 +60,22 @@ func trustedContextVerifyConfigFromEnv() (trustedauth.VerifyConfig, error) {
 	}, nil
 }
 
+// runInvocationIssuerFromEnv loads the query-api → orchestrator signing private key
+// and directional service credential. Incomplete config disables the issuer
+// (ProxyAI keeps fail-closed) rather than producing unsigned privileged calls.
+func runInvocationIssuerFromEnv() (*trustedauth.RunInvocationIssuer, error) {
+	encodedKey := strings.TrimSpace(os.Getenv("QUERY_TO_ORCHESTRATOR_SIGNING_KEY"))
+	serviceToken := strings.TrimSpace(os.Getenv("QUERY_TO_ORCHESTRATOR_TOKEN"))
+	if encodedKey == "" || serviceToken == "" {
+		return nil, fmt.Errorf("query-to-orchestrator signing key or service token is empty")
+	}
+	privateKey, err := trustedauth.DecodePrivateKey(encodedKey)
+	if err != nil {
+		return nil, err
+	}
+	return trustedauth.NewRunInvocationIssuer(privateKey, serviceToken)
+}
+
 func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
 	chHost := flag.String("ch-host", "clickhouse.observability.svc.cluster.local", "ClickHouse host")
@@ -72,9 +89,18 @@ func main() {
 		fmt.Sscanf(p, "%d", chPort)
 	}
 
-	// MySQL：先建表/迁移（EnsureSchema），再初始化 handler 加载规则，
-	// 确保 alert_rules 的新列（baseline_seconds 等）在 loadAlertRules 前已存在
-	store.EnsureSchema()
+	// V9.2 Phase 4 (P4.4 cutover)：runtime 不再执行 DDL。
+	// 1) 只读 readiness check：校验 schema 版本 + checksum 已就绪（缺失/漂移则 fail-closed）。
+	// 2) DML-only bootstrap seed（初始默认面板等幂等数据）。
+	// 所有 DDL 与一次性 backfill 由 schema-migrator（aiops_migrator）在初始化 Job 中执行。
+	if db := store.GetDB(); db != nil {
+		if err := migrations.RequireCurrent(db); err != nil {
+			log.Fatalf("schema not ready (read-only checksum check): %v", err)
+		}
+		if err := store.EnsureBootstrapData(db); err != nil {
+			log.Fatalf("bootstrap data: %v", err)
+		}
+	}
 
 	handler := api.NewHandler(*chHost, *chPort)
 	if config, err := trustedContextVerifyConfigFromEnv(); err != nil {
@@ -82,9 +108,17 @@ func main() {
 	} else {
 		api.ConfigureInternalRequestVerifier(config)
 	}
+	// V9.2 P3.9-B2: query-api → orchestrator RunInvocationContext issuer.
+	if issuer, err := runInvocationIssuerFromEnv(); err != nil {
+		log.Printf("query-to-orchestrator RunInvocation issuer disabled: %v", err)
+	} else {
+		api.ConfigureRunInvocationIssuer(issuer)
+	}
 	if vmURL := os.Getenv("VICTORIA_METRICS_URL"); vmURL != "" {
 		handler.SetVMURL(vmURL)
 	}
+	// P10 (V9.3 Phase 10)：durable outbox dispatcher——可靠派发 RunInvocation 给 orchestrator。
+	go handler.RunDispatchLoop(context.Background())
 	// 注入 CH 连接供告警事件持久化（必须先于评估引擎启动）
 	api.SetAlertCH(handler)
 	handler.StartAlertEvaluation()
@@ -122,8 +156,9 @@ func main() {
 	mux.HandleFunc("/api/v1/devices", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
 	mux.HandleFunc("/api/v1/devices/", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
 
-	// Clusters (read any, write/sync admin)
-	mux.HandleFunc("/api/v1/clusters", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
+	// Clusters: GET list 经 canonical-protected（JWT+canonical tenant+成员，前端集群选择器数据源）；
+	// 写/同步（POST create、sync）仍 RequireRoleForWrite fail-closed（当前无迁移权限，一律拒绝）。
+	mux.HandleFunc("/api/v1/clusters", handler.ClusterList)
 	mux.HandleFunc("/api/v1/clusters/", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 
 	// Health (no auth required)
@@ -222,7 +257,29 @@ func main() {
 	// GRAFANA_API_TOKEN/GRAFANA_TLS_INSECURE env；经 AuthMiddleware 统一 JWT 鉴权。
 	api.RegisterGrafanaRoutes(mux, api.NewGrafanaHandler(api.GrafanaConfigFromEnv()))
 	// AI proxy
-	mux.HandleFunc("/api/v1/ai/chat", handler.ProxyAI)
+	// P19.6: /api/v1/ai/chat 是对话型 canonical-protected 路由，由 ProxyChat 处理
+	// （JWT+tenant+cluster 解析 → ai.chat capability 签名 → orchestrator /internal/v1/chat SSE 流式透传）。
+	mux.HandleFunc("/api/v1/ai/chat", handler.ProxyChat)
+	// P12：Run API 只读代理（/api/v1/ai/runs/{id} 详情）→ orchestrator ai_runs_api
+	mux.HandleFunc("/api/v1/ai/runs/", handler.ProxyAI)
+	// P10 (V9.3 Phase 10)：公共 SSE proxy（query-api 直接从持久化事件 replay + live-tail）。
+	mux.HandleFunc("/api/v1/ai/runs/{runID}/events", handler.StreamRunEvents)
+	// P10 (V9.3 Phase 10)：公共 Control 入口（Browser → query-api cancel）。
+	mux.HandleFunc("/api/v1/ai/runs/{runID}/cancel", handler.PublicCancelRun)
+	// P10 (V9.3 Phase 10)：公共 Run 详情（直接读 MySQL，消除与 orchestrator 内存 RunStore 的 split-brain）。
+	mux.HandleFunc("/api/v1/ai/runs/{runID}", handler.GetRunPublic)
+	// P10 (V9.3 Phase 10)：/api/v1/ai/runs 由 query-api 作为 Run 持久化 owner 处理。
+	// POST=创建（JWT 鉴权 + 写 outbox 可靠派发），GET=列表（当前 tenant）。不再代理到 orchestrator。
+	mux.HandleFunc("/api/v1/ai/runs", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			handler.CreateRunPublic(w, r)
+		case http.MethodGet:
+			handler.ListRunsPublic(w, r)
+		default:
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		}
+	})
 	mux.HandleFunc("/api/v1/ai/sessions/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/sessions", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/session/", handler.ProxyAI)
@@ -312,16 +369,34 @@ func main() {
 	mux.HandleFunc("/api/v1/system/cache/invalidate", handler.InvalidateCache)
 	mux.HandleFunc("/api/v1/system/components", handler.SystemComponents)
 
+	// P6.2e: canonical internal query endpoints（Phase 6）。
+	// 供 orchestrator InternalQueryClient（Phase 7）调用。
+	// 统一 strict envelope：TrustedRequestContext ONLY（无 JWT fallback）+ capability + scope match + QueryError semantics。
+	mux.HandleFunc("/internal/v1/query/metrics", handler.InternalQueryMetrics)
+	mux.HandleFunc("/internal/v1/query/logs", handler.InternalQueryLogs)
+	mux.HandleFunc("/internal/v1/query/traces", handler.InternalQueryTraces)
+	mux.HandleFunc("/internal/v1/query/alerts", handler.InternalQueryAlerts)
+	mux.HandleFunc("/internal/v1/query/topology", handler.InternalQueryTopology)
+	mux.HandleFunc("/internal/v1/query/kubernetes", handler.InternalQueryKubernetes)
+	mux.HandleFunc("/internal/v1/query/changes", handler.InternalQueryChanges)
+	mux.HandleFunc("/internal/v1/query/knowledge", handler.InternalQueryKnowledge)
+	// P10 (V9.3 Phase 10)：control-plane 持久化端点（orchestrator system principal）。
+	mux.HandleFunc("/internal/v1/control-plane/runs", handler.InternalControlPlaneRunRouter)
+	mux.HandleFunc("/internal/v1/control-plane/runs/", handler.InternalControlPlaneRunRouter)
+	mux.HandleFunc("/internal/v1/control-plane/recovery/snapshot", handler.InternalControlPlaneRecovery)
+
 	// Wrap: CORS → Auth
 	corsHandler := api.CORSMiddleware(mux)
 	authHandler := api.AuthMiddleware(corsHandler)
 
 	// H5 修复（R3）：http.Server 加超时，防止慢客户端/慢请求无限占用连接。
+	// WriteTimeout=0（禁用）：P10 公共 SSE（长连接 live-tail）需要无限期写；60s 写超时
+	// 会中断长连接 SSE。读写超时仍由 ReadTimeout/IdleTimeout/ReadHeaderTimeout 控制（P1-5）。
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", *port),
 		Handler:           authHandler,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      0,
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
