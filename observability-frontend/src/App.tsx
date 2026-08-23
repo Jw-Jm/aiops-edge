@@ -33,6 +33,8 @@ const Changes = lazy(() => import('./pages/infra/Changes'))
 const InvestigationCenter = lazy(() => import('./pages/investigation/InvestigationCenter'))
 const IntelligentInvestigation = lazy(() => import('./pages/investigation/IntelligentInvestigation'))
 const NewInvestigation = lazy(() => import('./pages/investigation/NewInvestigation'))
+// Evidence 详情深链（tenant+cluster+run 三元授权，只读）
+const EvidenceDetail = lazy(() => import('./pages/investigation/EvidenceDetail'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 // ===== 侧栏导航：7 大板块 =====
@@ -306,6 +308,7 @@ function AppLayout() {
               <Route path="/investigation" element={<InvestigationCenter />} />
               <Route path="/investigation/new" element={<NewInvestigation />} />
               <Route path="/investigation/:runId" element={<IntelligentInvestigation />} />
+              <Route path="/investigation/:runId/evidence/:evidenceId" element={<EvidenceDetail />} />
 
               <Route path="/capacity" element={<Capacity />} />
               <Route path="/infra/k8s" element={<K8sActions />} />

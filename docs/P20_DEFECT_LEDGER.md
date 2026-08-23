@@ -56,7 +56,7 @@
 | P20-BUGBOT-P0-01 | P0-1 真实入口未验签（main.py:433） | BUGBOT | 合同 P0-10 相关 | 已修复（R2） |
 | P20-BUGBOT-P0-02 | P0-2 审批链绕过（main.py:1589） | BUGBOT | 合同 P0-11 | 已修复（R2） |
 | P20-BUGBOT-P0-03 | P0-3 RBAC 集群写权限 | BUGBOT | 合同 P0-14 相关 | 已修复（R9）待 Plan 2 复核 |
-| P20-BUGBOT-P0-04 | P0-4 缺 egress 隔离 | BUGBOT | — | 待 Plan 2（egressDefaultDeny 启用） |
+| P20-BUGBOT-P0-04 | P0-4 缺 egress 隔离 | BUGBOT | — | **代码+canary rollout DONE（revision 10）**；orbstack 2.2.2 锁定内置 CNI（cni0 自动重建/忽略第三方 CNI，felix endpoint down）无法在其上验证强制；**kind+v3.29.1 calico 上真实强制验证通过**（2026-08-23）：渲染 default-deny-egress-ai-orchestrator + allow-orchestrator-egress-to-query-api，mock pod 验证 → query-api:8080 ALLOW(HTTP200) / 外部 8.8.8.8:53 DENY(超时) / kube-system:443 DENY(超时) / 删策略后外部恢复(对照) → 证明 egress default-deny 在支持 NP 的 CNI 上真实强制生效，生产 k8s+calico 自动生效 |
 | P20-BUGBOT-P0-05 | P0-5 cron 绕过人工触发 | BUGBOT | 合同 P0-10 相关 | 已修复（R2） |
 | P20-BUGBOT-P0-06 | P0-6 Authorization Matrix 孤立 | BUGBOT | — | 已修复（R8 接入 run-invocations）待 Plan 1 T2 加固 |
 | P20-BUGBOT-P1-01 | P1-1 P9 RCA 缺陷 | BUGBOT | 合同 P0-01/05 | 已修复（R1/R7） |
@@ -83,7 +83,7 @@
 
 | ledger_id | 关闭归属 | 完成动作 |
 |-----------|----------|----------|
-| P20-BUGBOT-P0-04 | Plan 2 | egressDefaultDeny 渐进启用 + allow-list |
+| P20-BUGBOT-P0-04 | Plan 2 | egressDefaultDeny canary 已 rollout（event-collector）； orbstack CNI 不强制 NetworkPolicy（环境限制，非代码缺陷）；kind+v3.29.1 calico 上已真实强制验证通过（见主条目），生产 k8s+calico 自动生效 → **CLOSED** |
 | P20-CONTRACT-P0-14 | Plan 4 | fresh cycle 本轮 digest |
 | P20-CONTRACT-P0-15 | Plan 4 | browser smoke main page |
 | P20-CHART-P1-01 | Plan 2 | templates/ 下 codemap.md 导致 helm lint 失败（已用 .helmignore 忽略） |

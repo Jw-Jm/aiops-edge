@@ -1,15 +1,42 @@
 {{- if .Values.networkPolicy.enabled }}
 # =============================================================================
 # NetworkPolicy（G5 安全加固）
-# 默认拒绝 observability 命名空间内所有入站流量，仅放行组件间必需链路：
+# 【入站】默认拒绝 observability 命名空间内所有入站流量，仅放行组件间必需链路：
 #   frontend→query-api；query-api→orchestrator/clickhouse/mysql/victoria-metrics/victoria-logs；
 #   ingest→clickhouse/victoria-logs；event-collector→clickhouse；
 #   ai-orchestrator→clickhouse/mysql/victoria-metrics。
 # 另含保持平台功能所必需的链路：frontend 公共入口放行、orchestrator→query-api、
 # categraf→victoria-metrics（remote write）、victoria-metrics→ingest/orchestrator/node-exporter（抓取）、
 # backup/init job→mysql/clickhouse。
+#
+# 【出站】egress 默认拒绝（P0-P13 审计 P0-4 扩展），支持灰度发布：
+#   - networkPolicy.egressDefaultDeny=true：全局 default-deny-egress + 各组件出站白名单
+#     （allow-<app>-egress / allow-backup-egress / allow-dns-egress）。
+#   - networkPolicy.egressCanaryServices=["app1",...]：仅对列出的 app 渲染
+#     default-deny-egress-<app> + 对应出站白名单（单组件灰度验证，不影响其余组件）。
+#   建议灰度顺序：event-collector → categraf/ingest → 其余组件 → 全局 egressDefaultDeny=true。
+#
+#   出站依赖矩阵（端口已对照各 Service targetPort 核实）：
+#     frontend            无额外出站需求（仅 DNS）
+#     query-api           mysql:3306、clickhouse:8123、victoria-metrics:8428、
+#                         victoria-logs:9428、ai-orchestrator:8080、kube-system:443（K8s API）、DNS
+#     ingest              clickhouse:8123、victoria-metrics:8428、victoria-logs:9428、DNS；
+#                         DeepFlow ClickHouse 通常在集群外，需经
+#                         networkPolicy.ingestExternalEgress.cidrs 显式放行其 CIDR
+#     event-collector     clickhouse:8123、kube-system:443（Event watch / Lease 选主）、DNS
+#     categraf            victoria-metrics:8428（remote write）、mysql:3306（input.mysql）、DNS
+#                         （主机指标经 hostPath 本地读，无网络流量；未用 hostNetwork，策略生效）
+#     victoria-metrics    抓取 ingest:8080、ai-orchestrator:8080、query-api:8080、DNS；
+#                         node-exporter:9100（若启用；其为 hostNetwork，目标为节点 IP，
+#                         podSelector 出站匹配可能不生效，必要时按节点网段追加 ipBlock）
+#     ai-orchestrator     query-api:8080、DNS。注意：外部 LLM API 出站默认【不放行】——
+#                         收紧 orchestrator 出站前必须显式放行其 LLM endpoint，否则调用被拒
+#     backup/init Jobs    mysql:3306（mysqldump）、clickhouse:9000（clickhouse-client 原生端口）、DNS
+#     mysql/clickhouse/victoria-logs：无额外出站需求（全局 deny 下由 allow-dns-egress 兜底 DNS）
+#
 # 依赖 CNI 支持 NetworkPolicy；不支持的 CNI 下为 no-op。
-# 标签约定：本 chart 各组件统一使用 `app: <组件名>`（见各 deployment/statefulset）。
+# 标签约定：本 chart 各组件统一使用 `app: <组件名>`（见各 deployment/statefulset）；
+#           例外：categraf/node-exporter/ipmi-exporter 使用 `app.kubernetes.io/name`。
 # =============================================================================
 
 # 1) 默认拒绝所有入站流量（兜底：未显式放行的 pod 一律拒绝入站）
@@ -21,10 +48,16 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: ["Ingress"]
-{{- if .Values.networkPolicy.egressDefaultDeny }}
+{{- $denyAll := .Values.networkPolicy.egressDefaultDeny }}
+{{- $canary := .Values.networkPolicy.egressCanaryServices | default (list) }}
+{{- $extCidrs := .Values.networkPolicy.ingestExternalEgress.cidrs | default (list) }}
+{{- $extPorts := .Values.networkPolicy.ingestExternalEgress.ports | default (list 8123 443) }}
+{{- $dnsTo := list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) "podSelector" (dict "matchLabels" (dict "k8s-app" "kube-dns"))) }}
+{{- $dnsPorts := list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53) }}
+{{- if $denyAll }}
 ---
-# 1b) 默认拒绝所有出站流量（P0-P13 审计 P0-4：补 egress default-deny）。
-# 各组件出站白名单见下方 egress 规则；未显式放行的出站一律拒绝（fail-closed）。
+# 1b) 默认拒绝所有出站流量（P0-P13 审计 P0-4：全局 egress default-deny）。
+# 各组件出站白名单见下方 allow-*-egress 规则；未显式放行的出站一律拒绝（fail-closed）。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -33,8 +66,31 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: ["Egress"]
+{{- else if $canary }}
+{{- range $app := $canary }}
 ---
-# 1c) orchestrator 出站白名单：仅访问 query-api（P0-P13 审计：orchestrator 原则上只经 query-api 访问数据）。
+# 1b-canary) 灰度：仅对 {{ $app }} 施加 egress default-deny（其余组件出站不受影响）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress-{{ $app }}
+  namespace: {{ $.Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+{{- if eq $app "categraf" }}
+      app.kubernetes.io/name: categraf
+{{- else }}
+      app: {{ $app }}
+{{- end }}
+  policyTypes: ["Egress"]
+{{- end }}
+{{- end }}
+{{- if or $denyAll (has "ai-orchestrator" $canary) }}
+---
+# 1c) orchestrator 出站白名单：仅访问 query-api + DNS。
+#     （P0-P13 审计：orchestrator 原则上只经 query-api 访问数据。
+#       外部 LLM API 出站默认不放行；收紧前须显式评估并放行其 LLM endpoint。）
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -53,6 +109,306 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if or $denyAll (has "query-api" $canary) }}
+---
+# 1d) query-api 出站白名单：mysql/clickhouse/victoria-metrics/victoria-logs/ai-orchestrator +
+#     kube-system:443（K8s API，in-cluster 访问）+ DNS。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-api-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: query-api
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:
+        - podSelector:
+            matchLabels:
+              app: clickhouse
+      ports:
+        - protocol: TCP
+          port: 8123
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+      ports:
+        - protocol: TCP
+          port: 8428
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-logs
+      ports:
+        - protocol: TCP
+          port: 9428
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ai-orchestrator
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if or $denyAll (has "ingest" $canary) }}
+---
+# 1e) ingest 出站白名单：clickhouse/victoria-metrics/victoria-logs + DNS。
+#     DeepFlow ClickHouse 通常在集群外：需通过 networkPolicy.ingestExternalEgress.cidrs
+#     显式放行其 CIDR，否则 DEEPFLOW_CH_HOST 同步将被 egress 策略拒绝。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingest-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ingest
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: clickhouse
+      ports:
+        - protocol: TCP
+          port: 8123
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+      ports:
+        - protocol: TCP
+          port: 8428
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-logs
+      ports:
+        - protocol: TCP
+          port: 9428
+{{- if $extCidrs }}
+    # 外部 DeepFlow ClickHouse（集群外）显式放行（ipBlock）
+    - to:
+{{- range $cidr := $extCidrs }}
+        - ipBlock:
+            cidr: {{ $cidr }}
+{{- end }}
+      ports:
+{{- range $p := $extPorts }}
+        - protocol: TCP
+          port: {{ $p }}
+{{- end }}
+{{- end }}
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if or $denyAll (has "event-collector" $canary) }}
+---
+# 1f) event-collector 出站白名单：clickhouse:8123（事件落库）+
+#     kube-system:443（K8s API：Event watch / Lease leader election）+ DNS。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-event-collector-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: event-collector
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: clickhouse
+      ports:
+        - protocol: TCP
+          port: 8123
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if or $denyAll (has "categraf" $canary) }}
+---
+# 1g) categraf 出站白名单：victoria-metrics:8428（remote write）+
+#     mysql:3306（input.mysql 插件采集）+ DNS。
+#     说明：categraf 未使用 hostNetwork（主机指标经 hostPath 本地读，无网络流量），策略生效；
+#           标签为 app.kubernetes.io/name（chart 标签约定的例外组件）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-categraf-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: categraf
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+      ports:
+        - protocol: TCP
+          port: 8428
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if or $denyAll (has "victoria-metrics" $canary) }}
+---
+# 1h) victoria-metrics 出站白名单：抓取 ingest / ai-orchestrator / query-api 的 /metrics + DNS。
+#     node-exporter（若启用）为 hostNetwork:true，目标为节点 IP 而非 pod IP，
+#     podSelector 出站匹配可能不生效；如抓取被拦截需按节点网段追加 ipBlock 放行。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-victoria-metrics-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: victoria-metrics
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ingest
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ai-orchestrator
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app: query-api
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- if .Values.nodeExporter.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: node-exporter
+      ports:
+        - protocol: TCP
+          port: 9100
+{{- end }}
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if or $denyAll (has "mysql-backup" $canary) (has "clickhouse-backup" $canary) (has "mysql-init" $canary) (has "clickhouse-init" $canary) }}
+---
+# 1i) 备份/初始化 Job 出站白名单：mysql:3306（mysqldump）+
+#     clickhouse:9000（clickhouse-client 原生端口）+ DNS。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backup-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - mysql-backup
+          - mysql-init
+          - clickhouse-backup
+          - clickhouse-init
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:
+        - podSelector:
+            matchLabels:
+              app: clickhouse
+      ports:
+        - protocol: TCP
+          port: 9000
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if $denyAll }}
+---
+# 1j) 全局 DNS 放行（kube-dns）：未被单独白名单覆盖的组件（frontend/mysql/clickhouse/
+#     victoria-logs 等）在全局 egress default-deny 下仍需解析 Service 域名。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
 {{- end }}
 ---
 # 2) frontend 为公共入口（NodePort/Ingress），放行任意来源访问

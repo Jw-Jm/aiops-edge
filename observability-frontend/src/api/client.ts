@@ -113,6 +113,20 @@ export const getRun = (runId: string) => api.get<{ run: RunSummary }>(`/ai/runs/
 export const createRun = (data: Record<string, unknown>) =>
   api.post<{ run: RunSummary }>('/ai/runs', data)
 
+// ===== Evidence Detail（tenant+cluster+run 三元授权，只读）=====
+export interface RunEvidence {
+  id: string
+  type: string
+  source: string
+  reliability: number | string
+  fact: string
+  [k: string]: unknown
+}
+export const listRunEvidences = (runId: string, params: { tenant_id: string; cluster_id: string }) =>
+  api.get<{ run_id: string; evidences: RunEvidence[]; count: number }>(`/ai/runs/${encodeURIComponent(runId)}/evidences`, { params })
+export const getRunEvidence = (runId: string, evidenceId: string, params: { tenant_id: string; cluster_id: string }) =>
+  api.get<{ evidence: RunEvidence }>(`/ai/runs/${encodeURIComponent(runId)}/evidences/${encodeURIComponent(evidenceId)}`, { params })
+
 // ===== Chat Sessions =====
 export const getSession = (sid: string) => api.get(`/ai/session/${sid}`)
 

@@ -52,26 +52,16 @@ _manual_boundary = _ManualBoundary()
 
 # P10/P12 接线：RunStateStore 单例（In-memory MVP；真实持久化属 P10 后续接 MySQL）。
 # 供 ai_runs_api 端点（/api/v1/ai/runs）与 run-invocations 创建链共用。
+# P0 强制化：生产模式禁止静默退回内存，配置缺失或 control-plane 不可达则 fail-fast。
 from run_persistence import RunStateStore as _RunStateStore
-_run_state_store = _RunStateStore()
-
-# P10 完整闭环（Bugbot P0-1）：PersistentRunRepository 接入生产——配置了 query-api
-# （QUERY_API_URL + TRUSTED_CONTEXT_PRIVATE_KEY + INTERNAL_TOKEN）时，Run 迁移走远端
-# 提交优先（query-api control-plane 为提交权威，内存仅缓存，fail-closed 无 local-first
-# 双写）；未配置（当前 In-memory MVP 环境）则退化为纯内存 store（保留既有行为）。
-# 生产接线属后续真实环境 Integration Gate；此处已把 repository 作为生产后端接入。
+_memory_run_state_store = _RunStateStore()
+from run_store_factory import build_run_state_store as _build_run_state_store, resolve_deployment_mode as _resolve_deployment_mode, PersistenceConfigError as _PersistenceConfigError
+_DEPLOYMENT_MODE = _resolve_deployment_mode()
 try:
-    from control_plane_client import ControlPlaneClient as _ControlPlaneClient
-    from persistent_run_repository import PersistentRunRepository as _PersistentRunRepository
-    from persistent_run_state_store import PersistentRunStateStore as _PersistentRunStateStore
-    from run_cache import RunCache as _RunCache
-    if os.environ.get("QUERY_API_URL"):
-        _run_cache = _RunCache()
-        _run_repository = _PersistentRunRepository(
-            client=_ControlPlaneClient(), cache=_run_cache)
-        _run_state_store = _PersistentRunStateStore(repository=_run_repository, fallback=_run_state_store)
-except Exception:  # noqa: BLE001 — 配置不完整则保持 In-memory store（fail-closed 到纯内存）
-    pass
+    _run_state_store, _RUN_PERSISTENCE_BACKEND = _build_run_state_store(_memory_run_state_store)
+except (_PersistenceConfigError, ConnectionError, OSError) as _e:
+    # 生产模式配置缺失或 control-plane 不可达：fail-fast，禁止可服务的内存降级
+    raise SystemExit(f"[FATAL] 生产模式 Run 持久化强制校验失败: {_e}") from _e
 
 # P13 真实接线：AuthorizationMatrix 单例（P0-6，服务端授权）。服务账号角色从
 # SERVICE_ACCOUNT_ROLES（JSON {principal: role}）加载；生产应从 query-api 权威角色 SoT。
@@ -289,6 +279,9 @@ app.include_router(kg_router)
 # P12：Run API 端点（/api/v1/ai/runs，前端调查中心数据源）
 from ai_runs_api import router as _ai_runs_router
 app.include_router(_ai_runs_router)
+# P11 只读接线：结构化动作提案/确认（执行冻结）
+import ops_action_api as _ops_action_api
+app.include_router(_ops_action_api.router)
 
 
 async def _scheduled_anomaly_scan():
@@ -2127,11 +2120,51 @@ async def rca_deep_analysis(req: TaskCreateRequest, request: Request):
     if not req.service:
         raise HTTPException(400, "service is required")
     request_context = _request_context_from_request(request)
-    return full_rca_analysis(
+    result = full_rca_analysis(
         req.service,
         cluster_id=str(request_context.cluster_id),
         request_context=request_context,
     )
+    # P11 只读提案（best-effort，不影响 RCA 主流程）
+    try:
+        inner = result.get("result") if isinstance(result, dict) else {}
+        if not isinstance(inner, dict):
+            inner = {}
+        _svc = inner.get("root_cause_service") or req.service
+        if _svc:
+            _ops_action_api.get_hub().propose(
+                run_id=str(inner.get("run_id") or inner.get("task_id") or f"rca-{req.service}"),
+                tenant_id=str(getattr(request_context, "tenant_id", "") or ""),
+                cluster_id=str(getattr(request_context, "cluster_id", "") or ""),
+                resource_id=str(_svc),
+                namespace="default",
+                action_type="runbook",
+                parameters={
+                    "recommendation": str(inner.get("recommendation", "") or inner.get("root_cause", ""))[:2000],
+                    "evidence_chain": (inner.get("evidence_chain", []) or [])[:20],
+                },
+                expected_effect="沉淀 RCA 处置手册（只读提案，执行冻结）",
+                root_cause_confidence=float(inner.get("confidence", 0) or 0),
+                rca_status="completed" if inner.get("confidence") else "failed",
+                blast_radius="single_resource",
+                environment=os.getenv("AIOPS_DEPLOYMENT_MODE", "development"),
+            )
+    except Exception:
+        pass  # 提案失败不影响 RCA 主流程
+    # Evidence Registry 登记（best-effort，只读；失败绝不影响 RCA 主流程）
+    try:
+        from evidence_registry import get_registry as _ev_get_registry
+        _ev_list = [e for e in (inner.get("evidence_chain") or [])[:20] if isinstance(e, dict)]
+        if _ev_list:
+            _ev_get_registry().register_run(
+                str(inner.get("run_id") or inner.get("task_id") or f"rca-{req.service}"),
+                str(getattr(request_context, "tenant_id", "") or ""),
+                str(getattr(request_context, "cluster_id", "") or ""),
+                _ev_list,
+            )
+    except Exception:
+        pass  # 登记失败不影响 RCA 主流程
+    return result
 
 
 @app.post("/api/v1/ops/rca/alert")
@@ -2175,6 +2208,47 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
         "count": req.count,
         "last_timestamp": req.last_timestamp,
     }
+    # P11 只读提案（best-effort，不影响 RCA 主流程）
+    try:
+        inner = result.get("result") if isinstance(result, dict) else {}
+        if not isinstance(inner, dict):
+            inner = {}
+        _svc = inner.get("root_cause_service") or req.service or req.rule_id or "kubernetes"
+        if _svc:
+            _ns = str(req.namespace or inner.get("namespace") or "default")
+            _ops_action_api.get_hub().propose(
+                run_id=str(inner.get("run_id") or inner.get("task_id") or f"rca-{req.service or req.rule_id or 'alert'}"),
+                tenant_id=str(getattr(request_context, "tenant_id", "") or ""),
+                cluster_id=str(getattr(request_context, "cluster_id", "") or ""),
+                resource_id=str(_svc),
+                namespace=_ns,
+                action_type="runbook",
+                parameters={
+                    "recommendation": str(inner.get("recommendation", "") or inner.get("root_cause", ""))[:2000],
+                    "evidence_chain": (inner.get("evidence_chain", []) or [])[:20],
+                },
+                expected_effect="沉淀 RCA 处置手册（只读提案，执行冻结）",
+                root_cause_confidence=float(inner.get("confidence", 0) or 0),
+                rca_status="completed" if inner.get("confidence") else "failed",
+                blast_radius="single_resource",
+                environment=os.getenv("AIOPS_DEPLOYMENT_MODE", "development"),
+            )
+    except Exception:
+        pass  # 提案失败不影响 RCA 主流程
+    # Evidence Registry 登记（best-effort，只读；失败绝不影响 RCA 主流程）
+    try:
+        from evidence_registry import get_registry as _ev_get_registry
+        _ev_list = [e for e in (inner.get("evidence_chain") or [])[:20] if isinstance(e, dict)]
+        if _ev_list:
+            _ev_get_registry().register_run(
+                str(inner.get("run_id") or inner.get("task_id")
+                    or f"rca-{req.service or req.rule_id or 'alert'}"),
+                str(getattr(request_context, "tenant_id", "") or ""),
+                str(getattr(request_context, "cluster_id", "") or ""),
+                _ev_list,
+            )
+    except Exception:
+        pass  # 登记失败不影响 RCA 主流程
     return result
 
 
@@ -3356,7 +3430,16 @@ async def export_chat(sid: str):
 @app.get("/api/v1/health")
 async def health():
     return {"status": "ok", "version": "5.0", "langgraph": True, "sse": True,
-            "fastapi": True, "detector": True, "webhook": True}
+            "fastapi": True, "detector": True, "webhook": True,
+            "run_persistence": _RUN_PERSISTENCE_BACKEND, "deployment_mode": _DEPLOYMENT_MODE}
+
+
+@app.get("/readyz")
+async def readyz():
+    from run_store_factory import is_ready as _is_ready
+    if not _is_ready(_DEPLOYMENT_MODE, _RUN_PERSISTENCE_BACKEND):
+        return JSONResponse(status_code=503, content={"ready": False, "reason": "run persistence degraded to memory in production"})
+    return {"ready": True, "run_persistence": _RUN_PERSISTENCE_BACKEND, "deployment_mode": _DEPLOYMENT_MODE}
 
 
 @app.get("/metrics")

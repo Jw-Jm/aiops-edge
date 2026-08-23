@@ -77,6 +77,63 @@ def get_run(run_id: str, store: RunStateStore = Depends(_get_store)) -> dict[str
     return {"run": _run_detail(run)}
 
 
+def _get_registry():
+    from evidence_registry import get_registry
+    return get_registry()
+
+
+def _load_run_or_404(run_id: str, store: RunStateStore) -> contracts.Run:
+    """按 run_id 取 Run；非法 UUID 或不存在 → 404（与 GET /runs/{run_id} 一致）。"""
+    try:
+        return store.get(UUID(run_id))
+    except (ValueError, RunPersistenceError):
+        raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
+
+
+def _authorize_run_scope(run: contracts.Run, tenant_id: Optional[str], cluster_id: Optional[str]) -> None:
+    """tenant+cluster 双参数必须与 Run scope 完全一致；缺失/不匹配均 fail-closed 403。"""
+    if not tenant_id or not cluster_id:
+        raise HTTPException(status_code=403, detail="SCOPE_MISMATCH")
+    if str(run.tenant_id) != tenant_id or str(run.primary_cluster_id or "") != cluster_id:
+        raise HTTPException(status_code=403, detail="SCOPE_MISMATCH")
+
+
+@router.get("/runs/{run_id}/evidences")
+def list_run_evidences(
+    run_id: str,
+    tenant_id: Optional[str] = None,
+    cluster_id: Optional[str] = None,
+    store: RunStateStore = Depends(_get_store),
+) -> dict[str, Any]:
+    """Evidence Detail API：列出 Run 的证据链（tenant+cluster+run 三元授权，只读）。"""
+    run = _load_run_or_404(run_id, store)
+    _authorize_run_scope(run, tenant_id, cluster_id)
+    evidences = _get_registry().list_evidences(str(run.run_id))
+    return {"run_id": str(run.run_id), "evidences": evidences, "count": len(evidences)}
+
+
+@router.get("/runs/{run_id}/evidences/{evidence_id}")
+def get_run_evidence(
+    run_id: str,
+    evidence_id: str,
+    tenant_id: Optional[str] = None,
+    cluster_id: Optional[str] = None,
+    store: RunStateStore = Depends(_get_store),
+) -> dict[str, Any]:
+    """Evidence Detail API：单条证据详情（三元授权；404 未知 / 403 scope 不匹配）。"""
+    run = _load_run_or_404(run_id, store)
+    _authorize_run_scope(run, tenant_id, cluster_id)
+    try:
+        evidence = _get_registry().authorize_and_get(
+            str(run.run_id), evidence_id, tenant_id or "", cluster_id or "",
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="EVIDENCE_NOT_FOUND")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="SCOPE_MISMATCH")
+    return {"evidence": evidence}
+
+
 @router.post("/runs")
 def create_run() -> dict[str, Any]:
     """P10 完整闭环：业务 Run 创建已迁移到 query-api 公共 POST /api/v1/ai/runs。

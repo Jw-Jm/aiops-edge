@@ -38,6 +38,15 @@ backup:
 aiOrchestrator:
   llmMock: "false"
 
+# ── Egress 默认拒绝灰度（阶段一）────────────────────────────────────────
+# 阶段一：仅对 event-collector 施加 egress default-deny + 出站白名单
+#         （clickhouse:8123 / kube-system:443 / DNS），其余组件出站暂不限制。
+# 推进灰度：向列表追加组件（建议顺序 event-collector → categraf/ingest → 其余）；
+# 最终收紧：再叠加 networkPolicy.egressDefaultDeny=true 全局生效；
+# 回滚：清空列表（[]）即解除对应组件的 egress 限制。
+networkPolicy:
+  egressCanaryServices: ["event-collector"]
+
 # 密钥：正式环境必须显式注入强随机值（勿用 CHANGE_ME / 弱默认值）。
 # 生成建议：
 #   jwtSecret:        openssl rand -hex 32

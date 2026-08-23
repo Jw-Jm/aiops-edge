@@ -29,6 +29,18 @@ networkPolicy:
   # allowOrchestratorDbAccess：是否放行 orchestrator 直连 clickhouse/mysql/victoria-metrics。
   #   默认 false（fail-closed，orchestrator 原则上只经 query-api 访问数据）；过渡期可显式开启。
   allowOrchestratorDbAccess: false
+  # egress 灰度开关：列出的 app 单独施加 egress default-deny + 出站白名单
+  #   （渲染 default-deny-egress-<app> 与对应 allow-<app>-egress），配合全局 egressDefaultDeny：
+  #     - egressDefaultDeny=false 且本列表非空：仅列表内组件被限制（灰度验证，其余组件不受影响）；
+  #     - egressDefaultDeny=true：全局默认拒绝，本列表仅作记录。
+  #   建议灰度顺序：["event-collector"] → ["event-collector","categraf","ingest"] → 其余组件 → 全局 true。
+  #   回滚：清空列表（[]）即解除对应组件的 egress 限制。
+  egressCanaryServices: []
+  # ingest 外部 DeepFlow ClickHouse 放行：DeepFlow CH 通常在集群外，
+  #   需显式放行其 CIDR（仅在 ingest 被 egress 限制——灰度或全局——且 cidrs 非空时渲染 ipBlock 白名单）。
+  ingestExternalEgress:
+    cidrs: []
+    ports: [8123, 443]
 
 # ---------------------------------------------------------------------------
 # 密钥（占位，实际用 values 文件 / --set 注入，不提交真实值，不入 git）

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Badge, Button, Card, Col, Collapse, Descriptions, Row, Space, Steps, Tag, Typography } from 'antd'
-import { useParams } from 'react-router-dom'
-import { getRun } from '../../api/client'
+import { useNavigate, useParams } from 'react-router-dom'
+import { getRun, listRunEvidences } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
 import { ToolResultStatus } from '../../components/ToolResultStatus'
 
@@ -16,7 +16,7 @@ interface InvestigationDetail {
   scope: { tenantId: string; clusterId: string; resourceId: string; time: string }
   intent: string
   plan: { step: string; tool: string; status: string }[]
-  evidence: { id: string; type: string; source: string; reliability: number; fact: string }[]
+  evidence: { id: string; type: string; source: string; reliability: number | string; fact: string }[]
   hypothesis: { id: string; claim: string; support: number; contradictions: string[]; missing: string[] }[]
   rootCause: string
   confidence: number
@@ -37,6 +37,7 @@ const EMPTY_DETAIL: InvestigationDetail = {
 
 const InvestigationDetailView: React.FC = () => {
   const { runId } = useParams<{ runId: string }>()
+  const navigate = useNavigate()
   const [detail, setDetail] = useState<InvestigationDetail>(EMPTY_DETAIL)
 
   useEffect(() => {
@@ -44,9 +45,29 @@ const InvestigationDetailView: React.FC = () => {
     if (!runId) return
     let cancelled = false
     getRun(runId)
-      .then((resp) => {
+      .then(async (resp) => {
         const r = resp.data?.run
         if (!r || cancelled) return
+        // Evidence Detail API（tenant+cluster+run 三元授权）：失败渲染为空，不伪造
+        let evidence: InvestigationDetail['evidence'] = []
+        try {
+          const evResp = await listRunEvidences(runId, {
+            tenant_id: r.tenant_id ?? '',
+            cluster_id: r.primary_cluster_id ?? '',
+          })
+          if (!cancelled && Array.isArray(evResp.data?.evidences)) {
+            // 后端条目为 RCA evidence_chain 原始 dict + evidence_id：
+            // {layer, finding, ...} → 前端 {id, type, source, reliability, fact}
+            evidence = evResp.data.evidences.map((e) => ({
+              id: String(e.evidence_id ?? e.id ?? ''),
+              type: String(e.type ?? e.layer ?? 'unknown'),
+              source: String(e.source ?? 'rca'),
+              reliability: (e.reliability as number | string) ?? '-',
+              fact: String(e.fact ?? e.finding ?? ''),
+            }))
+          }
+        } catch { /* 拉取失败 → 空态 */ }
+        if (cancelled) return
         setDetail({
           runId: r.run_id,
           scope: {
@@ -57,7 +78,7 @@ const InvestigationDetailView: React.FC = () => {
           },
           intent: r.intent ?? '—',
           plan: [],
-          evidence: [],
+          evidence,
           hypothesis: [],
           rootCause: r.root_cause ?? 'unknown',
           confidence: r.confidence ?? 0,
@@ -98,7 +119,9 @@ const InvestigationDetailView: React.FC = () => {
         <Col span={12}>
           <Card title="Evidence" size="small">
             {d.evidence.map((e) => (
-              <div key={e.id} style={{ marginBottom: 8 }}>
+              <div key={e.id} style={{ marginBottom: 8, cursor: 'pointer' }}
+                onClick={() => navigate(`/investigation/${runId ?? d.runId}/evidence/${encodeURIComponent(e.id)}`)}
+                title="查看证据详情">
                 <Space>
                   <Tag>{e.type}</Tag>
                   <Text>{e.source}</Text>

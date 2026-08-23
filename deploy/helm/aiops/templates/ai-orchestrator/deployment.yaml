@@ -43,6 +43,8 @@ spec:
             - name: QUERY_TO_ORCHESTRATOR_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
+            - name: AIOPS_DEPLOYMENT_MODE
+              value: "production"
             - name: CLICKHOUSE_HOST
               value: {{ .Values.aiOrchestrator.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
@@ -84,7 +86,7 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 12
           readinessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /readyz, port: 8080 }
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 3
