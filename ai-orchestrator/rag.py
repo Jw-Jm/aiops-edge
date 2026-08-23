@@ -94,7 +94,13 @@ class RAGStore:
         if persist_dir is None:
             data_dir = os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
             persist_dir = os.path.join(data_dir, "ops-cases")
-        os.makedirs(persist_dir, exist_ok=True)
+        # 目录不可写（本机/无 PVC 环境）时降级为不可用模式，绝不阻断 import orchestrator
+        try:
+            os.makedirs(persist_dir, exist_ok=True)
+        except OSError as e:
+            print(f"[RAG] 持久化目录不可写，降级为无 RAG 模式: {persist_dir} ({e})")
+            persist_dir = None
+        self._persist_dir = persist_dir
         self._ready = False
         self._init_error = None
         self._init_lock = threading.Lock()
@@ -107,6 +113,10 @@ class RAGStore:
         if self._ready:
             return True
         if self._init_error:
+            return False
+        # 持久化目录不可写（本机/无 PVC 环境）：直接降级，不尝试 ChromaDB
+        if not self._persist_dir:
+            self._init_error = "persist_dir unavailable"
             return False
         # 在独立线程中初始化并设置超时，避免 HuggingFace/ChromaDB 联网卡死
         result = {}

@@ -1623,9 +1623,16 @@ def build_graph(checkpointer=None, mode: str = "full"):
 class BrainOrchestrator:
     def __init__(self, db_path=None):
         import os as _os
+        import tempfile
         if db_path is None:
-            db_path = _os.path.join(_os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops"), "ai-sessions.db")
+            data_dir = _os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
+            db_path = _os.path.join(data_dir, "ai-sessions.db")
         self.llm_config = None
+        # 持久化目录不可写（本机/无 PVC 环境）时降级到临时目录，绝不阻断 import orchestrator
+        try:
+            _os.makedirs(_os.path.dirname(db_path), exist_ok=True)
+        except OSError:
+            db_path = _os.path.join(tempfile.gettempdir(), "ai-sessions.db")
         self._db_path = db_path
         import sqlite3
         _os.makedirs(_os.path.dirname(db_path), exist_ok=True)
