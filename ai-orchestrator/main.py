@@ -475,7 +475,8 @@ async def rate_limit_middleware(request: Request, call_next):
 # ═══════════════════════════════════════════════════════════════
 
 # 白名单：健康检查、Prometheus 指标、ipmi-exporter 直接上报（该采集器不经代理、无法携带 token）
-_AUTH_ALLOWLIST = ("/health", "/api/v1/health", "/metrics", "/api/v1/ipmi/ingest")
+# /readyz 与 /health 同为探活端点，readiness probe 无法携带 INTERNAL_TOKEN，须放行否则 pod 永不就绪。
+_AUTH_ALLOWLIST = ("/health", "/api/v1/health", "/metrics", "/api/v1/ipmi/ingest", "/readyz")
 
 
 @app.middleware("http")
