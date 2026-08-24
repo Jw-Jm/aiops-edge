@@ -4,5 +4,7 @@ __pycache__
 *.pyc
 .venv
 venv
+.venv-312
+.venv312
 node_modules
 *.log
