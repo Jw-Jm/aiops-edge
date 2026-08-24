@@ -46,6 +46,9 @@ aiOrchestrator:
 # 回滚：清空列表（[]）即解除对应组件的 egress 限制。
 networkPolicy:
   egressCanaryServices: ["event-collector"]
+  # 28.2 #18：egress default-deny 最终目标——灰度（event-collector → categraf/ingest → 其余）
+  # 全部通过后，置 egressDefaultDeny=true 全局默认拒绝出站（仅显式白名单）。当前暂缓（集群不稳定）。
+  # egressDefaultDeny: true
 
 # 密钥：正式环境必须显式注入强随机值（勿用 CHANGE_ME / 弱默认值）。
 # 生成建议：

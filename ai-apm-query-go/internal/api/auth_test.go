@@ -108,6 +108,10 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		"/api/v1/settings/llm/providers/1",
 		"/api/v1/settings/llm/providers/1/enable",
 		"/api/v1/settings/llm/history/1/rollback",
+		// A0-04（11.11.7）：/api/v1/ai/runs/{runID} 单段详情——GetRunPublic 有 tenant/run ownership 校验
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		// A0-04（11.11.4）：/api/v1/metrics/query——typed RED metrics（canonical tenant + concrete cluster）
+		"/api/v1/metrics/query",
 	}
 	for _, p := range allowed {
 		if !isCanonicalProtectedRoute(p) {
@@ -121,6 +125,9 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		"/api/v1/dashboard/panels",
 		"/api/v1/capacity/instances/create",
 		"/api/v1/unknown",
+		// A0-04：多段子路径（非详情/events/cancel）不放行，避免 ProxyAI legacy 面被整体放开
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/actions",
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/something",
 	}
 	for _, p := range denied {
 		if isCanonicalProtectedRoute(p) {

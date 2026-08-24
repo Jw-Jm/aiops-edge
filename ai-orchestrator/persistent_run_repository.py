@@ -64,7 +64,11 @@ class PersistentRunRepository:
         current = self._current_status(run_id)
         if not RunStateMachine.can_cancel(current):
             raise RunPersistenceError("ILLEGAL_RUN_TRANSITION", f"Run {run_id} 当前状态不可 cancel")
-        resp = self._client.cancel(run_id=str(run_id), tenant_id=str(tenant_id))
+        # A0-01（F-02）：把 expected_version + command_id 端到端传入 query-api（CAS + 幂等）。
+        resp = self._client.cancel(
+            run_id=str(run_id), tenant_id=str(tenant_id),
+            expected_version=expected_version, command_id=command_id,
+        )
         committed = self._extract_run(resp)
         self._cache.put_with_check(committed, expected_version=expected_version)
         return committed

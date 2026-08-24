@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 var (
@@ -18,17 +20,59 @@ var (
 	ruleStateMu     sync.Mutex
 )
 
+// alertLeaderHolder 是本进程的 alert-eval Leader 身份（holder_id/epoch/token）。
+// C-03：多 alert-eval pod 只有一个 Leader 评估；非 Leader 进程等待但不评估（避免重复事件）。
+var (
+	alertLeaderHolderID = "query-api-" + randomSuffix()
+	alertLeaderEpoch    int64
+	alertLeaderToken    string
+)
+
 func (h *Handler) StartAlertEvaluation() {
 	go func() {
-		// Run once immediately on startup
-		h.evaluateAlerts()
+		// C-03：先获取/续约 Leader 租约（MySQL alert_eval_leader），再决定是否评估。
+		// Leader 身份跨进程持久；每次评估前 Renew + IsLeader，过期则让出。
+		acquire := func() bool {
+			if h.alertLeaderDAO == nil {
+				return true // DAO 不可用（本机/sqlmock）→ 单进程评估（兼容）
+			}
+			epoch, token, isLeader, err := h.alertLeaderDAO.Acquire(alertLeaderHolderID)
+			if err != nil {
+				log.Printf("alert leader acquire: %v", err)
+				return false
+			}
+			alertLeaderEpoch, alertLeaderToken = epoch, token
+			return isLeader
+		}
+		if acquire() {
+			h.evaluateAlerts()
+		} else {
+			log.Printf("alert-eval: not leader, waiting for leader lease")
+		}
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
+			// 续约 + 确认 Leader；非 Leader 不评估（避免多 pod 重复告警）。
+			if h.alertLeaderDAO != nil && alertLeaderEpoch > 0 && alertLeaderToken != "" {
+				if _, err := h.alertLeaderDAO.Renew(alertLeaderHolderID, alertLeaderEpoch, alertLeaderToken); err != nil {
+					log.Printf("alert leader renew failed: %v; re-acquiring", err)
+					if !acquire() {
+						continue
+					}
+				}
+			} else if !acquire() {
+				continue
+			}
 			h.evaluateAlerts()
 		}
 	}()
-	log.Println("Alert evaluation loop started (every 60s)")
+	log.Println("Alert evaluation loop started (every 60s, single-leader via MySQL lease)")
+}
+
+func randomSuffix() string {
+	// 简短随机后缀区分多 pod holder_id（不含密码/敏感信息）。
+	// 用时间戳 + 进程内计数器近似；真实场景由 Deployment pod name 覆盖。
+	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 // isK8sRule 判断规则是否属于 K8s 类（评估时实时打 K8s API）。
@@ -177,17 +221,29 @@ func (h *Handler) evaluateAlerts() {
 			now := time.Now().UTC()
 			nowStr := now.Format(time.RFC3339)
 
-			// cooldown 触发冷却：冷却期内不重复告警（即使窗口外）
+			// cooldown 触发冷却：冷却期内不重复告警（即使窗口外）。
+			// C-03：cooldown/dampening 持久化到 MySQL（alert_rule_runtime_state），
+			// 进程内 map 只能当缓存——多 pod / 重启后不丢失冷却期与 streak。
 			ruleStateMu.Lock()
-			if t, ok := lastRuleTrigger[rule.ID]; ok && inCooldown(rule, t, now) {
+			lastT, hasLast := lastRuleTrigger[rule.ID]
+			if h.alertRuleStateDAO != nil {
+				if st, err := h.alertRuleStateDAO.Get(rule.ID); err == nil && st != nil && st.LastTriggerAt != nil {
+					lastT = *st.LastTriggerAt
+					hasLast = true
+				}
+			}
+			if hasLast && inCooldown(rule, lastT, now) {
 				ruleStateMu.Unlock()
 				continue
 			}
 
 			// dampening 连续确认：连续 breach 次数未达阈值则暂不告警
-			ruleStreak[rule.ID]++
-			streak := ruleStreak[rule.ID]
+			streak := ruleStreak[rule.ID] + 1
+			ruleStreak[rule.ID] = streak
 			ruleStateMu.Unlock()
+			if h.alertRuleStateDAO != nil {
+				_ = h.alertRuleStateDAO.Upsert(store.AlertRuleRuntimeState{RuleID: rule.ID, BreachStreak: streak})
+			}
 			if !shouldAlertAfterDampening(rule, streak) {
 				log.Printf("ALERT_DAMPENED: %s | %s (streak=%d/%d)", rule.Service, rule.Name, streak, rule.Dampening)
 				continue
@@ -195,6 +251,12 @@ func (h *Handler) evaluateAlerts() {
 			ruleStateMu.Lock()
 			lastRuleTrigger[rule.ID] = now
 			ruleStateMu.Unlock()
+			if h.alertRuleStateDAO != nil {
+				t := now
+				_ = h.alertRuleStateDAO.Upsert(store.AlertRuleRuntimeState{
+					RuleID: rule.ID, LastTriggerAt: &t, BreachStreak: streak,
+				})
+			}
 
 			alertEventsMu.Lock()
 			// 时间窗口聚合 + dedupe：窗口内已有同 (service, rule_id, signature) 事件则只更新计数/时间，不新增（降噪）
@@ -266,10 +328,13 @@ func (h *Handler) evaluateAlerts() {
 
 			saveAlertEvents()
 		} else {
-			// 未 breach：重置连续计数（dampening）
+			// 未 breach：重置连续计数（dampening）；C-03：同步重置到 MySQL。
 			ruleStateMu.Lock()
 			ruleStreak[rule.ID] = 0
 			ruleStateMu.Unlock()
+			if h.alertRuleStateDAO != nil {
+				_ = h.alertRuleStateDAO.Upsert(store.AlertRuleRuntimeState{RuleID: rule.ID, BreachStreak: 0})
+			}
 			// 修复(误报)：指标已恢复正常，但之前触发过且仍为 firing 的事件应自动标记为 resolved，
 			// 否则误报/已恢复的事件会一直停留在 firing 状态，前端持续展示"异常"。
 			// 注意：saveAlertEvents 内部会再取 alertEventsMu.RLock，因此必须先在锁内

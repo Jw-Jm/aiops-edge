@@ -303,14 +303,20 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 
 // GetInternalLLMSettings handles GET /api/v1/settings/llm/internal
 // 仅供内部服务(ai-orchestrator)使用，返回解密后的真实 API Key。
-// 通过 X-Internal-Token 鉴权。
+// F-14：认证强度升级——除 X-Internal-Token（service token）外，还必须校验 Ed25519
+// TrustedRequestContext（issuer/audience/signature）+ 固定 llm.config.read capability
+// （system principal），不再仅凭共享 token 放行。internal-only routing 保持。
 func (h *Handler) GetInternalLLMSettings(w http.ResponseWriter, r *http.Request) {
-	// 鉴权：X-Internal-Token 必须非空且匹配（INTERNAL_TOKEN 未配置时一律拒绝，
-	// 避免"空 token == 空 header"绕过）
+	// 1) service token（既有）
 	internalToken := os.Getenv("INTERNAL_TOKEN")
 	got := r.Header.Get("X-Internal-Token")
 	if internalToken == "" || got == "" || got != internalToken {
 		respondJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "unauthorized"})
+		return
+	}
+	// 2) F-14：TrustedRequestContext V2 + 固定 llm.config.read capability（system principal）。
+	if _, err := authorizeInternalControlPlane(r, "llm.config.read", "ai-orchestrator"); err != nil {
+		respondJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "invalid_trusted_context"})
 		return
 	}
 	settingsMu.RLock()

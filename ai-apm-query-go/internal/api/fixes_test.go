@@ -285,41 +285,35 @@ func TestQueryLogsKeywordAlias(t *testing.T) {
 // ===== P2-6: /metrics/query PromQL 透传（VM instant query）=====
 
 func TestQueryMetricsPromQLPassthrough(t *testing.T) {
+	// A0-04（11.11.4）：任意 PromQL 直通已关闭（无 tenant/cluster matcher，跨租户泄漏风险）。
+	// query 有、service 无 → 生产 fail-closed 400，不代理到 VM。
 	vmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/query" {
-			t.Errorf("expected VM /api/v1/query, got %s", r.URL.Path)
-		}
-		if got := r.URL.Query().Get("query"); got != `rate(foo[5m])` {
-			t.Errorf("expected promQL passthrough, got %q", got)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+		t.Errorf("passthrough disabled: should never reach VM, got %s", r.URL.Path)
 	}))
 	defer vmSrv.Close()
 
 	h := &Handler{client: &http.Client{}}
 	h.vmURL = vmSrv.URL
 
-	// query 有、service 无 → 代理 VM
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?query=rate(foo%5B5m%5D)", nil)
 	h.QueryMetrics(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (passthrough disabled), got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// query 有、service 无、VM 未配置 → 503
+	// query 有、service 无、VM 未配置 → 仍 400（不因 VM 状态改变行为）
 	h.vmURL = ""
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?query=rate(foo%5B5m%5D)", nil)
 	h.QueryMetrics(rec2, req2)
-	if rec2.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when VM not configured, got %d", rec2.Code)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (passthrough disabled regardless of VM), got %d", rec2.Code)
 	}
 }
 
 func TestQueryMetricsWithServiceKeepsCHPath(t *testing.T) {
-	// service 存在时保持 CH RED 聚合行为（不代理 VM）
+	// A0-04：service 存在时走 CH RED typed 路径（不代理 VM）；需 concrete cluster + canonical tenant。
 	vmHit := false
 	vmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		vmHit = true
@@ -331,25 +325,42 @@ func TestQueryMetricsWithServiceKeepsCHPath(t *testing.T) {
 	h.vmURL = vmSrv.URL
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?service=frontend&query=rate(foo%5B5m%5D)", nil)
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/metrics/query?service=frontend&cluster_id=91771a6e-9c2d-11f1-8271-bea176fe9f9f", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{
+		TenantID: "7ed01afc-cc79-4ecd-8767-a2befa6168ad", UserID: "u", SessionID: "s",
+	})
 	h.QueryMetrics(rec, req)
-	if rec.Code == http.StatusBadGateway || rec.Code == http.StatusServiceUnavailable {
-		t.Fatalf("service present should keep CH path, got %d", rec.Code)
+	if rec.Code == http.StatusBadGateway || rec.Code == http.StatusServiceUnavailable ||
+		rec.Code == http.StatusBadRequest || rec.Code == http.StatusForbidden {
+		t.Fatalf("service+cluster present should keep CH path, got %d: %s", rec.Code, rec.Body.String())
 	}
 	if vmHit {
 		t.Fatal("service present should NOT proxy to VM")
 	}
 }
 
+func TestQueryMetricsRejectsAllCluster(t *testing.T) {
+	// A0-04（11.11.3）：cluster_id=all 不当作空过滤，metrics 必须 concrete canonical cluster。
+	h := newTestHandler(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?service=frontend&cluster_id=all", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{
+		TenantID: "7ed01afc-cc79-4ecd-8767-a2befa6168ad", UserID: "u", SessionID: "s",
+	})
+	h.QueryMetrics(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for cluster_id=all, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // ===== /metrics/query 透传加固：响应大小上限 / 限流 429 =====
 
-// TestQueryMetricsPromQLResponseTooLarge 验证 VM 响应超过 10MB 时返回 502（不占内存）。
+// TestQueryMetricsPromQLResponseTooLarge 验证任意 PromQL 直通已关闭（400 fail-closed），
+// 不再有 VM 大响应/502 路径。
 func TestQueryMetricsPromQLResponseTooLarge(t *testing.T) {
-	big := strings.Repeat("x", maxVMPayload+100)
 	vmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"success","data":`))
-		_, _ = w.Write([]byte(`"` + big + `"}`))
+		t.Errorf("passthrough disabled: should never reach VM")
 	}))
 	defer vmSrv.Close()
 
@@ -360,16 +371,16 @@ func TestQueryMetricsPromQLResponseTooLarge(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?query=rate(foo%5B5m%5D)", nil)
 	req.RemoteAddr = "203.0.113.9:1234" // 独立 IP，避免与限流测试共享计数
 	h.QueryMetrics(rec, req)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 for oversized response, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (passthrough disabled), got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-// TestQueryMetricsPromQLRateLimit 验证透传路径按 IP 限流，超限返回 429。
+// TestQueryMetricsPromQLRateLimit 验证任意 PromQL 直通已关闭——即使超限前也恒 400，
+// 不产生 VM 请求/限流路径（passthrough 在限流前 fail-closed）。
 func TestQueryMetricsPromQLRateLimit(t *testing.T) {
 	vmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+		t.Errorf("passthrough disabled: should never reach VM")
 	}))
 	defer vmSrv.Close()
 
@@ -382,12 +393,8 @@ func TestQueryMetricsPromQLRateLimit(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?query=rate(foo%5B5m%5D)", nil)
 		req.RemoteAddr = ip
 		h.QueryMetrics(rec, req)
-		if i < metricsQueryLimit {
-			if rec.Code != http.StatusOK {
-				t.Fatalf("call %d: expected 200, got %d: %s", i, rec.Code, rec.Body.String())
-			}
-		} else if rec.Code != http.StatusTooManyRequests {
-			t.Fatalf("call %d: expected 429 after limit, got %d: %s", i, rec.Code, rec.Body.String())
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("call %d: expected 400 (passthrough disabled), got %d: %s", i, rec.Code, rec.Body.String())
 		}
 	}
 }

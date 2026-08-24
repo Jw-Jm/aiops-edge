@@ -20,6 +20,7 @@ import (
 	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/pipeline"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/telemetry"
+	"github.com/observability-platform/ai-apm-ingest-go/internal/tracesink"
 )
 
 func main() {
@@ -63,17 +64,34 @@ func main() {
 		log.Fatalf("no write path active: telemetry new backend disabled; refusing to start with no data sink")
 	}
 
+	// C-01（0004_runtime_convergence / 报告 §16）：固定 ClickHouse trace_spans 为平台
+	// Trace Persistent SoT。构造 ClickHouseSpanSink（CLICKHOUSE_HTTP_URL 配置，HTTP 接口，
+	// 零新增依赖）。若配置了 CH 但写入失败 → readiness fail-closed（不允许"接收成功但静默丢 Span"）。
+	var spanSink pipeline.SpanSink
+	if chURL := os.Getenv("CLICKHOUSE_HTTP_URL"); chURL != "" {
+		// C-01（报告 §16 / 27.18）：trace_spans 为平台 Trace SoT；使用带鉴权的 sink（生产 CH 需要）。
+		spanSink = tracesink.NewClickHouseSpanSinkAuth(chURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), 10*time.Second)
+		log.Printf("ClickHouseSpanSink enabled (trace SoT): %s", chURL)
+	} else {
+		// 27.18：candidate/production profile 不允许 SpanSink=nil（fail-closed 拒绝启动）。
+		// 默认本地（TRACE_SOT_MODE=off）仅 WARN；设 TRACE_SOT_MODE=required 时 SpanSink=nil → 拒绝启动。
+		if os.Getenv("TRACE_SOT_MODE") == "required" {
+			log.Fatalf("TRACE_SOT_MODE=required but CLICKHOUSE_HTTP_URL not set: trace_spans SoT sink must be configured; refusing to start with nil span sink")
+		}
+		log.Printf("WARN: CLICKHOUSE_HTTP_URL not set; trace_spans SoT sink is nil (production/candidate must configure or set TRACE_SOT_MODE=required)")
+	}
+
 	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志，
 	// 并累加为 VM 服务 RED 指标。
 	// 多 k8s 环境支持：DEEPFLOW_CH_ENDPOINTS="name@host:port,name2@host2:port2"（name=cluster 名，RED 指标按 cluster 区分）
 	// 兼容旧配置：仅 DEEPFLOW_CH_HOST/DEEPFLOW_CH_PORT 时按单环境 cluster="default" 接入。
 	startDeepFlowSyncers := func() int {
 		n := 0
-		// V9.3 Phase 14：legacy ClickHouse sink 已删除。DeepFlowSyncer 只依赖中立 sink 接口，
-		// 此处显式传 nil（无 CH span/edge/log 落盘），核心链路 DeepFlow→VM RED 指标不受影响。
+		// C-01：DeepFlow 作为 Span 输入/补充来源，进入同一 ClickHouseSpanSink（trace SoT）。
+		// edge/log sink 仍 nil（service_topology 与日志独立管理）。
 		var (
 			dfEdge pipeline.EdgeSink
-			dfSpan pipeline.SpanSink
+			dfSpan pipeline.SpanSink = spanSink
 			dfLog  pipeline.LogSink
 		)
 		if eps := os.Getenv("DEEPFLOW_CH_ENDPOINTS"); eps != "" {
@@ -116,9 +134,9 @@ func main() {
 	}
 	startDeepFlowSyncers()
 
-	// V9.3 Phase 14：无 legacy CH sink，Pipeline 以 nil span/edge sink 构造
-	// （RED 聚合 + new 链 redSink 仍工作）。
-	pl := pipeline.New(nil, nil)
+	// C-01：Pipeline 以 ClickHouseSpanSink 作为 span sink（Trace Persistent SoT）；
+	// edge sink 仍 nil（service_topology 由 DeepFlow 独立管理）。
+	pl := pipeline.New(spanSink, nil)
 	pl.SetClusterID(clusterID)               // 多集群纳管：数据打 cluster_id 标
 	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics
 	// P6.5 new 链双写：聚合的 RED 服务指标在 flush 时写 VictoriaMetrics（ModeNew 真实发送）。
@@ -249,6 +267,19 @@ func main() {
 	// ingest 自身写路径健康由 VM/VLogs 后端侧探针负责，本端点报告进程存活 + new 后端启用。
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// C-01：Trace Persistent SoT sink 配置了但不可用 → readiness fail-closed
+		//（不允许"接收成功但静默丢 Span"）。
+		if chs, ok := spanSink.(*tracesink.ClickHouseSpanSink); ok && !chs.Healthy() {
+			detail := "trace_sot_sink_not_ready"
+			if last := chs.LastError(); last != nil {
+				detail = last.Error()
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "unhealthy", "reason": "trace_sot_sink_unavailable", "detail": detail,
+			})
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 	})

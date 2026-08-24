@@ -362,28 +362,54 @@ def _normalize_provider(provider: str) -> str:
 
 
 def _fetch_saved_llm_config() -> dict | None:
-    """从 query-api 内部接口拉取已保存的启用 LLM 配置（含真实 API Key）作为回退。"""
+    """从 query-api 内部接口拉取已保存的启用 LLM 配置。
+
+    F-14（Stage C）：外部 Provider API Key 不再下发到 Orchestrator——由固定 LLM Egress Proxy
+    独占。orchestrator 只读取 provider/model/base_url（base_url 指向 ai-llm-egress-proxy，
+    若已配置），API Key 经 proxy 注入（_LLM_KEY_HOLDER 仅在 proxy 未配置/回退时兜底）。
+    若配置了 LLM_PROXY_URL，则返回 proxy 基址且不持有真实 key。
+    """
     try:
-        import urllib.request
+        from internal_query import signed_query_api_request
         qa = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
         token = os.environ.get("INTERNAL_TOKEN", "")
-        req = urllib.request.Request(f"{qa}/settings/llm/internal", method="GET")
-        req.add_header("X-Internal-Token", token)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            cfg = data.get("data", data)
-            api_key = cfg.get("api_key") or cfg.get("apiKey")
-            if not api_key:
-                return None
-            provider = cfg.get("provider", "openai")
-            norm, backend = _normalize_provider(provider)
+        proxy_url = os.environ.get("LLM_PROXY_URL", "")
+        # F-14：用 TrustedRequestContext（capability=llm.config.read）签发，不再仅凭共享 token。
+        from contracts import TrustedRequestContext as _TRC  # noqa: F401  # 兼容 legacy
+        context = {
+            "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+            "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+            "run_id": str(uuid.uuid4()),
+            "principal_type": "system",
+            "principal_id": str(uuid.uuid4()),
+            "capability": "llm.config.read",
+            "source": "llm-config-reader",
+        }
+        raw = signed_query_api_request(f"{qa}/settings/llm/internal", context=context, timeout=5)
+        data = json.loads(raw)
+        cfg = data.get("data", data)
+        provider = cfg.get("provider", "openai")
+        norm, backend = _normalize_provider(provider)
+        if proxy_url:
+            # F-14：key 由 proxy 独占——orchestrator 只持 provider/model，key 由 proxy 注入。
             return {
-                "api_key": api_key,
+                "api_key": "",  # 不持有外部 key；由 proxy 注入
                 "model": cfg.get("model", "gpt-4o"),
-                "base_url": cfg.get("base_url", "https://api.openai.com/v1"),
+                "base_url": proxy_url.rstrip("/") + "/v1",
                 "provider": norm,
                 "backend": backend,
             }
+        # 回退（proxy 未配置）：仅当 query-api 未正确迁移时，避免破坏既有链。
+        api_key = cfg.get("api_key") or cfg.get("apiKey")
+        if not api_key:
+            return None
+        return {
+            "api_key": api_key,
+            "model": cfg.get("model", "gpt-4o"),
+            "base_url": cfg.get("base_url", "https://api.openai.com/v1"),
+            "provider": norm,
+            "backend": backend,
+        }
     except Exception:
         return None
 
@@ -596,14 +622,48 @@ async def run_invocations(request: Request):
     message = body.get("message", "对目标进行诊断")
     thread_id = body.get("thread_id") or uuid.uuid4().hex[:8]
 
+    # B2-01（27.16）：Lease-aware main loop——Investigation Run 执行前 Claim Run lease
+    # （epoch+token fencing），执行期间后台 renew，完成后 Commit 推进终态。
+    # 仅生产模式（配置 QUERY_API_URL，即真实 query-api control-plane）启用 Lease 边界；
+    # query-api lease 端点不可达时 fail-closed（不执行无 Lease 保护的 Run）。
+    run_id = str(claims.get("request_id", ""))
+    tenant_id = str(claims.get("tenant_id", ""))
     events = []
     brain = _get_brain()
-    async for event in brain.stream_sync(
-        intent, service or "", message, thread_id,
-        mode="chat", request_context=scope,
-    ):
-        events.append(event)
-    return {"run_id": str(claims.get("request_id", "")), "events": events}
+
+    async def _run_investigation():
+        async for event in brain.stream_sync(
+            intent, service or "", message, thread_id,
+            mode="chat", request_context=scope,
+        ):
+            events.append(event)
+        return events
+
+    if os.environ.get("QUERY_API_URL"):
+        from lease_aware_execution import LeaseAwareExecutor, LeaseAcquireError
+        lease_exec = LeaseAwareExecutor()
+        try:
+            with lease_exec.lease(run_id, tenant_id):
+                collected = await _run_investigation()
+                try:
+                    lease_exec.commit(
+                        target="success", result={"events": len(collected)},
+                        events=[{"event_type": "run.completed", "payload": {"events": len(collected)}}],
+                        expected_version=0,
+                    )
+                except Exception as _ce:  # noqa: BLE001
+                    try:
+                        _audit_log(run_id, "run.commit.failed", "system", tenant_id,
+                                   "commit", "failed", detail={"error": str(_ce)})
+                    except Exception:
+                        pass
+        except LeaseAcquireError as exc:
+            raise HTTPException(status_code=409, detail=f"RUN_LEASE_UNAVAILABLE: {exc}") from exc
+    else:
+        # 本地/单测：无真实 query-api，直接执行（不引入 Lease 边界）。
+        await _run_investigation()
+
+    return {"run_id": run_id, "events": events}
 
 
 @app.post("/internal/v1/chat")

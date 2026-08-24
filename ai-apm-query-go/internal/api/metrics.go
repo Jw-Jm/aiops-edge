@@ -39,4 +39,6 @@ func (h *Handler) PrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP aiops_build_info AIOps query-api build info.\n")
 	fmt.Fprintf(w, "# TYPE aiops_build_info gauge\n")
 	fmt.Fprintf(w, "aiops_build_info{service=\"query-api\",go_version=%q} 1\n", runtime.Version())
+	// 28.2 #19：control-plane 运行指标（Lease/Commit/Outbox/Tool/Replay/Recovery/SSE/LLM/Alert/correlation）。
+	cp.writeControlPlaneMetrics(w)
 }

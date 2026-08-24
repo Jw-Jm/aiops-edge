@@ -54,9 +54,13 @@ func trustedContextVerifyConfigFromEnv() (trustedauth.VerifyConfig, error) {
 		key := ed25519.PublicKey(publicKey)
 		publicKeys[trustedauth.KeyID(key)] = key
 	}
+	// A2-01：共享 TrustedRequest replay guard——用 MySQL ai_context_replay_guard 替代单进程
+	// 内存 cache，使多 query-api Pod / 重启后 nonce 重放保护跨进程一致。issuer/audience 固定
+	// 为验证器配置，与 nonce 构成 PK。MySQL 不可用时 fail-closed（internal 请求被拒）。
+	rc := api.NewMySQLReplayCache(issuer, "ai-apm-query-go")
 	return trustedauth.VerifyConfig{
 		Audience: "ai-apm-query-go", Issuer: issuer, PublicKeys: publicKeys,
-		ServiceToken: serviceToken, ReplayCache: trustedauth.NewReplayCache(4096),
+		ServiceToken: serviceToken, ReplayCache: rc,
 	}, nil
 }
 
@@ -80,6 +84,10 @@ func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
 	chHost := flag.String("ch-host", "clickhouse.observability.svc.cluster.local", "ClickHouse host")
 	chPort := flag.Int("ch-port", 8123, "ClickHouse HTTP port")
+	// C-02（报告 §17 / 27.22）：运行时三角色拆分——api（HTTP 服务）/ run-dispatch（outbox
+	// 派发循环）/ alert-eval（告警评估循环）。复用同一镜像，--role 决定启动哪些组件。
+	// 默认 api：HTTP + dispatch + alert 同进程（兼容既有单进程部署）。
+	role := flag.String("role", "api", "runtime role: api | run-dispatch | alert-eval")
 	flag.Parse()
 
 	if h := os.Getenv("CLICKHOUSE_HOST"); h != "" {
@@ -117,11 +125,26 @@ func main() {
 	if vmURL := os.Getenv("VICTORIA_METRICS_URL"); vmURL != "" {
 		handler.SetVMURL(vmURL)
 	}
+	// C-02：按 role 启动运行组件。
+	//   api：HTTP 服务 + dispatch + alert（兼容单进程）
+	//   run-dispatch：仅 outbox 派发循环（独立进程，与 api 解耦）
+	//   alert-eval：仅告警评估循环（独立进程，K8s Lease 单 Leader）
+	runDispatch := *role == "api" || *role == "run-dispatch"
+	runAlert := *role == "api" || *role == "alert-eval"
+
 	// P10 (V9.3 Phase 10)：durable outbox dispatcher——可靠派发 RunInvocation 给 orchestrator。
-	go handler.RunDispatchLoop(context.Background())
+	if runDispatch {
+		go handler.RunDispatchLoop(context.Background())
+	}
+	// 27.13：Tool Reconciler——收敛超时/未知的 ToolRun（deadline 扫描 + 统一锁序收敛）。
+	if runDispatch {
+		go handler.RunToolReconcilerLoop(context.Background(), 30*time.Second)
+	}
 	// 注入 CH 连接供告警事件持久化（必须先于评估引擎启动）
-	api.SetAlertCH(handler)
-	handler.StartAlertEvaluation()
+	if runAlert {
+		api.SetAlertCH(handler)
+		handler.StartAlertEvaluation()
+	}
 	if db := store.GetDB(); db != nil {
 		// admin 初始密码从环境变量注入（生产必设）；未设置时生成随机强密码并打印一次性提示。
 		adminPW := os.Getenv("ADMIN_INITIAL_PASSWORD")
@@ -384,41 +407,54 @@ func main() {
 	mux.HandleFunc("/internal/v1/control-plane/runs", handler.InternalControlPlaneRunRouter)
 	mux.HandleFunc("/internal/v1/control-plane/runs/", handler.InternalControlPlaneRunRouter)
 	mux.HandleFunc("/internal/v1/control-plane/recovery/snapshot", handler.InternalControlPlaneRecovery)
+	// A2-01：共享 TrustedRequest replay guard 显式消费（system principal + control_plane.replay.consume）。
+	mux.HandleFunc("/internal/v1/security/replay/consume", handler.SecurityReplayConsume)
+	// 27.14：Evidence 一次消费（/internal/v1/control-plane/tools/{id}/evidence/consume）。
+	mux.HandleFunc("/internal/v1/control-plane/tools", handler.InternalControlPlaneToolRouter)
+	mux.HandleFunc("/internal/v1/control-plane/tools/", handler.InternalControlPlaneToolRouter)
 
-	// Wrap: CORS → Auth
-	corsHandler := api.CORSMiddleware(mux)
-	authHandler := api.AuthMiddleware(corsHandler)
+	// C-02：仅 api role 启动 HTTP 服务；run-dispatch / alert-eval 只跑后台循环。
+	var server *http.Server
+	if *role == "api" {
+		// Wrap: CORS → Auth
+		corsHandler := api.CORSMiddleware(mux)
+		authHandler := api.AuthMiddleware(corsHandler)
 
-	// H5 修复（R3）：http.Server 加超时，防止慢客户端/慢请求无限占用连接。
-	// WriteTimeout=0（禁用）：P10 公共 SSE（长连接 live-tail）需要无限期写；60s 写超时
-	// 会中断长连接 SSE。读写超时仍由 ReadTimeout/IdleTimeout/ReadHeaderTimeout 控制（P1-5）。
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", *port),
-		Handler:           authHandler,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      0,
-		IdleTimeout:       120 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	// Production K8s log shipper → VictoriaLogs
-	go handler.StartLogShipper()
-
-	go func() {
-		log.Printf("Query API listening on :%d", *port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+		// H5 修复（R3）：http.Server 加超时，防止慢客户端/慢请求无限占用连接。
+		// WriteTimeout=0（禁用）：P10 公共 SSE（长连接 live-tail）需要无限期写；60s 写超时
+		// 会中断长连接 SSE。读写超时仍由 ReadTimeout/IdleTimeout/ReadHeaderTimeout 控制（P1-5）。
+		server = &http.Server{
+			Addr:              fmt.Sprintf(":%d", *port),
+			Handler:           authHandler,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      0,
+			IdleTimeout:       120 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
 		}
-	}()
+		// Production K8s log shipper → VictoriaLogs
+		go handler.StartLogShipper()
+
+		go func() {
+			log.Printf("Query API listening on :%d", *port)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("server error: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("Query API running in role=%s (no HTTP server)", *role)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	log.Println("shutting down...")
-	// H5 修复（R3）：用 Shutdown 优雅排空（10s 宽限），替代直接 Close 丢弃在途请求。
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("graceful shutdown error: %v", err)
+	if server != nil {
+		// H5 修复（R3）：用 Shutdown 优雅排空（10s 宽限），替代直接 Close 丢弃在途请求。
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("graceful shutdown error: %v", err)
+		}
 	}
 	log.Println("server stopped")
 }

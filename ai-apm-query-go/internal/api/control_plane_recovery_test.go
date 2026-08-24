@@ -53,8 +53,10 @@ func TestControlPlaneRecoverySnapshot(t *testing.T) {
 	// cmdDAO.ListByRunTx
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT command_id, run_id, operation")).
 		WillReturnRows(sqlmock.NewRows([]string{"command_id", "run_id", "operation",
-			"payload_json", "status", "idempotency_key", "created_at"}).
-			AddRow("cmd-1", "run-1", "cancel", []byte(`{}`), "pending", "k3", time.Now()))
+			"payload_json", "payload_hash", "response_json", "status", "idempotency_key",
+			"completed_at", "created_at"}).
+			AddRow("cmd-1", "run-1", "cancel", []byte(`{}`), nil, nil, "pending", "k3",
+				nil, time.Now()))
 	// approvalDAO.ListByRunTx（Phase D）
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT approval_id, run_id, action_id")).
 		WillReturnRows(sqlmock.NewRows([]string{"approval_id", "run_id", "action_id",

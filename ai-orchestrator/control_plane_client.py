@@ -24,6 +24,9 @@ from trusted_context import TrustedContextError, sign_trusted_request_context_v2
 # ── control-plane 独立内部服务能力域（D1，不进 Tool Registry）─────────────
 CP_RUNS_MUTATE = "control_plane.runs.mutate"
 CP_RUNS_RECOVER = "control_plane.runs.recover"
+# A0-05（F-18）：全局 unfinished 扫描（跨所有 tenant）用独立 system capability，
+# 与单 Run recover（control_plane.runs.recover）分离，防止普通恢复身份枚举全量非终态 Run。
+CP_RUNS_RECOVER_GLOBAL = "control_plane.runs.recover.global"
 CP_EVENTS_APPEND = "control_plane.events.append"
 CP_EVENTS_REPLAY = "control_plane.events.replay"
 
@@ -165,17 +168,65 @@ class ControlPlaneClient:
             "target": target, "expected_version": expected_version, "command_id": command_id,
         })
 
-    def cancel(self, *, run_id: str, tenant_id: str) -> dict:
-        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id)
-        return self._post(f"/internal/v1/control-plane/runs/{run_id}/cancel", claims, {})
+    def cancel(self, *, run_id: str, tenant_id: str, expected_version: int,
+               command_id: str) -> dict:
+        """cancel 必须显式携带 expected_version + command_id（A0-01 / F-02）。
+        expected_version 用于 CAS 冲突检测；command_id 用于业务幂等（响应丢失后
+        query-api 返回首次结果）。"""
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id,
+                              request_id=command_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/cancel", claims, {
+            "expected_version": expected_version, "command_id": command_id,
+        })
 
     def get(self, *, run_id: str, tenant_id: str) -> dict:
         claims = self._claims(run_id=run_id, capability=CP_RUNS_RECOVER, tenant_id=tenant_id)
         return self._get(f"/internal/v1/control-plane/runs/{run_id}", claims)
 
     def list_unfinished(self, *, tenant_id: str) -> list:
-        claims = self._claims(run_id=str(uuid.uuid4()), capability=CP_RUNS_RECOVER, tenant_id=tenant_id)
+        # A0-05（F-18）：全局 unfinished 扫描用独立 system capability
+        # control_plane.runs.recover.global。
+        # 注意：query-api 对 TrustedRequestContext 的 validateCommon 要求 tenant_id 是有效
+        # UUID（不允许空），而 internalControlPlaneRunUnfinished 本身**不按 tenant 过滤**
+        # （ScanUnfinishedLimit 扫全部非终态 Run）。因此这里传调用方传入的 tenant_id
+        #（必须是有效 UUID）以满足签名格式要求；扫描仍是全局的。
+        claims = self._claims(run_id=str(uuid.uuid4()), capability=CP_RUNS_RECOVER_GLOBAL, tenant_id=tenant_id)
         return self._get("/internal/v1/control-plane/runs/unfinished", claims).get("runs", [])
+
+    # ── lease / commit（B2-01 / A1）────────────────────────────────────────
+    def claim_lease(self, *, run_id: str, tenant_id: str, owner_id: str,
+                    lease_seconds: int = 60) -> dict:
+        """Claim 一次 Run execution lease（fencing：epoch + token）。"""
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/claim", claims, {
+            "owner_id": owner_id, "lease_seconds": lease_seconds,
+        })
+
+    def renew_lease(self, *, run_id: str, tenant_id: str, owner_id: str,
+                    epoch: int, token: str, lease_seconds: int = 60) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/renew", claims, {
+            "owner_id": owner_id, "epoch": epoch, "token": token, "lease_seconds": lease_seconds,
+        })
+
+    def release_lease(self, *, run_id: str, tenant_id: str, epoch: int, token: str) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/release", claims, {
+            "epoch": epoch, "token": token,
+        })
+
+    def commit(self, *, run_id: str, tenant_id: str, commit_id: str, payload_hash: str,
+               target: str, result: Mapping[str, Any], events: list,
+               expected_version: int, owner_id: str, epoch: int, token: str) -> dict:
+        """原子 Runtime Commit：Lease fencing + Run CAS + 事件追加 + commit 记录（幂等）。"""
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id,
+                              request_id=commit_id)
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/commit", claims, {
+            "commit_id": commit_id, "payload_hash": payload_hash, "target": target,
+            "result": dict(result or {}), "events": list(events or []),
+            "expected_version": expected_version, "owner_id": owner_id,
+            "epoch": epoch, "token": token,
+        })
 
     # ── events ───────────────────────────────────────────────────────────
     def append_event(self, *, run_id: str, tenant_id: str, event_id: str,

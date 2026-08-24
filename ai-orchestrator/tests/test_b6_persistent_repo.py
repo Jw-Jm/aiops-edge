@@ -137,6 +137,48 @@ def test_scan_unfinished():
     assert len(runs) == 2
 
 
+def test_cancel_passes_expected_version_and_command_id():
+    """A0-01（F-02）：PersistentRunRepository.cancel 必须把 expected_version + command_id
+    端到端传给 ControlPlaneClient（不再 POST 空 body / 丢参数）。"""
+    class RecordingHTTP:
+        def __init__(self):
+            self.calls = []
+        def __call__(self, path, *, context_claims, method="POST", data=None, headers=None):
+            import json
+            self.calls.append({
+                "path": path, "method": method,
+                "body": json.loads(data.decode("utf-8")) if data else {},
+            })
+            return 200, json.dumps({"run": _airun("cancelled", 1)}).encode("utf-8")
+
+    http = RecordingHTTP()
+    cache = RunCache()
+    cache.put(_contract("planning", 0))
+    repo = PersistentRunRepository(client=_client(http), cache=cache)
+    committed = repo.cancel(
+        run_id=UUID(RUN_ID), expected_version=0, tenant_id=UUID(TENANT), command_id="cancel-1")
+    assert committed.status == contracts.RunStatus.CANCELLED
+    assert http.calls, "cancel 必须发起远端请求"
+    call = http.calls[0]
+    assert call["path"].endswith("/cancel"), call["path"]
+    # 端到端传参：expected_version + command_id 必须出现在 body。
+    assert call["body"]["expected_version"] == 0
+    assert call["body"]["command_id"] == "cancel-1"
+
+
+def test_cancel_local_state_machine_rejects_terminal():
+    """本地状态机校验：终态 Run 不可 cancel，不发远端请求。"""
+    class NoCallHTTP:
+        def __call__(self, path, *, context_claims, method="POST", data=None, headers=None):
+            raise AssertionError("terminal cancel should not call remote")
+    cache = RunCache()
+    cache.put(_contract("success", 2))
+    repo = PersistentRunRepository(client=_client(NoCallHTTP()), cache=cache)
+    with pytest.raises(RunPersistenceError):
+        repo.cancel(run_id=UUID(RUN_ID), expected_version=2,
+                    tenant_id=UUID(TENANT), command_id="c1")
+
+
 def test_state_machine_alignment():
     # PersistentRunRepository 与 RunStateMachine 共享状态机语义。
     RunStateMachine.validate_transition("created", "planning")

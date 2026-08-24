@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -32,7 +33,17 @@ const (
 	// systemDispatchPrincipalID 是 query-api outbox dispatcher 派发 RunInvocation 时
 	// 使用的系统服务身份（P0-2：已授权 Run 的可信系统握手，不以原用户身份重授权）。
 	systemDispatchPrincipalID = "f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c"
-)
+	)
+
+	// dispatchOwnerID 返回本进程派发者标识（hostname:pid），用于 dispatch fencing 的 owner
+	// 字段区分多副本。真正防并发靠 epoch + token（每次 claim 随机），owner 仅作可读标识。
+	func dispatchOwnerID() string {
+		host, err := os.Hostname()
+		if err != nil {
+			host = "unknown"
+		}
+		return fmt.Sprintf("%s:%d", host, os.Getpid())
+	}
 
 // RunDispatchLoop 扫描 outbox 并派发，直到 ctx 取消。供 main 以 goroutine 启动。
 func (h *Handler) RunDispatchLoop(ctx context.Context) {
@@ -65,20 +76,25 @@ func (h *Handler) dispatchPending() {
 }
 
 // dispatchOne 派发单条 outbox 记录（P0-1：把持久化 run_id/request_id/invocation_id 与
-// 业务 body 传给 orchestrator，便于其创建/关联 Run；Claim 带 lease 防崩溃 in-flight 重复派发）。
+// 业务 body 传给 orchestrator，便于其创建/关联 Run；Claim 带 lease 防崩溃 in-flight 重复派发；
+// A0-03：dispatch fencing——Deliver/Retry 必须匹配本次 claim 的 owner+epoch+token）。
 func (h *Handler) dispatchOne(o store.AIRunOutbox) {
-	claimed, err := h.outboxDAO.Claim(o.InvocationID, dispatchLease)
+	// dispatchOwnerID 固定为本进程派发者标识（多副本各自独立，epoch/token 提供唯一 fencing）。
+	fence, claimed, err := h.outboxDAO.Claim(o.InvocationID, dispatchOwnerID(), dispatchLease)
 	if err != nil || !claimed {
 		return
 	}
+	retry := func() {
+		_ = h.outboxDAO.Retry(o.InvocationID, fence, time.Now().Add(backoff(o.DispatchCount)))
+	}
 	run, err := h.runDAO.Get(o.RunID)
 	if err != nil || run == nil {
-		_ = h.outboxDAO.Retry(o.InvocationID, time.Now().Add(backoff(o.DispatchCount)))
+		retry()
 		return
 	}
 	issuer := currentRunInvocationIssuer()
 	if issuer == nil {
-		_ = h.outboxDAO.Retry(o.InvocationID, time.Now().Add(backoff(o.DispatchCount)))
+		retry()
 		return
 	}
 	clusterScope := []string{}
@@ -93,7 +109,7 @@ func (h *Handler) dispatchOne(o store.AIRunOutbox) {
 		clusterScope, time.Now(),
 	)
 	if err != nil {
-		_ = h.outboxDAO.Retry(o.InvocationID, time.Now().Add(backoff(o.DispatchCount)))
+		retry()
 		return
 	}
 	// 派发 body 携带持久化 Run 身份 + 业务字段，使 orchestrator 能关联已授权 Run（P0-1）。
@@ -112,10 +128,10 @@ func (h *Handler) dispatchOne(o store.AIRunOutbox) {
 		"original_principal_id": run.Principal,
 	}
 	if err := h.postRunInvocation(ctxStr, issuer.ServiceToken(), body); err != nil {
-		_ = h.outboxDAO.Retry(o.InvocationID, time.Now().Add(backoff(o.DispatchCount)))
+		retry()
 		return
 	}
-	_ = h.outboxDAO.Deliver(o.InvocationID)
+	_ = h.outboxDAO.Deliver(o.InvocationID, fence)
 }
 
 // postRunInvocation 向 orchestrator /internal/v1/run-invocations 派发（带持久化 Run body）。

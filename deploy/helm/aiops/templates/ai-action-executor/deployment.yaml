@@ -1,0 +1,58 @@
+# Stage D（报告 §21 / F-22）：ai-action-executor——独立生产 mutation 安全执行边界。
+# Orchestrator / Query API API Pod 均不持生产写凭据；真实 mutation 只经本边界。
+# EXECUTION_MODE=disabled 默认关闭真实执行（A-C + D 全闭环后才可开启 approved）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-action-executor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: ai-action-executor
+spec:
+  replicas: {{ .Values.aiActionExecutor.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app: ai-action-executor
+  template:
+    metadata:
+      labels:
+        app: ai-action-executor
+    spec:
+      containers:
+        - name: executor
+          image: "{{ .Values.aiActionExecutor.image.repository }}:{{ .Values.aiActionExecutor.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: EXECUTOR_PORT
+              value: "8080"
+            - name: EXECUTION_MODE
+              value: {{ .Values.aiActionExecutor.executionMode | default "disabled" | quote }}
+            - name: EXECUTOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: EXECUTOR_TOKEN
+            - name: CREDENTIAL_BROKER_URL
+              value: {{ .Values.aiActionExecutor.credentialBrokerUrl | default "" | quote }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-action-executor
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: ai-action-executor
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

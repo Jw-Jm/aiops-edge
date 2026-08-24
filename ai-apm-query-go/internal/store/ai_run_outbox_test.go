@@ -22,20 +22,36 @@ func TestAIRunOutboxInsertAndClaim(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	ok, err := d.Claim("i", time.Minute)
+	fence, ok, err := d.Claim("i", "owner-1", time.Minute)
 	if err != nil || !ok {
 		t.Fatalf("Claim: ok=%v err=%v", ok, err)
 	}
+	if fence.OwnerID != "owner-1" || fence.TokenHash == "" || fence.Epoch == 0 {
+		t.Fatalf("fence not populated: %+v", fence)
+	}
 }
 
-func TestAIRunOutboxDeliver(t *testing.T) {
+func TestAIRunOutboxDeliverWithFence(t *testing.T) {
 	mock, cleanup := setupAIRunsDB(t)
 	defer cleanup()
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'delivered'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	d := &AIRunOutboxDAO{}
-	if err := d.Deliver("i"); err != nil {
+	fence := NewDispatchFence("owner-1")
+	if err := d.Deliver("i", fence); err != nil {
 		t.Fatalf("Deliver: %v", err)
+	}
+}
+
+func TestAIRunOutboxRetryWithFence(t *testing.T) {
+	mock, cleanup := setupAIRunsDB(t)
+	defer cleanup()
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'pending'")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	d := &AIRunOutboxDAO{}
+	fence := NewDispatchFence("owner-1")
+	if err := d.Retry("i", fence, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("Retry: %v", err)
 	}
 }
 
@@ -43,8 +59,9 @@ func TestAIRunOutboxScanPending(t *testing.T) {
 	mock, cleanup := setupAIRunsDB(t)
 	defer cleanup()
 	rows := sqlmock.NewRows([]string{"invocation_id", "run_id", "status", "dispatch_count",
-		"next_retry_at", "created_at", "updated_at"}).
-		AddRow("i", "r", "pending", 0, nil, time.Now(), time.Now())
+		"next_retry_at", "dispatch_owner_id", "dispatch_epoch", "dispatch_token_hash",
+		"dispatch_expires_at", "created_at", "updated_at"}).
+		AddRow("i", "r", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now())
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT invocation_id, run_id")).
 		WillReturnRows(rows)
 	d := &AIRunOutboxDAO{}

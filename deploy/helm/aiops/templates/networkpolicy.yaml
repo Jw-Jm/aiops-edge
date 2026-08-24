@@ -776,3 +776,87 @@ spec:
               app: vmalert
 {{- end }}
 {{- end }}
+{{- if .Values.llmEgressProxy.enabled }}
+---
+# C-04（报告 §19）：ai-llm-egress-proxy 是 LLM 出站唯一代理。
+#   【入站】orchestrator → proxy（本命名空间内）。
+#   【出站】proxy → 外部 LLM 域名（deepseek/openai 等，按 CIDR/域名配置）；其余出站拒绝。
+#   orchestrator/agent/frontend 不再直接出站到 LLM（default-deny egress 下仅 proxy 有 LLM 出站）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-llm-proxy-ingress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-llm-egress-proxy
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ai-orchestrator
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-llm-proxy-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-llm-egress-proxy
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+{{- if .Values.llmEgressProxy.allowlistCidrs }}
+{{ toYaml .Values.llmEgressProxy.allowlistCidrs | indent 8 }}
+{{- else }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+{{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- if .Values.llmEgressProxy.allowDns }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
+{{- end }}
+{{- if .Values.aiActionExecutor.enabled }}
+---
+# Stage D（F-22）：ai-action-executor 是独立 mutation 边界。
+#   【入站】query-api → executor（唯一调用方）；executor 无出站 mutation 之外的网络。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-action-executor-ingress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-action-executor
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: query-api
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}

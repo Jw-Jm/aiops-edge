@@ -26,12 +26,13 @@ func TestRunDispatchDelivers(t *testing.T) {
 	h, mock, cleanup := newTestRunsHandler()
 	defer cleanup()
 
-	// ScanPending → 1 行
+	// ScanPending → 1 行（含 dispatch fencing 列）
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT invocation_id, run_id")).
 		WillReturnRows(sqlmock.NewRows([]string{"invocation_id", "run_id", "status", "dispatch_count",
-			"next_retry_at", "created_at", "updated_at"}).
-			AddRow("inv-1", "run-1", "pending", 0, nil, time.Now(), time.Now()))
-	// Claim → ok
+			"next_retry_at", "dispatch_owner_id", "dispatch_epoch", "dispatch_token_hash",
+			"dispatch_expires_at", "created_at", "updated_at"}).
+			AddRow("inv-1", "run-1", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
+	// Claim → ok（fencing：owner/epoch/token）
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'claimed'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// runDAO.Get
@@ -45,7 +46,7 @@ func TestRunDispatchDelivers(t *testing.T) {
 				"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "single_cluster", "91771a6e-9c2d-11f1-8271-bea176fe9f9f", "investigate",
 				"read_only", nil, nil, nil, nil, "created", 0, nil, time.Now(), time.Now(),
 				nil, 0))
-	// Deliver
+	// Deliver（fencing）
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'delivered'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -79,8 +80,9 @@ func TestRunDispatchRetriesOnOrchestratorDown(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT invocation_id, run_id")).
 		WillReturnRows(sqlmock.NewRows([]string{"invocation_id", "run_id", "status", "dispatch_count",
-			"next_retry_at", "created_at", "updated_at"}).
-			AddRow("inv-1", "run-1", "pending", 0, nil, time.Now(), time.Now()))
+			"next_retry_at", "dispatch_owner_id", "dispatch_epoch", "dispatch_token_hash",
+			"dispatch_expires_at", "created_at", "updated_at"}).
+			AddRow("inv-1", "run-1", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'claimed'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
@@ -93,7 +95,7 @@ func TestRunDispatchRetriesOnOrchestratorDown(t *testing.T) {
 				"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "single_cluster", "91771a6e-9c2d-11f1-8271-bea176fe9f9f", "investigate",
 				"read_only", nil, nil, nil, nil, "created", 0, nil, time.Now(), time.Now(),
 				nil, 0))
-	// 失败 → Retry
+	// 失败 → Retry（fencing）
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'pending'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

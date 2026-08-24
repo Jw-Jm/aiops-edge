@@ -631,6 +631,19 @@ func isCanonicalProtectedRoute(path string) bool {
 		(strings.HasSuffix(path, "/events") || strings.HasSuffix(path, "/cancel")) {
 		return true
 	}
+	// A0-04（11.11.7）：/api/v1/ai/runs/{runID} 单段详情——GetRunPublic 已有
+	// tenant/run ownership 校验（与 SSE/cancel 同一 canonical 校验），放行不扩大 scope。
+	if strings.HasPrefix(path, "/api/v1/ai/runs/") &&
+		!strings.HasSuffix(path, "/") &&
+		strings.Count(strings.TrimPrefix(path, "/api/v1/ai/runs/"), "/") == 0 {
+		return true
+	}
+	// A0-04（11.11.4）：/api/v1/metrics/query——typed RED metrics（带 service + concrete
+	// canonical cluster），QueryMetrics 已改为 canonical tenant + concrete cluster fail-closed；
+	// 任意 PromQL 直通已关闭（无 service → 400），不构成任意 PromQL 透传面。
+	if path == "/api/v1/metrics/query" {
+		return true
+	}
 	return false
 }
 

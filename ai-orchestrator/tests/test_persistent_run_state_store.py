@@ -13,7 +13,7 @@ import pytest
 
 import contracts
 from control_plane_client import ControlPlaneClient, ControlPlaneError
-from persistent_run_repository import PersistentRunRepository, default_run_to_contract
+from persistent_run_repository import PersistError, PersistentRunRepository, default_run_to_contract
 from persistent_run_state_store import PersistentRunStateStore
 from run_cache import RunCache
 from run_persistence import RunPersistenceError, RunStateStore
@@ -94,3 +94,59 @@ def test_create_via_query_api_not_supported():
                          tenant_id=UUID(TENANT), intent="i", action_mode="read_only",
                          principal_type="user", principal_id=UUID("91480408-9c2d-11f1-8271-bea176fe9f9f"))
     assert ex.value.error_code == "CREATE_VIA_QUERY_API"
+
+
+def test_remote_get_cache_hit_returns_cache():
+    """cache 命中 → 直接返回，不触发远端。"""
+    http = _FakeHTTP(status=500, body={"error": "unavailable"})
+    cache = RunCache()
+    cache.put(default_run_to_contract(_airun("planning", 1)))
+    repo = PersistentRunRepository(client=ControlPlaneClient(http=http), cache=cache)
+    store = PersistentRunStateStore(repository=repo)
+    run = store.get(UUID(RUN_ID))
+    assert run.status == contracts.RunStatus.PLANNING
+    assert http.calls == 0  # 未触发远端
+
+
+def test_remote_get_cache_miss_fail_closed_on_remote_error():
+    """A0-02（F-01）：remote 模式 cache-miss + 远端 refresh 失败 → fail-closed 抛错，
+    绝不回退本地 fallback Run（Query API/MySQL 是唯一 SoT）。"""
+    http = _FakeHTTP(status=503, body={"error": "unavailable"})
+    cache = RunCache()  # 空 cache
+    repo = PersistentRunRepository(client=ControlPlaneClient(http=http), cache=cache)
+    # fallback（内存 store）里故意放一个 Run，验证不会用它当权威返回。
+    fallback = RunStateStore()
+    fallback.create_run(
+        run_id=UUID(RUN_ID), request_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        tenant_id=UUID(TENANT), intent="i", action_mode="read_only",
+        principal_type="user", principal_id=UUID("91480408-9c2d-11f1-8271-bea176fe9f9f"))
+    store = PersistentRunStateStore(repository=repo, fallback=fallback)
+    with pytest.raises(ControlPlaneError):
+        store.get(UUID(RUN_ID))
+    # 即使 fallback 有该 Run，也不应返回它作为权威（fail-closed 优先）。
+
+
+def test_remote_get_cache_miss_unknown_tenant_fail_closed():
+    """A0-02：cache/fallback 都无法确定 tenant → 拒绝 UUID(0) 猜测，fail-closed。"""
+    http = _FakeHTTP(status=200, body={"run": _airun("planning", 1)})
+    repo = PersistentRunRepository(client=ControlPlaneClient(http=http), cache=RunCache())
+    store = PersistentRunStateStore(repository=repo)  # 空 cache + 空 fallback
+    with pytest.raises(PersistError) as ex:
+        store.get(UUID(RUN_ID))
+    assert ex.value.error_code == "RUN_TENANT_UNKNOWN"
+
+
+def test_remote_get_cache_miss_with_tenant_success():
+    """remote 模式 cache-miss + fallback 能提供 tenant → 用该 tenant 远端 refresh 成功。"""
+    http = _FakeHTTP(status=200, body={"run": _airun("planning", 1)})
+    cache = RunCache()
+    repo = PersistentRunRepository(client=ControlPlaneClient(http=http), cache=cache)
+    fallback = RunStateStore()
+    fallback.create_run(
+        run_id=UUID(RUN_ID), request_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        tenant_id=UUID(TENANT), intent="i", action_mode="read_only",
+        principal_type="user", principal_id=UUID("91480408-9c2d-11f1-8271-bea176fe9f9f"))
+    store = PersistentRunStateStore(repository=repo, fallback=fallback)
+    run = store.get(UUID(RUN_ID))
+    assert run.status == contracts.RunStatus.PLANNING
+    assert http.calls >= 1  # 触发了远端 refresh

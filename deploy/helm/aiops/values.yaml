@@ -42,6 +42,30 @@ networkPolicy:
     cidrs: []
     ports: [8123, 443]
 
+# Stage D（报告 §21 / F-22）：ai-action-executor——独立生产 mutation 安全执行边界。
+# EXECUTION_MODE=disabled 默认关闭真实执行（A-C + D 全闭环后才可开 approved）。
+aiActionExecutor:
+  enabled: false
+  replicas: 1
+  image:
+    repository: ai-action-executor
+    tag: v0.1.0-d01
+  executionMode: disabled
+  credentialBrokerUrl: ""
+
+# C-04（报告 §19）：ai-llm-egress-proxy——LLM 出站唯一代理。
+#   默认 disabled；启用时 orchestrator 的 LLM 出站走本 proxy（Provider key 只存于 proxy Secret）。
+llmEgressProxy:
+  enabled: false
+  replicas: 1
+  image:
+    repository: ai-llm-egress-proxy
+    tag: v0.1.0-c04
+  # 允许 proxy 出站的 LLM 目标 CIDR（default-deny egress 下只放行这些；默认 0.0.0.0/0:443
+  # 即仅放行 443 到任意地址，配合 domain 校验兜底——安全场景应收敛为具体 LLM 服务商 CIDR）。
+  allowlistCidrs: []
+  allowDns: true
+
 # ---------------------------------------------------------------------------
 # 密钥（占位，实际用 values 文件 / --set 注入，不提交真实值，不入 git）
 # ---------------------------------------------------------------------------
@@ -235,7 +259,9 @@ queryApi:
   victoriaMetricsUrl: "http://victoria-metrics.observability.svc.cluster.local:8428"
   # K8s 集群 API（in-cluster 自签证书环境需 skip verify）与 VictoriaLogs 采集
   k8sApiUrl: "https://kubernetes.default.svc"
-  k8sInsecureSkipVerify: "true"
+  # C-05（F-12）：生产 profile 必须验证 K8s API 证书/CA，insecureSkipVerify 只能用于
+  # 明确标记的本地验证 profile。默认 false（fail-closed，验证目标集群 API Server 证书）。
+  k8sInsecureSkipVerify: "false"
   # P6.3.3/P6.4.0: reader 路由（legacy|new）。default=legacy（Phase 6 transition）。
   # cutover 受控窗口内翻为 new；显式非法值 → startup FAIL（拒绝启动）。
   queryReaderMode: "new"

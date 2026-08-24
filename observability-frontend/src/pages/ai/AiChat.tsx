@@ -1,11 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { Button, Input, Empty, Alert, Modal, message } from 'antd'
-import { BookOutlined } from '@ant-design/icons'
+import { BookOutlined, ExperimentOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import api, { TENANT_ID, getSession, executeSuggestion, finalReport, addKnowledgeCase } from '../../api/client'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
+import { useUIStore } from '../../store/uiStore'
+
+// canonical UUID 校验（与 Query API AuthMiddleware canonicalUUID 一致），用于判断
+// 是否已选择 concrete cluster（F-07 / A0-04：拒绝把 'all' 当可发送的 cluster）。
+const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 interface ChatMessage {
   id: string; role: 'user' | 'assistant'; content: string; timestamp: string
@@ -61,11 +66,16 @@ const execCodeBlockStyle: React.CSSProperties = {
 
 const AiChat: React.FC = () => {
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [sessions, setSessions] = useState<any[]>([])
   const [activeSession, setActiveSession] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState(searchParams.get('q') || '')
   const [loading, setLoading] = useState(false)
+  // A0-04（F-07）：concrete cluster 来自 UIStore（与 ClusterSwitcher 一致），
+  // 不依赖 localStorage 手解；无 concrete cluster（'all'/空）时禁用发送。
+  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const hasConcreteCluster = !!currentClusterId && CANONICAL_UUID_RE.test(currentClusterId)
   const [progress, setProgress] = useState('')
   const [toolActivity, setToolActivity] = useState<ToolActivity[]>([])
   // P0-1: 后端 SSE notice 事件（type=notice, level=warning, text=...）→ 消息区顶部黄色提示条
@@ -158,12 +168,14 @@ const AiChat: React.FC = () => {
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      // 多集群纳管：AI 默认所有集群（cluster_id=all），当前选中某集群时限定该集群
-      let clusterId = 'all'
-      try {
-        const raw = localStorage.getItem('aiops-ui-v3')
-        if (raw) { clusterId = JSON.parse(raw)?.state?.currentClusterId || 'all' }
-      } catch { clusterId = 'all' }
+      // A0-04（F-07）：移除默认 cluster_id=all。Query API ProxyChat 要求 concrete
+      // canonical cluster，'all' 会被 fail-closed 拒绝。未选择 concrete cluster 时
+      // 不发送，提示用户先选择集群（ClusterSwitcher）。
+      if (!hasConcreteCluster) {
+        message.warning('请先在顶部集群选择器选择具体集群后，再发起 AI 对话')
+        return
+      }
+      const clusterId = currentClusterId
       // B12 修复：统一走共享 api 实例（复用其 baseURL / token / 拦截器逻辑），
       // SSE 流式响应保留 fetch 实现（axios 不便于流式读取）。
       const authHeader = (api.defaults.headers.common.Authorization as string) || ''
@@ -439,10 +451,24 @@ const AiChat: React.FC = () => {
                   {/* C1: 助手消息经 react-markdown 渲染；用户消息保持纯文本 pre-wrap */}
                   {m.role === 'assistant' ? (
                     <div className="ai-msg__md">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {m.content.replace(/^__investigation_required__\n/, '')}
+                      </ReactMarkdown>
                     </div>
                   ) : (
                     <span style={{ whiteSpace: 'pre-wrap' }}>{m.content}</span>
+                  )}
+                  {/* B2-03/F-07：Chat 识别到结构化调查意图（investigation_required CTA）时，
+                      提供显式 createRun 入口（跳转智能调查页发起 Run），实时事实查询统一进入
+                      Investigation Tool/Evidence 主链，而非在 Chat 内固定实时采集。 */}
+                  {m.role === 'assistant' && m.content.indexOf('__investigation_required__') === 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <Button type="primary" size="small"
+                        icon={<ExperimentOutlined />}
+                        onClick={() => navigate('/investigation/new')}>
+                        创建结构化调查 (createRun)
+                      </Button>
+                    </div>
                   )}
                   {/* 需求：回复完成（done）且为最新一条助手消息时，可将本次分析加入知识库 */}
                   {m.role === 'assistant' && !loading && i === messages.length - 1
@@ -465,9 +491,13 @@ const AiChat: React.FC = () => {
           <div ref={bottomRef} />
         </div>
         <div className="ai-dock__input" style={{ borderTop: '1px solid var(--border-soft)' }}>
-          <Input value={input} onChange={(e) => setInput(e.target.value)} onPressEnter={() => handleSend()}
-            placeholder="描述问题，例如：分析 order-svc 错误率突增的根因…" />
-          <Button type="primary" loading={loading} icon={<AppIcon name="send" />} onClick={() => handleSend()} style={{ height: 36 }}>发送</Button>
+          <Input value={input} onChange={(e) => setInput(e.target.value)}
+            onPressEnter={() => handleSend()}
+            disabled={!hasConcreteCluster}
+            placeholder={hasConcreteCluster ? '描述问题，例如：分析 order-svc 错误率突增的根因…' : '请先在顶部选择具体集群'}>
+          </Input>
+          <Button type="primary" loading={loading} disabled={!hasConcreteCluster}
+            icon={<AppIcon name="send" />} onClick={() => handleSend()} style={{ height: 36 }}>发送</Button>
         </div>
       </div>
 

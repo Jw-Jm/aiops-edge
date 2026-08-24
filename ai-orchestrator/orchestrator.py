@@ -830,6 +830,60 @@ async def node_collect(state: AgentState) -> dict:
     return result
 
 
+_INVESTIGATION_CTA_KEYWORDS = (
+    "发起调查", "创建调查", "完整根因分析", "结构化调查", "investigation",
+)
+# 纯闲聊/信息查询（无数据采集需求）→ chat_pure 跳过 heavy collect（B2-03/F-07：Chat 不做固定实时采集）。
+_PURE_CONVERSATION_KEYWORDS = (
+    "你好", "谢谢", "感谢", "再见", "总结", "介绍一下", "你能做什么",
+    "hello", "hi ", "thanks", "thank you", "help",
+)
+
+
+def _needs_investigation_cta(message: str) -> bool:
+    """判断 Chat 消息是否需显式结构化调查（B2-03 / F-07）。
+
+    仅当用户明确要求"发起/创建调查"或"完整根因分析"等结构化 Run 时返回 CTA；
+    普通诊断类问题（诊断/错误率/告警等）仍走正常 Chat 分析（保留 exec_context/处置分析），
+    由 node_collect 的轻量按需采集支撑，不做固定全量实时采集。
+    """
+    m = (message or "").lower()
+    return any(kw in m for kw in _INVESTIGATION_CTA_KEYWORDS)
+
+
+def _is_pure_conversation(message: str) -> bool:
+    """判断是否纯闲聊（无数据采集需求）→ chat_pure，跳过 heavy collect。"""
+    m = (message or "").lower()
+    return any(kw in m for kw in _PURE_CONVERSATION_KEYWORDS)
+
+
+async def node_chat_classify(state: AgentState) -> dict:
+    """Chat 入口意图分流（B2-03 / F-07）：普通 Chat 不做固定全量实时采集。
+
+    - 明确要求结构化调查（"发起调查"/"完整根因分析"）→ investigation_required CTA，
+      由前端触发显式 createRun()。
+    - 纯闲聊/信息查询 → chat_pure=True，直接轻量 summarize（跳过 heavy collect）。
+    - 普通诊断/数据查询 → 走正常 Chat 链路（collect→clean→light/rca→summarize），
+      保留 exec_context/处置结果分析能力（不做每轮固定全量采集）。
+    """
+    msg = state.get("user_message", "")
+    if _needs_investigation_cta(msg):
+        return {
+            "investigation_required": True,
+            "chat_pure": False,
+            "messages": [f"[{_now()}] 检测到结构化调查意图，建议发起显式智能调查（createRun）"],
+            "final_response": (
+                "__investigation_required__\n该问题需要结构化智能调查（含 Run/Evidence/Plan/RCA 闭环）。"
+                "请在智能调查页发起调查，或点击按钮创建调查。"
+            ),
+        }
+    if _is_pure_conversation(msg):
+        return {"chat_pure": True, "investigation_required": False,
+                "messages": [f"[{_now()}] 纯对话模式：不采集实时数据"]}
+    return {"chat_pure": False, "investigation_required": False,
+            "messages": [f"[{_now()}] 诊断/查询模式：按需采集"]}
+
+
 async def node_clean(state: AgentState) -> dict:
     """Deduplicate and standardize collected data.
     P1-5: 顺带做轻量意图分流判定——信息查询类问题置 light_query=True,
@@ -1569,22 +1623,38 @@ def build_graph(checkpointer=None, mode: str = "full"):
         ("report", node_report), ("memorize", node_memorize),
         ("summarize", node_summarize),
     ]
+    if mode == "chat":
+        # B2-03（F-07）：chat 图入口意图分流——普通 Chat 不做固定实时采集。
+        nodes.insert(0, ("chat_classify", node_chat_classify))
     for name, fn in nodes:
         builder.add_node(name, fn)
 
-    builder.set_entry_point("collect")
-    builder.add_edge("collect", "clean")
-
     if mode == "chat":
-        # P1-5: chat 图入口轻量意图分流——信息查询（有哪些/列表/总结等）跳过
-        # RCA/RAG/CrewAI 深度节点，走 collect→clean→summarize 直接基于采集数据作答；
-        # 故障词（异常/错误/失败/根因/告警等）才走完整链路。
+        # B2-03：chat 入口先分流：需要调查 → investigation_required CTA（不再执行 node_collect
+        # 的固定实时采集）；纯对话 → 直接 summarize；否则才走 collect→clean 轻量采集链路。
+        builder.set_entry_point("chat_classify")
+        builder.add_edge("collect", "clean")
+
+        def route_chat(state: AgentState) -> str:
+            if state.get("investigation_required"):
+                return "__end__"
+            if state.get("chat_pure"):
+                return "summarize"
+            return "collect"
+
+        builder.add_conditional_edges(
+            "chat_classify", route_chat,
+            {"__end__": END, "summarize": "summarize", "collect": "collect"})
+
+        # P1-5: 轻量意图分流——信息查询跳过深度 RCA/RAG/CrewAI，走 summarize。
         def route_light(state: AgentState) -> str:
             return "summarize" if state.get("light_query") else "rca"
 
         builder.add_conditional_edges("clean", route_light,
                                       {"summarize": "summarize", "rca": "rca"})
     else:
+        builder.set_entry_point("collect")
+        builder.add_edge("collect", "clean")
         builder.add_edge("clean", "rca")
 
     builder.add_edge("rca", "rag")

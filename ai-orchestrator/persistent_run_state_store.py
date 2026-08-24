@@ -60,16 +60,28 @@ class PersistentRunStateStore:
         cached = self._cache.get(run_id)
         if cached is not None:
             return cached
-        try:
-            return self._repo.refresh(run_id=run_id, tenant_id=self._fallback_tenant(run_id))
-        except PersistError:
-            return self._fallback.get(run_id)
+        # 生产 remote 模式：远端 refresh 失败必须 fail-closed，绝不回退本地 fallback 当权威
+        # Run（报告 27.3 / F-01：Query API/MySQL 是唯一 SoT，remote 404/403/503 都不得
+        # 返回本地 RunStateStore）。
+        tenant = self._tenant_for(run_id)
+        if tenant is None:
+            raise PersistError("RUN_TENANT_UNKNOWN",
+                               f"Run {run_id} 无法确定 tenant，拒绝用 UUID(0) 猜测远端读取")
+        return self._repo.refresh(run_id=run_id, tenant_id=tenant)
 
-    def _fallback_tenant(self, run_id: UUID) -> UUID:
-        r = self._fallback.get(run_id)
+    def _tenant_for(self, run_id: UUID) -> UUID | None:
+        """从本地 session/缓存状态解析 tenant（仅作读取所需 scope，不作权威 Run 来源）。
+        无法确定 tenant 时返回 None（fail-closed），不再用 UUID(int=0) 猜测。"""
+        cached = self._cache.get(run_id)
+        if cached is not None:
+            return cached.tenant_id
+        try:
+            r = self._fallback.get(run_id)
+        except RunPersistenceError:
+            return None
         if r is not None:
             return r.tenant_id
-        return UUID(int=0)
+        return None
 
     def list(self, tenant_id: UUID | None = None) -> list[contracts.Run]:
         if self._repo is None:

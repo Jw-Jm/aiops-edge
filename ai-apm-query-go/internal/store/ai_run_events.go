@@ -124,6 +124,60 @@ func (d *AIRunEventDAO) ReplayAfter(runID string, afterSeq int64) ([]AIRunEvent,
 	return out, rows.Err()
 }
 
+// AppendTx 在给定事务内幂等追加事件（供 Runtime Commit 与 control-command 同事务使用，
+// 保证"事件+状态+commit"原子，不会留下孤立 event/sequence）。
+// 与 Append 相同的 owner-lock 顺序 + event_id 幂等去重，但所有操作在外部 tx 内。
+func (d *AIRunEventDAO) AppendTx(tx *sql.Tx, ev AIRunEvent) (AIRunEvent, bool, error) {
+	// 1) 幂等：同 event_id 已存在 → 返回既有事件（含真实 sequence），不递增 sequence，无 gap。
+	var existingSeq int64
+	err := tx.QueryRow(
+		`SELECT sequence FROM ai_run_events WHERE run_id = ? AND event_id = ?`,
+		ev.RunID, ev.EventID,
+	).Scan(&existingSeq)
+	if err == nil {
+		prev := AIRunEvent{EventID: ev.EventID, RunID: ev.RunID, Sequence: existingSeq, EventType: ev.EventType}
+		return prev, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return AIRunEvent{}, false, err
+	}
+
+	// 2) 锁 Run sequence owner，原子递增分配 sequence。
+	var seq int64
+	if _, err := tx.Exec(
+		`UPDATE ai_runs SET last_event_sequence = last_event_sequence + 1 WHERE run_id = ?`,
+		ev.RunID,
+	); err != nil {
+		return AIRunEvent{}, false, err
+	}
+	if err := tx.QueryRow(`SELECT last_event_sequence FROM ai_runs WHERE run_id = ?`, ev.RunID).Scan(&seq); err != nil {
+		return AIRunEvent{}, false, err
+	}
+
+	// 3) 插入。并发同 event_id 竞态由 UNIQUE(run_id,event_id) 兜底（调用方事务回滚不留下 sequence 推进）。
+	now := time.Now()
+	if _, err := tx.Exec(
+		`INSERT INTO ai_run_events (run_id, sequence, event_id, event_type, payload_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		ev.RunID, seq, ev.EventID, ev.EventType, ev.Payload, now,
+	); err != nil {
+		if isDuplicateKey(err) {
+			// 竞态：另一并发已写入 → 查回既有 sequence（不推进）。
+			var existing int64
+			_ = tx.QueryRow(
+				`SELECT sequence FROM ai_run_events WHERE run_id = ? AND event_id = ?`,
+				ev.RunID, ev.EventID,
+			).Scan(&existing)
+			prev := AIRunEvent{EventID: ev.EventID, RunID: ev.RunID, Sequence: existing, EventType: ev.EventType}
+			return prev, false, nil
+		}
+		return AIRunEvent{}, false, err
+	}
+	ev.Sequence = seq
+	ev.CreatedAt = now
+	return ev, true, nil
+}
+
 // LastSequenceTx 在给定事务内返回 Run 的当前最后事件 sequence（恢复一致性快照，P1-4）。
 func (d *AIRunEventDAO) LastSequenceTx(tx *sql.Tx, runID string) (int64, error) {
 	var seq int64

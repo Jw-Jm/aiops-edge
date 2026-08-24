@@ -125,61 +125,16 @@ func (h *Handler) proxyVMInstantQuery(w http.ResponseWriter, r *http.Request, qu
 	_, _ = w.Write(body)
 }
 
-// QueryRange 处理 GET /api/v1/metrics/query_range，代理 VictoriaMetrics /api/v1/query_range。
-// 参数：query=PromQL 表达式, start/end/step（Prometheus 兼容时间格式）。
-// G4 安全加固（S14）：按 IP 限流 + 数据点上限 + 响应体大小上限，防止透传端点被滥用。
+// QueryRange 处理 GET /api/v1/metrics/query_range。
+// A0-04（生产收敛 / 11.11.4）：关闭任意 PromQL range 直通——该端点无法可靠注入
+// tenant/cluster matcher，跨租户/跨集群数据泄漏风险，生产 fail-closed。
+// 浏览器/Agent 指标统一走 typed RED metrics（/internal/v1/query/metrics 或
+// QueryMetrics 的 service 形式）。
 func (h *Handler) QueryRange(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	query := q.Get("query")
-	start := q.Get("start")
-	end := q.Get("end")
-	step := q.Get("step")
-	if query == "" || start == "" || end == "" || step == "" {
-		respondError(w, http.StatusBadRequest, "query, start, end, step are required")
-		return
-	}
-	if h.vmURL == "" {
-		respondError(w, http.StatusServiceUnavailable, "victoria-metrics not configured")
-		return
-	}
-	// G4：按客户端 IP 限流（与 instant query 共用计数，60s 窗口 metricsQueryLimit 次）
-	if !allowMetricsQuery(clientIP(r)) {
-		respondError(w, http.StatusTooManyRequests, "metrics query rate limit exceeded")
-		return
-	}
-	// G4：数据点上限——(end-start)/step 超过 maxQueryRangePoints 直接拒绝，
-	// 要求增大 step 或缩小时间范围，防止 VM 返回海量数据点。
-	if pts, ok := queryRangePoints(start, end, step); ok && pts > maxQueryRangePoints {
-		respondError(w, http.StatusBadRequest,
-			fmt.Sprintf("query_range too large: %d data points exceeds max %d (increase step or reduce time range)", pts, maxQueryRangePoints))
-		return
-	}
-	target := h.buildQueryRangeURL(query, start, end, step)
-	req, err := http.NewRequest(http.MethodGet, target, nil)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	resp, err := h.client.Do(req)
-	if err != nil {
-		log.Printf("VM query_range error: %v", err)
-		respondError(w, http.StatusBadGateway, "victoria-metrics unavailable: "+err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	// G4：响应体大小上限（20MB），超限返回 502。
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxVMPayload+1))
-	if err != nil {
-		respondError(w, http.StatusBadGateway, "victoria-metrics read error: "+err.Error())
-		return
-	}
-	if len(body) > maxVMPayload {
-		respondError(w, http.StatusBadGateway, "victoria-metrics response too large (>20MB)")
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(body)
+	respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"error":  "METRICS_PROMQL_RANGE_DISABLED",
+		"detail": "任意 PromQL range 直通已关闭；请使用 typed metrics contract",
+	})
 }
 
 // queryRangePoints 估算 query_range 的数据点数量。

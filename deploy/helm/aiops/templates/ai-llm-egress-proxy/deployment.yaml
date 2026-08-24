@@ -1,0 +1,59 @@
+# C-04（报告 §19）：ai-llm-egress-proxy——LLM 出站唯一代理。
+# Provider API Key 只存于本 proxy 的 Secret/env；orchestrator/agent/frontend 不持 key。
+# 默认不部署（llmEgressProxy.enabled=false），启用时 orchestrator 的 LLM 出站走本 proxy。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-llm-egress-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: ai-llm-egress-proxy
+spec:
+  replicas: {{ .Values.llmEgressProxy.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app: ai-llm-egress-proxy
+  template:
+    metadata:
+      labels:
+        app: ai-llm-egress-proxy
+    spec:
+      containers:
+        - name: proxy
+          image: "{{ .Values.llmEgressProxy.image.repository }}:{{ .Values.llmEgressProxy.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: PROXY_PORT
+              value: "8080"
+            - name: PROXY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: LLM_PROXY_TOKEN
+            - name: LLM_PROVIDER_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: LLM_PROVIDER_KEYS
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-llm-egress-proxy
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: ai-llm-egress-proxy
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

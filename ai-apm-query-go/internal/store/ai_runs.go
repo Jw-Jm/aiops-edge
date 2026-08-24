@@ -43,6 +43,18 @@ type AIRun struct {
 	UpdatedAt        time.Time
 	FinishedAt       *time.Time
 	LastEventSeq     int64
+	// A1（0004）execution Lease / runtime-wait（正交化，非第二套 RunStatus）。
+	LeaseOwnerID     string
+	LeaseEpoch       int64
+	LeaseClaimID     string
+	LeaseTokenHash   string
+	LeaseExpiresAt   *time.Time
+	HeartbeatAt      *time.Time
+	RuntimeWaitKind  string // none | retry | waiting
+	RetryNotBefore   *time.Time
+	RetryAttempt     int
+	LastFailureCode  string
+	RuntimeMetadata  []byte // JSON
 }
 
 // AIRunDAO 访问 ai_runs 表。
@@ -247,18 +259,61 @@ func (d *AIRunDAO) Cancel(runID string, expectedVersion int64, now time.Time) (b
 	return n == 1, nil
 }
 
+// TransitionTx 在给定事务内乐观 CAS 状态迁移（供 ApplyRunControlCommandTx mutateFn 使用）。
+func (d *AIRunDAO) TransitionTx(tx *sql.Tx, runID, target string, expectedVersion int64, now time.Time) (bool, error) {
+	var finishedAt interface{} = nil
+	if isTerminalStatus(target) {
+		finishedAt = now
+	}
+	res, err := tx.Exec(
+		`UPDATE ai_runs SET status = ?, state_version = state_version + 1, updated_at = ?, finished_at = ?
+		 WHERE run_id = ? AND state_version = ?`,
+		target, now, finishedAt, runID, expectedVersion)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// CancelTx 在给定事务内显式 cancel（供 ApplyRunControlCommandTx mutateFn 使用）。
+func (d *AIRunDAO) CancelTx(tx *sql.Tx, runID string, expectedVersion int64, now time.Time) (bool, error) {
+	res, err := tx.Exec(
+		`UPDATE ai_runs SET status = 'cancelled', state_version = state_version + 1,
+		   updated_at = ?, finished_at = ? WHERE run_id = ? AND state_version = ?
+		   AND status NOT IN ('success','partial','failed','regressed','cancelled')`,
+		now, now, runID, expectedVersion)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
 // ScanUnfinished 扫描非终态 Run（重启恢复）。终态含 partial。
 func (d *AIRunDAO) ScanUnfinished() ([]AIRun, error) {
+	return d.ScanUnfinishedLimit(0)
+}
+
+// ScanUnfinishedLimit 扫描非终态 Run（重启恢复）并支持 limit 分页（limit<=0 不限制）。
+// A0-05（F-18）：供 control_plane.runs.recover.global 全局恢复扫描使用。
+func (d *AIRunDAO) ScanUnfinishedLimit(limit int) ([]AIRun, error) {
 	conn := GetDB()
 	if conn == nil {
 		return nil, errors.New("mysql unavailable")
 	}
-	rows, err := conn.Query(
-		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+	q := `SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
 		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
 		   target_resource_id, time_range_start, time_range_end, status, state_version,
 		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence
-		 FROM ai_runs WHERE status NOT IN ('success','partial','failed','regressed','cancelled')`)
+		 FROM ai_runs WHERE status NOT IN ('success','partial','failed','regressed','cancelled')`
+	var rows *sql.Rows
+	var err error
+	if limit > 0 {
+		rows, err = conn.Query(q+` ORDER BY created_at ASC LIMIT ?`, limit)
+	} else {
+		rows, err = conn.Query(q)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +327,29 @@ func (d *AIRunDAO) ScanUnfinished() ([]AIRun, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// GetWithRuntime 读取单个 Run 的完整行（含 A1 lease/runtime-wait 列），用于 recovery snapshot
+// 与 runtime metadata 恢复。与 Get 不同，这里扫描全列。
+func (d *AIRunDAO) GetWithRuntime(runID string) (*AIRun, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	row := conn.QueryRow(
+		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
+		   target_resource_id, time_range_start, time_range_end, status, state_version,
+		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence,
+		   lease_owner_id, lease_epoch, lease_claim_id, lease_token_hash, lease_expires_at,
+		   heartbeat_at, runtime_wait_kind, retry_not_before, retry_attempt,
+		   last_failure_code, runtime_metadata_json
+		 FROM ai_runs WHERE run_id = ?`, runID)
+	var r AIRun
+	if err := scanAIRunRowFull(row, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // isTerminalStatus 判断是否终态。
@@ -290,6 +368,59 @@ func scanAIRun(row *sql.Row) (*AIRun, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// scanAIRunRowFull 扫描完整行（含 A1 lease/runtime-wait 列）。供 GetWithRuntime / recovery。
+func scanAIRunRowFull(row *sql.Row, r *AIRun) error {
+	var primary, parent, principalType, session, targetType, targetResource sql.NullString
+	var timeStart, timeEnd, finished sql.NullTime
+	var leaseOwner, leaseClaim, leaseTokenHash, waitKind, failureCode sql.NullString
+	var leaseEpoch, retryAttempt sql.NullInt64
+	var leaseExpires, heartbeat, retryBefore sql.NullTime
+	var runtimeMeta []byte
+	if err := row.Scan(&r.RunID, &r.RequestID, &r.TenantID, &r.Principal, &principalType,
+		&session, &r.ScopeKind, &primary, &r.Intent, &r.ActionMode, &targetType,
+		&targetResource, &timeStart, &timeEnd, &r.Status, &r.StateVersion,
+		&parent, &r.CreatedAt, &r.UpdatedAt, &finished, &r.LastEventSeq,
+		&leaseOwner, &leaseEpoch, &leaseClaim, &leaseTokenHash, &leaseExpires,
+		&heartbeat, &waitKind, &retryBefore, &retryAttempt, &failureCode, &runtimeMeta); err != nil {
+		return err
+	}
+	r.PrincipalType = principalType.String
+	r.SessionID = session.String
+	r.PrimaryClusterID = primary.String
+	r.ParentRunID = parent.String
+	r.TargetType = targetType.String
+	r.TargetResourceID = targetResource.String
+	if timeStart.Valid {
+		r.TimeRangeStart = &timeStart.Time
+	}
+	if timeEnd.Valid {
+		r.TimeRangeEnd = &timeEnd.Time
+	}
+	if finished.Valid {
+		r.FinishedAt = &finished.Time
+	}
+	r.LeaseOwnerID = leaseOwner.String
+	r.LeaseEpoch = leaseEpoch.Int64
+	r.LeaseClaimID = leaseClaim.String
+	r.LeaseTokenHash = leaseTokenHash.String
+	if leaseExpires.Valid {
+		r.LeaseExpiresAt = &leaseExpires.Time
+	}
+	if heartbeat.Valid {
+		r.HeartbeatAt = &heartbeat.Time
+	}
+	r.RuntimeWaitKind = waitKind.String
+	if retryBefore.Valid {
+		r.RetryNotBefore = &retryBefore.Time
+	}
+	r.RetryAttempt = int(retryAttempt.Int64)
+	r.LastFailureCode = failureCode.String
+	if len(runtimeMeta) > 0 {
+		r.RuntimeMetadata = runtimeMeta
+	}
+	return nil
 }
 
 // scanAIRunRow 扫描一行到 AIRun（QueryRow / Rows 共用）。

@@ -1,8 +1,12 @@
 package api
 
 import (
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,6 +49,22 @@ func (h *Handler) InternalControlPlaneRunRouter(w http.ResponseWriter, r *http.R
 		case "cancel":
 			h.internalControlPlaneRunCancel(w, r, id)
 			return
+		case "claim":
+			// A1-02：执行 Lease claim（capability=control_plane.runs.mutate，run-scoped system principal）
+			h.internalControlPlaneRunClaim(w, r, id)
+			return
+		case "renew":
+			// A1-02：续约 Lease（fencing：owner+epoch+token 匹配）
+			h.internalControlPlaneRunRenew(w, r, id)
+			return
+		case "release":
+			// A1-02：主动释放 Lease（fencing）
+			h.internalControlPlaneRunRelease(w, r, id)
+			return
+		case "commit":
+			// A1-03：Runtime Commit（commit 幂等 + Run 状态推进 + 事件原子）
+			h.internalControlPlaneRunCommit(w, r, id)
+			return
 		case "events":
 			// events 由 events 端点处理（复用同一 handler 分派）
 			h.internalControlPlaneEventRouter(w, r, id)
@@ -62,17 +82,69 @@ func (h *Handler) InternalControlPlaneRunRouter(w http.ResponseWriter, r *http.R
 	respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 }
 
-// controlPlaneBodyTransition 是 transition 请求体。
+// controlPlaneBodyCancel 是 cancel 请求体（P1-3 + A0-01：cancel 也必须带 command_id + expected_version）。
+// ExpectedVersion 用 *int64：能区分"未提供"（nil，fail-closed 400）与合法数值（含 0），
+// 不能依赖 Go int64 零值猜测调用方 expected version（报告 8.2）。
+type controlPlaneBodyCancel struct {
+	ExpectedVersion *int64 `json:"expected_version"`
+	CommandID       string `json:"command_id"`
+}
+
+// controlPlaneBodyTransition 请求体（A0-01：expected_version 必填，缺省 400 fail-closed）。
 type controlPlaneBodyTransition struct {
-	ExpectedVersion int64  `json:"expected_version"`
+	ExpectedVersion *int64 `json:"expected_version"`
 	Target          string `json:"target"`
 	CommandID       string `json:"command_id"`
 }
 
-// controlPlaneBodyCancel 是 cancel 请求体（P1-3：cancel 也必须带 command_id + expected_version）。
-type controlPlaneBodyCancel struct {
-	ExpectedVersion int64  `json:"expected_version"`
-	CommandID       string `json:"command_id"`
+// controlCommandPayloadHash 计算 control command 的稳定业务语义 hash。
+// 覆盖 run_id + operation + expected_version + target（transition）。不含
+// Authorization / Trusted Context nonce / HTTP 时间戳（报告 27.2 / 5.6）。
+func controlCommandPayloadHash(runID, operation string, expectedVersion *int64, target string) string {
+	h := sha256.New()
+	h.Write([]byte(runID))
+	h.Write([]byte{0})
+	h.Write([]byte(operation))
+	h.Write([]byte{0})
+	if expectedVersion != nil {
+		h.Write([]byte{byte('v')})
+		h.Write([]byte(timeToBytes(*expectedVersion)))
+	} else {
+		h.Write([]byte{byte('n')})
+	}
+	h.Write([]byte{0})
+	h.Write([]byte(target))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func timeToBytes(n int64) []byte {
+	b := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		b[i] = byte(n >> (8 * (7 - i)))
+	}
+	return b
+}
+
+// runToResponseJSON 把 AIRun 编码为 control-plane response 的 JSON bytes（供 command 存储 response_json）。
+func runToResponseJSON(r *store.AIRun) []byte {
+	out, err := json.Marshal(map[string]interface{}{"run": airunToMap(r)})
+	if err != nil {
+		// Marshal 失败仅发生在不可序列化类型，实际不会；保守返回空 object。
+		return []byte(`{"run":{}}`)
+	}
+	return out
+}
+
+// respondRunConflictError 统一处理 control command 幂等/冲突错误。
+func respondRunControlError(w http.ResponseWriter, err error) {
+	switch err {
+	case store.ErrRunControlConflict:
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunStateConflict})
+	case store.ErrCommandIdempotencyReused:
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "IDEMPOTENCY_KEY_REUSED"})
+	default:
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "control_command_failed"})
+	}
 }
 
 // runTransitions 服务端 Run 状态机（与 orchestrator RunStateMachine.RUN_TRANSITIONS 对齐，
@@ -106,6 +178,8 @@ func validRunTransition(current, target string) bool {
 }
 
 // internalControlPlaneRunTransition 处理 POST .../runs/{id}/transition。
+// A0-01：统一走 ApplyRunControlCommandTx（command 幂等 + Run CAS + response 同一事务），
+// expected_version 必填（缺省 400），payload hash 语义化幂等。
 func (h *Handler) internalControlPlaneRunTransition(w http.ResponseWriter, r *http.Request, runID string) {
 	rctx, err := authorizeInternalControlPlane(r, "control_plane.runs.mutate", "ai-orchestrator")
 	if err != nil {
@@ -117,54 +191,74 @@ func (h *Handler) internalControlPlaneRunTransition(w http.ResponseWriter, r *ht
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
-	run, err := h.runDAO.Get(runID)
-	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_get_failed"})
+	// A0-01：expected_version 必填（用 *int64 区分 nil），缺省 fail-closed 400，
+	// 不得"先读当前 version 再当作 caller expected version"。
+	if body.ExpectedVersion == nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "MISSING_EXPECTED_VERSION"})
 		return
 	}
-	if run == nil {
-		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+	if body.Target == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
-	if rctx.TenantID != run.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
-		return
+	payloadHash := controlCommandPayloadHash(runID, "transition", body.ExpectedVersion, body.Target)
+	cmdDAO := h.cmdDAO
+	if cmdDAO == nil {
+		cmdDAO = &store.AIControlCommandDAO{}
 	}
-	// P1-3：服务端校验迁移合法性（非法 target → 400，不落库）。
-	if !validRunTransition(run.Status, body.Target) {
-		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"error": "ILLEGAL_RUN_TRANSITION", "detail": run.Status + " → " + body.Target,
+	resp, _, err := store.ApplyRunControlCommandTx(r.Context(), runID, body.CommandID,
+		"transition", payloadHash, cmdDAO, func(tx *sql.Tx) ([]byte, bool, error) {
+			run, gerr := h.runDAO.GetTx(tx, runID)
+			if gerr != nil {
+				return nil, false, gerr
+			}
+			if run == nil {
+				return nil, false, nil
+			}
+			if rctx.TenantID != run.TenantID {
+				return nil, false, nil
+			}
+			if !validRunTransition(run.Status, body.Target) {
+				return nil, false, nil
+			}
+			ok, terr := h.runDAO.TransitionTx(tx, runID, body.Target, *body.ExpectedVersion, time.Now())
+			if terr != nil {
+				return nil, false, terr
+			}
+			if !ok {
+				return nil, false, nil
+			}
+			updated, uerr := h.runDAO.GetTx(tx, runID)
+			if uerr != nil {
+				return nil, false, uerr
+			}
+			return runToResponseJSON(updated), true, nil
 		})
-		return
-	}
-	// P1-3：幂等——command_id 已执行过则返回首次结果（不重复 transition）。
-	if body.CommandID != "" && h.cmdDAO != nil {
-		existing, err := h.cmdDAO.Get(body.CommandID)
-		if err == nil && existing != nil && existing.Operation == "transition" && existing.Status == "done" {
-			replayed, _ := h.runDAO.Get(runID)
-			respondJSON(w, http.StatusOK, map[string]interface{}{"run": airunToMap(replayed)})
+	if err != nil {
+		if err == store.ErrRunControlConflict || err == store.ErrCommandIdempotencyReused {
+			respondRunControlError(w, err)
 			return
 		}
-		_ = h.recordControlCommand(runID, "transition", body.CommandID)
-	}
-	ok, err := h.runDAO.Transition(runID, body.Target, body.ExpectedVersion, time.Now())
-	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_transition_failed"})
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"error": "run_transition_failed", "detail": err.Error()})
 		return
 	}
-	if !ok {
-		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunStateConflict})
-		return
+	// replayed 或首次成功都返回最终 response（幂等重放返回 stored response）。
+	respondJSON(w, http.StatusOK, parseRunResponse(resp))
+}
+
+// parseRunResponse 把 stored response JSON bytes 解析为 map 响应（幂等重放/首次共用）。
+func parseRunResponse(b []byte) map[string]interface{} {
+	var out map[string]interface{}
+	if err := json.Unmarshal(b, &out); err != nil || out == nil {
+		return map[string]interface{}{}
 	}
-	// P1-3：记录 command 为 done（响应丢失后重放返回首次结果）。
-	if body.CommandID != "" {
-		_ = h.cmdDAO.MarkDone(body.CommandID)
-	}
-	updated, _ := h.runDAO.Get(runID)
-	respondJSON(w, http.StatusOK, map[string]interface{}{"run": airunToMap(updated)})
+	return out
 }
 
 // internalControlPlaneRunCancel 处理 POST .../runs/{id}/cancel。
+// A0-01：统一走 ApplyRunControlCommandTx；expected_version 必填（*int64 区分 nil，缺省 400），
+// command_id + expected_version 端到端传参（修复 F-02 客户端丢失参数 + 服务端"先读当前 version"缺陷）。
 func (h *Handler) internalControlPlaneRunCancel(w http.ResponseWriter, r *http.Request, runID string) {
 	rctx, err := authorizeInternalControlPlane(r, "control_plane.runs.mutate", "ai-orchestrator")
 	if err != nil {
@@ -172,50 +266,57 @@ func (h *Handler) internalControlPlaneRunCancel(w http.ResponseWriter, r *http.R
 		return
 	}
 	var body controlPlaneBodyCancel
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	run, err := h.runDAO.Get(runID)
-	if err != nil || run == nil {
-		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
-	if rctx.TenantID != run.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	// A0-01：expected_version 必填（缺省 fail-closed 400，不能读当前 version 当 caller expected）。
+	if body.ExpectedVersion == nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "MISSING_EXPECTED_VERSION"})
 		return
 	}
-	// P1-3：cancel 是显式 control action，终态不可 cancel（服务端校验）。
-	if !validRunTransition(run.Status, "cancelled") {
-		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "ILLEGAL_CANCEL", "detail": run.Status})
-		return
+	payloadHash := controlCommandPayloadHash(runID, "cancel", body.ExpectedVersion, "cancelled")
+	cmdDAO := h.cmdDAO
+	if cmdDAO == nil {
+		cmdDAO = &store.AIControlCommandDAO{}
 	}
-	// P1-3：幂等——同 command_id 已 cancel 过则返回首次结果。
-	if body.CommandID != "" && h.cmdDAO != nil {
-		existing, err := h.cmdDAO.Get(body.CommandID)
-		if err == nil && existing != nil && existing.Operation == "cancel" && existing.Status == "done" {
-			replayed, _ := h.runDAO.Get(runID)
-			respondJSON(w, http.StatusOK, map[string]interface{}{"run": airunToMap(replayed)})
+	resp, _, err := store.ApplyRunControlCommandTx(r.Context(), runID, body.CommandID,
+		"cancel", payloadHash, cmdDAO, func(tx *sql.Tx) ([]byte, bool, error) {
+			run, gerr := h.runDAO.GetTx(tx, runID)
+			if gerr != nil {
+				return nil, false, gerr
+			}
+			if run == nil {
+				return nil, false, nil
+			}
+			if rctx.TenantID != run.TenantID {
+				return nil, false, nil
+			}
+			if !validRunTransition(run.Status, "cancelled") {
+				return nil, false, nil
+			}
+			ok, terr := h.runDAO.CancelTx(tx, runID, *body.ExpectedVersion, time.Now())
+			if terr != nil {
+				return nil, false, terr
+			}
+			if !ok {
+				return nil, false, nil
+			}
+			updated, uerr := h.runDAO.GetTx(tx, runID)
+			if uerr != nil {
+				return nil, false, uerr
+			}
+			return runToResponseJSON(updated), true, nil
+		})
+	if err != nil {
+		if err == store.ErrRunControlConflict || err == store.ErrCommandIdempotencyReused {
+			respondRunControlError(w, err)
 			return
 		}
-		_ = h.recordControlCommand(runID, "cancel", body.CommandID)
-	}
-	// P1-3：用请求体 expected_version（若提供）做 CAS；否则用当前 version。
-	exp := run.StateVersion
-	if body.CommandID != "" && body.ExpectedVersion >= 0 {
-		exp = body.ExpectedVersion
-	}
-	ok, err := h.runDAO.Cancel(runID, exp, time.Now())
-	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_cancel_failed"})
 		return
 	}
-	if !ok {
-		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunCancelled})
-		return
-	}
-	if body.CommandID != "" {
-		_ = h.cmdDAO.MarkDone(body.CommandID)
-	}
-	updated, _ := h.runDAO.Get(runID)
-	respondJSON(w, http.StatusOK, map[string]interface{}{"run": airunToMap(updated)})
+	respondJSON(w, http.StatusOK, parseRunResponse(resp))
 }
 
 // internalControlPlaneRunGet 处理 GET .../runs/{id}。
@@ -257,21 +358,34 @@ func (h *Handler) internalControlPlaneRunList(w http.ResponseWriter, r *http.Req
 }
 
 // internalControlPlaneRunUnfinished 处理 GET .../runs/unfinished（重启恢复）。
+// A0-05（F-18）：全局扫描跨所有 tenant 的非终态 Run，要求独立 system capability
+// control_plane.runs.recover.global（与单 Run recover 的 control_plane.runs.recover 分离，
+// 防止普通恢复身份枚举全量非终态 Run）。支持 limit 分页（默认 200）。
 func (h *Handler) internalControlPlaneRunUnfinished(w http.ResponseWriter, r *http.Request) {
-	if _, err := authorizeInternalControlPlane(r, "control_plane.runs.recover", "ai-orchestrator"); err != nil {
+	if _, err := authorizeInternalControlPlane(r, "control_plane.runs.recover.global", "ai-orchestrator"); err != nil {
 		respondInternalQueryError(w, err)
 		return
 	}
-	runs, err := h.runDAO.ScanUnfinished()
+	limit := 200
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && l <= 1000 {
+		limit = l
+	}
+	// A2-02：Recovery Scanner——只返回需要恢复的候选（无活跃 Lease / 不在 retry backoff），
+	// 有活跃 Lease 的 Run 由当前 owner 继续，不列为候选（避免双 executor 抢同一活跃 Run）。
+	candidates, err := h.leaseDAO.ScanRecoveryCandidates(limit)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_scan_failed"})
 		return
 	}
-	out := make([]map[string]interface{}, 0, len(runs))
-	for _, rn := range runs {
-		out = append(out, airunToMap(&rn))
+	cp.inc("recovery_scan")
+	out := make([]map[string]interface{}, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, map[string]interface{}{
+			"run_id": c.RunID, "owner_id": c.OwnerID, "epoch": c.Epoch,
+			"wait_kind": c.WaitKind, "retry_attempt": c.RetryAttempt,
+		})
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"runs": out, "total": len(out)})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"runs": out, "total": len(out), "recovery_candidates": true})
 }
 
 // recordControlCommand 幂等记录 control command（command_id 唯一，供重启恢复）。

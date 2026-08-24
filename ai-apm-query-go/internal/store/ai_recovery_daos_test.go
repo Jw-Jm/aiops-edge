@@ -86,8 +86,8 @@ func TestAIControlCommandCreateAndGet(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_control_commands")).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	rows := sqlmock.NewRows([]string{"command_id", "run_id", "operation", "payload_json",
-		"status", "idempotency_key", "created_at"}).
-		AddRow("cmd-1", "run-1", "cancel", []byte(`{}`), "pending", "k1", time.Now())
+		"payload_hash", "response_json", "status", "idempotency_key", "completed_at", "created_at"}).
+		AddRow("cmd-1", "run-1", "cancel", []byte(`{}`), nil, nil, "pending", "k1", nil, time.Now())
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT command_id, run_id, operation")).
 		WillReturnRows(rows)
 

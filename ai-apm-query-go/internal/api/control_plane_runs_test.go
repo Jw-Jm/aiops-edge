@@ -95,15 +95,27 @@ func TestControlPlaneRunTransitionCAS(t *testing.T) {
 	c := newCPHandler(t)
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()
-	// Get run
+	c.h.cmdDAO = &store.AIControlCommandDAO{}
+	// 事务化：Begin → GetTx(command 幂等，无行) → GetTx(run) → TransitionTx → GetTx(updated) → UpsertDoneTx → Commit
+	mock.ExpectBegin()
+	// command 幂等检查（GetTx，无行）
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT command_id, run_id, operation")).
+		WillReturnRows(sqlmock.NewRows([]string{"command_id", "run_id", "operation",
+			"payload_json", "payload_hash", "response_json", "status", "idempotency_key",
+			"completed_at", "created_at"}))
+	// GetTx(run)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
 		WillReturnRows(airunMockRows("run-1", "created", 0))
-	// Transition ok
+	// TransitionTx ok
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_runs SET status")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	// Get updated
+	// GetTx(updated)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
 		WillReturnRows(airunMockRows("run-1", "planning", 1))
+	// UpsertDoneTx
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_control_commands")).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 
 	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/transition",
 		"control_plane.runs.mutate", `{"expected_version":0,"target":"planning","command_id":"cmd-1"}`, nil)
@@ -117,14 +129,33 @@ func TestControlPlaneRunTransitionCAS(t *testing.T) {
 	}
 }
 
-func TestControlPlaneRunTransitionConflict(t *testing.T) {
+func TestControlPlaneRunTransitionMissingVersion(t *testing.T) {
+	c := newCPHandler(t)
+	_, cleanup := setupAPIStore(t)
+	defer cleanup()
+	c.h.cmdDAO = &store.AIControlCommandDAO{}
+	// expected_version 缺失 → 400（fail-closed，不执行任何 SQL）
+	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/transition",
+		"control_plane.runs.mutate", `{"target":"planning","command_id":"cmd-1"}`, nil)
+	rec := httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 missing expected_version, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestControlPlaneRunTransitionCASConflict(t *testing.T) {
 	c := newCPHandler(t)
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()
+	c.h.cmdDAO = &store.AIControlCommandDAO{}
+	// 事务化（无 command_id → 跳过幂等检查）：GetTx(run, created, v5) → TransitionTx CAS 冲突(0 rows)
+	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
-		WillReturnRows(airunMockRows("run-1", "created", 0))
+		WillReturnRows(airunMockRows("run-1", "created", 5))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_runs SET status")).
 		WillReturnResult(sqlmock.NewResult(0, 0)) // CAS 冲突
+	mock.ExpectRollback()
 
 	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/transition",
 		"control_plane.runs.mutate", `{"expected_version":5,"target":"planning"}`, nil)
@@ -132,6 +163,87 @@ func TestControlPlaneRunTransitionConflict(t *testing.T) {
 	c.h.InternalControlPlaneRunRouter(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestControlPlaneRunUnfinishedRequiresGlobalCapability(t *testing.T) {
+	c := newCPHandler(t)
+	_, cleanup := setupAPIStore(t)
+	defer cleanup()
+	// 用单 Run recover capability 请求全局 unfinished → 403（F-18：全局扫描需独立 system capability）。
+	req := c.cpReq(t, http.MethodGet, "/internal/v1/control-plane/runs/unfinished",
+		"control_plane.runs.recover", "", nil)
+	rec := httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 with wrong capability, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestControlPlaneRunUnfinishedGlobalCapability(t *testing.T) {
+	c := newCPHandler(t)
+	mock, cleanup := setupAPIStore(t)
+	defer cleanup()
+	// 正确 capability + ScanRecoveryCandidates（A2-02）返回空列表（sqlmock 需匹配查询）。
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, lease_owner_id")).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "lease_owner_id", "lease_epoch",
+			"lease_claim_id", "lease_token_hash", "lease_expires_at", "runtime_wait_kind",
+			"retry_not_before", "retry_attempt"}))
+	req := c.cpReq(t, http.MethodGet, "/internal/v1/control-plane/runs/unfinished?limit=10",
+		"control_plane.runs.recover.global", "", nil)
+	rec := httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestControlPlaneRunCancelCAS(t *testing.T) {
+	c := newCPHandler(t)
+	mock, cleanup := setupAPIStore(t)
+	defer cleanup()
+	c.h.cmdDAO = &store.AIControlCommandDAO{}
+	// 事务化（有 command_id → 先幂等检查 GetTx 空行）：
+	// Begin → GetTx(command 空行) → GetTx(run planning v0) → CancelTx → GetTx(cancelled v1) → UpsertDoneTx → Commit
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT command_id, run_id, operation")).
+		WillReturnRows(sqlmock.NewRows([]string{"command_id", "run_id", "operation",
+			"payload_json", "payload_hash", "response_json", "status", "idempotency_key",
+			"completed_at", "created_at"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
+		WillReturnRows(airunMockRows("run-1", "planning", 0))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_runs SET status = 'cancelled'")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
+		WillReturnRows(airunMockRows("run-1", "cancelled", 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_control_commands")).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/cancel",
+		"control_plane.runs.mutate", `{"expected_version":0,"command_id":"cancel-1"}`, nil)
+	rec := httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations not met: %v", err)
+	}
+}
+
+func TestControlPlaneRunCancelMissingVersion(t *testing.T) {
+	c := newCPHandler(t)
+	_, cleanup := setupAPIStore(t)
+	defer cleanup()
+	c.h.cmdDAO = &store.AIControlCommandDAO{}
+	// expected_version 缺失 → 400（fail-closed，不执行 SQL / 不"读当前 version 当 caller expected"）
+	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/cancel",
+		"control_plane.runs.mutate", `{"command_id":"cancel-1"}`, nil)
+	rec := httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 missing expected_version, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

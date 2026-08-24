@@ -128,6 +128,13 @@ type Handler struct {
 	actionDAO   *store.AIActionDAO
 	cmdDAO      *store.AIControlCommandDAO
 	approvalDAO *store.AIApprovalDecisionDAO
+	// A1：Runtime execution Lease + Runtime Commit（并发权威）。
+	leaseDAO  *store.RuntimeLeaseDAO
+	commitDAO *store.RuntimeCommitDAO
+	evidenceDAO *store.EvidenceDAO
+	// C-03：Alert 单 Leader + cooldown/dampening MySQL 持久化。
+	alertLeaderDAO    *store.AlertEvalLeaderDAO
+	alertRuleStateDAO *store.AlertRuleRuntimeStateDAO
 }
 
 // NewHandler creates a new Handler.
@@ -181,6 +188,11 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.actionDAO = &store.AIActionDAO{}
 	h.cmdDAO = &store.AIControlCommandDAO{}
 	h.approvalDAO = &store.AIApprovalDecisionDAO{}
+	h.leaseDAO = &store.RuntimeLeaseDAO{}
+	h.commitDAO = &store.RuntimeCommitDAO{}
+	h.alertLeaderDAO = &store.AlertEvalLeaderDAO{}
+	h.alertRuleStateDAO = &store.AlertRuleRuntimeStateDAO{}
+	h.evidenceDAO = &store.EvidenceDAO{}
 	return h
 }
 
@@ -857,24 +869,41 @@ func (h *Handler) TraceContext(w http.ResponseWriter, r *http.Request) {
 
 // QueryMetrics handles GET /api/v1/metrics/query?service={name}
 // service 参数可选：有则按服务过滤，无则返回全局聚合。
-// P2-6 修复：当请求带 `query`（PromQL 表达式）参数且无 service 参数时，
-// 代理到 VictoriaMetrics /api/v1/query（instant query），与 /metrics/query_range 语义对齐；
-// service 参数存在时保持现有 CH RED 聚合行为不变（向后兼容）。
-// 安全（文档化已知限制）：PromQL 透传路径无租户/cluster 隔离（见 proxyVMInstantQuery），
-// 已由 AuthMiddleware 强制 JWT 鉴权，需配合网络层隔离控制可达性。
+// QueryMetrics 只读 metrics 查询（A0-04，生产收敛 / F-13 + 11.11.4）：
+//   - 关闭无 service 的任意 PromQL 直通（proxyVMInstantQuery 无 tenant/cluster matcher，
+//     跨租户/跨集群数据泄漏风险）；浏览器指标统一走 typed RED metrics（ServiceREDDetailed，
+//     repository 内按 tenant/cluster scope 过滤）。
+//   - tenant 取自 requestAuthorizationContext 的 canonical tenant（不再依赖
+//     extractTenantID() 的 'default' 猜测）；cluster 必须为 concrete canonical cluster，
+//     不接受 'all' 当作空过滤（11.11.3）。
 func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 	promql := r.URL.Query().Get("query")
 	service := r.URL.Query().Get("service")
 
+	// A0-04：PromQL 直通关闭。无 service 时无法可靠注入 tenant/cluster matcher →
+	// 生产 fail-closed，改走 typed metrics。
 	if promql != "" && service == "" {
-		h.proxyVMInstantQuery(w, r, promql)
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "METRICS_PROMQL_PASSTHROUGH_DISABLED",
+			"detail": "任意 PromQL 直通已关闭；请使用 typed metrics（带 service）",
+		})
 		return
 	}
 
-	tid := extractTenantID(r)
-	cid := extractClusterID(r)
-	if cid == "all" {
-		cid = ""
+	auth, ok := requestAuthorizationContext(r)
+	if !ok || auth.TenantID == "" {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	tid := auth.TenantID
+	cid := r.URL.Query().Get("cluster_id")
+	// 11.11.3：不接受 'all' 当作空过滤；metrics 必须 concrete canonical cluster。
+	if cid == "" || cid == "all" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "MISSING_CONCRETE_CLUSTER",
+			"detail": "metrics 查询必须指定 concrete canonical cluster_id",
+		})
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)

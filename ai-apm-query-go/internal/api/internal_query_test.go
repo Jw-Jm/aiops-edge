@@ -167,8 +167,13 @@ func TestInternalQueryChangesSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if total, _ := resp["total"].(float64); int(total) != 1 {
-		t.Fatalf("expected total=1, got %v", resp["total"])
+	// B1-02：ToolResultEnvelope——data 内嵌真实结果。
+	if resp["quality"] != "complete" {
+		t.Fatalf("expected quality=complete, got %v", resp["quality"])
+	}
+	data, _ := resp["data"].(map[string]interface{})
+	if total, _ := data["total"].(float64); int(total) != 1 {
+		t.Fatalf("expected total=1, got %v", data["total"])
 	}
 }
 
@@ -357,7 +362,12 @@ func TestInternalQueryKnowledgeSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if total, _ := resp["total"].(float64); int(total) != 1 {
-		t.Fatalf("expected total=1, got %v", resp["total"])
+	// B1-02：ToolResultEnvelope——data 内嵌真实结果。
+	if resp["quality"] != "complete" {
+		t.Fatalf("expected quality=complete, got %v", resp["quality"])
+	}
+	data, _ := resp["data"].(map[string]interface{})
+	if total, _ := data["total"].(float64); int(total) != 1 {
+		t.Fatalf("expected total=1, got %v", data["total"])
 	}
 }

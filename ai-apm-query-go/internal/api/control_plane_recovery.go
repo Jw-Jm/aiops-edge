@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
@@ -79,11 +80,23 @@ func (h *Handler) recoverySnapshot(runID string) (map[string]interface{}, error)
 	if err != nil {
 		return nil, err
 	}
+	// A1-04：runtime/lease 元数据（recovery 需知 Run 是否被持锁/retry backoff/epoch）。
+	var leaseMeta interface{}
+	if h.leaseDAO != nil {
+		lm, err := h.leaseDAO.GetRuntimeMetadataTx(tx, runID)
+		if err != nil && !errors.Is(err, store.ErrRunNotFound) {
+			return nil, err
+		}
+		if lm != nil {
+			leaseMeta = leaseHolderToMap(lm)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	snapshot := map[string]interface{}{
 		"run":                 airunToMap(run),
+		"lease":               leaseMeta,
 		"plan_steps":          planStepsToMaps(steps),
 		"tool_runs":           toolRunsToMaps(tools),
 		"actions":             actionsToMaps(actions),
@@ -92,6 +105,20 @@ func (h *Handler) recoverySnapshot(runID string) (map[string]interface{}, error)
 		"last_event_sequence": lastSeq,
 	}
 	return snapshot, nil
+}
+
+func leaseHolderToMap(l *store.RunLeaseHolder) map[string]interface{} {
+	m := map[string]interface{}{
+		"run_id": l.RunID, "owner_id": l.OwnerID, "epoch": l.Epoch, "claim_id": l.ClaimID,
+		"token_hash": l.TokenHash, "wait_kind": l.WaitKind, "retry_attempt": l.RetryAttempt,
+	}
+	if !l.ExpiresAt.IsZero() {
+		m["expires_at"] = l.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if l.RetryBefore != nil {
+		m["retry_not_before"] = l.RetryBefore.UTC().Format(time.RFC3339)
+	}
+	return m
 }
 
 func approvalsToMaps(approvals []store.AIApprovalDecision) []map[string]interface{} {

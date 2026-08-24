@@ -30,8 +30,12 @@ func (h *Handler) StartLogShipper() {
 		if vlURL == "" {
 			vlURL = "http://victoria-logs.observability.svc.cluster.local:9428/insert/jsonline"
 		}
-		// K8s TLS 校验：默认开启；仅自建/演示环境可设 K8S_INSECURE_SKIP_VERIFY=true
+		// K8s TLS 校验：默认开启（C-05 / F-12：生产 Query API 必须验证目标集群 API Server
+		// 证书/CA）；insecureSkipVerify=true 只能用于明确标记的本地验证 profile。
 		insecure := strings.EqualFold(os.Getenv("K8S_INSECURE_SKIP_VERIFY"), "true")
+		if insecure {
+			log.Printf("WARN[C-05/F-12]: K8S_INSECURE_SKIP_VERIFY=true — disabling K8s API TLS certificate verification; ONLY for explicit local verification profile; production MUST verify cluster API server cert/CA")
+		}
 		httpClient := &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{

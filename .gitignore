@@ -20,6 +20,9 @@ coverage/
 # query-api 本地编译产物（Mach-O arm64，勿入库）
 ai-apm-query-go/api
 ai-apm-ingest-go/ingest
+# Stage D/C 新独立服务本地编译产物（勿入库）
+ai-action-executor/ai-action-executor
+ai-llm-egress-proxy/ai-llm-egress-proxy
 
 # Python 缓存
 __pycache__/

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 	"github.com/observability-platform/ai-apm-query-go/internal/query"
 )
 
@@ -22,6 +23,7 @@ import (
 
 // internalQueryRequest 是 canonical internal query 的通用请求体。
 // tenant/cluster 由 TrustedRequestContext 服务端注入并强制一致；body 不得覆盖。
+// B1-02：新增 ToolRun 审计/幂等/Lease 上下文（orchestrator 传入，query-api 作为 ToolRun owner）。
 type internalQueryRequest struct {
 	TenantID  string   `json:"tenant_id"`
 	ClusterID string   `json:"cluster_id"`
@@ -35,6 +37,13 @@ type internalQueryRequest struct {
 	Limit     int      `json:"limit"`
 	Offset    int      `json:"offset"`
 	TopK      int      `json:"top_k"`
+	// B1 ToolRun 上下文（可选；缺失时不做 ToolRun 审计包装）。
+	ToolRunID     string `json:"tool_run_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	ExecutorID    string `json:"executor_id"`
+	LeaseEpoch    int64  `json:"lease_epoch"`
+	QueryWindowStart string `json:"query_window_start"` // RFC3339 绝对时间（Investigation 创建时冻结）
+	QueryWindowEnd   string `json:"query_window_end"`
 }
 
 // decodeInternalRequest 解析请求体并校验可信作用域与 body 一致性。
@@ -53,6 +62,71 @@ func decodeInternalRequest(r *http.Request, capability string) (*internalQueryCt
 	return rctx, &req, nil
 }
 
+// beginToolRun 包装 internal query 的 ToolRun 开始（B1-02）。返回 toolRunContext（nil=不包装）。
+// 幂等命中（同 idempotency_key 已存在）→ 返回 trc + idempotent=true（调用方不再执行，直接返回）。
+func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID string) (*toolRunContext, bool, error) {
+	trc := newToolRunFromRequest(req, tenantID, clusterID)
+	if trc == nil {
+		return nil, false, nil
+	}
+	if h.toolDAO == nil {
+		return trc, false, nil
+	}
+	// 幂等命中：同 idempotency_key 已有 ToolRun 且非 running → 不重复真实查询，返回既有。
+	if trc.IdempotencyKey != "" {
+		exists, err := h.toolDAO.GetByIdemKey(trc.IdempotencyKey)
+		if err == nil && exists != nil && exists.Status != "running" {
+			return trc, true, nil
+		}
+	}
+	// 创建 ToolRun 记录；失败（非幂等冲突）→ 不执行（fail-closed，避免无审计的真实查询）。
+	// 注意：只有"已存在完成结果"才算 idempotent；INSERT 失败绝不能当作幂等（否则静默跳过真实查询）。
+	if !h.startToolRun(trc) {
+		return nil, false, nil
+	}
+	return trc, false, nil
+}
+
+// endToolRun 包装 internal query 的 ToolRun 结束并返回 ToolResultEnvelope。
+func (h *Handler) endToolRun(trc *toolRunContext, quality string, data []byte, errMsg string) ToolResultEnvelope {
+	if trc != nil {
+		h.finishToolRun(trc, qualityStatus(quality), quality, data, len(data), errMsg)
+	}
+	return buildEnvelope(trc, quality, data, errMsg)
+}
+
+func qualityStatus(q string) string {
+	switch q {
+	case "complete":
+		return "success"
+	case "partial":
+		return "partial"
+	default:
+		return "failed"
+	}
+}
+
+// execToolQuery 是 internal query 的统一 ToolRun 包装执行器。
+// 调用方传入 exec（返回数据字节 + error；err==nil 视为 complete），本函数负责
+// beginToolRun / finishToolRun / 幂等命中 / ToolResultEnvelope 响应。
+func (h *Handler) execToolQuery(w http.ResponseWriter, rctx *internalQueryCtx, req *internalQueryRequest, exec func() ([]byte, error)) {
+	trc, idempotent, _ := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	if idempotent {
+		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
+		return
+	}
+	data, err := exec()
+	if err != nil {
+		if trc != nil {
+			h.finishToolRun(trc, "failed", "failed", nil, 0, err.Error())
+		}
+		respondQueryError(w, err)
+		return
+	}
+	env := h.endToolRun(trc, "complete", data, "")
+	respondJSON(w, 200, env)
+}
+
 // InternalQueryMetrics handles POST /internal/v1/query/metrics → observability.metrics.read。
 func (h *Handler) InternalQueryMetrics(w http.ResponseWriter, r *http.Request) {
 	rctx, req, err := decodeInternalRequest(r, "observability.metrics.read")
@@ -60,14 +134,24 @@ func (h *Handler) InternalQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		respondInternalQueryError(w, err)
 		return
 	}
+	trc, idempotent, _ := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	if idempotent {
+		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
+		return
+	}
 	pts, err := h.metricsRepo.ServiceRED(r.Context(), query.Scope{
 		TenantID: rctx.TenantID, ClusterID: rctx.ClusterID, Services: req.Services,
 	}, req.Service, req.Minutes)
 	if err != nil {
+		if trc != nil {
+			h.finishToolRun(trc, "failed", "failed", nil, 0, err.Error())
+		}
 		respondQueryError(w, err)
 		return
 	}
-	respondJSON(w, 200, map[string]interface{}{"points": pts, "total": len(pts)})
+	data, _ := json.Marshal(map[string]interface{}{"points": pts, "total": len(pts)})
+	env := h.endToolRun(trc, "complete", data, "")
+	respondJSON(w, 200, env)
 }
 
 // InternalQueryLogs handles POST /internal/v1/query/logs → observability.logs.read。
@@ -77,20 +161,21 @@ func (h *Handler) InternalQueryLogs(w http.ResponseWriter, r *http.Request) {
 		respondInternalQueryError(w, err)
 		return
 	}
-	records, err := h.logRepo.SearchRawLogs(r.Context(), query.LogQuery{
-		TenantID:   rctx.TenantID,
-		ClusterID:  rctx.ClusterID,
-		ResourceID: req.Namespace,
-		Service:    req.Service,
-		Query:      req.Query,
-		Services:   req.Services,
-		Minutes:    req.Minutes,
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		records, err := h.logRepo.SearchRawLogs(r.Context(), query.LogQuery{
+			TenantID:   rctx.TenantID,
+			ClusterID:  rctx.ClusterID,
+			ResourceID: req.Namespace,
+			Service:    req.Service,
+			Query:      req.Query,
+			Services:   req.Services,
+			Minutes:    req.Minutes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"logs": records, "total": len(records)})
 	})
-	if err != nil {
-		respondQueryError(w, err)
-		return
-	}
-	respondJSON(w, 200, map[string]interface{}{"logs": records, "total": len(records)})
 }
 
 // InternalQueryTraces handles POST /internal/v1/query/traces → observability.traces.read。
@@ -100,44 +185,46 @@ func (h *Handler) InternalQueryTraces(w http.ResponseWriter, r *http.Request) {
 		respondInternalQueryError(w, err)
 		return
 	}
-	limit, offset := req.Limit, req.Offset
-	if limit <= 0 {
-		limit = 20
-	}
-	traces, err := h.traceRepo.FindTraces(r.Context(), query.TraceQuery{
-		TenantID:  rctx.TenantID,
-		ClusterID: rctx.ClusterID,
-		Service:   req.Service,
-		Services:  req.Services,
-		Keyword:   req.Query,
-		Hours:     req.Hours,
-		Limit:     limit,
-		Offset:    offset,
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		limit, offset := req.Limit, req.Offset
+		if limit <= 0 {
+			limit = 20
+		}
+		traces, err := h.traceRepo.FindTraces(r.Context(), query.TraceQuery{
+			TenantID:  rctx.TenantID,
+			ClusterID: rctx.ClusterID,
+			Service:   req.Service,
+			Services:  req.Services,
+			Keyword:   req.Query,
+			Hours:     req.Hours,
+			Limit:     limit,
+			Offset:    offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"traces": traces, "total": len(traces)})
 	})
-	if err != nil {
-		respondQueryError(w, err)
-		return
-	}
-	respondJSON(w, 200, map[string]interface{}{"traces": traces, "total": len(traces)})
 }
 
 // InternalQueryAlerts handles POST /internal/v1/query/alerts → observability.alerts.read。
 func (h *Handler) InternalQueryAlerts(w http.ResponseWriter, r *http.Request) {
-	_, req, err := decodeInternalRequest(r, "observability.alerts.read")
+	rctx, req, err := decodeInternalRequest(r, "observability.alerts.read")
 	if err != nil {
 		respondInternalQueryError(w, err)
 		return
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	events, err := h.alertRepo.ListEvents(r.Context(), req.Service, limit, req.Offset)
-	if err != nil {
-		respondQueryError(w, err)
-		return
-	}
-	respondJSON(w, 200, map[string]interface{}{"alerts": events, "total": len(events)})
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		limit := req.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		events, err := h.alertRepo.ListEvents(r.Context(), req.Service, limit, req.Offset)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"alerts": events, "total": len(events)})
+	})
 }
 
 // InternalQueryTopology handles POST /internal/v1/query/topology → observability.topology.read。
@@ -147,22 +234,22 @@ func (h *Handler) InternalQueryTopology(w http.ResponseWriter, r *http.Request) 
 		respondInternalQueryError(w, err)
 		return
 	}
-	scope := query.TopologyScope{TenantID: rctx.TenantID, ClusterID: rctx.ClusterID, Services: req.Services}
-	minutes := req.Minutes
-	if minutes <= 0 {
-		minutes = 60
-	}
-	nodes, nerr := h.topoRepo.GlobalNodes(r.Context(), scope, minutes)
-	if nerr != nil {
-		respondQueryError(w, nerr)
-		return
-	}
-	edges, eerr := h.topoRepo.GlobalEdges(r.Context(), scope, minutes)
-	if eerr != nil {
-		respondQueryError(w, eerr)
-		return
-	}
-	respondJSON(w, 200, map[string]interface{}{"nodes": nodes, "edges": edges})
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		scope := query.TopologyScope{TenantID: rctx.TenantID, ClusterID: rctx.ClusterID, Services: req.Services}
+		minutes := req.Minutes
+		if minutes <= 0 {
+			minutes = 60
+		}
+		nodes, nerr := h.topoRepo.GlobalNodes(r.Context(), scope, minutes)
+		if nerr != nil {
+			return nil, nerr
+		}
+		edges, eerr := h.topoRepo.GlobalEdges(r.Context(), scope, minutes)
+		if eerr != nil {
+			return nil, eerr
+		}
+		return json.Marshal(map[string]interface{}{"nodes": nodes, "edges": edges})
+	})
 }
 
 // InternalQueryKubernetes handles POST /internal/v1/query/kubernetes → kubernetes.resources.read。
@@ -170,6 +257,11 @@ func (h *Handler) InternalQueryKubernetes(w http.ResponseWriter, r *http.Request
 	rctx, req, err := decodeInternalRequest(r, "kubernetes.resources.read")
 	if err != nil {
 		respondInternalQueryError(w, err)
+		return
+	}
+	trc, idempotent, _ := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	if idempotent {
+		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
 		return
 	}
 	// 请求可选 namespace（默认 all）用于 Pod 过滤
@@ -180,24 +272,60 @@ func (h *Handler) InternalQueryKubernetes(w http.ResponseWriter, r *http.Request
 	scope := query.KubernetesScope{TenantID: rctx.TenantID, ClusterID: rctx.ClusterID}
 
 	nodeDetails := []map[string]interface{}{}
-	if nd, err := h.kubeRepo.ListNodeDetails(r.Context(), scope, rctx.ClusterID); err == nil {
+	pods := []query.KubePod{}
+	nodes := []string{}
+
+	// A0-05（F-19）：K8s 子查询错误不得吞成 200 空数组（silent-empty）。
+	// 聚合三个子查询，任一失败 → partial（带部分成功数据 + 明确 errors）；全部失败 → unavailable。
+	partial := false
+	errs := []string{}
+	markErr := func(part string, err error) {
+		partial = true
+		errs = append(errs, part+": "+err.Error())
+	}
+
+	if nd, err := h.kubeRepo.ListNodeDetails(r.Context(), scope, rctx.ClusterID); err != nil {
+		markErr("node_details", err)
+	} else {
 		nodeDetails = nd
 	}
 
-	pods := []query.KubePod{}
-	if p, err := h.kubeRepo.ListPods(r.Context(), scope, rctx.ClusterID, namespace); err == nil {
+	if p, err := h.kubeRepo.ListPods(r.Context(), scope, rctx.ClusterID, namespace); err != nil {
+		markErr("pods", err)
+	} else {
 		pods = p
 	}
 
-	nodes := []string{}
-	if n, err := h.kubeRepo.ListNodeNames(r.Context(), scope, rctx.ClusterID); err == nil {
+	if n, err := h.kubeRepo.ListNodeNames(r.Context(), scope, rctx.ClusterID); err != nil {
+		markErr("nodes", err)
+	} else {
 		nodes = n
 	}
 
-	respondJSON(w, 200, map[string]interface{}{
+	// 全部子查询失败 → 不伪装成"没有 K8s 数据"，返回 unavailable（fail-closed）。
+	if partial && len(errs) == 3 {
+		if trc != nil {
+			h.finishToolRun(trc, "failed", "failed", nil, 0, errs[0])
+		}
+		respondInternalQueryError(w, &internalQueryError{
+			Code: contract.ErrorCodeBackendUnavailable, Message: "kubernetes backend unavailable: " + errs[0],
+		})
+		return
+	}
+
+	resp := map[string]interface{}{
 		"nodes": nodes, "node_details": nodeDetails, "pods": pods,
 		"total_nodes": len(nodes), "total_pods": len(pods),
-	})
+	}
+	quality := "complete"
+	if partial {
+		resp["partial"] = true
+		resp["errors"] = errs
+		quality = "partial"
+	}
+	data, _ := json.Marshal(resp)
+	env := h.endToolRun(trc, quality, data, "")
+	respondJSON(w, 200, env)
 }
 
 // InternalQueryChanges handles POST /internal/v1/query/changes → changes.read。
@@ -207,14 +335,15 @@ func (h *Handler) InternalQueryChanges(w http.ResponseWriter, r *http.Request) {
 		respondInternalQueryError(w, err)
 		return
 	}
-	changes, err := h.changeRepo.List(r.Context(), query.ChangeScope{
-		TenantID: rctx.TenantID, ClusterID: rctx.ClusterID,
-	}, req.Service, req.Since)
-	if err != nil {
-		respondQueryError(w, err)
-		return
-	}
-	respondJSON(w, 200, map[string]interface{}{"changes": changes, "total": len(changes)})
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		changes, err := h.changeRepo.List(r.Context(), query.ChangeScope{
+			TenantID: rctx.TenantID, ClusterID: rctx.ClusterID,
+		}, req.Service, req.Since)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"changes": changes, "total": len(changes)})
+	})
 }
 
 // InternalQueryKnowledge handles POST /internal/v1/query/knowledge → knowledge.search。
@@ -232,14 +361,15 @@ func (h *Handler) InternalQueryKnowledge(w http.ResponseWriter, r *http.Request)
 		respondQueryError(w, query.Unavailable("knowledge: repository not configured"))
 		return
 	}
-	hits, err := h.knowledgeRepo.Search(r.Context(), query.KnowledgeScope{
-		TenantID: rctx.TenantID, ClusterID: rctx.ClusterID,
-	}, req.Query, req.TopK)
-	if err != nil {
-		respondQueryError(w, err)
-		return
-	}
-	respondJSON(w, 200, map[string]interface{}{"results": hits, "total": len(hits)})
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		hits, err := h.knowledgeRepo.Search(r.Context(), query.KnowledgeScope{
+			TenantID: rctx.TenantID, ClusterID: rctx.ClusterID,
+		}, req.Query, req.TopK)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"results": hits, "total": len(hits)})
+	})
 }
 
 // decodeBody 解析请求体 JSON。
