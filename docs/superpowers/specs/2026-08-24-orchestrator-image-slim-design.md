@@ -150,6 +150,24 @@ sentence-transformers**（只依赖 onnxruntime/tokenizers/kubernetes/numpy 等�
 
 → 全部 PASS 后：DoD #72 = PASS，`AIOPS_AGENTIC_REFACTOR_COMPLETE` 满足。
 
+### 3.1 执行结果（2026-08-24 实测，Gate 全部 PASS）
+
+| 判定项 | 结果 |
+|--------|------|
+| P0 落地 | ✅ `.dockerignore` 排除 `.venv-312`/`.venv312`；orchestrator 镜像 **8.26GB → 5.97GB**（-27.7%） |
+| 五镜像合计 | ✅ **≈6.18GB ≤ 6,973MB**（DoD #72 达标） |
+| 镜像启动 | ✅ `/health` 200、`import main` OK、RAG embedding 512 维完整保留 |
+| 回归 | ✅ 全量 pytest 通过（1117 passed, 0 failed）；鉴权测试 37 passed |
+| 真实 rollout | ✅ `observability` 生产 rollout `ai-orchestrator:v1.2.0-p20-slim`，pod **1/1 Ready**，`run_persistence=remote`，RAG 77 案例 + playbooks 100 chunks 正常 |
+| P1/P2 | ✅ 明确不执行，torch/bge-small-zh 完整保留 |
+
+**期间发现并修复的预存生产缺陷（独立于 P0）**：
+- **`readyz` 401 导致生产 pod 永不就绪**：`/readyz` 不在 auth 白名单，readiness probe 无法携带
+  INTERNAL_TOKEN → 必 401 → 生产 pod 长期 0/1，阻塞所有镜像 rollout。
+- 修复：`main.py` 将 `/readyz` 加入 `_AUTH_ALLOWLIST`（与 `/health` 同为探活端点）。修复后生产
+  pod 首次 **1/1 Ready**。commit `f8640c3`。
+- 该缺陷为预存问题（新旧镜像均存在），非 P0 引入；本次收口时一并解决。
+
 ## 4. 边界与最后确认（决策冻结）
 
 - **仅 P0**：`.dockerignore` 排除开发 venv（`.venv-312`/`.venv312`）。这是构建缺陷修复，零功能风险。
