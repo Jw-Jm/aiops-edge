@@ -1,10 +1,11 @@
 import pytest
 from fastapi.testclient import TestClient
 
-def test_final_report_returns_report():
+def test_final_report_returns_report(monkeypatch):
     # 隔离测试：不依赖真实 DB，monkeypatch get_session_state / AuditStore / _llm
+    # 注意：所有对 main 模块全局的替换必须经 monkeypatch，避免污染后续测试（pytest 自动恢复）。
     import os
-    os.environ["INTERNAL_TOKEN"] = "test-internal-token"
+    monkeypatch.setenv("INTERNAL_TOKEN", "test-internal-token")
     import main as m
     class FakeBrain:
         def get_session_state(self, sid):
@@ -15,13 +16,13 @@ def test_final_report_returns_report():
             return [{"task_id": tid, "action": "approve", "target_service": "order-svc",
                      "command": "kubectl rollout restart", "result": "success",
                      "detail": "", "created_at": "t"}]
-    m._get_brain = lambda: FakeBrain()
-    m.AuditStore = lambda: FakeAudit()
+    monkeypatch.setattr(m, "_get_brain", lambda: FakeBrain(), raising=False)
+    monkeypatch.setattr(m, "AuditStore", lambda: FakeAudit(), raising=False)
     # monkeypatch LLM 调用（final_report 使用 orchestrator._llm 同步函数）
     def fake_llm(cfg, sys, user, role=""):
         return "最终版本报告：根因定位 order-svc 内存泄漏，已滚动重启，风险解除。"
-    m._llm = fake_llm
-    m._llm_key_ready = lambda: True
+    monkeypatch.setattr(m, "_llm", fake_llm, raising=False)
+    monkeypatch.setattr(m, "_llm_key_ready", lambda: True, raising=False)
     from fastapi import FastAPI
     app = FastAPI()
     # 挂载真实 final_report 路由（若 main 应用已定义则直接用 main.app）

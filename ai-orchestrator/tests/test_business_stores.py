@@ -1,3 +1,13 @@
+import os
+import tempfile
+
+# 指定可写数据目录（模拟 PVC 挂载 /var/lib/aiops），并在 import 前 seed 好 collection
+os.environ["AIOPS_DATA_DIR"] = tempfile.mkdtemp(prefix="aiops_bs_")
+from rag import RAGStore
+
+# 真实嵌入器（离线自动降级 ONNX）seed ops_cases/ops_playbooks，模拟 bootstrap 阶段
+RAGStore.ensure_collections()
+
 from db_agents import AgentStore, ReportStore, KnowledgeStore, RuleStore
 
 a, r, k, rl = AgentStore(), ReportStore(), KnowledgeStore(), RuleStore()

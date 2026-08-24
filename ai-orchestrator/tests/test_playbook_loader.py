@@ -19,6 +19,7 @@ class FakeEmbedding:
 
     def __init__(self):
         self._dim = 512
+        self.name = "fake-embedding"  # chromadb 1.x EF 接口要求 name 属性
 
     def _vec(self, text):
         t = "".join((text or "").split())
@@ -46,8 +47,10 @@ class FakeEmbedding:
 
 
 @pytest.fixture()
-def store(tmp_path, monkeypatch):
-    monkeypatch.setattr("rag._get_ef", lambda: FakeEmbedding())
+def store(tmp_path):
+    # 真实环境路径：用与 runtime 一致的嵌入器（离线自动降级 ONNX）自举 collection，
+    # 模拟 bootstrap 阶段创建 ops_cases/ops_playbooks（P4.7: runtime 只 get）。
+    RAGStore.ensure_collections(persist_dir=str(tmp_path))
     return RAGStore(persist_dir=str(tmp_path))
 
 

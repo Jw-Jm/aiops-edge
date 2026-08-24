@@ -281,6 +281,13 @@ def test_streamed_suggestion_execution_and_reload_preserve_aichat_card(monkeypat
             return {"messages": ["[collect] complete"], "intent": "diagnosis", "service": "order-svc"}
 
     monkeypatch.setenv("INTERNAL_TOKEN", "test-token")
+    # P3.9 安全改造后 ai_chat/execute_suggestion 入口由 internal_ingress 做 JWS 验签，
+    # 并解码 X-Trusted-Request-Context。真实环境由 query-api 代理前置验签；本测试聚焦
+    # checkpointer 业务逻辑，隔离验签 + 上下文解码层，直接注入最小可信 scope。
+    import types as _types
+    monkeypatch.setattr(
+        main, "_request_context_from_request",
+        lambda request: _types.SimpleNamespace(cluster_id="cluster-1"))
     monkeypatch.setattr(main, "_get_brain", lambda: FakeBrain())
     monkeypatch.setattr(main, "_audit_log", lambda *args, **kwargs: None)
     request = Request({"type": "http", "method": "POST", "path": "/api/v1/ai/chat", "headers": []})

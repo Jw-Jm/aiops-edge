@@ -386,6 +386,46 @@ class RAGStore:
     #  ops_playbooks 集合: 内置运维 playbook 向量检索
     #  (与 ops_cases 复用同一嵌入器 bge-small-zh-v1.5, 独立 collection)
     # ─────────────────────────────────────────────
+    @classmethod
+    def ensure_collections(cls, persist_dir: str = None, ef=None):
+        """幂等创建 ops_cases + ops_playbooks 两个 collection。
+
+        供 bootstrap 阶段与测试自举调用（对应 P4.7：runtime 只 get，
+        collection 必须预先存在）。使用与 runtime 一致的 _get_ef() 嵌入器，
+        保证读写 EF 一致（离线时自动降级到 ONNX）。
+
+        Args:
+            persist_dir: 持久化目录; 缺省取 AIOPS_DATA_DIR/ops-cases
+            ef: 嵌入器; 缺省 _get_ef()。测试可传入 FakeEmbedding 保持 hermetic。
+        Returns:
+            (client, ef) 或 None（目录不可写/嵌入器不可用）
+        """
+        import chromadb
+        from chromadb.config import Settings
+        if persist_dir is None:
+            data_dir = os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
+            persist_dir = os.path.join(data_dir, "ops-cases")
+        try:
+            os.makedirs(persist_dir, exist_ok=True)
+        except OSError:
+            print(f"[RAG] ensure_collections: 目录不可写, 跳过: {persist_dir}")
+            return None
+        if ef is None:
+            ef = _get_ef()
+        if ef is None:
+            print("[RAG] ensure_collections: 嵌入器不可用, 跳过")
+            return None
+        client = chromadb.PersistentClient(
+            path=persist_dir, settings=Settings(anonymized_telemetry=False))
+        for name in (CASE_COLLECTION, "ops_playbooks"):
+            try:
+                client.get_collection(name, embedding_function=ef)
+            except Exception:
+                client.create_collection(
+                    name, embedding_function=ef,
+                    metadata={"hnsw:space": "cosine"})
+        return client, ef
+
     def _playbooks_collection(self):
         """懒加载 ops_playbooks 集合 (get/create, 复用 RAGStore 嵌入器)。"""
         if not self._ensure_init():

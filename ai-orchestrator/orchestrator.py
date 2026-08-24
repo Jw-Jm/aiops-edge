@@ -20,7 +20,9 @@ from rag import rag
 from rca import full_rca_analysis
 from skill_registry import ToolRegistry, ExpertRegistry
 from contracts import RequestContext
-from invocation_scope import InvocationScope, LegacyScopeAdapter, ScopeView
+from invocation_scope import (
+    InvocationScope, LegacyScopeAdapter, ScopeView, ScopeViewSnapshot,
+)
 from internal_query import signed_query_api_request
 
 QUERY_API_VL = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1") + "/logs/victorialogs"
@@ -727,7 +729,8 @@ async def node_collect(state: AgentState) -> dict:
     cfg = state.get("llm_config")
     api_key = _LLM_KEY_HOLDER.get("api_key", "")
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
-    request_context = state.get("request_context")
+    # P-fix: state 中 request_context 是纯 dict 投影，还原为满足 ScopeView 协议的对象
+    request_context = ScopeViewSnapshot.from_projection(state.get("request_context"))
     cid = str(request_context.cluster_id) if isinstance(request_context, ScopeView) else ""
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
@@ -926,10 +929,12 @@ async def node_rca(state: AgentState) -> dict:
     """
     svc = state.get("service", "")
     cid = state.get("cluster_id", "")  # A-5：RCA 按集群范围
+    # P-fix: state 中 request_context 是纯 dict 投影，还原为满足 ScopeView 协议的对象
+    rc = ScopeViewSnapshot.from_projection(state.get("request_context"))
     if not svc:
         svc = await asyncio.to_thread(
             _top_anomaly_service, cid,
-            request_context=state.get("request_context"),
+            request_context=rc,
         )
         if not svc:
             return {"rca_mode": "skipped", "messages": [f"[{_now()}] RCA: 无异常服务数据, 跳过"]}
@@ -940,7 +945,7 @@ async def node_rca(state: AgentState) -> dict:
             svc,
             None,
             cid,
-            request_context=state.get("request_context"),
+            request_context=rc,
         )
         mode = result.get("mode", "deterministic")
         if mode == "deterministic":
@@ -1297,13 +1302,15 @@ async def node_verify(state: AgentState) -> dict:
 
     before_str = state.get("before_metrics", "")
     cid = state.get("cluster_id", "")  # A-5：验证阶段查询也按集群范围
+    # P-fix: state 中 request_context 是纯 dict 投影，还原为满足 ScopeView 协议的对象
+    rc = ScopeViewSnapshot.from_projection(state.get("request_context"))
     try:
         # 二次取样 (间隔 30s 确认非瞬时波动)
         samples = []
         for _ in range(2):
             raw = await asyncio.to_thread(
                 query_metrics, svc, cluster_id=cid,
-                request_context=state.get("request_context"),
+                request_context=rc,
             )
             data = _parse(raw)
             if data and isinstance(data.get("data"), list):
@@ -1332,7 +1339,7 @@ async def node_verify(state: AgentState) -> dict:
         try:
             topo_raw = await asyncio.to_thread(
                 query_topology, cluster_id=cid,
-                request_context=state.get("request_context"),
+                request_context=rc,
             )
             topo_data = _parse(topo_raw)
             edges = topo_data.get("edges", []) if topo_data else []
@@ -1340,7 +1347,7 @@ async def node_verify(state: AgentState) -> dict:
             for ds in downstreams[:3]:
                 ds_data = _parse(await asyncio.to_thread(
                     query_metrics, ds, cluster_id=cid,
-                    request_context=state.get("request_context"),
+                    request_context=rc,
                 ))
                 if ds_data and isinstance(ds_data.get("data"), list):
                     ds_lat = sum(float(i.get("avg_ms", 0)) for i in ds_data["data"]) / max(len(ds_data["data"]), 1)
@@ -1816,7 +1823,9 @@ class BrainOrchestrator:
         initial: AgentState = {
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
-            "request_context": request_context,
+            # P-fix: request_context 以可 msgpack 序列化的纯 dict 投影入 state，
+            # 避免持久化 saver 序列化 ScopeView 实例崩溃；节点读取处用 ScopeViewSnapshot 还原。
+            "request_context": ScopeViewSnapshot.to_projection(request_context),
             "llm_config": self.llm_config,
             "services_data": "", "infra_data": "", "infra_error": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,
@@ -1883,7 +1892,9 @@ class BrainOrchestrator:
             "messages": [], "intent": intent, "service": service, "user_message": message,
             "history_context": history_context,
             "cluster_id": cluster_id,  # A-5：集群范围透传至查询工具
-            "request_context": request_context,
+            # P-fix: request_context 以可 msgpack 序列化的纯 dict 投影入 state，
+            # 避免持久化 saver 序列化 ScopeView 实例崩溃；节点读取处用 ScopeViewSnapshot 还原。
+            "request_context": ScopeViewSnapshot.to_projection(request_context),
             "llm_config": self.llm_config,
             "services_data": "", "infra_data": "", "infra_error": "", "alert_data": "", "red_metrics": "", "trace_data": "", "k8sgpt_raw": "", "k8sgpt_error": "",
             "rca_mode": "", "rca_root_cause": "", "rca_evidence": "", "rca_confidence": 0, "rca_hypotheses_tested": 0,

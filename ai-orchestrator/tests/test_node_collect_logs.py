@@ -1,7 +1,10 @@
 import asyncio
+import subprocess
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 import pytest
+from cryptography.hazmat.primitives.serialization import (
+    Encoding, PrivateFormat, NoEncryption)
 
 from contracts import RequestContext
 from invocation_scope import LegacyScopeAdapter
@@ -61,13 +64,20 @@ def test_node_collect_includes_logs_and_k8sgpt(monkeypatch):
                     stderr = ""
                 return R()
             return real_run(*a, **kw)
-        monkeypatch.setattr("orchestrator.subprocess.run", fake_subprocess)
+        monkeypatch.setattr(subprocess, "run", fake_subprocess)
+        # node_collect 的 k8sgpt 按需分支先经 _fetch_llm_config_for_k8sgpt 校验 LLM provider 配置
+        # （真实环境由运维注入）；测试环境隔离外部 LLM provider 依赖，返回最小配置以触发 k8sgpt 调用。
+        monkeypatch.setattr("tools._fetch_llm_config_for_k8sgpt",
+                            lambda: {"api_key": "test-key", "model": "gpt-test",
+                                     "base_url": "https://api.openai.com/v1"})
         # 注: node_collect 内的 query_logs/query_metrics 等经 tools 模块调用 tools._get_json,
         # 因此需 patch tools._get_json（orchestrator 未重导出 _get_json）。
         monkeypatch.setattr("tools._get_json", lambda *a, **k: {"data": [], "count": 0})
         # P1-6: K8sGPT 仅在 diagnosis 意图且非信息查询时调用（聊天/信息查询链路不再无条件调）
+        # 使用显式 k8sgpt 路由（user_message 含 "k8sgpt" 关键词）触发按需诊断，
+        # 与真实环境「用户显式要求 k8sgpt 诊断」一致。
         state = {"service": "order-svc", "llm_config": None,
-                 "intent": "diagnosis", "user_message": "分析 order-svc 错误率升高的原因",
+                 "intent": "diagnosis", "user_message": "用 k8sgpt 诊断 order-svc 错误率升高的根因",
                  "cluster_id": str(_context().cluster_id), "request_context": _context()}
         res = await node_collect(state)
         assert "logs_data" in res
@@ -104,13 +114,30 @@ def test_node_collect_skips_k8sgpt_for_info_query(monkeypatch):
 
 def test_infrastructure_permission_error_is_not_reported_as_zero_resources(monkeypatch):
     from tools import get_infrastructure
+    import urllib.error
 
-    def unavailable(url, **_kwargs):
-        if "/infrastructure/pods" in url:
-            return {"pods": [], "error": "forbidden: admin or approver role required"}
-        return {"nodes": [], "error": "forbidden: admin or approver role required"}
+    # get_infrastructure（P19）已内联签名 + HTTP 调用，不再走 tools._get_json。
+    # 提供最小合法签名凭据（TRUSTED_CONTEXT_PRIVATE_KEY）让签名阶段通过，
+    # 再让内部 urlopen 返回 403 forbidden，模拟真实环境「权限不足」响应。
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    import hashlib, base64
+    priv = Ed25519PrivateKey.from_private_bytes(
+        hashlib.sha256(b"test-infra-key").digest())
+    monkeypatch.setenv("TRUSTED_CONTEXT_PRIVATE_KEY",
+                       base64.b64encode(priv.private_bytes(
+                           Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode())
+    monkeypatch.setenv("INTERNAL_TOKEN", "svc-token")
+    monkeypatch.setenv("QUERY_API_URL", "http://query-api.svc:8080/api/v1")
 
-    monkeypatch.setattr("tools._get_json", unavailable)
+    class _ForbiddenResp:
+        status = 403
+        def read(self): return b"forbidden: admin or approver role required"
+
+    def _fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(
+            req.full_url, 403, "forbidden", {}, _ForbiddenResp())
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
     report = get_infrastructure(request_context=_context())
 
     assert "权限" in report or "forbidden" in report

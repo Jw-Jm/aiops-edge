@@ -16,35 +16,22 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 
-from rag import CASE_COLLECTION, PLAYBOOK_COLLECTION, EMBEDDING_MODEL  # noqa: E402
-
-
-def _embedding_function():
-    from chromadb.utils import embedding_functions
-    return embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL, device="cpu")
-
-
-def _client(persist_dir):
-    import chromadb
-    from chromadb.config import Settings
-    return chromadb.PersistentClient(
-        path=persist_dir, settings=Settings(anonymized_telemetry=False))
+from rag import RAGStore, CASE_COLLECTION, PLAYBOOK_COLLECTION  # noqa: E402
 
 
 def create_or_validate_collections(persist_dir: str) -> list[str]:
-    """幂等创建/校验 collection，返回已就绪的 collection 名列表。"""
-    client = _client(persist_dir)
-    ef = _embedding_function()
+    """幂等创建/校验 collection，返回已就绪的 collection 名列表。
+
+    复用 RAGStore.ensure_collections（与 runtime 一致的嵌入器，离线自动降级 ONNX）。
+    """
+    res = RAGStore.ensure_collections(persist_dir=persist_dir)
+    if res is None:
+        raise SystemExit("[RAG-BOOTSTRAP] 嵌入器或目录不可用, 无法创建 collection")
+    client, ef = res
     ready = []
     for name in (CASE_COLLECTION, PLAYBOOK_COLLECTION):
-        try:
-            col = client.get_collection(name, embedding_function=ef)
-            print(f"[RAG-BOOTSTRAP] {name}: exists, count={col.count()}")
-        except Exception:
-            col = client.create_collection(
-                name, embedding_function=ef, metadata={"hnsw:space": "cosine"})
-            print(f"[RAG-BOOTSTRAP] {name}: created, count={col.count()}")
+        col = client.get_collection(name, embedding_function=ef)
+        print(f"[RAG-BOOTSTRAP] {name}: ready, count={col.count()}")
         ready.append(name)
     return ready
 
@@ -58,7 +45,10 @@ def main() -> int:
 
     if args.check_only:
         # readiness check：两个 collection 都必须存在。
-        client = _client(args.persist_dir)
+        import chromadb
+        from chromadb.config import Settings
+        client = chromadb.PersistentClient(
+            path=args.persist_dir, settings=Settings(anonymized_telemetry=False))
         missing = []
         for name in (CASE_COLLECTION, PLAYBOOK_COLLECTION):
             try:

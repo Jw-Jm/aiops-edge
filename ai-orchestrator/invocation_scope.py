@@ -155,3 +155,75 @@ class LegacyScopeAdapter:
     @property
     def nonce(self) -> str:
         return str(getattr(self._ctx, "nonce", ""))
+
+
+# ── P-fix: ScopeView 可序列化投影 ───────────────────────────────────────────
+# LangGraph 的 checkpoint saver（msgpack/JsonPlus）无法序列化 ScopeView 实例
+# （InvocationScope / LegacyScopeAdapter 是 dataclass / 包装对象）。而
+# request_context 只作为只读上下文传给下游工具，不应被持久化。为避免真实环境
+# 启用持久化 saver 时 astream/ainvoke 因序列化崩溃，state 中的 request_context
+# 存「可 msgpack 序列化的纯 dict 投影」，节点读取时用 ScopeViewSnapshot 还原为
+# 满足 @runtime_checkable ScopeView 协议的对象。
+_SNAPSHOT_FIELDS = (
+    "principal_id", "session_id", "tenant_id", "cluster_id",
+    "request_id", "source", "run_id", "principal_type", "capability",
+)
+
+
+class ScopeViewSnapshot:
+    """满足 ``ScopeView`` 协议的可还原轻量对象 + 纯 dict 投影工厂。
+
+    同时满足 :func:`internal_query._validated_source_context` 读取的全部字段
+    （principal_id/session_id/tenant_id/cluster_id/run_id/principal_type/
+    capability/source），缺失字段用 ``getattr(..., "")`` 兜底为空，与
+    ``LegacyScopeAdapter`` 的空值语义一致。
+    """
+
+    __slots__ = _SNAPSHOT_FIELDS
+
+    def __init__(self, principal_id="", session_id=None, tenant_id="", cluster_id="",
+                 request_id="", source="", run_id="", principal_type="user", capability=""):
+        self.principal_id = str(principal_id)
+        self.session_id = str(session_id) if session_id is not None else None
+        self.tenant_id = str(tenant_id)
+        self.cluster_id = str(cluster_id)
+        self.request_id = str(request_id)
+        self.source = str(source)
+        self.run_id = str(run_id)
+        self.principal_type = str(principal_type)
+        self.capability = str(capability)
+
+    @classmethod
+    def to_projection(cls, view: ScopeView | None) -> dict:
+        """把任意 ScopeView（或 None）转成可 msgpack 序列化的纯 dict 投影。"""
+        if view is None:
+            return {}
+        proj = {}
+        for f in _SNAPSHOT_FIELDS:
+            v = getattr(view, f, None)
+            proj[f] = (str(v) if v is not None else None)
+        # session_id 为空时规范为 None，与下游语义一致
+        if not proj.get("session_id"):
+            proj["session_id"] = None
+        return proj
+
+    @classmethod
+    def from_projection(cls, data: dict | ScopeView | None) -> ScopeView:
+        """从纯 dict 投影（或已有 ScopeView）还原为满足 ScopeView 协议的对象。
+
+        兼容: 传入已是 ScopeView 实例时原样返回（避免二次包装）；传入 None /
+        空 dict 时返回一个空 snapshot（cluster_id="" 等，下游 fail-closed）。"""
+        if isinstance(data, ScopeView):
+            return data
+        data = data or {}
+        return cls(
+            principal_id=data.get("principal_id") or "",
+            session_id=data.get("session_id") or None,
+            tenant_id=data.get("tenant_id") or "",
+            cluster_id=data.get("cluster_id") or "",
+            request_id=data.get("request_id") or "",
+            source=data.get("source") or "",
+            run_id=data.get("run_id") or "",
+            principal_type=data.get("principal_type") or "user",
+            capability=data.get("capability") or "",
+        )
