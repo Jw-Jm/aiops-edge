@@ -72,18 +72,19 @@ func requestKey(nonce string) string {
 var errContextReplayed = errors.New("context_replayed")
 
 // ConsumeReplayNonce 显式消费一个 nonce（供 /internal/v1/security/replay/consume 使用）。
+// P1（报告 §33）：consumed_at/expires_at 用 DB 时钟（CURRENT_TIMESTAMP(3)）生成，
+// 不用应用侧 time.Now()——与清理（expires_at < CURRENT_TIMESTAMP(3)）同一时钟基准，
+// 避免分布式时钟偏差导致 nonce 提前过期或残留。
 // 返回 created=true 表示首次消费（成功占用）；false 表示已消费过（重放）。
 func ConsumeReplayNonce(issuer, audience, nonce string, ttlSeconds int) (bool, error) {
 	conn := store.GetDB()
 	if conn == nil {
 		return false, errors.New("mysql replay cache unavailable")
 	}
-	now := time.Now()
-	expires := now.Add(time.Duration(ttlSeconds) * time.Second)
 	res, err := conn.Exec(
 		`INSERT IGNORE INTO ai_context_replay_guard (issuer, audience, nonce, request_hash, consumed_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		issuer, audience, nonce, requestKey(nonce), now, expires,
+		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3) + INTERVAL ? SECOND)`,
+		issuer, audience, nonce, requestKey(nonce), ttlSeconds,
 	)
 	if err != nil {
 		return false, err

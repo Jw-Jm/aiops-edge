@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,10 +37,24 @@ func (h *Handler) StartLogShipper() {
 		if insecure {
 			log.Printf("WARN[C-05/F-12]: K8S_INSECURE_SKIP_VERIFY=true — disabling K8s API TLS certificate verification; ONLY for explicit local verification profile; production MUST verify cluster API server cert/CA")
 		}
+		tlsConf := &tls.Config{InsecureSkipVerify: insecure, MinVersion: tls.VersionTLS12}
+		if !insecure {
+			// 生产必须验证 API Server 证书：显式加载 in-cluster CA（K8s 注入的
+			// /var/run/secrets/kubernetes.io/serviceaccount/ca.crt），失败则 fail-closed
+			// （不静默退化为 InsecureSkipVerify）。本地验证 profile 才允许 insecure=true。
+			if ca, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); err == nil && len(ca) > 0 {
+				pool := x509.NewCertPool()
+				if pool.AppendCertsFromPEM(ca) {
+					tlsConf.RootCAs = pool
+				} else {
+					log.Printf("WARN[C-05]: in-cluster CA present but not parseable; using system roots for K8s API TLS verification")
+				}
+			}
+		}
 		httpClient := &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig:         &tls.Config{InsecureSkipVerify: insecure},
+				TLSClientConfig:         tlsConf,
 				MaxIdleConns:            20,
 				IdleConnTimeout:         30 * time.Second,
 			},

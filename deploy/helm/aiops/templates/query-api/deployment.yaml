@@ -43,8 +43,10 @@ spec:
               value: {{ .Values.queryApi.queryReaderMode | default "legacy" | quote }}
             - name: K8S_API_URL
               value: {{ .Values.queryApi.k8sApiUrl | quote }}
+            # C-05/F-12：生产必须验证 K8s API Server 证书（CA）。insecure 仅限本地验证 profile，
+            # 默认 false（fail-closed）——未显式设 true 时强制校验，杜绝误部署为跳过校验。
             - name: K8S_INSECURE_SKIP_VERIFY
-              value: {{ .Values.queryApi.k8sInsecureSkipVerify | default "true" | quote }}
+              value: {{ .Values.queryApi.k8sInsecureSkipVerify | default "false" | quote }}
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: JWT_SECRET }
