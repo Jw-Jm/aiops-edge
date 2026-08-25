@@ -58,6 +58,15 @@ def _require_approver(request: Request):
         raise HTTPException(403, "仅管理员或审批人可操作")
 
 
+def _legacy_flow_runtime_enabled() -> bool:
+    return os.environ.get("LEGACY_FLOW_RUNTIME_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _require_legacy_flow_runtime() -> None:
+    if not _legacy_flow_runtime_enabled():
+        raise HTTPException(410, "LEGACY_FLOW_RUNTIME_DISABLED_USE_INVESTIGATION_RUN")
+
+
 class FlowCreate(BaseModel):
     name: str
     description: str = ""
@@ -234,6 +243,7 @@ def toggle_flow(flow_id: str, request: Request):
 
 @router.post("/{flow_id}/run")
 def run_flow(flow_id: str, req: RunRequest):
+    _require_legacy_flow_runtime()
     svc = get_flow_service()
     trigger = req.trigger or {}
     if req.service:
@@ -267,6 +277,7 @@ def get_run(flow_id: str, run_id: str):
 
 @router.post("/{flow_id}/runs/{run_id}/resume")
 def resume_run(flow_id: str, run_id: str, req: ResumeRequest, request: Request):
+    _require_legacy_flow_runtime()
     # P0-3: 自研引擎 resume 的 approved 若为 True（放行执行），必须由 admin/审批人
     # 显式发起，禁止普通用户自决审批绕过审批节点直接执行工作流。
     if req.approved:

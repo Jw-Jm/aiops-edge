@@ -33,17 +33,17 @@ const (
 	// systemDispatchPrincipalID 是 query-api outbox dispatcher 派发 RunInvocation 时
 	// 使用的系统服务身份（P0-2：已授权 Run 的可信系统握手，不以原用户身份重授权）。
 	systemDispatchPrincipalID = "f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c"
-	)
+)
 
-	// dispatchOwnerID 返回本进程派发者标识（hostname:pid），用于 dispatch fencing 的 owner
-	// 字段区分多副本。真正防并发靠 epoch + token（每次 claim 随机），owner 仅作可读标识。
-	func dispatchOwnerID() string {
-		host, err := os.Hostname()
-		if err != nil {
-			host = "unknown"
-		}
-		return fmt.Sprintf("%s:%d", host, os.Getpid())
+// dispatchOwnerID 返回本进程派发者标识（hostname:pid），用于 dispatch fencing 的 owner
+// 字段区分多副本。真正防并发靠 epoch + token（每次 claim 随机），owner 仅作可读标识。
+func dispatchOwnerID() string {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown"
 	}
+	return fmt.Sprintf("%s:%d", host, os.Getpid())
+}
 
 // RunDispatchLoop 扫描 outbox 并派发，直到 ctx 取消。供 main 以 goroutine 启动。
 func (h *Handler) RunDispatchLoop(ctx context.Context) {
@@ -101,12 +101,10 @@ func (h *Handler) dispatchOne(o store.AIRunOutbox) {
 	if run.PrimaryClusterID != "" {
 		clusterScope = []string{run.PrimaryClusterID}
 	}
-	// P0-2：派发用 **system principal**（orchestrator 服务身份）签发 RunInvocation——Run 已在
-	// query-api 公共层由原用户 ai.investigate 授权创建，这里是已授权 Run 的可信系统握手，
-	// 不再以原用户身份重新授权（否则未配服务角色的用户会被 orchestrator ingress 403）。
-	ctxStr, err := issuer.SignRunInvocation(
-		"system", systemDispatchPrincipalID, "", run.TenantID, "run",
-		clusterScope, time.Now(),
+	// P0-2：派发用 **system principal**（orchestrator 服务身份）签发已存在 Run 的
+	// investigation invocation；签名上下文同时绑定 run_id + invocation_id。
+	ctxStr, err := issuer.SignExistingRunInvocation(
+		run.RunID, o.InvocationID, run.RequestID, run.TenantID, clusterScope, time.Now(),
 	)
 	if err != nil {
 		retry()
@@ -115,17 +113,20 @@ func (h *Handler) dispatchOne(o store.AIRunOutbox) {
 	// 派发 body 携带持久化 Run 身份 + 业务字段，使 orchestrator 能关联已授权 Run（P0-1）。
 	// original_principal_type/principal_id 保留原用户身份供 orchestrator 关联业务。
 	body := map[string]interface{}{
-		"invocation_id":         o.InvocationID,
-		"run_id":                run.RunID,
-		"request_id":            run.RequestID,
-		"tenant_id":             run.TenantID,
-		"cluster_id":            run.PrimaryClusterID,
-		"intent":                run.Intent,
-		"action_mode":           run.ActionMode,
-		"principal_type":        "system",
-		"principal_id":          systemDispatchPrincipalID,
+		"invocation_id":           o.InvocationID,
+		"run_id":                  run.RunID,
+		"request_id":              run.RequestID,
+		"tenant_id":               run.TenantID,
+		"cluster_id":              run.PrimaryClusterID,
+		"intent":                  run.Intent,
+		"action_mode":             run.ActionMode,
+		"resource_id":             run.TargetResourceID,
+		"service":                 run.TargetResourceID,
+		"message":                 run.Intent,
+		"principal_type":          "system",
+		"principal_id":            systemDispatchPrincipalID,
 		"original_principal_type": run.PrincipalType,
-		"original_principal_id": run.Principal,
+		"original_principal_id":   run.Principal,
 	}
 	if err := h.postRunInvocation(ctxStr, issuer.ServiceToken(), body); err != nil {
 		retry()

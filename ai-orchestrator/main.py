@@ -105,6 +105,21 @@ def _workflow_cron_enabled() -> bool:
     return os.environ.get("RUN_CREATION_MODE", "").lower() == "auto"
 
 
+def _legacy_flow_runtime_enabled() -> bool:
+    """Parallel flow/investigator runtime is opt-in during convergence."""
+    return os.environ.get("LEGACY_FLOW_RUNTIME_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _investigation_runtime_enabled() -> bool:
+    """Canonical persistent Investigation worker switch (enabled by default)."""
+    return os.environ.get("INVESTIGATION_RUNTIME_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _direct_mutation_enabled() -> bool:
+    """Direct shell/Kubernetes/SQL mutation paths are retired by default."""
+    return os.environ.get("LEGACY_DIRECT_MUTATIONS_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
+
+
 def _execution_after_approval_enabled() -> bool:
     """审批通过后是否自动执行脚本/动作（安全整改 P0，默认 fail-closed 关闭）。
 
@@ -125,6 +140,10 @@ async def lifespan(app: FastAPI):
     各启动项均可降级，失败不阻塞服务启动。
     """
     # === startup ===
+    # Durable Run recovery is best-effort at startup; the queue/lease boundary
+    # remains fail-closed if query-api is unavailable.
+    if os.environ.get("QUERY_API_URL") and _investigation_runtime_enabled():
+        asyncio.create_task(_recover_investigations_on_startup())
     # 1. APScheduler 定时异常扫描
     try:
         scheduler.add_job(_scheduled_anomaly_scan, 'interval', minutes=5,
@@ -248,6 +267,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # === shutdown ===
+    global _investigation_dispatcher
+    if _investigation_dispatcher is not None:
+        try:
+            await _investigation_dispatcher.stop()
+        finally:
+            _investigation_dispatcher = None
     try:
         scheduler.shutdown(wait=False)
     except Exception:  # noqa: BLE001
@@ -335,6 +360,7 @@ async def _scheduled_node_health_aggregate():
 # 延迟导入：orchestrator 中的 ChromaDB 模型下载会阻塞启动
 # 使用 startup event 在后台初始化
 _brain = None
+_investigation_dispatcher = None
 
 def _get_brain():
     global _brain
@@ -342,6 +368,82 @@ def _get_brain():
         from orchestrator import brain
         _brain = brain
     return _brain
+
+
+class _InvestigationBrainAdapter:
+    """Adapter from the existing graph stream to the persistent worker API."""
+
+    async def investigate(self, item, lease):
+        events = []
+        if item.request_context is None:
+            raise RuntimeError("RUN_CONTEXT_REQUIRED")
+        async for event in _get_brain().stream_sync(
+            item.intent or "diagnosis", item.service or "", item.message or "",
+            item.invocation_id, mode="full", request_context=item.request_context,
+        ):
+            lease.check_active()
+            events.append(event)
+        return events
+
+
+async def _get_investigation_dispatcher():
+    global _investigation_dispatcher
+    if _investigation_dispatcher is None:
+        from investigation_dispatcher import InvestigationDispatcher
+        from investigation_runtime import InvestigationRuntime
+
+        runtime = InvestigationRuntime(brain=_InvestigationBrainAdapter())
+        _investigation_dispatcher = InvestigationDispatcher(
+            runtime, capacity=int(os.environ.get("INVESTIGATION_QUEUE_CAPACITY", "100")),
+        )
+        await _investigation_dispatcher.start(
+            workers=max(1, int(os.environ.get("INVESTIGATION_WORKERS", "1"))),
+        )
+    return _investigation_dispatcher
+
+
+async def _recover_investigations_on_startup() -> None:
+    """Requeue unfinished Runs after a process restart; never scan data sources directly."""
+    if not os.environ.get("QUERY_API_URL"):
+        return
+    try:
+        from control_plane_client import ControlPlaneClient, DEFAULT_SYSTEM_TENANT_ID
+        from investigation_dispatcher import AcceptedInvocation
+        from invocation_scope import InvocationScope
+
+        tenant_id = os.environ.get("AIOPS_SYSTEM_TENANT_ID", DEFAULT_SYSTEM_TENANT_ID)
+        runs = await asyncio.to_thread(ControlPlaneClient().list_unfinished, tenant_id=tenant_id)
+        items = []
+        for run in runs:
+            status = str(run.get("status") or "")
+            if status not in {"planning", "investigating", "verifying"}:
+                continue
+            run_id = str(run.get("run_id") or "")
+            cluster_id = str(run.get("primary_cluster_id") or "")
+            request_id = str(run.get("request_id") or "")
+            if not run_id or not cluster_id or not request_id:
+                continue
+            scope = InvocationScope(
+                principal_type="system", principal_id="f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c",
+                session_id=None, tenant_id=tenant_id, cluster_id=cluster_id,
+                request_id=request_id, source="recovery", run_id=run_id,
+                invocation_id=request_id, workload_kind="investigation",
+            )
+            items.append(AcceptedInvocation(
+                run_id=run_id, invocation_id=request_id, request_id=request_id,
+                tenant_id=tenant_id, cluster_id=cluster_id,
+                intent=str(run.get("intent") or "diagnosis"),
+                resource_id=str(run.get("target_resource_id") or ""),
+                service=str(run.get("target_resource_id") or ""),
+                message=str(run.get("intent") or "对目标进行诊断"),
+                action_mode=str(run.get("action_mode") or "read_only"),
+                request_context=scope,
+            ))
+        if items:
+            await (await _get_investigation_dispatcher()).recover(items)
+            print(f"[startup] investigation recovery queued: {len(items)}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] investigation recovery skipped: {exc}", flush=True)
 
 PROVIDER_BACKEND = {
     "openai": "openai", "deepseek": "deepseek",
@@ -591,6 +693,18 @@ async def run_invocations(request: Request):
     """
     claims = verify_run_invocation_ingress(request)
     body = await request.json() or {}
+    # Investigation invocations are bound to the persisted Run/outbox identity.
+    # Never accept a client/body run id that differs from the signed envelope.
+    capability = str(claims.get("capability", "") or "")
+    if capability == "ai.investigate":
+        signed_run_id = str(claims.get("run_id", "") or "")
+        signed_invocation_id = str(claims.get("invocation_id", "") or "")
+        if not signed_run_id or not signed_invocation_id:
+            raise HTTPException(status_code=403, detail="RUN_IDENTITY_REQUIRED")
+        for claim_name, error_code in (("run_id", "RUN_ID_MISMATCH"), ("invocation_id", "INVOCATION_ID_MISMATCH")):
+            body_value = body.get(claim_name)
+            if body_value is None or str(body_value) != str(claims.get(claim_name)):
+                raise HTTPException(status_code=403, detail=error_code)
     # P0-2：query-api outbox dispatcher 用 system principal 派发已授权 Run（body 带 run_id）。
     # 这是**已授权 Run 的可信系统握手**，不是"系统创建新 Run"——Run 已在 query-api 公共层由
     # 原用户 ai.investigate 授权创建。此时跳过"system 不能创建 Run"的 ManualBoundary 拒绝，
@@ -625,6 +739,41 @@ async def run_invocations(request: Request):
     if body.get("cluster_id") and str(body["cluster_id"]) != scope.cluster_id:
         raise HTTPException(status_code=403, detail="CLUSTER_ACCESS_DENIED")
 
+    # Explicit investigation invocations use the durable, bounded worker queue.
+    # A missing query-api control plane is an availability error, never a reason
+    # to fall back to synchronous or in-memory execution.
+    if capability == "ai.investigate":
+        if not _investigation_runtime_enabled():
+            raise HTTPException(status_code=410, detail="INVESTIGATION_RUNTIME_DISABLED")
+        if not os.environ.get("QUERY_API_URL"):
+            raise HTTPException(status_code=503, detail="CONTROL_PLANE_REQUIRED")
+        from investigation_dispatcher import AcceptedInvocation
+
+        dispatcher = await _get_investigation_dispatcher()
+        item = AcceptedInvocation(
+            run_id=str(claims["run_id"]),
+            invocation_id=str(claims["invocation_id"]),
+            request_id=str(claims.get("request_id", "")),
+            tenant_id=str(claims["tenant_id"]),
+            cluster_id=scope.cluster_id,
+            intent=str(body.get("intent") or "diagnosis"),
+            resource_id=str(body.get("resource_id") or body.get("service") or ""),
+            service=str(body.get("service") or body.get("resource_id") or ""),
+            message=str(body.get("message") or body.get("intent") or "对目标进行诊断"),
+            action_mode=str(body.get("action_mode") or "read_only"),
+            request_context=scope,
+        )
+        try:
+            accepted = await dispatcher.accept(item)
+        except asyncio.QueueFull as exc:
+            raise HTTPException(status_code=429, detail="INVESTIGATION_QUEUE_FULL") from exc
+        return JSONResponse(status_code=202, content={
+            "run_id": accepted.run_id,
+            "invocation_id": accepted.invocation_id,
+            "accepted": accepted.accepted,
+            "duplicate": accepted.duplicate,
+        })
+
     intent = body.get("intent", "diagnose")
     service = body.get("service", "")
     message = body.get("message", "对目标进行诊断")
@@ -634,7 +783,7 @@ async def run_invocations(request: Request):
     # （epoch+token fencing），执行期间后台 renew，完成后 Commit 推进终态。
     # 仅生产模式（配置 QUERY_API_URL，即真实 query-api control-plane）启用 Lease 边界；
     # query-api lease 端点不可达时 fail-closed（不执行无 Lease 保护的 Run）。
-    run_id = str(claims.get("request_id", ""))
+    run_id = str(claims.get("run_id") or claims.get("request_id", ""))
     tenant_id = str(claims.get("tenant_id", ""))
     events = []
     brain = _get_brain()
@@ -1014,7 +1163,9 @@ async def ai_skill_detail(key: str):
     return skill.to_summary()
 
 @app.post("/api/v1/ai/skills/{key}/execute")
-async def ai_skill_execute(key: str, body: dict = None):
+async def ai_skill_execute(key: str, body: dict = None, request: Request = None):
+    if not _direct_mutation_enabled():
+        raise HTTPException(410, "DIRECT_MUTATION_MOVED_TO_ACTION_EXECUTOR")
     try:
         if not SkillRegistry.list_all():
             init_skills()
@@ -1195,6 +1346,8 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
     安全：复用 execute_suggestion 的 ShellPolicy 黑名单 + 白名单强制（读写动作分级），
     用户确认后才会执行。返回执行结果，前端据此发起下一轮深入分析。
     """
+    if not _direct_mutation_enabled():
+        raise HTTPException(410, "DIRECT_MUTATION_MOVED_TO_ACTION_EXECUTOR")
     _require_approver(request)  # 复用审批人校验（与任务工作台一致）
     script = (req.script or "").strip()
     if not script:
@@ -1748,6 +1901,8 @@ async def ops_webhook(request: Request):
 
     # === Mount A3: 告警触发 workflow（后台派发，不阻塞 webhook 返回）===
     try:
+        if not _legacy_flow_runtime_enabled():
+            raise RuntimeError("legacy flow runtime disabled")
         import threading as _t
         import logging as _logging
         from flow_api import get_flow_service as _get_flow_service
@@ -1770,6 +1925,8 @@ async def ops_webhook(request: Request):
 
     # === Mount B6: 告警自动调查 (incident-investigator，daemon 线程异步执行，不阻塞告警入库) ===
     try:
+        if not _legacy_flow_runtime_enabled():
+            raise RuntimeError("legacy alert investigator disabled")
         import logging as _logging
         import threading as _t
         from investigator import maybe_investigate
@@ -2027,6 +2184,8 @@ class K8sActionBody(BaseModel):
 @app.post("/api/v1/ops/k8s/preflight")
 def k8s_preflight(body: K8sActionBody, request: Request):
     """预检: 白名单校验 + 资源存在性 + resourceVersion + preflight token (TTL 5min)。"""
+    if not _direct_mutation_enabled():
+        raise HTTPException(410, "DIRECT_MUTATION_MOVED_TO_ACTION_EXECUTOR")
     _require_approver(request)
     import k8s_actions
     result = k8s_actions.preflight(body.action, kind=body.kind, namespace=body.namespace,
@@ -2045,6 +2204,8 @@ def k8s_preflight(body: K8sActionBody, request: Request):
 @app.post("/api/v1/ops/k8s/execute")
 def k8s_execute(body: K8sActionBody, request: Request):
     """执行: 审批(destructive) → preflight token → 乐观锁 → 执行 + 审计。"""
+    if not _direct_mutation_enabled():
+        raise HTTPException(410, "DIRECT_MUTATION_MOVED_TO_ACTION_EXECUTOR")
     _require_approver(request)
     import k8s_actions
     try:
@@ -3438,6 +3599,8 @@ async def nl2sql_translate(body: dict = None, request: Request = None):
 def nl2sql_execute(sid: str):
     """同步 handler：内部含阻塞的 ClickHouse 查询 + 审计 MySQL 写入，
     用同步 def 让 FastAPI 放入线程池执行，避免 async 事件循环中同步 DB 写入被吞。"""
+    if not _direct_mutation_enabled():
+        raise HTTPException(410, "DIRECT_MUTATION_MOVED_TO_ACTION_EXECUTOR")
     item = _nl2sql_store.get(sid)
     if not item:
         raise HTTPException(404, "not found")

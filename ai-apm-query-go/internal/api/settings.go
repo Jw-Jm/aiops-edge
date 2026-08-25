@@ -730,9 +730,9 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Sign RunInvocationContext with capability=ai.chat (对话型，非 ai.investigate)。
-	signed, err := issuer.SignRunInvocation(
+	signed, err := issuer.SignChatInvocation(
 		"user", authCtx.UserID, authCtx.SessionID, authCtx.TenantID, "frontend",
-		[]string{cluster.ClusterID}, time.Now(), "ai.chat")
+		[]string{cluster.ClusterID}, time.Now())
 	if err != nil {
 		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 		return

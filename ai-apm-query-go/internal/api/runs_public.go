@@ -3,7 +3,9 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
@@ -48,11 +50,12 @@ func randomUUID() string {
 // (tenant_id, request_id)），使同一 idempotency_key 重试返回首次创建结果（P1-1）。
 type createRunPublicRequest struct {
 	TenantID       string `json:"tenant_id"`
-	ClusterID      string `json:"cluster_id"`       // 必填：调查必须有目标 cluster（P1-1 禁空 cluster 非法 multi-cluster scope）
-	IdempotencyKey string `json:"idempotency_key"`  // 客户端幂等键 → request_id
+	ClusterID      string `json:"cluster_id"`      // 必填：调查必须有目标 cluster（P1-1 禁空 cluster 非法 multi-cluster scope）
+	IdempotencyKey string `json:"idempotency_key"` // 客户端幂等键 → request_id
 	Intent         string `json:"intent"`
 	ActionMode     string `json:"action_mode"`
 	Service        string `json:"service"`
+	ResourceID     string `json:"resource_id"`
 	Message        string `json:"message"`
 }
 
@@ -99,6 +102,7 @@ func (h *Handler) CreateRunPublic(w http.ResponseWriter, r *http.Request) {
 		requestID = randomUUID()
 	}
 	scopeKind := "single_cluster"
+	intent := firstNonEmpty(req.Intent, req.Message)
 	// 同事务创建 Run + 写 outbox（P0-5：outbox 失败则回滚，不留下"永不派发"的 Run）。
 	created, err := h.runDAO.CreateWithOutbox(
 		store.AIRun{
@@ -110,8 +114,10 @@ func (h *Handler) CreateRunPublic(w http.ResponseWriter, r *http.Request) {
 			SessionID:        auth.SessionID,
 			ScopeKind:        scopeKind,
 			PrimaryClusterID: req.ClusterID,
-			Intent:           req.Intent,
+			Intent:           intent,
 			ActionMode:       firstNonEmpty(req.ActionMode, "read_only"),
+			TargetType:       "service",
+			TargetResourceID: firstNonEmpty(req.ResourceID, req.Service),
 			Status:           "created",
 			StateVersion:     0,
 			CreatedAt:        now,
@@ -167,6 +173,8 @@ func (h *Handler) ListRunsPublic(w http.ResponseWriter, r *http.Request) {
 			"primary_cluster_id": nullableStringValue(rn.PrimaryClusterID),
 			"intent":             rn.Intent,
 			"action_mode":        rn.ActionMode,
+			"target_type":        nullableStringValue(rn.TargetType),
+			"target_resource_id": nullableStringValue(rn.TargetResourceID),
 			"created_at":         rn.CreatedAt.Format(time.RFC3339),
 		})
 	}
@@ -240,16 +248,97 @@ func (h *Handler) GetRunToolsPublic(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]interface{}{
 			"tool_run_id": t.ToolRunID, "step_id": nullableStringValue(t.StepID),
 			"tool_name": t.ToolName, "status": t.Status,
-			"result_quality": nullableStringValue(t.ResultQuality),
-			"executor_id": nullableStringValue(t.ExecutorID),
-			"lease_epoch_at_start": t.LeaseEpochAtStart,
+			"result_quality":        nullableStringValue(t.ResultQuality),
+			"executor_id":           nullableStringValue(t.ExecutorID),
+			"lease_epoch_at_start":  t.LeaseEpochAtStart,
 			"eligible_for_evidence": t.EligibleForEvidence,
-			"result_digest_sha256": nullableStringValue(t.ResultDigestSHA256),
-			"result_truncated": t.ResultTruncated, "result_count": t.ResultCount,
+			"result_digest_sha256":  nullableStringValue(t.ResultDigestSHA256),
+			"result_truncated":      t.ResultTruncated, "result_count": t.ResultCount,
 			"error_message": nullableStringValue(t.ErrorMessage),
 		})
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"tools": out, "total": len(out)})
+}
+
+// GetRunEvidencesPublic returns query-api-owned Evidence for a Run.
+func (h *Handler) GetRunEvidencesPublic(w http.ResponseWriter, r *http.Request) {
+	auth, ok := requestAuthorizationContext(r)
+	if !ok || auth.UserID == "" {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	runID := extractRunIDFromPath(r.URL.Path)
+	if h.runDAO == nil || h.evidenceDAO == nil || runID == "" {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "persistence_unavailable"})
+		return
+	}
+	run, err := h.runDAO.Get(runID)
+	if err != nil || run == nil {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+		return
+	}
+	if run.TenantID != auth.TenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+		return
+	}
+	evs, err := h.evidenceDAO.ListByRun(runID, run.TenantID, run.PrimaryClusterID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "evidence_list_failed"})
+		return
+	}
+	out := make([]map[string]interface{}, 0, len(evs))
+	for _, ev := range evs {
+		out = append(out, evidenceToMap(&ev))
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"run_id": runID, "evidences": out, "count": len(out)})
+}
+
+// GetRunEvidencePublic returns one Evidence under run + tenant + cluster scope.
+func (h *Handler) GetRunEvidencePublic(w http.ResponseWriter, r *http.Request) {
+	auth, ok := requestAuthorizationContext(r)
+	if !ok || auth.UserID == "" {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	runID := extractRunIDFromPath(r.URL.Path)
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	evidenceID := ""
+	for i := range parts {
+		if parts[i] == "evidences" && i+1 < len(parts) {
+			evidenceID = parts[i+1]
+		}
+	}
+	if h.runDAO == nil || h.evidenceDAO == nil || runID == "" || evidenceID == "" {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "persistence_unavailable"})
+		return
+	}
+	run, err := h.runDAO.Get(runID)
+	if err != nil || run == nil {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+		return
+	}
+	if run.TenantID != auth.TenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+		return
+	}
+	ev, err := h.evidenceDAO.GetByID(evidenceID, runID, run.TenantID, run.PrimaryClusterID)
+	if err != nil || ev == nil {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"evidence": evidenceToMap(ev)})
+}
+
+func evidenceToMap(ev *store.Evidence) map[string]interface{} {
+	return map[string]interface{}{
+		"evidence_id": ev.EvidenceID, "run_id": ev.RunID, "tenant_id": ev.TenantID,
+		"cluster_id": ev.ClusterID, "evidence_type": ev.EvidenceType,
+		"source_ref": ev.SourceRef, "raw_ref": ev.RawRef,
+		"raw_digest_sha256": ev.RawDigestSHA256, "summary": ev.Summary,
+		"metadata":               json.RawMessage(ev.MetadataJSON),
+		"provenance_fingerprint": ev.ProvenanceFingerprint,
+		"collected_at":           ev.CollectedAt.Format(time.RFC3339),
+	}
 }
 
 func nullableStringValue(s string) interface{} {

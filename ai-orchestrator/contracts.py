@@ -233,15 +233,28 @@ class _ContextBase(ContractModel):
 
 
 class RunInvocationContext(_ContextBase):
-    """query-api → orchestrator, to create a new Run (V9.2 §11.1)."""
+    """query-api → orchestrator investigation or dialogue invocation.
+
+    Investigation contexts are bound to an existing persisted Run and outbox
+    invocation. Dialogue contexts must not carry either identity.
+    """
 
     context_type: ContextType = ContextType.RUN_INVOCATION
     source: str
     cluster_scope: List[UUID] = Field(min_length=1)
+    capability: Optional[str] = None
+    run_id: Optional[UUID] = None
+    invocation_id: Optional[UUID] = None
 
     @model_validator(mode="after")
     def validate_scope(self) -> "RunInvocationContext":
         # cluster_scope is the target scope for this run, not an authorization list.
+        if self.capability not in {None, "ai.chat", "ai.investigate"}:
+            raise ValueError("capability must be one of ai.chat | ai.investigate")
+        if self.capability == "ai.investigate" and (self.run_id is None or self.invocation_id is None):
+            raise ValueError("investigation invocation requires run_id and invocation_id")
+        if self.capability == "ai.chat" and (self.run_id is not None or self.invocation_id is not None):
+            raise ValueError("chat invocation must not carry run identity")
         return self
 
 
@@ -270,9 +283,12 @@ class TrustedRequestContext(_ContextBase):
     cluster_id: Optional[UUID] = None
     capability: ToolCapability
     source: str
+    workload_kind: str = "platform"
 
     @model_validator(mode="after")
     def validate_scope_kind(self) -> "TrustedRequestContext":
+        if self.workload_kind not in {"investigation", "chat", "platform"}:
+            raise ValueError("workload_kind must be investigation, chat, or platform")
         if self.scope_kind not in {"cluster", "run"}:
             raise ValueError("scope_kind must be cluster or run")
         if self.scope_kind == "cluster" and self.cluster_id is None:

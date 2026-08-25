@@ -29,6 +29,8 @@ CP_RUNS_RECOVER = "control_plane.runs.recover"
 CP_RUNS_RECOVER_GLOBAL = "control_plane.runs.recover.global"
 CP_EVENTS_APPEND = "control_plane.events.append"
 CP_EVENTS_REPLAY = "control_plane.events.replay"
+CP_EVIDENCE_CONSUME = "control_plane.evidence.consume"
+CP_VERIFICATIONS_APPEND = "control_plane.verifications.append"
 CP_SETTINGS_READ = "control_plane.settings.read"
 CP_SETTINGS_WRITE = "control_plane.settings.write"
 CP_KNOWLEDGE_GRAPH_READ = "control_plane.knowledge_graph.read"
@@ -104,7 +106,7 @@ class ControlPlaneClient:
     # ── claims 构造（system principal，scope_kind=run）────────────────────
     def _claims(self, *, run_id: str, capability: str, tenant_id: str,
                 request_id: Optional[str] = None, cluster_id: str = "",
-                scope_kind: str = "run") -> dict:
+                scope_kind: str = "run", workload_kind: str = "platform") -> dict:
         now = datetime.now(timezone.utc)
         return {
             "version": 1,
@@ -121,6 +123,7 @@ class ControlPlaneClient:
             "cluster_id": cluster_id,
             "capability": capability,
             "source": "control-plane",
+            "workload_kind": workload_kind,
             "issued_at": now,
             "expires_at": now + timedelta(seconds=_CP_LIFETIME_SECONDS),
             "nonce": str(uuid.uuid4()),
@@ -291,3 +294,40 @@ class ControlPlaneClient:
         claims = self._claims(run_id=run_id, capability=CP_EVENTS_REPLAY, tenant_id=tenant_id)
         path = f"/internal/v1/control-plane/runs/{run_id}/events?after_sequence={after_sequence}"
         return self._get(path, claims).get("events", [])
+
+    def consume_tool_evidence(self, *, run_id: str, tenant_id: str, cluster_id: str,
+                              tool_run_id: str, evidence_id: str, evidence_type: str,
+                              source_ref: str, raw_ref: str, raw_digest_sha256: str,
+                              summary: str, metadata: Mapping[str, Any] | None = None,
+                              provenance_fingerprint: str = "") -> dict:
+        """Atomically consume an eligible ToolRun into query-api Evidence."""
+        claims = self._claims(run_id=run_id, capability=CP_EVIDENCE_CONSUME,
+                              tenant_id=tenant_id, scope_kind="run")
+        return self._post(
+            f"/internal/v1/control-plane/tools/{tool_run_id}/evidence/consume", claims,
+            {"run_id": run_id, "tenant_id": tenant_id, "cluster_id": cluster_id,
+             "evidence_id": evidence_id, "evidence_type": evidence_type,
+             "source_ref": source_ref, "raw_ref": raw_ref,
+             "raw_digest_sha256": raw_digest_sha256, "summary": summary,
+             "metadata": dict(metadata or {}),
+            "provenance_fingerprint": provenance_fingerprint},
+        )
+
+    def append_verification(self, *, run_id: str, tenant_id: str,
+                            verification_id: str, action_id: str, status: str,
+                            before_snapshot: Mapping[str, Any],
+                            after_snapshot: Mapping[str, Any],
+                            observation_window_seconds: int,
+                            checks: list[Mapping[str, Any]] | None = None,
+                            summary: str = "") -> dict:
+        """Persist an independent observer result in query-api/MySQL."""
+        claims = self._claims(run_id=run_id, capability=CP_VERIFICATIONS_APPEND,
+                              tenant_id=tenant_id, scope_kind="run")
+        return self._post(
+            f"/internal/v1/control-plane/runs/{run_id}/verifications", claims,
+            {"verification_id": verification_id, "action_id": action_id,
+             "status": status, "before_snapshot": dict(before_snapshot or {}),
+             "after_snapshot": dict(after_snapshot or {}),
+             "observation_window_seconds": observation_window_seconds,
+             "checks": list(checks or []), "summary": summary},
+        )

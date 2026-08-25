@@ -89,6 +89,15 @@ def test_context_lifetime_bounded():
         TrustedRequestContext.model_validate({**tr, "expires_at": "2026-08-19T10:05:00Z"})
 
 
+def test_trusted_request_workload_kind_is_bounded():
+    base = load_fixture()["trusted_request_context"]
+    for kind in ("investigation", "chat", "platform"):
+        context = TrustedRequestContext.model_validate({**base, "workload_kind": kind})
+        assert context.workload_kind == kind
+    with pytest.raises(ValidationError):
+        TrustedRequestContext.model_validate({**base, "workload_kind": "admin"})
+
+
 # ── ResourceRef — canonical id does NOT include tenant (V9.2 §10) ──────
 
 def test_resource_ref_does_not_include_tenant_in_id():

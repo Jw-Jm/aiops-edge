@@ -43,7 +43,7 @@ const InvestigationCenter: React.FC = () => {
             runId: r.run_id,
             tenantId: r.tenant_id ?? '',
             clusterId: r.primary_cluster_id ?? '',
-            resourceId: r.intent ?? 'investigation',
+            resourceId: r.target_resource_id ?? 'investigation',
             symptom: r.intent ?? '—',
             status: (r.status ?? 'created') as InvestigationRun['status'],
             rootCause: r.root_cause ?? null,

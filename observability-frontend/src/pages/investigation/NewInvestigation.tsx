@@ -20,13 +20,15 @@ const NewInvestigation: React.FC = () => {
       tenant_id: TENANT_ID,
       cluster_id: values.clusterId,
       resource_id: values.resourceId,
+      service: values.resourceId,
       intent: values.symptom,
+      message: values.symptom,
       action_mode: 'read_only',
       principal_type: 'user',
     })
-      .then(() => {
+      .then((resp) => {
         message.success('调查已发起')
-        navigate('/investigation')
+        navigate(`/investigation/${resp.data.run_id}`)
       })
       .catch(() => {
         message.error('发起失败：后端 Run API 不可用或鉴权被拒')

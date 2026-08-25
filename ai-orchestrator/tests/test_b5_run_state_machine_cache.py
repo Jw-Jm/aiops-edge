@@ -47,6 +47,10 @@ def test_state_machine_accepts_legal_transition():
     RunStateMachine.validate_transition("executing", "partial")
 
 
+def test_read_only_investigation_can_enter_verifying():
+    RunStateMachine.validate_transition("investigating", "verifying")
+
+
 def test_state_machine_terminal_and_cancel():
     assert RunStateMachine.is_terminal("partial")
     assert not RunStateMachine.is_terminal("created")

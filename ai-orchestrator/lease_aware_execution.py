@@ -63,10 +63,24 @@ class LeaseAwareExecutor:
         """返回 LeaseContext 上下文管理器。"""
         return _LeaseContext(self._client, run_id, tenant_id, owner_id, lease_seconds)
 
+    def acquire(self, *, run_id: str, tenant_id: str, owner_id: str = SYSTEM_OWNER,
+                claim_id: str = "", lease_seconds: int = DEFAULT_LEASE_SECONDS):
+        """Acquire and return a handle whose lifetime can span HTTP acceptance.
+
+        The caller must invoke ``close`` exactly once after queued work has
+        completed. This is the asynchronous counterpart to ``lease(...)``.
+        """
+        handle = _LeaseContext(
+            self._client, run_id, tenant_id, owner_id, lease_seconds,
+            claim_id=claim_id or None,
+        )
+        handle.__enter__()
+        return handle
+
 
 class _LeaseContext:
     def __init__(self, client: ControlPlaneClient, run_id: str, tenant_id: str,
-                 owner_id: str, lease_seconds: int) -> None:
+                 owner_id: str, lease_seconds: int, claim_id: Optional[str] = None) -> None:
         self._client = client
         self._run_id = run_id
         self._tenant_id = tenant_id
@@ -81,7 +95,7 @@ class _LeaseContext:
         self._renew_failures = 0
         # P0-LEASE-03：caller 生成稳定 claim_id + lease_token（>=256-bit random），
         # Claim 响应丢失后以相同 claim_id 精确重试恢复同一 Lease。
-        self._claim_id = str(uuid.uuid4())
+        self._claim_id = claim_id or str(uuid.uuid4())
         self._lease_token = str(uuid.uuid4()) + str(uuid.uuid4())
 
     def __enter__(self) -> "_LeaseContext":
@@ -103,6 +117,9 @@ class _LeaseContext:
         if self._renew_thread is not None:
             self._renew_thread.join(timeout=3)
         return False  # 不吞异常
+
+    def close(self) -> None:
+        self.__exit__(None, None, None)
 
     # P0#4/#12：Lease 状态机——每次 renew 后更新 ACTIVE；renew 失败 → UNCERTAIN → LOST。
     # LOST 状态下调用方应停止（不执行无 Lease 保护的数据面/动作）。

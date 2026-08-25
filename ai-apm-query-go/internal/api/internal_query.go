@@ -44,6 +44,7 @@ type internalQueryRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 	ExecutorID     string `json:"executor_id"`
 	LeaseEpoch     int64  `json:"lease_epoch"`
+	WorkloadKind   string `json:"workload_kind"` // investigation | chat | platform
 	// P0-TOOL-02：Lease token（明文）——Tool 执行前 server-side fencing 用。
 	//   缺失则不做 ToolRun 包装（无 Lease 保护的查询不写 ToolRun，避免无审计数据面访问）。
 	LeaseToken string `json:"lease_token"`
@@ -67,23 +68,54 @@ func decodeInternalRequest(r *http.Request, capability string) (*internalQueryCt
 	if err := checkScopeMatch(rctx, req.TenantID, req.ClusterID); err != nil {
 		return nil, nil, err
 	}
+	if err := checkWorkloadKindMatch(rctx.WorkloadKind, req.WorkloadKind); err != nil {
+		return nil, nil, err
+	}
+	if req.WorkloadKind == "investigation" && req.RunID != rctx.RunID {
+		return nil, nil, &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "run scope mismatch"}
+	}
 	return rctx, &req, nil
+}
+
+// checkWorkloadKindMatch keeps the workload boundary fail-closed. In
+// particular, a body-only investigation declaration is not trusted, and a
+// signed investigation cannot be omitted or downgraded by the body.
+func checkWorkloadKindMatch(signed, body string) error {
+	if body == "investigation" && signed != "investigation" {
+		return &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "workload kind mismatch"}
+	}
+	if signed == "investigation" && body != "investigation" {
+		return &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "workload kind mismatch"}
+	}
+	if body != "" && signed != "" && body != signed {
+		return &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "workload kind mismatch"}
+	}
+	return nil
 }
 
 // beginToolRun 包装 internal query 的 ToolRun 开始（B1-02）。返回 toolRunContext（nil=不包装）。
 // 幂等命中（同 idempotency_key 已存在）→ 返回 trc + idempotent=true（调用方不再执行，直接返回）。
 func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID string) (*toolRunContext, bool, error) {
+	if err := validateToolRunRequest(req); err != nil {
+		return nil, false, err
+	}
 	trc := newToolRunFromRequest(req, tenantID, clusterID)
 	if trc == nil {
+		if req != nil && req.WorkloadKind == "investigation" {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeValidationFailed, Message: "investigation ToolRun context required"}
+		}
 		return nil, false, nil
 	}
 	if h.toolDAO == nil {
+		if req.WorkloadKind == "investigation" {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "ToolRun persistence unavailable"}
+		}
 		return trc, false, nil
 	}
 	// 幂等命中（P0-TOOL-04）：同 (run_id, idempotency_key, args_hash) 已有 ToolRun 且非 running →
 	// 不重复真实查询，返回既有。同 idempotency_key 但 args_hash 不同 → 409 IDEMPOTENCY_KEY_REUSED。
 	if trc.IdempotencyKey != "" {
-		exists, err := h.toolDAO.GetByIdemKey(trc.IdempotencyKey)
+		exists, err := h.toolDAO.GetByIdemKey(trc.RunID, trc.IdempotencyKey)
 		if err == nil && exists != nil {
 			if exists.ArgsHash != "" && exists.ArgsHash != trc.ArgsHash {
 				return nil, false, &toolIdempotencyReusedError{}
@@ -183,7 +215,11 @@ func (h *Handler) InternalQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		respondInternalQueryError(w, err)
 		return
 	}
-	trc, idempotent, _ := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	trc, idempotent, beginErr := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	if beginErr != nil {
+		respondInternalQueryError(w, beginErr)
+		return
+	}
 	if idempotent {
 		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
 		return
@@ -326,7 +362,11 @@ func (h *Handler) InternalQueryKubernetes(w http.ResponseWriter, r *http.Request
 		respondInternalQueryError(w, err)
 		return
 	}
-	trc, idempotent, _ := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	trc, idempotent, beginErr := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	if beginErr != nil {
+		respondInternalQueryError(w, beginErr)
+		return
+	}
 	if idempotent {
 		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
 		return

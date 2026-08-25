@@ -193,6 +193,7 @@ class TestT1SignAndQuery:
         assert transport.calls[0]["context_claims"]["capability"] == "observability.logs.read"
         assert transport.calls[0]["context_claims"]["tenant_id"] == "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
         assert transport.calls[0]["context_claims"]["cluster_id"] == "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
+        assert transport.calls[0]["context_claims"]["workload_kind"] == "platform"
 
 
 # ═══════════════════════════════════════════════════════

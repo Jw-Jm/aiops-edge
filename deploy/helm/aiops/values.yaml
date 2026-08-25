@@ -321,14 +321,17 @@ aiOrchestrator:
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   llmMock: "false"
+  # Canonical persistent Investigation runtime switches. Legacy flow and
+  # investigator runtimes stay disabled; mutations are executor-owned.
+  investigationRuntimeEnabled: "1"
+  legacyFlowRuntimeEnabled: "0"
+  investigatorEnabled: "0"
+  legacyDirectMutationsEnabled: "0"
   # 知识图谱定时重建间隔（秒）；0 关闭。默认 60s（每 1 分钟刷新一次）
   kgBuildIntervalSeconds: 60
   dataStorageClass: ""
   dataStorage: 5Gi
-  # ── P0-P13 审计紧急隔离（包1）：orchestrator 安全最小化，默认 fail-closed ──
-  # grantK8sWrite：是否授予 orchestrator K8s 集群写权限（workload patch/scale/pod eviction/node patch）。
-  #   审计 P0-3：ClusterRole 集群写权限与 P13.7/F4/F5（orchestrator 无 target K8s 写凭据）冲突。
-  #   默认 false（fail-closed，不授予）；工作流 K8s 动作应由独立执行服务身份按动作临时授权（后续架构）。
+  # Deprecated compatibility knobs; ignored by the read-only RBAC template.
   grantK8sWrite: false
   # injectDbCredentials：是否向 orchestrator 注入 ClickHouse/MySQL 直连凭据。
   #   审计 P0-3：orchestrator 不应持有 DB 直连凭据，原则上只访问 query-api。

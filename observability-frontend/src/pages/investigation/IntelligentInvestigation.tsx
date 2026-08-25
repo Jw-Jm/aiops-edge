@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { Badge, Button, Card, Col, Collapse, Descriptions, Row, Space, Steps, Tag, Typography } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getRun, listRunEvidences, listRunTools, RunTool } from '../../api/client'
+import { getRun, listRunEvidences, listRunTools, RunTool, streamRunEvents } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
-import { ToolResultStatus } from '../../components/ToolResultStatus'
 
 const { Text } = Typography
 
@@ -15,6 +14,7 @@ interface InvestigationDetail {
   runId: string
   scope: { tenantId: string; clusterId: string; resourceId: string; time: string }
   intent: string
+  status: string
   plan: { step: string; tool: string; status: string }[]
   evidence: { id: string; type: string; source: string; reliability: number | string; fact: string }[]
   hypothesis: { id: string; claim: string; support: number; contradictions: string[]; missing: string[] }[]
@@ -27,6 +27,7 @@ const EMPTY_DETAIL: InvestigationDetail = {
   runId: '',
   scope: { tenantId: '', clusterId: '', resourceId: '', time: '' },
   intent: '—',
+  status: 'created',
   plan: [],
   evidence: [],
   hypothesis: [],
@@ -41,11 +42,13 @@ const InvestigationDetailView: React.FC = () => {
   const [detail, setDetail] = useState<InvestigationDetail>(EMPTY_DETAIL)
   // C2-4：真实 Tool Activity（ai_tool_runs），不用图节点推断冒充。
   const [tools, setTools] = useState<RunTool[]>([])
+  const [lastEvent, setLastEvent] = useState('')
 
   useEffect(() => {
     // P12：接真实 Run 详情 GET /api/v1/ai/runs/:id；无数据/API 失败保持空态（不伪造 DEMO，不自动创建 Run）
     if (!runId) return
     let cancelled = false
+    const controller = new AbortController()
     // C2-4：拉取真实 ToolRun（只读工具执行事实）。
     listRunTools(runId)
       .then((resp) => { if (!cancelled && Array.isArray(resp.data?.tools)) setTools(resp.data.tools) })
@@ -79,10 +82,11 @@ const InvestigationDetailView: React.FC = () => {
           scope: {
             tenantId: r.tenant_id ?? '',
             clusterId: r.primary_cluster_id ?? '',
-            resourceId: r.intent ?? 'investigation',
+            resourceId: r.target_resource_id ?? 'investigation',
             time: r.created_at ?? '',
           },
           intent: r.intent ?? '—',
+          status: r.status ?? 'created',
           plan: [],
           evidence,
           hypothesis: [],
@@ -92,7 +96,14 @@ const InvestigationDetailView: React.FC = () => {
         })
       })
       .catch(() => { if (!cancelled) setDetail(EMPTY_DETAIL) })
-    return () => { cancelled = true }
+    streamRunEvents(runId, (event) => {
+      if (cancelled) return
+      const type = event.event_type ?? event.error ?? ''
+      if (type) setLastEvent(type)
+      const payload = event.payload as { status?: string } | undefined
+      if (payload?.status) setDetail((previous) => ({ ...previous, status: payload.status ?? previous.status }))
+    }, controller.signal).catch(() => { /* details remain the durable source */ })
+    return () => { cancelled = true; controller.abort() }
   }, [runId])
 
   const d = detail
@@ -112,6 +123,8 @@ const InvestigationDetailView: React.FC = () => {
               <Descriptions.Item label="Cluster">{d.scope.clusterId}</Descriptions.Item>
               <Descriptions.Item label="Resource">{d.scope.resourceId}</Descriptions.Item>
             </Descriptions>
+            <Text strong>状态：</Text>
+            <Tag color={d.status === 'success' ? 'green' : d.status === 'failed' ? 'red' : 'blue'}>{d.status}</Tag>
             <Text strong>Intent：</Text>
             <Text>{d.intent}</Text>
           </Card>
@@ -149,16 +162,13 @@ const InvestigationDetailView: React.FC = () => {
               </div>
             ))}
           </Card>
-          <Card title="执行状态（SSE 区分，不统一为暂无数据）" size="small" style={{ marginTop: 16 }}>
-            <ToolResultStatus status="no_data" detail="数据源无匹配记录" />
-            <ToolResultStatus status="permission_denied" detail="权限被拒绝，非数据缺失" />
-            <ToolResultStatus status="unavailable" detail="数据源服务未就绪" />
-            <ToolResultStatus status="timeout" detail="查询超时" />
+          <Card title="执行事件（持久化 SSE）" size="small" style={{ marginTop: 16 }}>
+            {lastEvent ? <Text>{lastEvent}</Text> : <Text type="secondary">暂无事件</Text>}
           </Card>
         </Col>
         <Col span={24}>
           <Card title="Hypothesis / Root Cause / Action" size="small">
-            {d.hypothesis.map((h) => (
+            {d.hypothesis.length === 0 ? <Text type="secondary">暂无持久化假设或动作记录</Text> : d.hypothesis.map((h) => (
               <Collapse key={h.id} size="small" items={[{
                 key: h.id,
                 label: <Space>{h.claim} <Tag color={h.support > 0.8 ? 'green' : 'blue'}>support {(h.support * 100).toFixed(0)}%</Tag></Space>,

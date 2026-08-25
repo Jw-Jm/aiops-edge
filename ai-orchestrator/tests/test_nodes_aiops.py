@@ -30,3 +30,22 @@ def test_execute_returns_output_dict():
     spec = node_registry.lookup("collect")
     out = spec.execute(RunContext(), {"service": "demo"})
     assert isinstance(out, dict)
+
+
+def test_verify_without_target_is_inconclusive_not_success():
+    """Verification must never claim success when no observable target exists."""
+    node_registry.reset()
+    register_aiops_nodes()
+    spec = node_registry.lookup("verify")
+    out = spec.execute(RunContext(), {})
+    assert out["pass"] is False
+    assert out["status"] == "inconclusive"
+    assert out["error_code"] == "VERIFICATION_INCONCLUSIVE"
+
+
+def test_execute_never_runs_shell_from_legacy_flow_node():
+    node_registry.reset()
+    register_aiops_nodes()
+    spec = node_registry.lookup("execute")
+    out = spec.execute(RunContext(vars={"_approved": True}), {"script": "kubectl get pods"})
+    assert out["error_code"] == "ACTION_EXECUTOR_REQUIRED"

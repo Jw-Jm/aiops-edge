@@ -120,19 +120,21 @@ type Handler struct {
 	// runDAO 读写 ai_runs；outboxDAO 记录 Run 创建后的可靠派发；
 	// eventDAO 读写 ai_run_events（sequence/幂等）；planDAO/toolDAO/actionDAO/cmdDAO
 	// 读写 Plan/Step/Tool/Action/ControlCommand（重启恢复，Plan C）。
-	runDAO      *store.AIRunDAO
-	outboxDAO   *store.AIRunOutboxDAO
-	eventDAO    *store.AIRunEventDAO
-	planDAO     *store.AIPlanStepDAO
-	toolDAO     *store.AIToolRunDAO
-	actionDAO   *store.AIActionDAO
-	cmdDAO      *store.AIControlCommandDAO
-	approvalDAO *store.AIApprovalDecisionDAO
+	runDAO          *store.AIRunDAO
+	outboxDAO       *store.AIRunOutboxDAO
+	eventDAO        *store.AIRunEventDAO
+	planDAO         *store.AIPlanStepDAO
+	toolDAO         *store.AIToolRunDAO
+	actionDAO       *store.AIActionDAO
+	cmdDAO          *store.AIControlCommandDAO
+	approvalDAO     *store.AIApprovalDecisionDAO
+	attemptDAO      *store.AIActionAttemptDAO
+	verificationDAO *store.AIVerificationDAO
 	// A1：Runtime execution Lease + Runtime Commit（并发权威）。
-	leaseDAO  *store.RuntimeLeaseDAO
-	commitDAO *store.RuntimeCommitDAO
+	leaseDAO    *store.RuntimeLeaseDAO
+	commitDAO   *store.RuntimeCommitDAO
 	evidenceDAO *store.EvidenceDAO
-	runControl *RunControlService
+	runControl  *RunControlService
 	// C-03：Alert 单 Leader + cooldown/dampening MySQL 持久化。
 	alertLeaderDAO    *store.AlertEvalLeaderDAO
 	alertRuleStateDAO *store.AlertRuleRuntimeStateDAO
@@ -187,8 +189,10 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.planDAO = &store.AIPlanStepDAO{}
 	h.toolDAO = &store.AIToolRunDAO{}
 	h.actionDAO = &store.AIActionDAO{}
+	h.attemptDAO = &store.AIActionAttemptDAO{}
 	h.cmdDAO = &store.AIControlCommandDAO{}
 	h.approvalDAO = &store.AIApprovalDecisionDAO{}
+	h.verificationDAO = &store.AIVerificationDAO{}
 	h.leaseDAO = &store.RuntimeLeaseDAO{}
 	h.commitDAO = &store.RuntimeCommitDAO{}
 	h.alertLeaderDAO = &store.AlertEvalLeaderDAO{}
@@ -886,7 +890,7 @@ func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 	// 生产 fail-closed，改走 typed metrics。
 	if promql != "" && service == "" {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"error": "METRICS_PROMQL_PASSTHROUGH_DISABLED",
+			"error":  "METRICS_PROMQL_PASSTHROUGH_DISABLED",
 			"detail": "任意 PromQL 直通已关闭；请使用 typed metrics（带 service）",
 		})
 		return
@@ -902,7 +906,7 @@ func (h *Handler) QueryMetrics(w http.ResponseWriter, r *http.Request) {
 	// 11.11.3：不接受 'all' 当作空过滤；metrics 必须 concrete canonical cluster。
 	if cid == "" || cid == "all" {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"error": "MISSING_CONCRETE_CLUSTER",
+			"error":  "MISSING_CONCRETE_CLUSTER",
 			"detail": "metrics 查询必须指定 concrete canonical cluster_id",
 		})
 		return

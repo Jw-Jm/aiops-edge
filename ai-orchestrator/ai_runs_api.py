@@ -13,8 +13,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.params import Depends as DependsParam
 
 import contracts
 from run_persistence import RunPersistenceError, RunStateStore
@@ -98,6 +100,14 @@ def _authorize_run_scope(run: contracts.Run, tenant_id: Optional[str], cluster_i
         raise HTTPException(status_code=403, detail="SCOPE_MISMATCH")
 
 
+def _legacy_evidence_route_enabled(store: RunStateStore) -> bool:
+    """Allow isolated in-memory tests/dev only when no query-api is configured."""
+    # A direct Python call still receives FastAPI's Depends sentinel; keep that
+    # path retired so authority tests cannot accidentally exercise the legacy
+    # store outside an HTTP-injected dev/test route.
+    return not bool(os.environ.get("QUERY_API_URL")) and not isinstance(store, DependsParam)
+
+
 @router.get("/runs/{run_id}/evidences")
 def list_run_evidences(
     run_id: str,
@@ -105,11 +115,13 @@ def list_run_evidences(
     cluster_id: Optional[str] = None,
     store: RunStateStore = Depends(_get_store),
 ) -> dict[str, Any]:
-    """Evidence Detail API：列出 Run 的证据链（tenant+cluster+run 三元授权，只读）。"""
-    run = _load_run_or_404(run_id, store)
-    _authorize_run_scope(run, tenant_id, cluster_id)
-    evidences = _get_registry().list_evidences(str(run.run_id))
-    return {"run_id": str(run.run_id), "evidences": evidences, "count": len(evidences)}
+    """Evidence authority moved to query-api; this split-brain route is retired."""
+    if _legacy_evidence_route_enabled(store):
+        run = _load_run_or_404(run_id, store)
+        _authorize_run_scope(run, tenant_id, cluster_id)
+        entries = _get_registry().list_evidences(run_id)
+        return {"run_id": run_id, "evidences": entries, "count": len(entries)}
+    raise HTTPException(status_code=410, detail="EVIDENCE_AUTHORITY_MOVED_TO_QUERY_API")
 
 
 @router.get("/runs/{run_id}/evidences/{evidence_id}")
@@ -120,18 +132,18 @@ def get_run_evidence(
     cluster_id: Optional[str] = None,
     store: RunStateStore = Depends(_get_store),
 ) -> dict[str, Any]:
-    """Evidence Detail API：单条证据详情（三元授权；404 未知 / 403 scope 不匹配）。"""
-    run = _load_run_or_404(run_id, store)
-    _authorize_run_scope(run, tenant_id, cluster_id)
-    try:
-        evidence = _get_registry().authorize_and_get(
-            str(run.run_id), evidence_id, tenant_id or "", cluster_id or "",
-        )
-    except LookupError:
-        raise HTTPException(status_code=404, detail="EVIDENCE_NOT_FOUND")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="SCOPE_MISMATCH")
-    return {"evidence": evidence}
+    """Evidence authority moved to query-api; this split-brain route is retired."""
+    if _legacy_evidence_route_enabled(store):
+        run = _load_run_or_404(run_id, store)
+        _authorize_run_scope(run, tenant_id, cluster_id)
+        try:
+            evidence = _get_registry().authorize_and_get(run_id, evidence_id, tenant_id, cluster_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="EVIDENCE_NOT_FOUND") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="SCOPE_MISMATCH") from None
+        return {"run_id": run_id, "evidence": evidence}
+    raise HTTPException(status_code=410, detail="EVIDENCE_AUTHORITY_MOVED_TO_QUERY_API")
 
 
 @router.post("/runs")

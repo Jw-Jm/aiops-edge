@@ -299,6 +299,32 @@ func TestInternalQueryRunScopeRejected(t *testing.T) {
 	}
 }
 
+func TestInternalQueryInvestigationRequiresSignedWorkloadKind(t *testing.T) {
+	c := newInternalQueryTestHandler(t, nil)
+	req := c.signedRequest(t, http.MethodPost, "/internal/v1/query/changes", `{"workload_kind":"investigation","run_id":"22222222-2222-4222-8222-222222222222","service":"checkout"}`, func(ctx *contract.TrustedRequestContext) {
+		ctx.Capability = "changes.read"
+		ctx.WorkloadKind = "platform"
+	})
+	rec := httptest.NewRecorder()
+	c.h.InternalQueryChanges(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unsigned investigation workload must be rejected, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInternalQuerySignedInvestigationCannotBeDowngraded(t *testing.T) {
+	c := newInternalQueryTestHandler(t, nil)
+	req := c.signedRequest(t, http.MethodPost, "/internal/v1/query/changes", `{"workload_kind":"chat","service":"checkout"}`, func(ctx *contract.TrustedRequestContext) {
+		ctx.Capability = "changes.read"
+		ctx.WorkloadKind = "investigation"
+	})
+	rec := httptest.NewRecorder()
+	c.h.InternalQueryChanges(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("investigation workload downgrade must be rejected, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestInternalQueryMetricsSuccess(t *testing.T) {
 	rows := `{"t":"2026-08-20 10:00:00","call_count":10,"error_count":1,"avg_ms":5.5}` + "\n"
 	c := newInternalQueryTestHandler(t, map[string]string{"FROM observability.trace_spans": rows})

@@ -53,7 +53,7 @@ _PERSONAS = None
 
 def _enabled() -> bool:
     """门控总开关 (env INVESTIGATOR_ENABLED, 默认 true)。"""
-    return os.environ.get("INVESTIGATOR_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+    return os.environ.get("INVESTIGATOR_ENABLED", "0").lower() in ("1", "true", "yes", "on")
 
 
 def _personas() -> dict:

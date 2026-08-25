@@ -76,6 +76,9 @@ func (h *Handler) InternalControlPlaneRunRouter(w http.ResponseWriter, r *http.R
 		case "approvals":
 			h.internalControlPlaneApprovalAppend(w, r, id)
 			return
+		case "verifications":
+			h.internalControlPlaneVerificationAppend(w, r, id)
+			return
 		}
 		h.internalControlPlaneRunGet(w, r, id)
 		return
@@ -151,13 +154,13 @@ func respondRunControlError(w http.ResponseWriter, err error) {
 // runTransitions 服务端 Run 状态机（与 orchestrator RunStateMachine.RUN_TRANSITIONS 对齐，
 // P1-3：状态迁移在 query-api 服务端校验合法性，不能只信任 orchestrator 传入的任意 target）。
 var runTransitions = map[string][]string{
-	"created":             {"planning", "cancelled"},
-	"planning":            {"investigating", "awaiting_confirmation", "failed", "cancelled"},
-	"investigating":       {"awaiting_confirmation", "awaiting_approval", "failed", "cancelled"},
+	"created":               {"planning", "cancelled"},
+	"planning":              {"investigating", "awaiting_confirmation", "failed", "cancelled"},
+	"investigating":         {"awaiting_confirmation", "awaiting_approval", "verifying", "failed", "cancelled"},
 	"awaiting_confirmation": {"investigating", "awaiting_approval", "cancelled"},
-	"awaiting_approval":   {"executing", "cancelled", "failed"},
-	"executing":           {"verifying", "success", "partial", "failed", "regressed", "cancelled"},
-	"verifying":           {"success", "partial", "failed", "regressed", "cancelled"},
+	"awaiting_approval":     {"executing", "cancelled", "failed"},
+	"executing":             {"verifying", "success", "partial", "failed", "regressed", "cancelled"},
+	"verifying":             {"success", "partial", "failed", "regressed", "cancelled"},
 }
 
 // runTerminal 终态集合。
@@ -415,6 +418,8 @@ func airunToMap(r *store.AIRun) map[string]interface{} {
 		"primary_cluster_id": nullableStringValue(r.PrimaryClusterID),
 		"intent":             r.Intent,
 		"action_mode":        r.ActionMode,
+		"target_type":        nullableStringValue(r.TargetType),
+		"target_resource_id": nullableStringValue(r.TargetResourceID),
 		"status":             r.Status,
 		"state_version":      r.StateVersion,
 		"created_at":         r.CreatedAt.Format(time.RFC3339),

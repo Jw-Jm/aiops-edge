@@ -15,7 +15,7 @@ Rules:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Protocol, runtime_checkable
 
 from trusted_context import TrustedContextError
@@ -67,6 +67,13 @@ class InvocationScope:
     cluster_id: str
     request_id: str
     source: str
+    run_id: str = ""
+    invocation_id: str = ""
+    workload_kind: str = "chat"
+    capability: str = ""
+    executor_id: str = ""
+    lease_epoch: int = 0
+    lease_token: str = ""
 
     @classmethod
     def from_run_invocation_context(cls, claims: dict) -> "InvocationScope":
@@ -91,7 +98,14 @@ class InvocationScope:
             cluster_id=str(cluster_scope[0]),
             request_id=str(request_id),
             source=str(claims.get("source", "orchestrator")),
+            run_id=str(claims.get("run_id") or ""),
+            invocation_id=str(claims.get("invocation_id") or ""),
+            workload_kind=("investigation" if claims.get("capability") == "ai.investigate" else "chat"),
+            capability=str(claims.get("capability") or ""),
         )
+
+    def bind_lease(self, *, executor_id: str, lease_epoch: int, lease_token: str) -> "InvocationScope":
+        return replace(self, executor_id=executor_id, lease_epoch=int(lease_epoch), lease_token=lease_token)
 
     # ScopeView properties (makes InvocationScope satisfy ScopeView directly).
     @property
@@ -149,6 +163,10 @@ class LegacyScopeAdapter:
         return str(getattr(self._ctx, "capability", ""))
 
     @property
+    def workload_kind(self) -> str:
+        return "chat"
+
+    @property
     def run_id(self) -> str:
         return str(getattr(self._ctx, "run_id", ""))
 
@@ -166,7 +184,7 @@ class LegacyScopeAdapter:
 # 满足 @runtime_checkable ScopeView 协议的对象。
 _SNAPSHOT_FIELDS = (
     "principal_id", "session_id", "tenant_id", "cluster_id",
-    "request_id", "source", "run_id", "principal_type", "capability",
+    "request_id", "source", "run_id", "principal_type", "capability", "workload_kind",
 )
 
 
@@ -182,7 +200,8 @@ class ScopeViewSnapshot:
     __slots__ = _SNAPSHOT_FIELDS
 
     def __init__(self, principal_id="", session_id=None, tenant_id="", cluster_id="",
-                 request_id="", source="", run_id="", principal_type="user", capability=""):
+                 request_id="", source="", run_id="", principal_type="user", capability="",
+                 workload_kind="chat"):
         self.principal_id = str(principal_id)
         self.session_id = str(session_id) if session_id is not None else None
         self.tenant_id = str(tenant_id)
@@ -192,6 +211,7 @@ class ScopeViewSnapshot:
         self.run_id = str(run_id)
         self.principal_type = str(principal_type)
         self.capability = str(capability)
+        self.workload_kind = str(workload_kind or "chat")
 
     @classmethod
     def to_projection(cls, view: ScopeView | None) -> dict:
@@ -226,4 +246,5 @@ class ScopeViewSnapshot:
             run_id=data.get("run_id") or "",
             principal_type=data.get("principal_type") or "user",
             capability=data.get("capability") or "",
+            workload_kind=data.get("workload_kind") or "chat",
         )

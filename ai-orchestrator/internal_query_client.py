@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from tool_registry import ToolRegistry
 from trusted_context import TrustedContextError, sign_trusted_request_context_v2
 from trusted_context_issuer import TrustedContextIssuer
+from tool_execution_context import ToolExecutionContext
 
 
 # operation → (固定 internal endpoint, 该端点所需 capability) 对齐 query-api routeCapability。
@@ -138,6 +139,7 @@ class InternalQueryClient:
         cluster_id: str,
         params: Mapping[str, Any],
         context_ref: str,
+        execution_context: ToolExecutionContext | None = None,
     ) -> QueryResult:
         """执行一次带能力门控的 internal query。capability 不能由调用方传入。"""
         tool = self._resolve_tool(tool_id)
@@ -148,17 +150,36 @@ class InternalQueryClient:
         # Tool-Capability binding：Tool 的能力必须与该端点所需能力精确一致（T6）。
         if tool.capability != required_capability:
             raise TrustedContextError("invalid_context")
-        body = self._build_body(params)
+        raw_params = dict(params)
+        raw_params.pop("_execution_context", None)
+        body = self._build_body(raw_params)
+        tool_context = execution_context
+        if tool_context is None and isinstance(params, Mapping) and context_ref:
+            # Investigation callers pass identity in the trusted in-process
+            # context; chat keeps the legacy read-only envelope for now.
+            context_mapping = params.get("_execution_context") if isinstance(params.get("_execution_context"), Mapping) else None
+            if context_mapping and context_mapping.get("workload_kind") == "investigation":
+                tool_context = ToolExecutionContext.from_mapping(
+                    context_mapping, tool_id=tool_id, params=raw_params,
+                )
+        if tool_context is not None and tool_context.workload_kind == "investigation":
+            body.update(tool_context.to_body())
+            run_id = tool_context.run_id
+            workload_kind = tool_context.workload_kind
+        else:
+            run_id = self._run_id(context_ref)
+            workload_kind = "platform"
         claims = self._issuer.build_claims(
             tenant_id=tenant_id,
             cluster_id=cluster_id,
             capability=tool.capability,
-            run_id=self._run_id(context_ref),
+            run_id=run_id,
             # 审计 P0-1：InternalQueryClient 是系统调查运行的查询代理（Planner DAG 驱动），
             # 非真实用户会话。必须使用 system principal（session_id 为空），
             # 不得伪造 user session，也不得自动生成非空 session。
             principal_type="system",
             principal_id=self._principal_id(context_ref),
+            workload_kind=workload_kind,
         )
         headers = {"Content-Type": "application/json", "X-Context-Ref": context_ref}
         status, raw = self._http(

@@ -44,17 +44,17 @@ type AIRun struct {
 	FinishedAt       *time.Time
 	LastEventSeq     int64
 	// A1（0004）execution Lease / runtime-wait（正交化，非第二套 RunStatus）。
-	LeaseOwnerID     string
-	LeaseEpoch       int64
-	LeaseClaimID     string
-	LeaseTokenHash   string
-	LeaseExpiresAt   *time.Time
-	HeartbeatAt      *time.Time
-	RuntimeWaitKind  string // none | retry | waiting
-	RetryNotBefore   *time.Time
-	RetryAttempt     int
-	LastFailureCode  string
-	RuntimeMetadata  []byte // JSON
+	LeaseOwnerID    string
+	LeaseEpoch      int64
+	LeaseClaimID    string
+	LeaseTokenHash  string
+	LeaseExpiresAt  *time.Time
+	HeartbeatAt     *time.Time
+	RuntimeWaitKind string // none | retry | waiting
+	RetryNotBefore  *time.Time
+	RetryAttempt    int
+	LastFailureCode string
+	RuntimeMetadata []byte // JSON
 }
 
 // AIRunDAO 访问 ai_runs 表。
@@ -387,7 +387,7 @@ func (d *AIRunDAO) GetWithRuntime(runID string) (*AIRun, error) {
 var runTransitions = map[string][]string{
 	"created":               {"planning", "cancelled"},
 	"planning":              {"investigating", "awaiting_confirmation", "failed", "cancelled"},
-	"investigating":         {"awaiting_confirmation", "awaiting_approval", "failed", "cancelled"},
+	"investigating":         {"awaiting_confirmation", "awaiting_approval", "verifying", "failed", "cancelled"},
 	"awaiting_confirmation": {"investigating", "awaiting_approval", "cancelled"},
 	"awaiting_approval":     {"executing", "cancelled", "failed"},
 	"executing":             {"verifying", "success", "partial", "failed", "regressed", "cancelled"},

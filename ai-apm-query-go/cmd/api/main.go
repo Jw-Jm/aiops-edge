@@ -329,6 +329,9 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/runs/{runID}", handler.GetRunPublic)
 	// C2-4：公共 Run Tool activity（真实 ai_tool_runs，不推断冒充）→ 只读工具执行事实。
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/tools", handler.GetRunToolsPublic)
+	// Evidence 只读投影由 query-api 持有（不再代理 orchestrator 内存注册表）。
+	mux.HandleFunc("/api/v1/ai/runs/{runID}/evidences", handler.GetRunEvidencesPublic)
+	mux.HandleFunc("/api/v1/ai/runs/{runID}/evidences/{evidenceID}", handler.GetRunEvidencePublic)
 	// Stage D 接线（报告 §29）：公共 action 执行端点（GET 详情放行；POST execute 需 admin）。
 	// GET /api/v1/ai/actions/{id} → 详情；POST /api/v1/ai/actions/{id}/execute → 经 executor 执行。
 	mux.HandleFunc("/api/v1/ai/actions/", handler.RequireRoleForWrite("admin", handler.ActionPublicHandler))

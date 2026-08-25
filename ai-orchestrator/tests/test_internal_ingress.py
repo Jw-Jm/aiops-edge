@@ -273,6 +273,26 @@ def test_cluster_mismatch_rejected(monkeypatch, client):
     assert resp.status_code == 403
 
 
+def test_signed_and_body_run_id_must_match(monkeypatch, client):
+    private_key = _keypair()
+    _configure(monkeypatch, private_key)
+    claims = _run_invocation_claims()
+    claims.update({
+        "capability": "ai.investigate",
+        "run_id": "22222222-2222-4222-8222-222222222222",
+        "invocation_id": "99999999-9999-4999-8999-999999999999",
+    })
+    jws = _sign_run_invocation(claims, private_key)
+    resp = client.post(
+        "/internal/v1/run-invocations",
+        headers={"X-Internal-Token": "svc-token", "X-Trusted-Request-Context": jws},
+        json={"run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "RUN_ID_MISMATCH"
+    assert client._stub_brain.calls == 0
+
+
 def test_multi_cluster_run_invocation_refused(monkeypatch, client):
     private_key = _keypair()
     _configure(monkeypatch, private_key)

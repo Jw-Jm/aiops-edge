@@ -17,7 +17,7 @@ TERMINAL: frozenset[str] = frozenset({"success", "partial", "failed", "regressed
 RUN_TRANSITIONS: dict[str, frozenset[str]] = {
     "created": frozenset({"planning", "cancelled"}),
     "planning": frozenset({"investigating", "awaiting_confirmation", "failed", "cancelled"}),
-    "investigating": frozenset({"awaiting_confirmation", "awaiting_approval", "failed", "cancelled"}),
+    "investigating": frozenset({"awaiting_confirmation", "awaiting_approval", "verifying", "failed", "cancelled"}),
     "awaiting_confirmation": frozenset({"investigating", "awaiting_approval", "cancelled"}),
     "awaiting_approval": frozenset({"executing", "cancelled", "failed"}),
     "executing": frozenset({"verifying", "success", "partial", "failed", "regressed", "cancelled"}),

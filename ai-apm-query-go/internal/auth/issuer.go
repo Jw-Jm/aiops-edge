@@ -19,14 +19,15 @@ import (
 const (
 	// InvocationIssuer / InvocationAudience are the fixed direction claims for
 	// query-api → orchestrator contexts (V9.2 §11).
-	InvocationIssuer   = "query-api"
-	InvocationAudience = "ai-orchestrator"
+	InvocationIssuer    = "query-api"
+	InvocationAudience  = "ai-orchestrator"
+	dispatchPrincipalID = "f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c"
 )
 
 // RunInvocationIssuer holds the query-api signing material for the
 // query-api → orchestrator direction.
 type RunInvocationIssuer struct {
-	privateKey ed25519.PrivateKey
+	privateKey   ed25519.PrivateKey
 	serviceToken string
 }
 
@@ -51,29 +52,38 @@ func (i *RunInvocationIssuer) Audience() string { return InvocationAudience }
 // ServiceToken is the directional service credential sent as X-Internal-Token.
 func (i *RunInvocationIssuer) ServiceToken() string { return i.serviceToken }
 
-// SignRunInvocation signs a RunInvocationContext. The caller provides the identity
-// claims (principal, session, tenant, cluster_scope) and an optional capability
-// (default "ai.investigate"). The issuer fills issuer/audience/request_id/TTL/nonce
-// and signs with EdDSA typ=AIOPS-CONTEXT.
-//
-// P19.6: capability distinguishes 调查型 (ai.investigate) from 对话型 (ai.chat).
-// It is signed into the context so the orchestrator trusts it, never a client claim.
-func (i *RunInvocationIssuer) SignRunInvocation(
+// SignExistingRunInvocation signs an invocation bound to an already persisted
+// investigation Run. requestID is the correlation id; it is never substituted
+// for runID.
+func (i *RunInvocationIssuer) SignExistingRunInvocation(
+	runID, invocationID, requestID, tenantID string,
+	clusterScope []string,
+	now time.Time,
+) (string, error) {
+	ctx := contract.NewRunInvocationContext(
+		InvocationIssuer, InvocationAudience,
+		requestID, "system", dispatchPrincipalID, "", tenantID, "run",
+		clusterScope, now, now.Add(60*time.Second), randomUUID(),
+	)
+	ctx.Capability = "ai.investigate"
+	ctx.RunID = runID
+	ctx.InvocationID = invocationID
+	return SignRunInvocationContext(ctx, i.privateKey)
+}
+
+// SignChatInvocation signs a dialogue-only context. Chat never carries Run
+// identity and therefore cannot be mistaken for an Investigation worker.
+func (i *RunInvocationIssuer) SignChatInvocation(
 	principalType, principalID, sessionID, tenantID, source string,
 	clusterScope []string,
 	now time.Time,
-	capability ...string,
 ) (string, error) {
-	cap := "ai.investigate"
-	if len(capability) > 0 && capability[0] != "" {
-		cap = capability[0]
-	}
 	ctx := contract.NewRunInvocationContext(
 		InvocationIssuer, InvocationAudience,
 		randomUUID(), principalType, principalID, sessionID, tenantID, source,
 		clusterScope, now, now.Add(60*time.Second), randomUUID(),
 	)
-	ctx.Capability = cap
+	ctx.Capability = "ai.chat"
 	return SignRunInvocationContext(ctx, i.privateKey)
 }
 

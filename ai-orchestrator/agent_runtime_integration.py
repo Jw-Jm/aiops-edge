@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict
 
 from internal_query_client import InternalQueryClient
 from tool_registry import ToolRegistry
+from tool_execution_context import ToolExecutionContext
 
 # tool_id → operation（对齐 OPERATION_ROUTES）
 _TOOL_OPERATION = {
@@ -47,6 +48,11 @@ class RealToolExecutor:
         if tool is None or tool.lifecycle_status != "active":
             raise ValueError(f"未注册/非 active Tool: {tool_id}")
         operation = self._tool_operation(tool_id)
+        execution_context = None
+        if context.get("workload_kind") == "investigation":
+            execution_context = ToolExecutionContext.from_mapping(
+                context, tool_id=tool_id, params=params,
+            )
         return self._client.query(
             tool_id=tool_id,
             operation=operation,
@@ -54,6 +60,7 @@ class RealToolExecutor:
             cluster_id=cluster_id,
             params=params,
             context_ref=context.get("request_id", ""),
+            execution_context=execution_context,
         )
 
     @staticmethod

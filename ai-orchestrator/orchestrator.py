@@ -78,6 +78,9 @@ class AgentState(TypedDict):
     before_metrics: str
     after_metrics: str
     verify_pass: bool
+    verify_status: str  # passed | failed | regressed | inconclusive
+    verify_error_code: str
+    action_id: str
 
     # rca
     rca_mode: str
@@ -396,6 +399,24 @@ def _collect_alerts(
     # V9.2: context must be explicit; do not fall back or issue queries without one.
     if request_context is None:
         return "采集失败"
+    if getattr(request_context, "workload_kind", "") == "investigation":
+        try:
+            from tools import _internal_investigation_query
+            data = _internal_investigation_query(
+                tool_id="query_alerts.v1", operation="alerts", params={"limit": 15}, context=request_context,
+            )
+            events = data.get("events", data.get("data", [])) if isinstance(data, dict) else []
+            if not events:
+                return "活跃告警事件: 无"
+            lines = ["活跃告警事件:"]
+            for event in events:
+                lines.append(
+                    f"- [{event.get('severity', '')}] {event.get('rule_name', '?')} "
+                    f"服务={event.get('service', '?')} 触发次数={event.get('count', 1)}"
+                )
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"活跃告警事件: 采集失败（{str(exc)[:120]}）"
     qa = _os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
     out = []
 
@@ -802,7 +823,8 @@ async def node_collect(state: AgentState) -> dict:
     import shutil
     is_diag = (state.get("intent") or "").lower() == "diagnosis"
     explicit_tools = _explicit_tool_routes(state.get("user_message", ""))
-    if "k8sgpt_diagnose" in explicit_tools:
+    investigation_workload = getattr(request_context, "workload_kind", "") == "investigation"
+    if "k8sgpt_diagnose" in explicit_tools and not investigation_workload:
         try:
             # Use the registered read-only tool so an explicit request is
             # observable and gets the same fallback text as MCP callers.
@@ -814,7 +836,8 @@ async def node_collect(state: AgentState) -> dict:
                 result["k8sgpt_raw"] = raw_text
         except Exception as exc:
             result["k8sgpt_error"] = f"K8sGPT error: {str(exc)[:300]}"
-    elif is_diag and not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt"):
+    elif (not investigation_workload and is_diag and
+          not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt")):
         # P19.7：统一走 k8sgpt_diagnose（安全注入版）——按需拉取平台 LLM key 子进程私有 env 注入，
         # 不写 /root/.k8sgpt、不用 --all-namespaces（该 flag 在当前 k8sgpt 版本无效）。
         try:
@@ -1319,32 +1342,22 @@ async def node_wait_approval(state: AgentState) -> dict:
 
 
 async def node_execute(state: AgentState) -> dict:
-    """Execute K8s command via ShellCommandPolicy whitelist.
+    """Emit an Action proposal; mutation is performed only by Action Executor.
 
-    安全：只读命令可自动执行；写命令（EXEC_WRITE 白名单）必须经人工审批
-    （human_approved 由 node_wait_approval 的 interrupt 或 approve 端点设置），
-    否则不执行，防止 LLM 生成的写操作在无人工确认下自动落库/变更集群。
+    This node intentionally has no shell/Kubernetes side effect.  A signed,
+    approved Action must be persisted by query-api and executed by the isolated
+    ``ai-action-executor`` service.
     """
     script = state.get("script", "")
     if not script or not state.get("approved"):
         return {"execute_output": ""}
-    try:
-        from shell_policy import ShellPolicy
-        allowed, category = ShellPolicy().is_whitelisted_for_execute(script)
-    except Exception:
-        allowed, category = False, "not_whitelisted"
-    if not allowed:
-        return {"execute_output": "", "messages": [f"[{_now()}] 脚本不在可执行白名单内，已跳过执行"]}
-    if category == "write" and not state.get("human_approved"):
-        return {"execute_output": "", "messages": [f"[{_now()}] 检测到写操作，需人工审批后才执行（可在审批面板确认）"]}
-    # execute_shell 内部 subprocess 同步阻塞 (timeout=30s)，丢线程池避免阻塞 event loop
-    result = await asyncio.to_thread(execute_shell, script, 30)
-    # 审计日志 (P1-2): task_id 用真实任务ID, 无则 "manual"; operator 用 "system"(非状态值)
-    _audit_log("manual", "execute", "system",
-               _infer_target_from_script(script, state.get("service", "")), script,
-               "success" if "error" not in result.lower()[:100] else "error",
-               {"output_preview": result[:200]})
-    return {"execute_output": result[:2000], "messages": [f"[{_now()}] 命令执行完成"]}
+    return {
+        "execute_output": "",
+        "action_proposal": {"script": script[:2000],
+                             "service": state.get("service", "")},
+        "execute_error_code": "ACTION_EXECUTOR_REQUIRED",
+        "messages": [f"[{_now()}] 已生成动作提案，需经 query-api/Action Executor 执行"],
+    }
 
 
 async def node_verify(state: AgentState) -> dict:
@@ -1352,7 +1365,12 @@ async def node_verify(state: AgentState) -> dict:
     import re, statistics as _stats
     svc = state.get("service", "")
     if not svc:
-        return {"verify_pass": True, "messages": [f"[{_now()}] 验证: 无服务, 跳过"]}
+        return {
+            "verify_pass": False,
+            "verify_status": "inconclusive",
+            "verify_error_code": "VERIFICATION_INCONCLUSIVE",
+            "messages": [f"[{_now()}] 验证: 未绑定服务，无法得出成功结论"],
+        }
 
     before_str = state.get("before_metrics", "")
     cid = state.get("cluster_id", "")  # A-5：验证阶段查询也按集群范围
@@ -1415,21 +1433,83 @@ async def node_verify(state: AgentState) -> dict:
         if not improved and effect_size > 0.2:
             improved = after_err < 5 and after_lat < 1000
 
-        return {
+        # No samples means the observer did not establish an after window;
+        # this is inconclusive, never a failure disguised as success.
+        status = "passed" if improved else "failed"
+        if not samples:
+            status = "inconclusive"
+        elif side_effect and after_lat > before_lat * 1.5:
+            status = "regressed"
+
+        result = {
             "verify_pass": improved,
+            "verify_status": status,
+            "verify_error_code": "" if improved else f"VERIFICATION_{status.upper()}",
             "verify_effect_size": round(effect_size, 2),
             "verify_side_effect": side_effect,
             "after_metrics": after_str,
             "messages": [f"[{_now()}] 验证: {'✅ 通过' if improved else '❌ 未通过'} (d={effect_size:.2f}, 副作用={'有' if side_effect else '无'})"],
         }
+        _persist_verification_result(state, rc, result)
+        return result
     except Exception as e:
-        return {"verify_pass": False, "messages": [f"[{_now()}] 验证: 失败 ({e})"]}
+        return {
+            "verify_pass": False,
+            "verify_status": "inconclusive",
+            "verify_error_code": "VERIFICATION_SOURCE_UNAVAILABLE",
+            "messages": [f"[{_now()}] 验证: 数据源不可用 ({e})"],
+        }
+
+
+def _persist_verification_result(state: AgentState, scope: ScopeView, result: dict) -> None:
+    """Persist a verification only when the run has an immutable Action binding.
+
+    The legacy/chat graph has no action and therefore cannot manufacture one;
+    those results remain explicitly non-durable/inconclusive.  For an action
+    run, persistence failure downgrades a computed pass so the UI never shows a
+    success that the control plane cannot recover.
+    """
+    run_id = str(getattr(scope, "run_id", "") or state.get("run_id", ""))
+    action_id = str(state.get("action_id", "") or "")
+    tenant_id = str(getattr(scope, "tenant_id", "") or state.get("tenant_id", ""))
+    if not run_id or not action_id or not tenant_id:
+        return
+    try:
+        import uuid
+        from control_plane_client import ControlPlaneClient
+        try:
+            verification_id = str(uuid.uuid5(uuid.UUID(run_id), f"verification:{action_id}"))
+        except (ValueError, AttributeError):
+            verification_id = str(uuid.uuid4())
+        ControlPlaneClient().append_verification(
+            run_id=run_id, tenant_id=tenant_id, verification_id=verification_id,
+            action_id=action_id, status=str(result.get("verify_status", "inconclusive")),
+            before_snapshot={"raw": state.get("before_metrics", "")},
+            after_snapshot={"raw": result.get("after_metrics", "")},
+            observation_window_seconds=60,
+            checks=[{"effect_size": result.get("verify_effect_size"),
+                     "side_effect": result.get("verify_side_effect")}],
+            summary=" ".join(str(m) for m in result.get("messages", [])),
+        )
+    except Exception as exc:
+        result["verify_pass"] = False
+        result["verify_status"] = "inconclusive"
+        result["verify_error_code"] = "VERIFICATION_PERSISTENCE_FAILED"
+        result.setdefault("messages", []).append(
+            f"[{_now()}] 验证结果未持久化，已降级为不充分: {str(exc)[:160]}"
+        )
 
 
 async def node_report(state: AgentState) -> dict:
     """LLM generates execution summary report."""
     cfg = state.get("llm_config")
-    verify = "✅ 修复成功" if state.get("verify_pass") else "❌ 修复未达到预期"
+    verify_status = state.get("verify_status", "")
+    verify = {
+        "passed": "✅ 修复成功",
+        "failed": "❌ 修复未达到预期",
+        "regressed": "⚠️ 验证发现回归",
+        "inconclusive": "⏳ 验证不充分，无法确认结果",
+    }.get(verify_status, "✅ 修复成功" if state.get("verify_pass") else "❌ 修复未达到预期")
     context = f"""
     before: {state.get('before_metrics','')}
     after: {state.get('after_metrics','')}
@@ -1439,7 +1519,7 @@ async def node_report(state: AgentState) -> dict:
     if cfg:
         rep = await _llm_async(cfg, "生成运维执行总结报告，含 before/after 对比和后续建议。", context, "报告生成器")
         return {"report": rep[:8000]}
-    return {"report": f"执行结果: {verify}"}
+    return {"report": f"执行结果: {verify}（状态={verify_status or 'unknown'}）"}
 
 
 async def node_memorize(state: AgentState) -> dict:
@@ -1905,6 +1985,8 @@ class BrainOrchestrator:
             # (approved 由 approve/resume 显式置位；chat 图无 wait_approval 节点不受影响)
             "approved": False, "human_approved": False, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
+            "verify_status": "inconclusive", "verify_error_code": "",
+            "action_id": "",
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
             "light_query": False,
@@ -1974,6 +2056,8 @@ class BrainOrchestrator:
             # (approved 由 approve/resume 显式置位；chat 图无 wait_approval 节点不受影响)
             "approved": False, "human_approved": False, "execute_output": "",
             "before_metrics": "", "after_metrics": "", "verify_pass": False,
+            "verify_status": "inconclusive", "verify_error_code": "",
+            "action_id": "",
             "final_response": "", "report": "", "error": "",
             "subtasks": [], "sub_results": {}, "review_result": "",
             "exec_context": exec_context, "iteration": iteration,

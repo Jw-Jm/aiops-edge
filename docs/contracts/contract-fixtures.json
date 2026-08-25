@@ -48,6 +48,7 @@
     "cluster_id": "66666666-6666-4666-8666-666666666666",
     "capability": "observability.logs.read",
     "source": "log_agent",
+    "workload_kind": "platform",
     "issued_at": "2026-08-19T10:00:00Z",
     "expires_at": "2026-08-19T10:00:30Z",
     "nonce": "77777777-7777-4777-8777-777777777777"

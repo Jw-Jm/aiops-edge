@@ -31,14 +31,15 @@ const MaxToolResultBytes = 2 << 20 // 2MB
 
 // ToolResultEnvelope 是 canonical tool query 的统一返回信封。
 type ToolResultEnvelope struct {
-	Quality         string          `json:"quality"`          // complete | partial | failed
-	Truncated       bool            `json:"truncated"`
-	Count           int             `json:"count"`
-	Digest          string          `json:"digest"`
-	QueryWindowStart string         `json:"query_window_start,omitempty"`
-	QueryWindowEnd   string         `json:"query_window_end,omitempty"`
-	SourceErrors    []string        `json:"source_errors,omitempty"`
-	Data            json.RawMessage `json:"data"`
+	Quality          string          `json:"quality"` // complete | partial | failed
+	ToolRunID        string          `json:"tool_run_id,omitempty"`
+	Truncated        bool            `json:"truncated"`
+	Count            int             `json:"count"`
+	Digest           string          `json:"digest"`
+	QueryWindowStart string          `json:"query_window_start,omitempty"`
+	QueryWindowEnd   string          `json:"query_window_end,omitempty"`
+	SourceErrors     []string        `json:"source_errors,omitempty"`
+	Data             json.RawMessage `json:"data"`
 }
 
 // validUUID 校验字符串是规范 UUID（P0-TOOL-01：run_id 必须是真实 UUID）。
@@ -49,7 +50,9 @@ func validUUID(s string) bool { return canonicalUUIDRe.MatchString(s) }
 // toolIdempotencyReusedError 表示同 idempotency_key 但 args_hash 不同（P0-TOOL-04：409）。
 type toolIdempotencyReusedError struct{}
 
-func (e *toolIdempotencyReusedError) Error() string { return "tool idempotency key reused with different args" }
+func (e *toolIdempotencyReusedError) Error() string {
+	return "tool idempotency key reused with different args"
+}
 
 // toolRunContext 携带一次 tool 执行的审计/幂等/Lease 上下文（来自 internalQueryRequest）。
 type toolRunContext struct {
@@ -68,7 +71,7 @@ type toolRunContext struct {
 
 // newToolRunFromRequest 从 internalQueryRequest + rctx 构造 toolRunContext（无 tool_run_id 则 nil）。
 // P0-TOOL-01：run_id 必须为真实 Investigation Run UUID；缺失/非法 → 返回 nil（fail-closed，
-// 拒绝写 run_id='' 的孤儿 ToolRun）。
+// 拒绝写 run_id=” 的孤儿 ToolRun）。
 func newToolRunFromRequest(req *internalQueryRequest, tenantID, clusterID string) *toolRunContext {
 	if req == nil || req.ToolRunID == "" {
 		return nil
@@ -99,33 +102,46 @@ func newToolRunFromRequest(req *internalQueryRequest, tenantID, clusterID string
 	return trc
 }
 
+// validateToolRunRequest enforces the strict investigation execution envelope.
+// Legacy/chat callers may omit it while they are not admitted to the
+// Investigation runtime; an explicit investigation workload never may.
+func validateToolRunRequest(req *internalQueryRequest) error {
+	if req == nil || req.WorkloadKind == "" {
+		return nil
+	}
+	if req.WorkloadKind != "investigation" && req.WorkloadKind != "chat" && req.WorkloadKind != "platform" {
+		return &internalQueryError{Code: "VALIDATION_FAILED", Message: "invalid workload_kind"}
+	}
+	if req.WorkloadKind != "investigation" {
+		return nil
+	}
+	if !validUUID(req.RunID) || !validUUID(req.ToolRunID) || req.IdempotencyKey == "" ||
+		req.ExecutorID == "" || req.LeaseEpoch <= 0 || req.LeaseToken == "" {
+		return &internalQueryError{Code: "VALIDATION_FAILED", Message: "investigation ToolRun lease context required"}
+	}
+	return nil
+}
+
 // toolArgsHash 计算 Tool 幂等域 args_hash = SHA256(操作语义参数)。
 // P0-TOOL-04：幂等判定 (run_id, idempotency_key, args_hash)——同 key 同 args → exact replay；
 // 同 key 不同 args → 409 IDEMPOTENCY_KEY_REUSED。
 func toolArgsHash(req *internalQueryRequest) string {
-	h := sha256.New()
-	h.Write([]byte(req.Service))
-	h.Write([]byte{0})
-	for _, s := range req.Services {
-		h.Write([]byte(s))
-		h.Write([]byte{0})
-	}
-	h.Write([]byte(req.Query))
-	h.Write([]byte{0})
-	h.Write([]byte(req.Namespace))
-	h.Write([]byte{0})
-	if req.Minutes != 0 {
-		h.Write([]byte{byte(req.Minutes)})
-	}
-	h.Write([]byte{0})
-	if req.Hours != 0 {
-		h.Write([]byte{byte(req.Hours)})
-	}
-	h.Write([]byte{0})
-	if req.TopK != 0 {
-		h.Write([]byte{byte(req.TopK)})
-	}
-	return hex.EncodeToString(h.Sum(nil))
+	args := struct {
+		Service   string   `json:"service"`
+		Services  []string `json:"services"`
+		Query     string   `json:"query"`
+		Since     string   `json:"since"`
+		Minutes   int      `json:"minutes"`
+		Hours     int      `json:"hours"`
+		Namespace string   `json:"namespace"`
+		Limit     int      `json:"limit"`
+		Offset    int      `json:"offset"`
+		TopK      int      `json:"top_k"`
+	}{req.Service, req.Services, req.Query, req.Since, req.Minutes, req.Hours,
+		req.Namespace, req.Limit, req.Offset, req.TopK}
+	canonical, _ := json.Marshal(args)
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
 }
 
 // startToolRun 幂等开始一个 ToolRun 记录（B1-02：query-api 作为 ToolRun owner）。
@@ -211,6 +227,9 @@ func (h *Handler) finishToolRun(trc *toolRunContext, status, quality string, res
 // buildEnvelope 构造 ToolResultEnvelope（含 truncation/digest/window）。
 func buildEnvelope(trc *toolRunContext, quality string, data []byte, errMsg string) ToolResultEnvelope {
 	env := ToolResultEnvelope{Quality: quality, Data: data}
+	if trc != nil {
+		env.ToolRunID = trc.ToolRunID
+	}
 	if trc != nil && trc.WindowStart != nil {
 		env.QueryWindowStart = trc.WindowStart.UTC().Format(time.RFC3339)
 		env.QueryWindowEnd = trc.WindowEnd.UTC().Format(time.RFC3339)

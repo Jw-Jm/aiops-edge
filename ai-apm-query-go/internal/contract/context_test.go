@@ -21,6 +21,40 @@ const (
 	tenantID = "55555555-5555-4555-8555-555555555555"
 )
 
+func validRunInvocationContext(t *testing.T) RunInvocationContext {
+	t.Helper()
+	now := mustTime("2026-08-19T10:00:00Z")
+	ctx := NewRunInvocationContext(
+		"query-api", "ai-orchestrator", "11111111-1111-4111-8111-111111111111",
+		"system", "33333333-3333-4333-8333-333333333333", "", tenantID, "run",
+		[]string{clusterA}, now, now.Add(30*time.Second), "77777777-7777-4777-8777-777777777777",
+	)
+	ctx.Capability = "ai.investigate"
+	return ctx
+}
+
+func TestInvestigationInvocationRequiresExistingRunIdentity(t *testing.T) {
+	ctx := validRunInvocationContext(t)
+	if err := ctx.Validate(); err == nil {
+		t.Fatal("investigation invocation without run identity must be rejected")
+	}
+	ctx.RunID = "22222222-2222-4222-8222-222222222222"
+	ctx.InvocationID = "99999999-9999-4999-8999-999999999999"
+	if err := ctx.Validate(); err != nil {
+		t.Fatalf("complete investigation invocation should validate: %v", err)
+	}
+}
+
+func TestChatInvocationRejectsRunIdentity(t *testing.T) {
+	ctx := validRunInvocationContext(t)
+	ctx.Capability = "ai.chat"
+	ctx.RunID = "22222222-2222-4222-8222-222222222222"
+	ctx.InvocationID = "99999999-9999-4999-8999-999999999999"
+	if err := ctx.Validate(); err == nil {
+		t.Fatal("chat invocation must not carry run identity")
+	}
+}
+
 func TestTrustedRequestContextClusterScope(t *testing.T) {
 	payload := []byte(`{
         "version":1,
@@ -56,6 +90,26 @@ func TestTrustedRequestContextClusterScope(t *testing.T) {
 	}
 	if !strings.Contains(string(roundTrip), `"cluster_id":"`+clusterA+`"`) {
 		t.Fatalf("round trip lost canonical cluster_id: %s", roundTrip)
+	}
+}
+
+func TestTrustedRequestContextWorkloadKind(t *testing.T) {
+	ctx := NewTrustedRequestContext(
+		"ai-orchestrator", "ai-apm-query-go", "11111111-1111-4111-8111-111111111111",
+		"system", "33333333-3333-4333-8333-333333333333", "", tenantID,
+		"22222222-2222-4222-8222-222222222222", "cluster", clusterA,
+		"observability.logs.read", "log_agent", mustTime("2026-08-19T10:00:00Z"),
+		mustTime("2026-08-19T10:00:30Z"), "77777777-7777-4777-8777-777777777777",
+	)
+	for _, kind := range []string{"investigation", "chat", "platform"} {
+		ctx.WorkloadKind = kind
+		if err := ctx.Validate(); err != nil {
+			t.Fatalf("workload_kind %q should validate: %v", kind, err)
+		}
+	}
+	ctx.WorkloadKind = "admin"
+	if err := ctx.Validate(); err == nil {
+		t.Fatal("unsupported workload_kind must reject")
 	}
 }
 
@@ -140,12 +194,12 @@ func TestResourceRefRejectsTenantInIdAndSlug(t *testing.T) {
 
 func TestToolResultSuccessEmptyIsNoData(t *testing.T) {
 	empty := ToolResult{
-		ToolName:  "k8sgpt_diagnose",
-		ClusterID: clusterA,
-		Success:   true,
-		Status:    "no_data",
-		Summary:   "k8sgpt executed successfully but produced no diagnostics",
-		StartedAt: mustTime("2026-08-19T10:00:01Z"),
+		ToolName:   "k8sgpt_diagnose",
+		ClusterID:  clusterA,
+		Success:    true,
+		Status:     "no_data",
+		Summary:    "k8sgpt executed successfully but produced no diagnostics",
+		StartedAt:  mustTime("2026-08-19T10:00:01Z"),
 		FinishedAt: mustTime("2026-08-19T10:00:02Z"),
 	}
 	if err := empty.Validate(); err != nil {
@@ -153,11 +207,11 @@ func TestToolResultSuccessEmptyIsNoData(t *testing.T) {
 	}
 
 	bad := ToolResult{
-		ToolName:  "k8sgpt_diagnose",
-		ClusterID: clusterA,
-		Success:   true,
-		Status:    "failed",
-		StartedAt: mustTime("2026-08-19T10:00:01Z"),
+		ToolName:   "k8sgpt_diagnose",
+		ClusterID:  clusterA,
+		Success:    true,
+		Status:     "failed",
+		StartedAt:  mustTime("2026-08-19T10:00:01Z"),
 		FinishedAt: mustTime("2026-08-19T10:00:02Z"),
 	}
 	if err := bad.Validate(); err == nil {
@@ -168,12 +222,12 @@ func TestToolResultSuccessEmptyIsNoData(t *testing.T) {
 func TestToolResultErrorNotOnWire(t *testing.T) {
 	// Bugbot C3：Go 非空 Error 也不得输出第 16 个 "error" 字段，三端 wire 严格 15 字段。
 	tr := ToolResult{
-		ToolName:  "query_logs",
-		ClusterID: clusterA,
-		Success:   false,
-		Status:    "failed",
-		Summary:   "boom",
-		ErrorCode: "INTERNAL_ERROR",
+		ToolName:     "query_logs",
+		ClusterID:    clusterA,
+		Success:      false,
+		Status:       "failed",
+		Summary:      "boom",
+		ErrorCode:    "INTERNAL_ERROR",
 		ErrorMessage: "structured failure",
 		Error: &StructuredError{
 			ErrorCode: "INTERNAL_ERROR",

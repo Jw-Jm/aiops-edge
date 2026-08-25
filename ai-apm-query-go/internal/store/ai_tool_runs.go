@@ -13,35 +13,35 @@ import (
 
 // AIToolRun DB 实体。
 type AIToolRun struct {
-	ToolRunID     string
-	RunID         string
-	StepID        string
-	TenantID      string
-	ClusterID     string
-	ToolName      string
-	Status        string
-	Input         []byte
-	Result        []byte
-	ErrorCode     string
-	ErrorMessage  string
-	DurationMS    int64
-	StartedAt     *time.Time
-	CompletedAt   *time.Time
-	CreatedAt     time.Time
+	ToolRunID      string
+	RunID          string
+	StepID         string
+	TenantID       string
+	ClusterID      string
+	ToolName       string
+	Status         string
+	Input          []byte
+	Result         []byte
+	ErrorCode      string
+	ErrorMessage   string
+	DurationMS     int64
+	StartedAt      *time.Time
+	CompletedAt    *time.Time
+	CreatedAt      time.Time
 	IdempotencyKey string
 	// B1（0004）：data-quality / time-window / result-limit / Lease 绑定。
-	ArgsHash          string
-	ExecutorID        string
-	LeaseEpochAtStart int64
-	DeadlineAt        *time.Time
-	ObservedAt        *time.Time
-	QueryWindowStart  *time.Time
-	QueryWindowEnd    *time.Time
-	ResultQuality     string // complete | partial | failed | none
-	ResultComplete    bool
-	ResultTruncated   bool
-	ResultCount       int64
-	ResultDigestSHA256 string
+	ArgsHash            string
+	ExecutorID          string
+	LeaseEpochAtStart   int64
+	DeadlineAt          *time.Time
+	ObservedAt          *time.Time
+	QueryWindowStart    *time.Time
+	QueryWindowEnd      *time.Time
+	ResultQuality       string // complete | partial | failed | none
+	ResultComplete      bool
+	ResultTruncated     bool
+	ResultCount         int64
+	ResultDigestSHA256  string
 	EligibleForEvidence bool
 	EvidenceConsumedAt  *time.Time
 }
@@ -282,16 +282,17 @@ func (d *AIToolRunDAO) ConvergeToolRun(tx *sql.Tx, toolRunID, runID string, stat
 	return true, nil
 }
 
-// GetByIdemKey 按 idempotency_key 查询 ToolRun（幂等命中判断，P0-TOOL-04 含 args_hash）。
-func (d *AIToolRunDAO) GetByIdemKey(idemKey string) (*AIToolRun, error) {
+// GetByIdemKey 按 (run_id, idempotency_key) 查询 ToolRun；幂等键不得跨 Run
+// 全局碰撞（P0-TOOL-04）。
+func (d *AIToolRunDAO) GetByIdemKey(runID, idemKey string) (*AIToolRun, error) {
 	conn := GetDB()
 	if conn == nil {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
 		`SELECT tool_run_id, run_id, status, idempotency_key, args_hash
-		 FROM ai_tool_runs WHERE idempotency_key = ?`,
-		idemKey)
+		 FROM ai_tool_runs WHERE run_id = ? AND idempotency_key = ?`,
+		runID, idemKey)
 	var t AIToolRun
 	if err := row.Scan(&t.ToolRunID, &t.RunID, &t.Status, &t.IdempotencyKey, &t.ArgsHash); err != nil {
 		return nil, err

@@ -1,8 +1,6 @@
 {{- if .Values.aiOrchestrator.enabled }}
-# ai-orchestrator 专用 ServiceAccount + K8s 写操作 RBAC
-# 支撑工作流 C 结构化动作（rollout restart / scale / cordon / uncordon / drain）。
-# 采用与 query-api 相同的 in-cluster SA 模式：kubectl 自动使用容器内 SA token，
-# 无需挂载 kubeconfig secret（未挂载时 kubectl 回退当前 context / in-cluster SA）。
+# ai-orchestrator 专用 ServiceAccount + K8s read-only RBAC。
+# 所有 mutation 必须经 query-api → ai-action-executor；该身份永远不获写权限。
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -11,12 +9,6 @@ metadata:
   labels:
     app: ai-orchestrator
 ---
-# 写操作：严格对齐 shell_policy.EXEC_WRITE 白名单能力（动作粒度最小授权）
-# G5 加固：移除集群级 pods/exec create 与 pods delete（高危面收敛）。
-#   - pods/exec：如需支持受控 exec，请改用命名空间级 Role（限定目标命名空间），
-#     并配合 shell_policy 目标+命令双重白名单，勿用 ClusterRole 集群级授权。
-#   - pods delete：删除 pod 属高危操作，已移除；如需支持，请加审批门控后按命名空间 Role 授权。
-#   - nodes patch：保留（cordon/uncordon/drain 工作流动作必需），仅限节点调度状态变更。
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -24,27 +16,7 @@ metadata:
   labels:
     app: ai-orchestrator
 rules:
-# P0-P13 审计紧急隔离（P0-3）：orchestrator 集群写权限默认 fail-closed。
-# grantK8sWrite=true 才授予 workload patch/scale、pod eviction、node patch（工作流 K8s 动作）；
-# 默认 false（不授予），与 P13.7/F4/F5（orchestrator 无 target K8s 写凭据）一致。
-{{- if .Values.aiOrchestrator.grantK8sWrite }}
-# rollout restart / rollout undo / scale（apps 工作负载）
-- apiGroups: ["apps"]
-  resources: ["deployments", "statefulsets", "daemonsets"]
-  verbs: ["get", "list", "watch", "patch"]
-- apiGroups: ["apps"]
-  resources: ["deployments/scale", "statefulsets/scale"]
-  verbs: ["get", "patch"]
-# pod 驱逐（drain 依赖 pods/eviction）
-- apiGroups: [""]
-  resources: ["pods/eviction"]
-  verbs: ["create"]
-# cordon / uncordon / drain：节点调度状态变更
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get", "list", "watch", "patch"]
-{{- end }}
-# pod 只读（分析/证据采集必需，始终保留）
+# pod 只读（分析/证据采集必需）
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch"]

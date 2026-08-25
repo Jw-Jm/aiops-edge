@@ -53,12 +53,15 @@ class TrustedContextIssuer:
         principal_id: str,
         session_id: str | None = None,
         source: str = "planner",
+        workload_kind: str = "platform",
     ) -> Dict[str, Any]:
         """构造一组唯一、可签名的 TrustedRequestContext V2 claims（不签名）。
 
         capability 必须是 KNOWN_CAPABILITIES 之一（来自 Tool Registry），否则拒绝。
         """
         if capability not in KNOWN_CAPABILITIES:
+            raise TrustedContextError("invalid_context")
+        if workload_kind not in {"investigation", "chat", "platform"}:
             raise TrustedContextError("invalid_context")
         # 身份不变量（审计 P0-1）：按 principal_type 强制校验 session。
         # - system principal：session_id 必须为空（不持有认证会话）。
@@ -89,6 +92,7 @@ class TrustedContextIssuer:
             "cluster_id": cluster_id,
             "capability": capability,
             "source": source,
+            "workload_kind": workload_kind,
             "issued_at": now,
             "expires_at": now + self._lifetime,
             "nonce": uuid4(),

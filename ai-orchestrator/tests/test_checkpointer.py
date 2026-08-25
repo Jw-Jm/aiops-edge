@@ -262,6 +262,10 @@ def test_streamed_suggestion_execution_and_reload_preserve_aichat_card(monkeypat
     import main
     from starlette.requests import Request
 
+    # Legacy direct mutation is retired by default; this test explicitly opts
+    # into the compatibility path so it continues to cover card persistence.
+    monkeypatch.setenv("LEGACY_DIRECT_MUTATIONS_ENABLED", "1")
+
     thread_id = f"stream-session-{uuid.uuid4().hex[:8]}"
 
     class FakeBrain:

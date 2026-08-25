@@ -136,37 +136,106 @@ def _risk(ctx, config):
 
 
 def _execute(ctx, config):
-    """执行节点：真实执行，但受双重约束——
-    ① ShellPolicy 白名单 + 元字符拦截；
-    ② 安全(P0-4): write 类（环境变更）命令必须已经 wait_approval 人工审批
-      （ctx.vars["_approved"]），否则拒绝执行——杜绝绕过审批节点直接执行环境操作。
+    """Emit an action proposal; never execute a shell command in this runtime.
+
+    Mutation is owned by query-api → ai-action-executor.  Keeping this legacy
+    node proposal-only prevents a flow definition or approval flag from
+    bypassing the signed Action boundary.
     """
     script = config.get("script", "")
     if not script:
-        return {"output": "(无脚本)"}
-    try:
-        from shell_policy import ShellPolicy
-        policy = ShellPolicy()
-        if mc := policy.check_shell_metachars(script):
-            return {"output": f"拒绝执行（含 shell 元字符）: {mc}"}
-        allowed, category = policy.is_whitelisted_for_execute(script)
-        if not allowed:
-            return {"output": "拒绝执行（不在可执行白名单内）"}
-        # 环境变更命令（write 类）必须已人工审批（wait_approval 通过写入 _approved）
-        if category == "write" and not (ctx.vars or {}).get("_approved"):
-            return {"output": "拒绝执行：环境变更命令需先经人工审批（wait_approval 节点批准后才会执行）"}
-    except Exception as e:
-        return {"output": f"安全校验失败: {e}"}
-    try:
-        from tools import execute_shell
-        out = execute_shell(script, timeout=30)
-        return {"output": out[:2000]}
-    except Exception as e:
-        return {"output": f"执行异常: {e}"}
+        return {"output": "(无脚本)", "status": "inconclusive",
+                "error_code": "ACTION_EXECUTOR_REQUIRED"}
+    return {
+        "output": "",
+        "status": "proposed",
+        "error_code": "ACTION_EXECUTOR_REQUIRED",
+        "action_proposal": {"script": str(script)[:2000]},
+    }
 
 
 def _verify(ctx, config):
-    return {"pass": True, "after_metrics": ""}
+    """Verify through a fresh read-only observation.
+
+    A workflow node may propose an action, but it must not turn a missing target
+    or unavailable data source into a successful verdict.  The observer reads
+    the current service metrics independently of the execute node and returns a
+    four-state outcome consumed by the report/UI layer.
+    """
+    import json
+
+    collected = _collect_out(ctx)
+    service = str(config.get("service") or collected.get("service") or "").strip()
+    if not service:
+        return {
+            "pass": False,
+            "status": "inconclusive",
+            "error_code": "VERIFICATION_INCONCLUSIVE",
+            "after_metrics": "",
+            "summary": "无法验证：未绑定目标服务",
+        }
+
+    request_context = None
+    if isinstance(getattr(ctx, "vars", None), dict):
+        request_context = ctx.vars.get("request_context")
+    cluster_id = str(getattr(request_context, "cluster_id", "") or "")
+    try:
+        from tools import query_metrics
+        raw = query_metrics(service, cluster_id=cluster_id,
+                            request_context=request_context)
+    except Exception as exc:
+        return {
+            "pass": False,
+            "status": "inconclusive",
+            "error_code": "VERIFICATION_SOURCE_UNAVAILABLE",
+            "after_metrics": "",
+            "summary": f"验证数据源不可用: {str(exc)[:200]}",
+        }
+
+    def _snapshot(value):
+        try:
+            payload = json.loads(value) if isinstance(value, str) else value
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        rows = payload.get("data")
+        if isinstance(rows, dict):
+            rows = rows.get("data")
+        if not isinstance(rows, list) or not rows:
+            return None
+        try:
+            calls = sum(float(row.get("calls", 0) or 0) for row in rows if isinstance(row, dict))
+            errors = sum(float(row.get("errors", 0) or 0) for row in rows if isinstance(row, dict))
+            latency = sum(float(row.get("avg_ms", 0) or 0) for row in rows if isinstance(row, dict)) / len(rows)
+            return {"latency": latency, "error_rate": errors / max(calls, 1) * 100}
+        except (TypeError, ValueError):
+            return None
+
+    before = _snapshot(collected.get("red") or collected.get("services"))
+    after = _snapshot(raw)
+    if before is None or after is None:
+        return {
+            "pass": False,
+            "status": "inconclusive",
+            "error_code": "VERIFICATION_INCONCLUSIVE",
+            "after_metrics": str(raw)[:1000],
+            "summary": "验证窗口缺少可比较的 before/after 指标",
+        }
+
+    regressed = (after["latency"] > before["latency"] * 1.2 or
+                 after["error_rate"] > before["error_rate"] + 1.0)
+    passed = (after["latency"] <= before["latency"] and
+              after["error_rate"] <= before["error_rate"])
+    status = "regressed" if regressed else "passed" if passed else "partial"
+    return {
+        "pass": passed,
+        "status": status,
+        "error_code": "" if passed else "VERIFICATION_NOT_PASSED",
+        "before_metrics": before,
+        "after_metrics": after,
+        "summary": f"before={before}, after={after}",
+    }
 
 
 def _report(ctx, config):

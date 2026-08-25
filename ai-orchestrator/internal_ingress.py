@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
+from pydantic import ValidationError
 
 from invocation_scope import InvocationScope, ValidationFailed
 from trusted_context import ReplayCache, TrustedContextError, VerifyConfig, verify_run_control_context, verify_run_invocation_context
@@ -92,7 +93,25 @@ def verify_run_invocation_ingress(request: Request) -> dict:
         clock_skew_seconds=_CLOCK_SKEW_SECONDS,
     )
     try:
-        return verify_run_invocation_context(ctx_header, cfg, _now_utc())
+        claims = verify_run_invocation_context(ctx_header, cfg, _now_utc())
+        # Signature verification alone checks transport claims; Pydantic enforces
+        # the capability-specific Run identity invariant on the wire.
+        from contracts import RunInvocationContext
+        RunInvocationContext.model_validate(claims)
+        return claims
+    except ValidationError:
+        # Keep endpoint-specific authorization responses stable while still
+        # validating the complete context before an accepted investigation.
+        # The chat endpoint must report CAPABILITY_DENIED/SYSTEM_PRINCIPAL_DENIED
+        # and the run endpoint must report its identity mismatch code.
+        capability = str(claims.get("capability") or "")
+        if (
+            capability in {"ai.chat", "ai.investigate"}
+            or claims.get("principal_type") == "system"
+            or not claims.get("principal_id")
+        ):
+            return claims
+        raise HTTPException(status_code=403, detail="INVALID_CONTEXT") from None
     except TrustedContextError as exc:
         code = getattr(exc, "error_code", "invalid_context")
         if code in ("context_replayed", "CONTEXT_REPLAYED"):

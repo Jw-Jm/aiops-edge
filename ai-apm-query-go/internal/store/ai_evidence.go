@@ -21,22 +21,75 @@ import (
 
 // Evidence 是对应 ai_evidence 表的记录（原子创建时写入）。
 type Evidence struct {
-	EvidenceID           string
-	RunID                string
-	TenantID             string
-	ClusterID            string
-	EvidenceType         string
-	SourceRef            string
-	RawRef               string
-	RawDigestSHA256      string
-	Summary              string
-	MetadataJSON         []byte
+	EvidenceID            string
+	RunID                 string
+	TenantID              string
+	ClusterID             string
+	EvidenceType          string
+	SourceRef             string
+	RawRef                string
+	RawDigestSHA256       string
+	Summary               string
+	MetadataJSON          []byte
 	ProvenanceFingerprint string
-	CollectedAt          time.Time
+	CollectedAt           time.Time
 }
 
 // EvidenceDAO 访问 ai_evidence 表。
 type EvidenceDAO struct{}
+
+// ListByRun returns persisted Evidence for a Run. Scope filtering is included
+// in the query so callers cannot accidentally mix tenants/clusters.
+func (d *EvidenceDAO) ListByRun(runID, tenantID, clusterID string) ([]Evidence, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	rows, err := conn.Query(`SELECT evidence_id, run_id, tenant_id, cluster_id,
+		evidence_type, source_ref, raw_ref, raw_digest_sha256, summary, metadata_json,
+		provenance_fingerprint, collected_at
+		FROM ai_evidence WHERE run_id = ? AND tenant_id = ? AND cluster_id = ? ORDER BY collected_at ASC`,
+		runID, tenantID, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Evidence{}
+	for rows.Next() {
+		var ev Evidence
+		var summary sql.NullString
+		if err := rows.Scan(&ev.EvidenceID, &ev.RunID, &ev.TenantID, &ev.ClusterID,
+			&ev.EvidenceType, &ev.SourceRef, &ev.RawRef, &ev.RawDigestSHA256,
+			&summary, &ev.MetadataJSON, &ev.ProvenanceFingerprint, &ev.CollectedAt); err != nil {
+			return nil, err
+		}
+		ev.Summary = summary.String
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+func (d *EvidenceDAO) GetByID(evidenceID, runID, tenantID, clusterID string) (*Evidence, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	var ev Evidence
+	var summary sql.NullString
+	err := conn.QueryRow(`SELECT evidence_id, run_id, tenant_id, cluster_id,
+		evidence_type, source_ref, raw_ref, raw_digest_sha256, summary, metadata_json,
+		provenance_fingerprint, collected_at FROM ai_evidence
+		WHERE evidence_id = ? AND run_id = ? AND tenant_id = ? AND cluster_id = ?`,
+		evidenceID, runID, tenantID, clusterID).Scan(
+		&ev.EvidenceID, &ev.RunID, &ev.TenantID, &ev.ClusterID,
+		&ev.EvidenceType, &ev.SourceRef, &ev.RawRef, &ev.RawDigestSHA256,
+		&summary, &ev.MetadataJSON, &ev.ProvenanceFingerprint, &ev.CollectedAt)
+	if err != nil {
+		return nil, err
+	}
+	ev.Summary = summary.String
+	return &ev, nil
+}
 
 // ErrEvidenceNotEligible 表示 ToolRun 不满足进入 Evidence 的条件（跨 epoch/终态/已消费/不匹配）。
 var ErrEvidenceNotEligible = errors.New("toolrun not eligible for evidence")

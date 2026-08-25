@@ -1,0 +1,41 @@
+name: aiops-workflow-gates
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ai-apm-query-go/**"
+      - "ai-orchestrator/**"
+      - "ai-action-executor/**"
+      - "observability-frontend/**"
+      - "deploy/helm/aiops/**"
+      - "deploy/scripts/verify-aiops-workflow-gates.sh"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: observability-frontend/package-lock.json
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.18.0"
+      - name: Install Python and frontend dependencies
+        run: |
+          python -m venv ai-orchestrator/.venv314
+          ai-orchestrator/.venv314/bin/pip install -r ai-orchestrator/requirements.txt -r ai-orchestrator/requirements-dev.txt
+          npm ci --prefix observability-frontend
+      - name: Verify workflow gates
+        run: deploy/scripts/verify-aiops-workflow-gates.sh

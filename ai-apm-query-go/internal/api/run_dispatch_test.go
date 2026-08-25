@@ -31,7 +31,7 @@ func TestRunDispatchDelivers(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"invocation_id", "run_id", "status", "dispatch_count",
 			"next_retry_at", "dispatch_owner_id", "dispatch_epoch", "dispatch_token_hash",
 			"dispatch_expires_at", "created_at", "updated_at"}).
-			AddRow("inv-1", "run-1", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
+			AddRow("99999999-9999-4999-8999-999999999999", "22222222-2222-4222-8222-222222222222", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
 	// Claim → ok（fencing：owner/epoch/token）
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'claimed'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -42,7 +42,7 @@ func TestRunDispatchDelivers(t *testing.T) {
 			"action_mode", "target_type", "target_resource_id", "time_range_start",
 			"time_range_end", "status", "state_version", "parent_run_id", "created_at",
 			"updated_at", "finished_at", "last_event_sequence"}).
-			AddRow("run-1", "req-1", "7ed01afc-cc79-4ecd-8767-a2befa6168ad", "91480408-9c2d-11f1-8271-bea176fe9f9f", "user",
+			AddRow("22222222-2222-4222-8222-222222222222", "11111111-1111-4111-8111-111111111111", "7ed01afc-cc79-4ecd-8767-a2befa6168ad", "91480408-9c2d-11f1-8271-bea176fe9f9f", "user",
 				"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "single_cluster", "91771a6e-9c2d-11f1-8271-bea176fe9f9f", "investigate",
 				"read_only", nil, nil, nil, nil, "created", 0, nil, time.Now(), time.Now(),
 				nil, 0))
@@ -82,7 +82,7 @@ func TestRunDispatchRetriesOnOrchestratorDown(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"invocation_id", "run_id", "status", "dispatch_count",
 			"next_retry_at", "dispatch_owner_id", "dispatch_epoch", "dispatch_token_hash",
 			"dispatch_expires_at", "created_at", "updated_at"}).
-			AddRow("inv-1", "run-1", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
+			AddRow("99999999-9999-4999-8999-999999999999", "22222222-2222-4222-8222-222222222222", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'claimed'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
@@ -91,7 +91,7 @@ func TestRunDispatchRetriesOnOrchestratorDown(t *testing.T) {
 			"action_mode", "target_type", "target_resource_id", "time_range_start",
 			"time_range_end", "status", "state_version", "parent_run_id", "created_at",
 			"updated_at", "finished_at", "last_event_sequence"}).
-			AddRow("run-1", "req-1", "7ed01afc-cc79-4ecd-8767-a2befa6168ad", "91480408-9c2d-11f1-8271-bea176fe9f9f", "user",
+			AddRow("22222222-2222-4222-8222-222222222222", "11111111-1111-4111-8111-111111111111", "7ed01afc-cc79-4ecd-8767-a2befa6168ad", "91480408-9c2d-11f1-8271-bea176fe9f9f", "user",
 				"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "single_cluster", "91771a6e-9c2d-11f1-8271-bea176fe9f9f", "investigate",
 				"read_only", nil, nil, nil, nil, "created", 0, nil, time.Now(), time.Now(),
 				nil, 0))

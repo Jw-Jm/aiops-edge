@@ -105,6 +105,51 @@ def _context_for_cluster(
     return request_context
 
 
+def _internal_investigation_query(*, tool_id: str, operation: str,
+                                  params: dict, context: ScopeView) -> dict:
+    """Run an Investigation read through the ToolRun-owned query boundary."""
+    from internal_query import _load_private_key
+    from internal_query_client import InternalQueryClient
+    from tool_execution_context import ToolExecutionContext
+    from trusted_context_issuer import TrustedContextIssuer
+
+    private_key = _load_private_key(os.environ.get("TRUSTED_CONTEXT_PRIVATE_KEY", ""))
+    issuer = TrustedContextIssuer(private_key=private_key)
+    execution = {
+        "workload_kind": "investigation",
+        "run_id": str(getattr(context, "run_id", "") or ""),
+        "invocation_id": str(getattr(context, "invocation_id", "") or ""),
+        "tenant_id": str(context.tenant_id),
+        "cluster_id": str(context.cluster_id),
+        "executor_id": str(getattr(context, "executor_id", "") or ""),
+        "lease_epoch": int(getattr(context, "lease_epoch", 0) or 0),
+        "lease_token": str(getattr(context, "lease_token", "") or ""),
+    }
+    client = InternalQueryClient(issuer=issuer)
+    result = client.query(
+        tool_id=tool_id, operation=operation,
+        tenant_id=str(context.tenant_id), cluster_id=str(context.cluster_id),
+        params=params, context_ref=str(context.request_id),
+        execution_context=ToolExecutionContext.from_mapping(execution, tool_id=tool_id, params=params),
+    )
+    body = result.body
+    tool_run_id = str(body.get("tool_run_id") or "")
+    if tool_run_id and body.get("quality") in {"complete", "partial"}:
+        from control_plane_client import ControlPlaneClient
+        evidence_id = str(_uuid.uuid5(_uuid.UUID(execution["run_id"]), tool_run_id))
+        raw = json.dumps(body.get("data", body), ensure_ascii=False, sort_keys=True, default=str)
+        ControlPlaneClient().consume_tool_evidence(
+            run_id=execution["run_id"], tenant_id=execution["tenant_id"],
+            cluster_id=execution["cluster_id"], tool_run_id=tool_run_id,
+            evidence_id=evidence_id, evidence_type=operation,
+            source_ref=f"query-api:{operation}", raw_ref=tool_run_id,
+            raw_digest_sha256=str(body.get("digest") or ""), summary=raw[:4000],
+            metadata={"quality": body.get("quality"), "count": body.get("count", 0)},
+            provenance_fingerprint=str(body.get("digest") or ""),
+        )
+    return body
+
+
 def query_metrics(service: str, tenant_id: str = "", cluster_id: str = "", *, request_context: RequestContext | None = None) -> str:
     if not service:
         return "未指定服务名称"
@@ -112,6 +157,13 @@ def query_metrics(service: str, tenant_id: str = "", cluster_id: str = "", *, re
     context = _context_for_cluster(cluster_id, request_context)
     if context is None:
         return "查询失败: invalid_context"
+    if getattr(context, "workload_kind", "") == "investigation":
+        try:
+            return json.dumps(_internal_investigation_query(
+                tool_id="query_metrics.v1", operation="metrics", params={"service": service}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
     data = _get_json(f"{QUERY_API}/services/{service}?{cp}", request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
@@ -125,6 +177,13 @@ def query_traces(service: str = "", tenant_id: str = "", cluster_id: str = "", *
     context = _context_for_cluster(cluster_id, request_context)
     if context is None:
         return "查询失败: invalid_context"
+    if getattr(context, "workload_kind", "") == "investigation":
+        try:
+            return json.dumps(_internal_investigation_query(
+                tool_id="query_traces.v1", operation="traces", params={"service": service, "limit": 5}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
     data = _get_json(url, request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
@@ -145,6 +204,14 @@ def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "", *, re
     context = _context_for_cluster(cluster_id, request_context)
     if context is None:
         return "日志查询失败: invalid_context"
+    if getattr(context, "workload_kind", "") == "investigation":
+        try:
+            return json.dumps(_internal_investigation_query(
+                tool_id="query_logs.v1", operation="logs",
+                params={"service": service, "minutes": minutes}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"日志查询失败: {str(exc)[:200]}"
     data = _get_json(url, request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"日志查询失败: {data['error']}"
@@ -174,6 +241,17 @@ def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_conte
     request_context = _context_for_cluster(cluster_id, request_context)
     if request_context is None:
         return "查询失败: invalid_context"
+    if getattr(request_context, "workload_kind", "") == "investigation":
+        try:
+            data = _internal_investigation_query(
+                tool_id="query_topology.v1", operation="topology", params={}, context=request_context,
+            )
+            nodes = data.get("nodes", []) if isinstance(data, dict) else []
+            services = sorted({str(n.get("name") or n.get("service_name")) for n in nodes
+                               if isinstance(n, dict) and n.get("type") == "service"})
+            return "服务数 " + str(len(services)) + "：\n" + "\n".join(services[:50])
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
     # 图谱优先：统一口径（自动构建的服务节点，排除 deleted），图谱不可达降级原逻辑
     try:
         from kg_graph import _load_graph, _json_loads
@@ -368,6 +446,20 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
     )
     if context is None:
         return "K8s 基础设施数据不可用（invalid_context）"
+    if getattr(context, "workload_kind", "") == "investigation":
+        try:
+            data = _internal_investigation_query(
+                tool_id="query_k8s.v1", operation="kubernetes", params={"namespace": "all"}, context=context,
+            )
+            if not isinstance(data, dict) or data.get("error"):
+                return f"K8s 基础设施数据不可用（数据源错误: {data.get('error') if isinstance(data, dict) else data}）"
+            pods = data.get("pods") or []
+            nodes = data.get("node_details") or data.get("nodes") or []
+            if not nodes:
+                return "K8s 基础设施数据不可用（未获取到节点信息，无法据此判断健康）"
+            return f"运行中 Pods: {len(pods)} 个\n节点: {len(nodes)} 个"
+        except Exception as exc:
+            return f"K8s 基础设施数据不可用（查询失败: {str(exc)[:200]}）"
     # 内部边界端点 /internal/v1/query/kubernetes 是 POST + body(cluster_id)。
     # QUERY_API 常含 /api/v1 前缀（公共 API），内部端点必须用 origin 基址（不含 /api/v1），
     # 否则会拼出 .../api/v1/internal/v1/... 错误路径（P19 真实环境暴露的 URL 接线缺陷）。

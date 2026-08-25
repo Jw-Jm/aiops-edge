@@ -87,6 +87,7 @@ def signed_query_api_request(
         "cluster_id": source.get("cluster_id"),
         "capability": source.get("capability"),
         "source": source.get("source", "planner"),
+        "workload_kind": source.get("workload_kind", "platform"),
         "issued_at": now,
         "expires_at": now + _CONTEXT_LIFETIME,
         "nonce": uuid4(),
@@ -127,6 +128,7 @@ def _validated_source_context(context: ScopeView | TrustedRequestContext | dict,
             "cluster_id": data.get("cluster_id"),
             "capability": data.get("capability"),
             "source": data.get("source", "planner"),
+            "workload_kind": data.get("workload_kind", "platform"),
         }
 
     # ScopeView: InvocationScope (new ingress) or LegacyScopeAdapter (old AI Chat path).
@@ -140,6 +142,7 @@ def _validated_source_context(context: ScopeView | TrustedRequestContext | dict,
             "cluster_id": str(context.cluster_id or ""),
             "capability": str(getattr(context, "capability", "") or ""),
             "source": str(getattr(context, "source", "planner")),
+            "workload_kind": str(getattr(context, "workload_kind", "platform") or "platform"),
         }
 
     if isinstance(context, dict):
@@ -158,6 +161,7 @@ def _validated_source_context(context: ScopeView | TrustedRequestContext | dict,
                 "cluster_id": validated.cluster_id,
                 "capability": validated.capability,
                 "source": validated.source,
+                "workload_kind": validated.workload_kind,
             }
 
     raise TrustedContextError("invalid_context")

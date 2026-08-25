@@ -38,9 +38,11 @@ var routeCapability = map[string]string{
 
 // internalQueryCtx 是 internal query 的可信作用域（服务端注入，body 不得覆盖）。
 type internalQueryCtx struct {
-	TenantID  string
-	ClusterID string
-	Capability string
+	TenantID     string
+	ClusterID    string
+	Capability   string
+	RunID        string
+	WorkloadKind string
 }
 
 // internalQueryError 是 internal query 边界的结构化错误（对齐契约 §58 错误码）。
@@ -85,9 +87,11 @@ func authorizeInternalQuery(r *http.Request, capability string) (*internalQueryC
 		return nil, &internalQueryError{Code: contract.ErrorCodeTenantAccessDenied, Message: "unauthorized tenant/cluster scope"}
 	}
 	return &internalQueryCtx{
-		TenantID:   ctx.TenantID,
-		ClusterID:  ctx.ClusterID,
-		Capability: ctx.Capability,
+		TenantID:     ctx.TenantID,
+		ClusterID:    ctx.ClusterID,
+		Capability:   ctx.Capability,
+		RunID:        ctx.RunID,
+		WorkloadKind: ctx.WorkloadKind,
 	}, nil
 }
 

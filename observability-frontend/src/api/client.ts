@@ -102,16 +102,64 @@ export interface RunSummary {
   primary_cluster_id?: string | null
   intent?: string
   action_mode?: string
+  target_type?: string | null
+  target_resource_id?: string | null
   created_at?: string | null
   root_cause?: string | null
   confidence?: number | null
+}
+export interface CreateRunResponse {
+  run_id: string
+  request_id: string
+  status: string
+  created_at?: string
 }
 export interface RunListResponse { runs: RunSummary[] }
 export const listRuns = (params?: Record<string, unknown>) =>
   api.get<RunListResponse>('/ai/runs', { params })
 export const getRun = (runId: string) => api.get<{ run: RunSummary }>(`/ai/runs/${encodeURIComponent(runId)}`)
 export const createRun = (data: Record<string, unknown>) =>
-  api.post<{ run: RunSummary }>('/ai/runs', data)
+  api.post<CreateRunResponse>('/ai/runs', data)
+
+export interface RunEvent {
+  sequence?: number
+  event_id?: string
+  event_type?: string
+  payload?: unknown
+  error?: string
+}
+
+// 公共 Run SSE 需要 JWT，不能使用原生 EventSource（无法附加 Authorization）。
+export async function streamRunEvents(
+  runId: string,
+  onEvent: (event: RunEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const auth = localStorage.getItem('token')
+  const response = await fetch(`/api/v1/ai/runs/${encodeURIComponent(runId)}/events`, {
+    headers: {
+      Accept: 'text/event-stream',
+      ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+    },
+    signal,
+  })
+  if (!response.ok || !response.body) throw new Error(`Run SSE failed: ${response.status}`)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const frames = buffer.split('\n\n')
+    buffer = frames.pop() ?? ''
+    for (const frame of frames) {
+      const data = frame.split('\n').find((line) => line.startsWith('data:'))?.slice(5).trim()
+      if (!data) continue
+      try { onEvent(JSON.parse(data) as RunEvent) } catch { /* ignore comments/heartbeats */ }
+    }
+  }
+}
 
 // ===== Evidence Detail（tenant+cluster+run 三元授权，只读）=====
 export interface RunEvidence {

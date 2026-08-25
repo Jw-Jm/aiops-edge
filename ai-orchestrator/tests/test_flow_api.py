@@ -11,12 +11,19 @@ from flow_engine.noderegistry import node_registry
 def client():
     tmp = tempfile.mkdtemp()
     os.environ["INTERNAL_TOKEN"] = "test-internal-token"
+    os.environ["LEGACY_FLOW_RUNTIME_ENABLED"] = "1"  # explicit test opt-in; production defaults off
     node_registry.reset()
     svc = WorkflowService(FlowStore(os.path.join(tmp, "flows.db")))
     set_flow_service(svc)
     app = FastAPI()
     app.include_router(router)
     return TestClient(app)
+
+
+def test_legacy_flow_runtime_is_disabled_without_explicit_opt_in(client, monkeypatch):
+    monkeypatch.delenv("LEGACY_FLOW_RUNTIME_ENABLED", raising=False)
+    r = client.post("/api/v1/ai/workflows/missing/run", json={})
+    assert r.status_code == 410
 
 # P0-3: 工作流定义变更（create/update/delete/toggle）仅限 admin，测试须带内部 token + admin 角色
 ADMIN = {"X-Internal-Token": "test-internal-token", "X-Internal-Role": "admin"}

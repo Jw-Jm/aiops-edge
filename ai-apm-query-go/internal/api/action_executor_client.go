@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -42,7 +43,7 @@ var (
 
 // ActionExecutionClient 是 query-api → ai-action-executor 的 HTTP 客户端。
 type ActionExecutionClient struct {
-	baseURL    string            // executor base URL（如 http://ai-action-executor:8080）
+	baseURL    string // executor base URL（如 http://ai-action-executor:8080）
 	httpClient *http.Client
 	privateKey ed25519.PrivateKey // query-api Ed25519 私钥（签发 signed context）
 	token      string             // 可选方向性 service token（EXECUTOR_TOKEN 匹配）
@@ -169,12 +170,12 @@ func httpStatusToExecutionStatus(status int) string {
 }
 
 // executeApprovedAction 实现 Stage D 执行闭环（handler 调用）：
-//   1. 校验 action 已 approved（ai_approval_decisions 有 approved 记录）。
-//   2. durable idempotency：execution_status 已 terminal（success/failed/rejected/
-//      rollback_required）→ 直接返回已记录结果，不重复执行。
-//   3. 构造 ActionExecutionContext + 签发 signed context → POST executor。
-//   4. 按 executor 结果持久化到 ai_actions（UpdateExecution）。
-//   5. execution_unknown → 调 reconcile 判定后再落终态。
+//  1. 校验 action 已 approved（ai_approval_decisions 有 approved 记录）。
+//  2. durable idempotency：execution_status 已 terminal（success/failed/rejected/
+//     rollback_required）→ 直接返回已记录结果，不重复执行。
+//  3. 构造 ActionExecutionContext + 签发 signed context → POST executor。
+//  4. 按 executor 结果持久化到 ai_actions（UpdateExecution）。
+//  5. execution_unknown → 调 reconcile 判定后再落终态。
 func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.AIApprovalDecision) (contract.ActionResult, error) {
 	client := currentActionExecutor()
 	if client == nil {
@@ -210,33 +211,108 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 	if err := ctx.Validate(); err != nil {
 		return contract.ActionResult{}, err
 	}
+	if h.actionDAO == nil {
+		return contract.ActionResult{}, errors.New("action persistence unavailable")
+	}
+	// Persist the attempt before crossing the mutation boundary. A missing or
+	// duplicate attempt is a hard stop: the executor must never be called for an
+	// action that cannot be reconciled after a response loss.
+	attemptID := newActionAttemptID()
+	startedAt := time.Now()
+	if h.attemptDAO != nil {
+		created, createErr := h.attemptDAO.Create(store.AIActionAttempt{
+			AttemptID: attemptID, ActionID: action.ActionID, RunID: action.RunID,
+			TenantID: action.TenantID, ClusterID: action.ClusterID,
+			IdempotencyKey: action.IdempotencyKey, ActionHash: action.ActionHash,
+			Status: "running", ExecutorID: "ai-action-executor", RequestJSON: targetSpec,
+			StartedAt: &startedAt, CreatedAt: startedAt,
+		})
+		if createErr != nil {
+			return contract.ActionResult{}, fmt.Errorf("action attempt persistence failed: %w", createErr)
+		}
+		if !created {
+			return contract.ActionResult{}, errors.New("action attempt already exists; reconcile before retry")
+		}
+	}
+	recordAttempt := func(status string, result []byte, errorCode string) error {
+		if h.attemptDAO == nil {
+			return nil
+		}
+		finished := time.Now()
+		return h.attemptDAO.Update(attemptID, status, result, errorCode, &finished)
+	}
 	res, reached, err := client.Execute(ctx)
 	if err != nil {
 		// executor 不可达 → 持久化 execution_unknown（不盲目重试）。
-		_ = h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", nil, contract.ErrorCodeExecutorUnavailable)
+		if attemptErr := recordAttempt("execution_unknown", nil, contract.ErrorCodeExecutorUnavailable); attemptErr != nil {
+			return contract.ActionResult{}, attemptErr
+		}
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", nil, contract.ErrorCodeExecutorUnavailable); updateErr != nil {
+			return contract.ActionResult{}, updateErr
+		}
 		return contract.ActionResult{}, err
 	}
 	if !reached {
-		_ = h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", nil, contract.ErrorCodeExecutorUnavailable)
+		if attemptErr := recordAttempt("execution_unknown", nil, contract.ErrorCodeExecutorUnavailable); attemptErr != nil {
+			return contract.ActionResult{}, attemptErr
+		}
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", nil, contract.ErrorCodeExecutorUnavailable); updateErr != nil {
+			return contract.ActionResult{}, updateErr
+		}
 		return contract.ActionResult{ActionID: action.ActionID, Status: "execution_unknown"}, nil
 	}
 	resultJSON, _ := json.Marshal(res)
 	switch res.Status {
 	case "success":
-		_ = h.actionDAO.UpdateExecution(action.ActionID, "success", resultJSON, "")
+		if attemptErr := recordAttempt("success", resultJSON, ""); attemptErr != nil {
+			return res, attemptErr
+		}
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "success", resultJSON, ""); updateErr != nil {
+			return res, updateErr
+		}
 	case "rejected":
-		_ = h.actionDAO.UpdateExecution(action.ActionID, "rejected", resultJSON, contract.ErrorCodeExecutorRejected)
+		if attemptErr := recordAttempt("rejected", resultJSON, contract.ErrorCodeExecutorRejected); attemptErr != nil {
+			return res, attemptErr
+		}
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "rejected", resultJSON, contract.ErrorCodeExecutorRejected); updateErr != nil {
+			return res, updateErr
+		}
 	case "failed", "rollback_required":
-		_ = h.actionDAO.UpdateExecution(action.ActionID, res.Status, resultJSON, res.Message)
+		if attemptErr := recordAttempt(res.Status, resultJSON, res.Message); attemptErr != nil {
+			return res, attemptErr
+		}
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, res.Status, resultJSON, res.Message); updateErr != nil {
+			return res, updateErr
+		}
 	case "execution_unknown":
 		// reconcile-before-retry：先调 executor 判定目标实际状态，不盲目 retry。
 		rec, _, _ := client.Reconcile(action.ActionID, action.TargetUID, string(action.Result))
 		recResultJSON, _ := json.Marshal(rec)
-		_ = h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", recResultJSON, contract.ErrorCodeExecutionUnknown)
+		if attemptErr := recordAttempt("execution_unknown", recResultJSON, contract.ErrorCodeExecutionUnknown); attemptErr != nil {
+			return res, attemptErr
+		}
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", recResultJSON, contract.ErrorCodeExecutionUnknown); updateErr != nil {
+			return res, updateErr
+		}
 	default:
-		_ = h.actionDAO.UpdateExecution(action.ActionID, "failed", resultJSON, res.Message)
+		if attemptErr := recordAttempt("failed", resultJSON, res.Message); attemptErr != nil {
+			return res, attemptErr
+		}
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "failed", resultJSON, res.Message); updateErr != nil {
+			return res, updateErr
+		}
 	}
 	return res, nil
+}
+
+func newActionAttemptID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("attempt-%d", time.Now().UnixNano())
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }
 
 func formatApprovedAt(t *time.Time) string {

@@ -57,18 +57,18 @@ func validateOptionalUUID(field, value string) error {
 
 // commonContext holds the shared context claims (V9.2 §11).
 type commonContext struct {
-	Version      int       `json:"version"`
-	ContextType  string    `json:"context_type"`
-	Issuer       string    `json:"issuer"`
-	Audience     string    `json:"audience"`
-	RequestID    string    `json:"request_id"`
-	PrincipalType string   `json:"principal_type"`
-	PrincipalID  string    `json:"principal_id"`
-	SessionID    string    `json:"session_id"`
-	TenantID     string    `json:"tenant_id"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Nonce        string    `json:"nonce"`
+	Version       int       `json:"version"`
+	ContextType   string    `json:"context_type"`
+	Issuer        string    `json:"issuer"`
+	Audience      string    `json:"audience"`
+	RequestID     string    `json:"request_id"`
+	PrincipalType string    `json:"principal_type"`
+	PrincipalID   string    `json:"principal_id"`
+	SessionID     string    `json:"session_id"`
+	TenantID      string    `json:"tenant_id"`
+	IssuedAt      time.Time `json:"issued_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	Nonce         string    `json:"nonce"`
 }
 
 func (c commonContext) validateCommon() error {
@@ -118,9 +118,13 @@ func (c commonContext) validateCommon() error {
 // the investigation chain.
 type RunInvocationContext struct {
 	commonContext
-	Source      string   `json:"source"`
+	Source       string   `json:"source"`
 	ClusterScope []string `json:"cluster_scope"`
-	Capability  string   `json:"capability,omitempty"`
+	Capability   string   `json:"capability,omitempty"`
+	// RunID/InvocationID bind an investigation invocation to the already
+	// persisted control-plane Run. They are intentionally absent for chat.
+	RunID        string `json:"run_id,omitempty"`
+	InvocationID string `json:"invocation_id,omitempty"`
 }
 
 // NewRunInvocationContext builds a RunInvocationContext from its explicit fields.
@@ -155,6 +159,17 @@ func (c RunInvocationContext) Validate() error {
 	}
 	if c.Capability != "" && c.Capability != "ai.chat" && c.Capability != "ai.investigate" {
 		return errors.New("capability must be one of ai.chat | ai.investigate")
+	}
+	if c.Capability == "ai.investigate" {
+		if err := validateUUID("run_id", c.RunID); err != nil {
+			return err
+		}
+		if err := validateUUID("invocation_id", c.InvocationID); err != nil {
+			return err
+		}
+	}
+	if c.Capability == "ai.chat" && (c.RunID != "" || c.InvocationID != "") {
+		return errors.New("chat invocation must not carry run identity")
 	}
 	return nil
 }
@@ -201,11 +216,12 @@ func NewRunControlContext(issuer, audience, requestID, principalType, principalI
 // TrustedRequestContext: orchestrator → query-api, for tool/data access (V9.2 §11.3).
 type TrustedRequestContext struct {
 	commonContext
-	RunID      string    `json:"run_id"`
-	ScopeKind  string    `json:"scope_kind"`
-	ClusterID  string    `json:"cluster_id"`
-	Capability string    `json:"capability"`
-	Source     string    `json:"source"`
+	RunID        string `json:"run_id"`
+	ScopeKind    string `json:"scope_kind"`
+	ClusterID    string `json:"cluster_id"`
+	Capability   string `json:"capability"`
+	Source       string `json:"source"`
+	WorkloadKind string `json:"workload_kind,omitempty"`
 }
 
 func (c TrustedRequestContext) Validate() error {
@@ -238,6 +254,11 @@ func (c TrustedRequestContext) Validate() error {
 	}
 	if c.Source == "" {
 		return errors.New("source is required")
+	}
+	// Empty is retained only for pre-convergence signed callers. New issuers
+	// must populate one of the three bounded workload kinds.
+	if c.WorkloadKind != "" && c.WorkloadKind != "investigation" && c.WorkloadKind != "chat" && c.WorkloadKind != "platform" {
+		return errors.New("workload_kind must be investigation, chat, or platform")
 	}
 	return nil
 }
@@ -348,25 +369,25 @@ type StructuredError struct {
 }
 
 type ToolResult struct {
-	ToolName     string           `json:"tool_name"`
-	ClusterID    string           `json:"cluster_id"`
-	Success      bool             `json:"success"`
-	Status       string           `json:"status"`
-	Summary      string           `json:"summary"`
-	Data         any              `json:"data"`
-	ErrorCode    string           `json:"error_code"`
-	ErrorMessage string           `json:"error_message"`
-	Retryable    bool             `json:"retryable"`
-	EvidenceIDs  []string         `json:"evidence_ids"`
-	SourceSystem string           `json:"source_system"`
-	QueryID      string           `json:"query_id"`
-	TimeRange    any `json:"time_range"`
+	ToolName     string   `json:"tool_name"`
+	ClusterID    string   `json:"cluster_id"`
+	Success      bool     `json:"success"`
+	Status       string   `json:"status"`
+	Summary      string   `json:"summary"`
+	Data         any      `json:"data"`
+	ErrorCode    string   `json:"error_code"`
+	ErrorMessage string   `json:"error_message"`
+	Retryable    bool     `json:"retryable"`
+	EvidenceIDs  []string `json:"evidence_ids"`
+	SourceSystem string   `json:"source_system"`
+	QueryID      string   `json:"query_id"`
+	TimeRange    any      `json:"time_range"`
 	// Error 是 Go binding 内部承载结构化错误的结构（经 error_code/error_message 落 wire）。
 	// `json:"-"`：不序列化到 wire，保证三端 wire 严格为 V1 冻结 15 字段（Python/TS/Schema
 	// 均不接受第 16 个 "error" 字段）。R2 方案 B 三端一致性（Bugbot B4/C3）。
-	Error        *StructuredError `json:"-"`
-	StartedAt    time.Time        `json:"started_at"`
-	FinishedAt   time.Time        `json:"finished_at"`
+	Error      *StructuredError `json:"-"`
+	StartedAt  time.Time        `json:"started_at"`
+	FinishedAt time.Time        `json:"finished_at"`
 }
 
 func (result ToolResult) Validate() error {
@@ -408,15 +429,15 @@ func (result ToolResult) Validate() error {
 // action_hash / approval_id / target_uid / target_name / resource_version / cluster_id /
 // namespace / operation / target_spec / credential_ref / approved_at / executed_by）。
 type ActionExecutionContext struct {
-	ActionID        string          `json:"action_id"`          // 绑定 immutable action 身份
-	ActionHash      string          `json:"action_hash"`        // 绑定 immutable action
+	ActionID        string          `json:"action_id"`   // 绑定 immutable action 身份
+	ActionHash      string          `json:"action_hash"` // 绑定 immutable action
 	ApprovalID      string          `json:"approval_id"`
-	TargetUID       string          `json:"target_uid"`         // 执行前重新读取校验（TOCTOU）
-	TargetName      string          `json:"target_name"`        // K8s lookup 用
-	ResourceVersion string          `json:"resource_version"`   // TOCTOU precondition
+	TargetUID       string          `json:"target_uid"`       // 执行前重新读取校验（TOCTOU）
+	TargetName      string          `json:"target_name"`      // K8s lookup 用
+	ResourceVersion string          `json:"resource_version"` // TOCTOU precondition
 	ClusterID       string          `json:"cluster_id"`
 	Namespace       string          `json:"namespace"`
-	Operation       string          `json:"operation"`          // patch/scale/restart（白名单）
+	Operation       string          `json:"operation"` // patch/scale/restart（白名单）
 	TargetSpec      json.RawMessage `json:"target_spec"`
 	CredentialRef   string          `json:"credential_ref"`
 	ApprovedAt      string          `json:"approved_at"`
