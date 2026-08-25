@@ -44,11 +44,11 @@ const NewInvestigation: React.FC = () => {
         actions={<Button onClick={() => window.history.back()}>返回</Button>}
       />
       <Card size="small" style={{ maxWidth: 560 }}>
-        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ clusterId: clusters[0]?.id ?? '' }}>
+        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ clusterId: clusters[0]?.cluster_id ?? '' }}>
           <Form.Item name="clusterId" label="Canonical Cluster" rules={[{ required: true }]}>
             <Select
               placeholder="选择 canonical cluster"
-              options={clusters.map((c) => ({ value: c.id, label: `${c.name} (${c.id})` }))}
+              options={clusters.filter((c) => c.cluster_id).map((c) => ({ value: c.cluster_id, label: `${c.name} (${c.cluster_id})` }))}
             />
           </Form.Item>
           <Form.Item name="resourceId" label="资源" rules={[{ required: true, message: '请输入资源标识' }]}>

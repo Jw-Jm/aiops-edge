@@ -18,8 +18,8 @@ export default function ClusterSwitcher() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // cluster_id 语义：查询层的集群标记。主集群（id===1，数据写入 cluster_id='default'）映射为 'default'；
-  // 纳管集群用集群 name 作为 cluster_id 标记（与采集 chart 上报的 cluster_id 对齐）。
+  // cluster_id 语义：始终使用后端返回的 canonical UUID。旧 numeric id/name
+  // 不再被当成查询授权上下文，避免 UI 选择器把不可授权的 legacy ref 传给后端。
   // 修复 5.9：option label 增加集群状态图标（● 健康 / ● 降级 / ● 失联 / ● 未知），便于运维一眼识别集群可用性
   const statusDot = (s: string) => {
     const st = String(s || '').toLowerCase()
@@ -33,7 +33,7 @@ export default function ClusterSwitcher() {
     ...clusters.map((c) => {
       const d = statusDot(c.status)
       return {
-        value: c.id === 1 ? 'default' : c.name,
+        value: c.cluster_id || `legacy-${c.id}`,
         label: c.node_count
           ? `${c.name} (${c.node_count}节点)`
           : c.name,

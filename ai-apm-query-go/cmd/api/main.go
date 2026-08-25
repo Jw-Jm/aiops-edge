@@ -98,6 +98,36 @@ func requireDatabase(getter func() *sql.DB) (*sql.DB, error) {
 	return db, nil
 }
 
+func canonicalBootstrapConfigFromEnv() (store.CanonicalBootstrapConfig, error) {
+	cfg := store.CanonicalBootstrapConfig{
+		TenantID:              strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_TENANT_ID")),
+		TenantName:            strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_TENANT_NAME")),
+		ClusterID:             strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_ID")),
+		ClusterSlug:           strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_SLUG")),
+		ClusterName:           strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_NAME")),
+		ClusterEnvironment:    strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_ENVIRONMENT")),
+		ClusterRegion:         strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_REGION")),
+		ClusterCredentialRef:  strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_CREDENTIAL_REF")),
+		KubernetesIdentityUID: strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_IDENTITY_UID")),
+	}
+	if cfg.TenantName == "" {
+		cfg.TenantName = "AIOps Tenant"
+	}
+	if cfg.ClusterEnvironment == "" {
+		cfg.ClusterEnvironment = "local"
+	}
+	if cfg.ClusterRegion == "" {
+		cfg.ClusterRegion = "local"
+	}
+	if cfg.ClusterName == "" {
+		cfg.ClusterName = cfg.ClusterSlug
+	}
+	if err := cfg.Validate(); err != nil {
+		return store.CanonicalBootstrapConfig{}, fmt.Errorf("canonical bootstrap configuration is missing or invalid: %w", err)
+	}
+	return cfg, nil
+}
+
 func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
 	chHost := flag.String("ch-host", "clickhouse.observability.svc.cluster.local", "ClickHouse host")
@@ -188,7 +218,16 @@ func main() {
 			log.Printf("ADMIN_INITIAL_PASSWORD not set: generated random admin password (first login / reset only): %s", adminPW)
 		}
 		if adminHash, err := bcrypt.GenerateFromPassword([]byte(adminPW), bcrypt.DefaultCost); err == nil {
-			_ = (&store.UserDAO{}).SeedAdmin(string(adminHash))
+			if err := (&store.UserDAO{}).SeedAdmin(string(adminHash)); err != nil {
+				log.Fatalf("admin bootstrap: %v", err)
+			}
+		} else {
+			log.Fatalf("admin password hash: %v", err)
+		}
+		if cfg, err := canonicalBootstrapConfigFromEnv(); err != nil {
+			log.Fatalf("canonical authorization bootstrap: %v", err)
+		} else if err := store.EnsureCanonicalBootstrapData(db, cfg); err != nil {
+			log.Fatalf("canonical authorization bootstrap: %v", err)
 		}
 		// 拓扑类型目录内置种子（幂等）
 		_ = store.SeedTopologyTypes()

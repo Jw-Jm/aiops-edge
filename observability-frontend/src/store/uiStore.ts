@@ -4,6 +4,7 @@ import { listClusters, type ClusterItem } from '../api/client'
 
 export interface ClusterOption {
   id: number
+  cluster_id: string
   name: string
   status: string
   node_count: number
@@ -46,11 +47,21 @@ export const useUIStore = create<UIState>()(
             : (data?.data ?? data?.clusters ?? [])
           const options: ClusterOption[] = (list as ClusterItem[]).map((c) => ({
             id: c.id,
+            cluster_id: c.cluster_id || '',
             name: c.name,
             status: c.status,
             node_count: c.node_count,
           }))
-          set({ clusters: options, clusterLoading: false })
+          set((state) => ({
+            clusters: options,
+            clusterLoading: false,
+            // Clear stale pre-canonical values persisted by older builds. A
+            // legacy alias must never become an API authorization context.
+            currentClusterId:
+              state.currentClusterId === 'all' || options.some((c) => c.cluster_id === state.currentClusterId)
+                ? state.currentClusterId
+                : 'all',
+          }))
         } catch (e) {
           // 集群接口失败不阻塞页面：保持已缓存列表，仅清 loading
           set({ clusterLoading: false })

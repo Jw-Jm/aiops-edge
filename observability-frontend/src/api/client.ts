@@ -1,7 +1,10 @@
 import axios from 'axios'
 
-// 租户 ID 从构建环境变量注入（可移植），默认单租户 'default'
-export const TENANT_ID = (import.meta.env.VITE_TENANT_ID as string) || 'default'
+// Canonical tenant identity is tracked in source so a GitHub checkout and the
+// local build produce the same request context even when .env is absent.
+// VITE_TENANT_ID remains an explicit deployment override, never a legacy alias.
+const DEFAULT_TENANT_ID = '7ed01afc-cc79-4ecd-8767-a2befa6168ad'
+export const TENANT_ID = (import.meta.env.VITE_TENANT_ID as string) || DEFAULT_TENANT_ID
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -549,8 +552,9 @@ export const listArtifacts = (params?: { limit?: number; type_filter?: string })
 
 // ===== 集群管理 =====
 export interface ClusterItem {
-  id: number; name: string; provider: string; region: string; version: string
-  node_count: number; status: string; api_server: string
+  id: number; cluster_id?: string; tenant_id?: string; slug?: string
+  name: string; provider: string; region: string; environment?: string; version: string
+  node_count: number; status: string; lifecycle_status?: string; api_server: string
 }
 export interface ClusterNodeItem {
   name: string; role: string; status: string; ip: string; os: string; cpu: string; memory: string; kubelet: string

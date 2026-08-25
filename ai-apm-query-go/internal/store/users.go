@@ -114,7 +114,7 @@ func (d *UserDAO) CreateSession(userUUID, sessionID string, expiresAt time.Time)
 		return ErrMySQLUnavailable
 	}
 	_, err := conn.Exec(
-		"INSERT INTO user_sessions (session_id, user_uuid, status, expires_at, revoked_at) VALUES (?, ?, 'active', ?, NULL)",
+		"INSERT INTO auth_sessions (session_id, user_uuid, status, expires_at, revoked_at) VALUES (?, ?, 'active', ?, NULL)",
 		sessionID, userUUID, expiresAt.UTC())
 	return err
 }

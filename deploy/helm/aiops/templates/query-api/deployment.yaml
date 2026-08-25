@@ -24,6 +24,24 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: AIOPS_SYSTEM_TENANT_ID
+              value: {{ .Values.queryApi.systemTenantId | quote }}
+            - name: AIOPS_SYSTEM_TENANT_NAME
+              value: {{ .Values.queryApi.systemTenantName | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_ID
+              value: {{ .Values.queryApi.systemClusterId | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_SLUG
+              value: {{ .Values.queryApi.systemClusterSlug | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_NAME
+              value: {{ .Values.queryApi.systemClusterName | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_ENVIRONMENT
+              value: {{ .Values.queryApi.systemClusterEnvironment | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_REGION
+              value: {{ .Values.queryApi.systemClusterRegion | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_CREDENTIAL_REF
+              value: {{ .Values.queryApi.systemClusterCredentialRef | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_IDENTITY_UID
+              value: {{ .Values.queryApi.systemClusterIdentityUID | quote }}
             - name: CLICKHOUSE_HOST
               value: {{ .Values.queryApi.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT

@@ -56,7 +56,7 @@ const Login: React.FC = () => {
             </div>
           </div>
         </div>
-        <div className="text-sm muted">© 2026 智能可观测平台 · 演示环境</div>
+        <div className="text-sm muted">© 2026 智能可观测平台</div>
       </aside>
 
       <div className="login-card-wrap">
@@ -79,7 +79,6 @@ const Login: React.FC = () => {
               </Button>
             </Form.Item>
           </Form>
-          <div className="login-hint">演示账号：admin / admin123</div>
         </div>
       </div>
     </div>

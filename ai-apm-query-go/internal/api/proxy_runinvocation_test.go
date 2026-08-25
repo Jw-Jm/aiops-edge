@@ -250,7 +250,7 @@ func TestProxyAIMissingClusterFailsClosed(t *testing.T) {
 	t.Cleanup(func() { store.SetDB(prev) })
 
 	// auth passes, but body has no cluster → fail closed before any cluster query.
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(authzUserID, authzSessionID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).
 			AddRow(authzUserID, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))

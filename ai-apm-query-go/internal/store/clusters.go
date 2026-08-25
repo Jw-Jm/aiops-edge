@@ -34,19 +34,20 @@ var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-
 // Cluster 集群实体。
 type Cluster struct {
 	// ID is legacy migration metadata only. New authorization and registry code uses ClusterID.
-	ID            int64  `json:"id,omitempty"`
-	ClusterID     string `json:"cluster_id"`
-	TenantID      string `json:"tenant_id"`
-	Slug          string `json:"slug"`
-	Name          string `json:"name"`
-	Environment   string `json:"environment"`
-	Region        string `json:"region"`
-	CredentialRef string `json:"credential_ref,omitempty"`
-	Status        string `json:"status"`
-	Provider      string `json:"provider,omitempty"`
-	Version       string `json:"version,omitempty"`
-	NodeCount     int    `json:"node_count,omitempty"`
-	APIServer     string `json:"api_server,omitempty"`
+	ID              int64  `json:"id,omitempty"`
+	ClusterID       string `json:"cluster_id"`
+	TenantID        string `json:"tenant_id"`
+	Slug            string `json:"slug"`
+	Name            string `json:"name"`
+	Environment     string `json:"environment"`
+	Region          string `json:"region"`
+	CredentialRef   string `json:"credential_ref,omitempty"`
+	Status          string `json:"status"`
+	LifecycleStatus string `json:"lifecycle_status,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Version         string `json:"version,omitempty"`
+	NodeCount       int    `json:"node_count,omitempty"`
+	APIServer       string `json:"api_server,omitempty"`
 	// Type/Capabilities/Labels/DeletedAt are V9.2 §9 minimum registry fields.
 	Type         string     `json:"type,omitempty"`
 	Capabilities string     `json:"capabilities,omitempty"`
@@ -187,7 +188,7 @@ func (d *ClusterDAO) List() ([]Cluster, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	rows, err := conn.Query(
-		"SELECT id, name, provider, region, version, node_count, status, api_server, kubeconfig, created_at, updated_at FROM clusters ORDER BY name")
+		"SELECT id, cluster_id, tenant_id, slug, name, provider, region, version, node_count, status, api_server, kubeconfig, environment, lifecycle_status, credential_ref, kubernetes_identity_uid, created_at, updated_at FROM clusters ORDER BY name")
 	if err != nil {
 		return nil, err
 	}
@@ -195,13 +196,21 @@ func (d *ClusterDAO) List() ([]Cluster, error) {
 	items := []Cluster{}
 	for rows.Next() {
 		var c Cluster
-		var kc sql.NullString
-		if err := rows.Scan(&c.ID, &c.Name, &c.Provider, &c.Region, &c.Version,
-			&c.NodeCount, &c.Status, &c.APIServer, &kc, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		var clusterID, tenantID, slug, kc, credentialRef, identity sql.NullString
+		if err := rows.Scan(&c.ID, &clusterID, &tenantID, &slug, &c.Name, &c.Provider, &c.Region, &c.Version,
+			&c.NodeCount, &c.Status, &c.APIServer, &kc, &c.Environment, &c.LifecycleStatus, &credentialRef, &identity, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
+		c.ClusterID = clusterID.String
+		c.TenantID = tenantID.String
+		c.Slug = slug.String
 		c.Kubeconfig = kc.String // A-2 修复：kubeconfig 为 NULL 时容忍（转空串）
+		c.CredentialRef = credentialRef.String
+		c.KubernetesIdentityUID = identity.String
 		items = append(items, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return items, nil
 }

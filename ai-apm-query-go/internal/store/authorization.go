@@ -64,7 +64,7 @@ func (d *AuthorizationDAO) Authorize(ctx AuthorizationQuery) (AuthorizationDecis
 	var expiresAt, revokedAt sql.NullTime
 	var storedVersion int64
 	// Consistent with resolveMySQLAuthorizationContext: read token_version (V9.2 §8).
-	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s ON s.user_uuid = u.user_uuid
+	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s ON s.user_uuid = u.user_uuid
 WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, ctx.UserID, ctx.SessionID).Scan(&userID, &userStatus, &sessionStatus, &expiresAt, &revokedAt, &storedVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -150,7 +150,7 @@ func completeAuthorizationQuery(ctx AuthorizationQuery) bool {
 
 func authorizationSchemaStatements() []string {
 	return []string{
-		`CREATE TABLE IF NOT EXISTS user_sessions (
+		`CREATE TABLE IF NOT EXISTS auth_sessions (
   session_id CHAR(36) PRIMARY KEY,
   user_uuid CHAR(36) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'active',
@@ -159,7 +159,7 @@ func authorizationSchemaStatements() []string {
   revoked_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_user_sessions_user_status (user_uuid, status)
+  INDEX idx_auth_sessions_user_status (user_uuid, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS user_tenants (
   user_uuid CHAR(36) NOT NULL,

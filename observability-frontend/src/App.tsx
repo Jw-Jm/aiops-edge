@@ -239,7 +239,6 @@ function AppLayout() {
           <ClusterSwitcher />
           <div className="topbar__spacer" />
           {currentLabel && <span className="topbar__label" style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>{currentLabel}</span>}
-          <div className="env-switch"><span className="dot" />演示环境</div>
           {/* 修复 5.7：通知按钮从"直接跳转告警页"改为下拉抽屉，展示最近告警，点击进入告警事件页 */}
           <Dropdown
             trigger={['click']}

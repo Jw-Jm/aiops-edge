@@ -40,8 +40,8 @@ const Overview: React.FC = () => {
   const [nodeSort, setNodeSort] = useState<'cpu' | 'memory'>('cpu')
   const [showAllNodes, setShowAllNodes] = useState(false)
 
-  // A6: 移除集群名映射 hack（c.id===1 ? 'default' : c.name），直接用集群 name 作为 cluster_id 字符串
-  const clusterName = currentClusterId === 'all' ? '全部集群' : (clusters.find((c) => c.name === currentClusterId)?.name || currentClusterId)
+  // Cluster selection is a canonical UUID; labels are display-only.
+  const clusterName = currentClusterId === 'all' ? '全部集群' : (clusters.find((c) => c.cluster_id === currentClusterId)?.name || currentClusterId)
 
   const load = () => {
     setLoading(true)

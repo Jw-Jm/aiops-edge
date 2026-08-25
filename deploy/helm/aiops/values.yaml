@@ -204,7 +204,7 @@ categraf:
   enabled: true
   image: "flashcatcloud/categraf:v0.5.17"
   # 所属集群 ID：与 ingest.clusterId 对齐（多集群纳管时每集群一个配置/标签维度）
-  clusterId: "default"
+  clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
   # 全局采集间隔（秒）
   interval: 15
   resources:
@@ -267,6 +267,20 @@ frontend:
 queryApi:
   enabled: true
   image: "query-api:{{ .Values.global.imageTag }}"
+  # Query API canonical bootstrap identity. These values must match the
+  # frontend tenant header and the telemetry writers' cluster_id.
+  systemTenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
+  systemTenantName: "AIOps Tenant"
+  systemClusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
+  systemClusterSlug: "local-cluster"
+  systemClusterName: "kubernetes-cluster"
+  systemClusterEnvironment: "local"
+  systemClusterRegion: "local"
+  # Optional registration evidence. Empty means the cluster is visible to the
+  # tenant but the Kubernetes Access Boundary remains fail-closed until a real
+  # credential→kube-system UID registration is completed.
+  systemClusterCredentialRef: ""
+  systemClusterIdentityUID: ""
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"

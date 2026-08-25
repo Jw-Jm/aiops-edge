@@ -207,7 +207,7 @@ func generateJWTWithSessionExpiry(userID, sessionID string, expiresAt time.Time)
 		return ""
 	}
 	// token_version is an invalidation mechanism, not an authorization fact (V9.2 §8).
-	// Single authoritative source: user_sessions.token_version.
+	// Single authoritative source: auth_sessions.token_version.
 	tokenVersion := currentSessionTokenVersion(sessionID)
 	return signJWT(userID, sessionID, expiresAt, tokenVersion)
 }
@@ -243,7 +243,7 @@ func currentSessionTokenVersion(sessionID string) int64 {
 		return 0
 	}
 	var version int64
-	if err := conn.QueryRow("SELECT token_version FROM user_sessions WHERE session_id = ?", sessionID).Scan(&version); err != nil {
+	if err := conn.QueryRow("SELECT token_version FROM auth_sessions WHERE session_id = ?", sessionID).Scan(&version); err != nil {
 		return 0
 	}
 	return version
@@ -341,7 +341,7 @@ func resolveMySQLAuthorizationContext(userID, sessionID, tenantID string, tokenV
 	var userStatus int
 	var storedVersion int64
 	var expiresAt, revokedAt sql.NullTime
-	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN user_sessions s ON s.user_uuid = u.user_uuid
+	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s ON s.user_uuid = u.user_uuid
 WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, userID, sessionID).Scan(&currentUserID, &userStatus, &sessionStatus, &expiresAt, &revokedAt, &storedVersion)
 	if err != nil || currentUserID != userID || userStatus != 1 || sessionStatus != "active" || !expiresAt.Valid || !expiresAt.Time.After(time.Now()) || (revokedAt.Valid && !revokedAt.Time.IsZero()) {
 		return zero, authorizationFailure("permission_denied")
