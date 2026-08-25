@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -134,7 +135,8 @@ func approvalsToMaps(approvals []store.AIApprovalDecision) []map[string]interfac
 	for _, a := range approvals {
 		out = append(out, map[string]interface{}{
 			"approval_id": a.ApprovalID, "action_id": a.ActionID, "decision": a.Decision,
-			"approver": a.Approver, "reason": a.Reason,
+			"approver": a.Approver, "reason": a.Reason, "action_hash": a.ActionHash,
+			"action_version": a.ActionVersion, "decision_idempotency_key": a.DecisionIdempotencyKey,
 		})
 	}
 	return out
@@ -169,6 +171,9 @@ func actionsToMaps(actions []store.AIAction) []map[string]interface{} {
 	for _, a := range actions {
 		out = append(out, map[string]interface{}{
 			"action_id": a.ActionID, "action_type": a.ActionType, "action_hash": a.ActionHash,
+			"hash_schema_version": a.HashSchemaVersion, "action_version": a.ActionVersion,
+			"policy_version": a.PolicyVersion, "preflight_status": a.PreflightStatus,
+			"target_resource_type": a.TargetResourceType, "run_id": a.RunID,
 			"idempotency_key": a.IdempotencyKey, "status": a.Status,
 			"authoritative_risk": a.AuthoritativeRisk, "dry_run": a.DryRun,
 			"target_name": a.TargetName, "target_uid": a.TargetUID,
@@ -186,6 +191,34 @@ func hypothesesToMaps(hypotheses []store.AIHypothesis) []map[string]interface{} 
 			"hypothesis_id": h.HypothesisID, "content": h.Content,
 			"confidence": h.Confidence, "status": h.Status,
 			"confirmed_by_evidence": h.ConfirmedByEvidence,
+		})
+	}
+	return out
+}
+
+func verificationsToMaps(verifications []store.AIVerification) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(verifications))
+	for _, v := range verifications {
+		out = append(out, map[string]interface{}{
+			"verification_id": v.VerificationID, "run_id": v.RunID, "action_id": v.ActionID,
+			"status": v.Status, "before_snapshot": json.RawMessage(v.BeforeSnapshot),
+			"after_snapshot": json.RawMessage(v.AfterSnapshot), "checks": json.RawMessage(v.Checks),
+			"summary": v.Summary, "payload_hash": v.PayloadHash,
+			"observation_window_seconds": v.ObservationWindowSeconds,
+			"created_at":                 v.CreatedAt, "updated_at": v.UpdatedAt,
+		})
+	}
+	return out
+}
+
+func actionAttemptsToMaps(attempts []store.AIActionAttempt) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(attempts))
+	for _, a := range attempts {
+		out = append(out, map[string]interface{}{
+			"attempt_id": a.AttemptID, "action_id": a.ActionID, "run_id": a.RunID,
+			"status": a.Status, "executor_id": a.ExecutorID, "action_hash": a.ActionHash,
+			"request_digest_sha256": a.RequestDigestSHA256, "error_code": a.ErrorCode,
+			"started_at": a.StartedAt, "finished_at": a.FinishedAt, "created_at": a.CreatedAt,
 		})
 	}
 	return out

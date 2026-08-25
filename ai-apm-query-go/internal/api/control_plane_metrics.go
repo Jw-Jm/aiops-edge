@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -19,7 +20,10 @@ type cpMetrics struct {
 	// Runtime Commit
 	commitTotal, commitIdempotent int64
 	// Outbox dispatch
-	outboxDispatch, outboxStaleReclaim int64
+	outboxDispatch, outboxStaleReclaim        int64
+	actionOutboxDispatch, actionOutboxUnknown int64
+	actionOutboxPending                       int64
+	actionOutboxOldestAgeSeconds              float64
 	// Tool
 	toolStarted, toolConverged int64
 	// Replay
@@ -58,6 +62,10 @@ func (m *cpMetrics) inc(name string) {
 		m.outboxDispatch++
 	case "outbox_stale_reclaim":
 		m.outboxStaleReclaim++
+	case "action_outbox_dispatch":
+		m.actionOutboxDispatch++
+	case "action_outbox_unknown":
+		m.actionOutboxUnknown++
 	case "tool_started":
 		m.toolStarted++
 	case "tool_converged":
@@ -80,6 +88,17 @@ func (m *cpMetrics) inc(name string) {
 		m.alertLeaderElected++
 	case "correlation_propagated":
 		m.correlationPropagated++
+	}
+}
+
+func (m *cpMetrics) setActionQueue(depth int, oldestAge time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.actionOutboxPending = int64(depth)
+	if oldestAge > 0 {
+		m.actionOutboxOldestAgeSeconds = oldestAge.Seconds()
+	} else {
+		m.actionOutboxOldestAgeSeconds = 0
 	}
 }
 
@@ -106,6 +125,18 @@ func (m *cpMetrics) writeControlPlaneMetrics(w http.ResponseWriter) {
 	fmt.Fprintf(w, "# HELP aio_control_plane_outbox_stale_reclaim_total Stale outbox claim reclaims.\n")
 	fmt.Fprintf(w, "# TYPE aio_control_plane_outbox_stale_reclaim_total counter\n")
 	fmt.Fprintf(w, "aio_control_plane_outbox_stale_reclaim_total %d\n", m.outboxStaleReclaim)
+	fmt.Fprintf(w, "# HELP aio_control_plane_action_outbox_dispatch_total Action outbox dispatch attempts.\n")
+	fmt.Fprintf(w, "# TYPE aio_control_plane_action_outbox_dispatch_total counter\n")
+	fmt.Fprintf(w, "aio_control_plane_action_outbox_dispatch_total %d\n", m.actionOutboxDispatch)
+	fmt.Fprintf(w, "# HELP aio_control_plane_action_outbox_unknown_total Action executions awaiting reconciliation.\n")
+	fmt.Fprintf(w, "# TYPE aio_control_plane_action_outbox_unknown_total counter\n")
+	fmt.Fprintf(w, "aio_control_plane_action_outbox_unknown_total %d\n", m.actionOutboxUnknown)
+	fmt.Fprintf(w, "# HELP aio_control_plane_action_outbox_pending Action outbox pending depth.\n")
+	fmt.Fprintf(w, "# TYPE aio_control_plane_action_outbox_pending gauge\n")
+	fmt.Fprintf(w, "aio_control_plane_action_outbox_pending %d\n", m.actionOutboxPending)
+	fmt.Fprintf(w, "# HELP aio_control_plane_action_outbox_oldest_age_seconds Action outbox oldest pending age.\n")
+	fmt.Fprintf(w, "# TYPE aio_control_plane_action_outbox_oldest_age_seconds gauge\n")
+	fmt.Fprintf(w, "aio_control_plane_action_outbox_oldest_age_seconds %.3f\n", m.actionOutboxOldestAgeSeconds)
 	fmt.Fprintf(w, "# HELP aio_control_plane_tool_started_total ToolRun started.\n")
 	fmt.Fprintf(w, "# TYPE aio_control_plane_tool_started_total counter\n")
 	fmt.Fprintf(w, "aio_control_plane_tool_started_total %d\n", m.toolStarted)

@@ -9,14 +9,18 @@ cd "${repo_root}"
 go_cache="${GOCACHE:-${TMPDIR:-/tmp}/aiops-gocache}"
 export GOCACHE="${go_cache}"
 
-echo "[G0] Go contract/store/API tests"
-(cd ai-apm-query-go && go test ./... -count=1)
-
-echo "[G1-G3] Orchestrator tests"
 python_bin="${AIOPS_PYTHON:-python3}"
 if [[ -x ai-orchestrator/.venv314/bin/python ]]; then
   python_bin="${repo_root}/ai-orchestrator/.venv314/bin/python"
 fi
+
+echo "[G0] Go contract/store/API tests"
+(cd ai-apm-query-go && go test ./... -count=1)
+
+echo "[G0.5] Cross-service durable workflow contract tests"
+(cd "${repo_root}" && "${python_bin}" -m pytest tests/workflow-e2e -q)
+
+echo "[G1-G3] Orchestrator tests"
 (cd ai-orchestrator && "${python_bin}" -m pytest -q)
 
 echo "[G5] Action executor tests"
@@ -35,6 +39,7 @@ if command -v helm >/dev/null 2>&1; then
   # suitable for deployment. Production secrets are injected by the release
   # system before helm install.
   helm template aiops deploy/helm/aiops \
+    -f deploy/helm/aiops/values-prod.yaml \
     --set secrets.jwtSecret="gate-jwt-012345678901234567890123456789" \
     --set secrets.llmEncryptionKey="gate-llm-012345678901234567890123456789" \
     --set secrets.internalToken="gate-internal-012345678901234567890123456789" \

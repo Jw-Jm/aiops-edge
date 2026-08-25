@@ -61,6 +61,7 @@ type RecoveryCandidate struct {
 	WaitKind         string
 	RetryBefore      *time.Time
 	RetryAttempt     int
+	CreatedAt        time.Time
 }
 
 // RuntimeLeaseDAO 访问 ai_runs lease 列 + ai_run_claims。
@@ -349,6 +350,68 @@ func (d *RuntimeLeaseDAO) ScanRecoveryCandidates(limit int) ([]RecoveryCandidate
 			h.RetryBefore = &retryBefore.Time
 		}
 		h.RetryAttempt = int(retryAttempt.Int64)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// ScanRecoveryCandidatesForWorker applies an explicit owner status set and a
+// keyset cursor.  A shared all-nonterminal LIMIT lets a busy awaiting_approval
+// backlog starve investigation/verification work; worker ownership makes the
+// recovery queue deterministic and prevents callers from filtering after the
+// database page has already been truncated.
+func (d *RuntimeLeaseDAO) ScanRecoveryCandidatesForWorker(workerKind string, limit int, afterCreatedAt *time.Time, afterRunID string) ([]RecoveryCandidate, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	statuses := map[string]string{
+		"investigation":    "r.status IN ('created','planning','investigating')",
+		"verification":     "r.status = 'verifying'",
+		"action_reconcile": "r.status = 'executing' AND EXISTS (SELECT 1 FROM ai_actions aa WHERE aa.run_id = r.run_id AND aa.execution_status = 'execution_unknown')",
+	}
+	statusClause, ok := statuses[workerKind]
+	if !ok {
+		return nil, errors.New("unknown recovery worker kind")
+	}
+	q := `SELECT r.run_id, r.request_id, COALESCE(o.invocation_id, ''), r.tenant_id,
+		COALESCE(r.primary_cluster_id, ''), r.status, r.intent,
+		COALESCE(r.target_resource_id, ''), r.action_mode, r.lease_owner_id,
+		r.lease_epoch, r.runtime_wait_kind, r.retry_not_before, r.retry_attempt, r.created_at
+		FROM ai_runs r LEFT JOIN ai_run_outbox o ON o.run_id = r.run_id
+		WHERE ` + statusClause + `
+		AND (r.lease_owner_id IS NULL OR r.lease_expires_at IS NULL OR r.lease_expires_at < CURRENT_TIMESTAMP(3))
+		AND (r.runtime_wait_kind <> 'retry' OR r.retry_not_before IS NULL OR r.retry_not_before <= CURRENT_TIMESTAMP(3))`
+	args := make([]interface{}, 0, 4)
+	if afterCreatedAt != nil {
+		q += ` AND (r.created_at > ? OR (r.created_at = ? AND r.run_id > ?))`
+		args = append(args, *afterCreatedAt, *afterCreatedAt, afterRunID)
+	}
+	q += ` ORDER BY r.created_at ASC, r.run_id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := conn.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]RecoveryCandidate, 0, limit)
+	for rows.Next() {
+		var h RecoveryCandidate
+		var owner, waitKind sql.NullString
+		var epoch, retryAttempt sql.NullInt64
+		var retryBefore sql.NullTime
+		if err := rows.Scan(&h.RunID, &h.RequestID, &h.InvocationID, &h.TenantID,
+			&h.ClusterID, &h.Status, &h.Intent, &h.TargetResourceID, &h.ActionMode,
+			&owner, &epoch, &waitKind, &retryBefore, &retryAttempt, &h.CreatedAt); err != nil {
+			return nil, err
+		}
+		h.OwnerID, h.Epoch, h.WaitKind, h.RetryAttempt = owner.String, epoch.Int64, waitKind.String, int(retryAttempt.Int64)
+		if retryBefore.Valid {
+			h.RetryBefore = &retryBefore.Time
+		}
 		out = append(out, h)
 	}
 	return out, rows.Err()

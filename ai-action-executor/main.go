@@ -38,6 +38,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -94,8 +95,30 @@ type server struct {
 	httpClient *http.Client
 	// Function seams keep the execution state machine testable without requiring
 	// a live Kubernetes API server. Production uses the methods below directly.
-	readCurrentStateFn func(ActionExecutionContext) (string, string, bool, error)
-	patchTargetFn      func(ActionExecutionContext, string) error
+	readCurrentStateFn   func(ActionExecutionContext) (string, string, bool, error)
+	patchTargetFn        func(ActionExecutionContext, string) error
+	readReconcileStateFn func(ReconcileRequest) (reconcileObserved, error)
+}
+
+// ReconcileRequest is the immutable Action context needed to decide whether
+// an execution whose response was lost already took effect.
+type ReconcileRequest struct {
+	ActionID        string          `json:"action_id"`
+	ActionHash      string          `json:"action_hash"`
+	ClusterID       string          `json:"cluster_id"`
+	TargetUID       string          `json:"target_uid"`
+	TargetName      string          `json:"target_name"`
+	ResourceVersion string          `json:"resource_version"`
+	Namespace       string          `json:"namespace"`
+	Operation       string          `json:"operation"`
+	TargetSpec      json.RawMessage `json:"target_spec"`
+}
+
+type reconcileObserved struct {
+	UID             string
+	ResourceVersion string
+	Replicas        int32
+	Annotations     map[string]string
 }
 
 // newK8sClient 初始化 in-cluster K8s client（SA token + service host）。
@@ -300,34 +323,47 @@ func (s *server) readCurrentState(ctx ActionExecutionContext) (string, string, b
 
 // k8sReadDeployment 从真实 K8s API 读取 deployment 的 UID + resourceVersion。
 func (s *server) k8sReadDeployment(namespace, name string) (string, string, error) {
-	if !s.k8sEnabled || s.httpClient == nil {
-		return "", "", errors.New("k8s client not configured")
-	}
-	url := s.k8sHost + "/apis/apps/v1/namespaces/" + namespace + "/deployments/" + name
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	state, err := s.k8sReadDeploymentState(namespace, name)
 	if err != nil {
 		return "", "", err
+	}
+	return state.UID, state.ResourceVersion, nil
+}
+
+func (s *server) k8sReadDeploymentState(namespace, name string) (reconcileObserved, error) {
+	if !s.k8sEnabled || s.httpClient == nil {
+		return reconcileObserved{}, errors.New("k8s client not configured")
+	}
+	endpoint := s.k8sHost + "/apis/apps/v1/namespaces/" + url.PathEscape(namespace) + "/deployments/" + url.PathEscape(name)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return reconcileObserved{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", "", err
+		return reconcileObserved{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", errors.New("k8s read failed: " + resp.Status + " " + string(body))
+		return reconcileObserved{}, errors.New("k8s read failed: " + resp.Status + " " + string(body))
 	}
 	var obj struct {
 		Metadata struct {
-			UID             string `json:"uid"`
-			ResourceVersion string `json:"resourceVersion"`
+			UID             string            `json:"uid"`
+			ResourceVersion string            `json:"resourceVersion"`
+			Annotations     map[string]string `json:"annotations"`
 		} `json:"metadata"`
+		Spec struct {
+			Replicas int32 `json:"replicas"`
+		} `json:"spec"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
-		return "", "", err
+		return reconcileObserved{}, err
 	}
-	return obj.Metadata.UID, obj.Metadata.ResourceVersion, nil
+	return reconcileObserved{UID: obj.Metadata.UID, ResourceVersion: obj.Metadata.ResourceVersion,
+		Replicas: obj.Spec.Replicas, Annotations: obj.Metadata.Annotations}, nil
 }
 
 // patchTarget 对目标 deployment 执行真实 strategic merge patch（F5 已废除，经 in-cluster SA）。
@@ -354,7 +390,7 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	if err != nil {
 		return err
 	}
-	url := s.k8sHost + "/apis/apps/v1/namespaces/" + ns + "/deployments/" + name
+	url := s.k8sHost + "/apis/apps/v1/namespaces/" + url.PathEscape(ns) + "/deployments/" + url.PathEscape(name)
 	req, err := http.NewRequest(http.MethodPatch, url, strings.NewReader(payload))
 	if err != nil {
 		return err
@@ -398,8 +434,30 @@ func validateExecutionConfig(mode ExecutionMode, k8sEnabled bool, verifyKeyB64 s
 func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 	switch ctx.Operation {
 	case "patch":
-		// 安全默认：只 patch 一个受控 annotation（aio-action-executor/verified=true），可回滚。
-		return `{"metadata":{"annotations":{"aio-action-executor/verified":"true"}}}`, nil
+		if len(ctx.TargetSpec) == 0 || string(ctx.TargetSpec) == "null" {
+			// Keep manually constructed test/preview contexts safe and useful; all
+			// production candidates pass preflight and therefore carry an explicit
+			// allow-listed annotation payload.
+			return `{"metadata":{"annotations":{"aio-action-executor/verified":"true"}}}`, nil
+		}
+		var spec struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(ctx.TargetSpec, &spec); err != nil || len(spec.Metadata.Annotations) == 0 {
+			return "", errors.New("patch target_spec must contain metadata.annotations")
+		}
+		for key, value := range spec.Metadata.Annotations {
+			if (!strings.HasPrefix(key, "aiops.observability.io/") && !strings.HasPrefix(key, "aio-action-executor/")) || len(value) > 256 {
+				return "", errors.New("patch target_spec contains an annotation outside the allowlist")
+			}
+		}
+		payload, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": spec.Metadata.Annotations}})
+		if err != nil {
+			return "", err
+		}
+		return string(payload), nil
 	case "scale":
 		var spec struct {
 			Replicas *int32 `json:"replicas"`
@@ -437,31 +495,101 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // handleReconcile 处理 execution_unknown 后的目标实际状态 Reconcile（D-03）。
 // 禁止对未知写操作盲目 retry——先读取目标实际状态，决定 success/rollback/re-execute。
 func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
-	if s.token != "" && r.Header.Get("X-Executor-Token") != s.token {
+	body, err := readBody(r)
+	if err != nil {
+		http.Error(w, "bad reconcile body", http.StatusBadRequest)
+		return
+	}
+	if s.verifyKeyB64 != "" {
+		if err := verifySignedContext(r, body, s.verifyKeyB64); err != nil {
+			writeJSON(w, http.StatusForbidden, ActionResult{Status: "rejected", Message: "signed reconciliation context verification failed: " + err.Error()})
+			return
+		}
+	} else if s.token != "" && r.Header.Get("X-Executor-Token") != s.token {
 		http.Error(w, "unauthorized", http.StatusForbidden)
 		return
 	}
-	var req struct {
-		ActionID     string `json:"action_id"`
-		TargetUID    string `json:"target_uid"`
-		ExpectedSpec string `json:"expected_spec"` // 执行前期望的目标状态（用于判定是否已生效）
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	if req.ActionID == "" {
-		http.Error(w, "missing action_id", http.StatusBadRequest)
+	var req ReconcileRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "bad reconcile body", http.StatusBadRequest)
 		return
 	}
-	// Reconcile：读取目标实际状态，与 ExpectedSpec 比对。
-	// 安全边界原型：模拟——返回 reconciled 状态供 Query API 决定（不盲 retry）。
+	if req.ActionID == "" || req.ActionHash == "" || req.TargetUID == "" || req.TargetName == "" || req.Operation == "" || len(req.TargetSpec) == 0 {
+		http.Error(w, "missing action context", http.StatusBadRequest)
+		return
+	}
+	var observed reconcileObserved
+	if s.readReconcileStateFn != nil {
+		observed, err = s.readReconcileStateFn(req)
+	} else if s.k8sEnabled {
+		observed, err = s.k8sReadDeploymentState(firstNonEmpty(req.Namespace, "default"), req.TargetName)
+	} else {
+		writeJSON(w, http.StatusServiceUnavailable, ActionResult{ActionID: req.ActionID, Status: "execution_unknown",
+			Message: "reconciliation requires a Kubernetes read capability"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, ActionResult{ActionID: req.ActionID, Status: "execution_unknown",
+			Message: "reconciliation state read failed: " + err.Error()})
+		return
+	}
+	if observed.UID != req.TargetUID {
+		writeJSON(w, http.StatusConflict, ActionResult{ActionID: req.ActionID, Status: "drift",
+			ObservedUID: observed.UID, ObservedVersion: observed.ResourceVersion,
+			Message: "reconciliation target UID drifted; no retry is permitted"})
+		return
+	}
+	applied, err := desiredStateMatches(req, observed)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, ActionResult{ActionID: req.ActionID, Status: "execution_unknown",
+			ObservedUID: observed.UID, ObservedVersion: observed.ResourceVersion, Message: err.Error()})
+		return
+	}
+	status := "not_applied"
+	message := "target state does not prove the requested mutation; operator review is required before retry"
+	if applied {
+		status = "applied"
+		message = "target state already matches the approved Action; no retry was issued"
+	}
 	res := ActionResult{
-		ActionID: req.ActionID, Status: "reconciled",
-		Message:    "execution_unknown: target state reconciled; re-execute only after confirming desired state not already applied (reconcile-before-retry)",
+		ActionID: req.ActionID, Status: status, ObservedUID: observed.UID, ObservedVersion: observed.ResourceVersion,
+		Message:    message,
 		ExecutedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	s.mu.Lock()
 	s.results[req.ActionID] = res
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, res)
+}
+
+func desiredStateMatches(req ReconcileRequest, observed reconcileObserved) (bool, error) {
+	switch req.Operation {
+	case "scale":
+		var desired struct {
+			Replicas *int32 `json:"replicas"`
+		}
+		if err := json.Unmarshal(req.TargetSpec, &desired); err != nil || desired.Replicas == nil {
+			return false, errors.New("scale reconciliation requires target_spec.replicas")
+		}
+		return observed.Replicas == *desired.Replicas, nil
+	case "patch":
+		var desired struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(req.TargetSpec, &desired); err != nil || len(desired.Metadata.Annotations) == 0 {
+			return false, errors.New("patch reconciliation requires target_spec.metadata.annotations")
+		}
+		for key, value := range desired.Metadata.Annotations {
+			if observed.Annotations == nil || observed.Annotations[key] != value {
+				return false, nil
+			}
+		}
+		return true, nil
+	default:
+		return false, errors.New("unsupported reconciliation operation: " + req.Operation)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

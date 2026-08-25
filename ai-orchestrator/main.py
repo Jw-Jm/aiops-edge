@@ -134,6 +134,13 @@ def _execution_after_approval_enabled() -> bool:
     return os.environ.get("EXECUTION_AFTER_APPROVAL", "0").lower() in ("1", "true", "yes")
 
 
+def _legacy_approval_compat_enabled() -> bool:
+    """Legacy in-memory approval is development-only during Action cutover."""
+    if _DEPLOYMENT_MODE == "production":
+        return os.environ.get("LEGACY_APPROVAL_COMPAT", "0").lower() in ("1", "true", "yes")
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """统一生命周期：startup + shutdown（替代废弃的 @app.on_event）。
@@ -144,9 +151,25 @@ async def lifespan(app: FastAPI):
     # === startup ===
     # Durable Run recovery is best-effort at startup; the queue/lease boundary
     # remains fail-closed if query-api is unavailable.
-    global _investigation_recovery_task
+    global _investigation_recovery_task, _investigation_dispatcher
     if os.environ.get("QUERY_API_URL") and _investigation_runtime_enabled():
         _investigation_recovery_task = asyncio.create_task(_investigation_recovery_loop())
+    # The dedicated Investigation Worker has no Chat/legacy scheduler or local
+    # persistence ownership.  It only serves the signed Run invocation ingress
+    # and its durable recovery queue; all other startup jobs belong to the
+    # compatibility gateway process.
+    if os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {"1", "true", "yes", "on"}:
+        yield
+        if _investigation_recovery_task is not None:
+            _investigation_recovery_task.cancel()
+            await asyncio.gather(_investigation_recovery_task, return_exceptions=True)
+            _investigation_recovery_task = None
+        if _investigation_dispatcher is not None:
+            try:
+                await _investigation_dispatcher.stop()
+            finally:
+                _investigation_dispatcher = None
+        return
     # 1. APScheduler 定时异常扫描
     try:
         scheduler.add_job(_scheduled_anomaly_scan, 'interval', minutes=5,
@@ -270,7 +293,6 @@ async def lifespan(app: FastAPI):
     yield
 
     # === shutdown ===
-    global _investigation_dispatcher
     if _investigation_recovery_task is not None:
         _investigation_recovery_task.cancel()
         await asyncio.gather(_investigation_recovery_task, return_exceptions=True)
@@ -542,7 +564,10 @@ async def _recover_investigations_on_startup() -> None:
         from invocation_scope import InvocationScope
 
         tenant_id = os.environ.get("AIOPS_SYSTEM_TENANT_ID", DEFAULT_SYSTEM_TENANT_ID)
-        runs = await asyncio.to_thread(ControlPlaneClient().list_unfinished, tenant_id=tenant_id)
+        runs = await asyncio.to_thread(
+            ControlPlaneClient().list_unfinished,
+            tenant_id=tenant_id, worker_kind="investigation",
+        )
         items = []
         for run in runs:
             status = str(run.get("status") or "")
@@ -659,17 +684,10 @@ def _fetch_saved_llm_config() -> dict | None:
                 "provider": norm,
                 "backend": backend,
             }
-        # 回退（proxy 未配置）：仅当 query-api 未正确迁移时，避免破坏既有链。
-        api_key = cfg.get("api_key") or cfg.get("apiKey")
-        if not api_key:
-            return None
-        return {
-            "api_key": api_key,
-            "model": cfg.get("model", "gpt-4o"),
-            "base_url": cfg.get("base_url", "https://api.openai.com/v1"),
-            "provider": norm,
-            "backend": backend,
-        }
+        # There is no direct-provider fallback.  A missing proxy is an
+        # explicit capability-unavailable state (or LLM_MOCK in tests); never
+        # pull a provider key into the orchestrator process.
+        return None
     except Exception:
         return None
 
@@ -2228,6 +2246,8 @@ def _require_approver(request: Request):
 @app.post("/api/v1/ops/tasks/{tid}/approve")
 def approve_task(tid: str, request: Request):
     """同步 handler：内部含阻塞的审批持久化 + 审计 MySQL 写入，放线程池执行。"""
+    if not _legacy_approval_compat_enabled():
+        raise HTTPException(410, "LEGACY_APPROVAL_DISABLED_USE_CANONICAL_ACTION_DECISION")
     _require_approver(request)
     if tid not in _task_store:
         raise HTTPException(404, "task not found")
@@ -2294,6 +2314,8 @@ def approve_task(tid: str, request: Request):
 @app.post("/api/v1/ops/tasks/{tid}/reject")
 def reject_task(tid: str, request: Request):
     """同步 handler：内部含阻塞的审批持久化 + 审计 MySQL 写入，放线程池执行。"""
+    if not _legacy_approval_compat_enabled():
+        raise HTTPException(410, "LEGACY_APPROVAL_DISABLED_USE_CANONICAL_ACTION_DECISION")
     _require_approver(request)
     if tid not in _task_store:
         raise HTTPException(404, "task not found")
@@ -3826,6 +3848,9 @@ async def readyz():
     from run_store_factory import is_ready as _is_ready
     if not _is_ready(_DEPLOYMENT_MODE, _RUN_PERSISTENCE_BACKEND):
         return JSONResponse(status_code=503, content={"ready": False, "reason": "run persistence degraded to memory in production"})
+    from orchestrator import _llm_boundary_ready
+    if _DEPLOYMENT_MODE == "production" and not _llm_boundary_ready():
+        return JSONResponse(status_code=503, content={"ready": False, "reason": "LLM egress proxy is not configured"})
     return {"ready": True, "run_persistence": _RUN_PERSISTENCE_BACKEND, "deployment_mode": _DEPLOYMENT_MODE}
 
 

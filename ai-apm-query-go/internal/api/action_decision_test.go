@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 )
 
 func TestValidateActionDecisionRequiresVersionAndIdempotency(t *testing.T) {
@@ -35,6 +36,14 @@ func TestActionDecisionEndpointAtomicallyQueuesApprovedAction(t *testing.T) {
 	h := &Handler{}
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()
+	actionHash, err := contract.CanonicalActionHash(contract.CanonicalActionPayloadV2{
+		Version: 1, ActionType: "kubernetes", ResourceType: "deployment", Namespace: "prod",
+		TargetName: "orders", TargetUID: "uid-1", ResourceVersion: "rv-7", Operation: "scale",
+		Params: []byte(`{"replicas":2}`), PolicyVersion: "action-policy-v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT approval_id, action_id, COALESCE(action_version, 0), decision,")+
@@ -47,7 +56,7 @@ func TestActionDecisionEndpointAtomicallyQueuesApprovedAction(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"action_id", "run_id", "tenant_id", "cluster_id", "action_hash",
 			"hash_schema_version", "action_version", "proposed_by", "preflight_status", "dry_run", "status",
 			"target_name", "target_uid", "resource_version", "namespace", "operation", "params_json"}).
-			AddRow("action-1", "run-1", "tenant-1", "cluster-1", "hash-1", 2, 1, "owner-1", "passed", 0, "proposed",
+			AddRow("action-1", "run-1", "tenant-1", "cluster-1", actionHash, 2, 1, "owner-1", "passed", 0, "proposed",
 				"orders", "uid-1", "rv-7", "prod", "scale", []byte(`{"replicas":2}`)))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, tenant_id, principal, status, state_version,") +
 		"\\s+COALESCE\\(primary_cluster_id, ''\\) FROM ai_runs").
@@ -55,11 +64,11 @@ func TestActionDecisionEndpointAtomicallyQueuesApprovedAction(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "tenant_id", "principal", "status", "state_version", "primary_cluster_id"}).
 			AddRow("run-1", "tenant-1", "owner-1", "awaiting_approval", 3, "cluster-1"))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_approval_decisions")).
-		WithArgs(sqlmock.AnyArg(), "run-1", "action-1", "hash-1", int64(1), "decision-1", "tenant-1", "cluster-1",
+		WithArgs(sqlmock.AnyArg(), "run-1", "action-1", actionHash, int64(1), "decision-1", "tenant-1", "cluster-1",
 			"approved", "approver-1", nil, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_action_outbox")).
-		WithArgs(sqlmock.AnyArg(), "action-1", int64(1), "hash-1", "run-1", "tenant-1", "cluster-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), "action-1", int64(1), actionHash, "run-1", "tenant-1", "cluster-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_actions SET status = ?, execution_status = ?, updated_at = ? WHERE action_id = ? AND status = 'proposed'")).
 		WithArgs("approved", "queued", sqlmock.AnyArg(), "action-1").

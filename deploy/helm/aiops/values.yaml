@@ -327,6 +327,16 @@ aiOrchestrator:
   legacyFlowRuntimeEnabled: "0"
   investigatorEnabled: "0"
   legacyDirectMutationsEnabled: "0"
+
+# Stateless durable Investigation worker. It rebuilds work from query-api Run
+# snapshots/leases and does not mount the legacy SQLite session PVC.
+investigationWorker:
+  enabled: false
+  replicas: 2
+  image:
+    repository: ai-orchestrator
+    tag: latest
+  resources: {}
   # 知识图谱定时重建间隔（秒）；0 关闭。默认 60s（每 1 分钟刷新一次）
   kgBuildIntervalSeconds: 60
   dataStorageClass: ""

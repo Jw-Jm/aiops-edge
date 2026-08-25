@@ -113,7 +113,7 @@ func (h *Handler) internalControlPlaneActionAppend(w http.ResponseWriter, r *htt
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "action_persist_failed"})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"action_id": body.ActionID, "created": created})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"action_id": body.ActionID, "created": created, "replayed": !created})
 }
 
 // internalControlPlaneApprovalAppend 处理 POST .../runs/{id}/approvals。
@@ -143,7 +143,7 @@ func (h *Handler) internalControlPlaneApprovalAppend(w http.ResponseWriter, r *h
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "approval_persist_failed"})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"approval_id": body.ApprovalID, "created": created})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"approval_id": body.ApprovalID, "created": created, "replayed": !created})
 }
 
 // internalControlPlaneHypothesisAppend persists an RCA hypothesis generated
@@ -173,7 +173,7 @@ func (h *Handler) internalControlPlaneHypothesisAppend(w http.ResponseWriter, r 
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "hypothesis_persist_failed"})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"hypothesis_id": body.HypothesisID, "created": created})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"hypothesis_id": body.HypothesisID, "created": created, "replayed": !created})
 }
 
 func (h *Handler) internalControlPlanePlanStepAppend(w http.ResponseWriter, r *http.Request, runID string) {
@@ -201,5 +201,5 @@ func (h *Handler) internalControlPlanePlanStepAppend(w http.ResponseWriter, r *h
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "plan_step_persist_failed"})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"step_id": body.StepID, "created": created})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"step_id": body.StepID, "created": created, "replayed": !created})
 }

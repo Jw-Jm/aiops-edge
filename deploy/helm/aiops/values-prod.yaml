@@ -37,6 +37,15 @@ backup:
 # LLM 接真实模型（关闭 mock）
 aiOrchestrator:
   llmMock: "false"
+  investigationRuntimeEnabled: "0"
+
+investigationWorker:
+  enabled: true
+  replicas: 2
+
+# 生产 LLM 出站唯一经 egress proxy，Provider key 只注入 proxy Secret。
+llmEgressProxy:
+  enabled: true
 
 # ── Egress 默认拒绝灰度（阶段一）────────────────────────────────────────
 # 阶段一：仅对 event-collector 施加 egress default-deny + 出站白名单

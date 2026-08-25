@@ -1052,6 +1052,22 @@ git commit -m "refactor: retire legacy aiops mutation workflows"
 
 ## Release Gates
 
+## Execution closure (2026-08-25)
+
+本轮已在当前工作区完成并验证 Task 4-11 的代码闭环：durable Action outbox/lease
+fencing、确定性 Attempt、真实签名 reconcile 四态、独立 Verification、worker-owned
+recovery、canonical Run/Action 投影、LLM proxy 隔离、stateless Investigation Worker、
+跨服务故障契约和发布门禁均已落盘。最终命令
+`./deploy/scripts/verify-aiops-workflow-gates.sh` 全部通过（Go、4 个 workflow contract、
+Python 1166 passed/1 skipped、Executor、前端构建、Helm lint/render/RBAC）。
+
+以下两项保持未勾选是有意的外部发布条件，不是代码缺口：
+
+- Task 8 Step 4-5：仓库没有安装 Vitest/Testing Library，当前门禁以 TypeScript/Vite 构建和
+  deterministic workflow contract 代替；引入前端测试依赖需单独批准依赖下载。
+- Task 12 Step 5：真实集群单目标 canary 需要人工变更审批、真实目标 namespace 和签名
+  Executor，当前环境未执行；生产仍保持 `EXECUTION_MODE=disabled`、`realMutation=false`。
+
 - **G0 — Action identity:** canonical payload hash includes target UID/resourceVersion, operation, normalized params and policy version; stale approval and mismatched replay return 409.
 - **G1 — Approval authority:** approver comes from JWT/MySQL role truth; self-approval and cross-tenant decisions are rejected; approval and Action outbox are atomic.
 - **G2 — Mutation exactly-once effect:** response loss creates `execution_unknown`; the same immutable Action never produces a second Executor mutation call.

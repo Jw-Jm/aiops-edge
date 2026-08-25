@@ -13,17 +13,19 @@ import (
 
 // AIApprovalDecision DB 实体。
 type AIApprovalDecision struct {
-	ApprovalID string
-	RunID      string
-	ActionID   string
-	ActionHash string
-	TenantID   string
-	ClusterID  string
-	Decision   string // pending|approved|rejected|self_denied|cross_cluster_denied
-	Approver   string
-	Reason     string
-	DecidedAt  *time.Time
-	CreatedAt  time.Time
+	ApprovalID             string
+	RunID                  string
+	ActionID               string
+	ActionHash             string
+	ActionVersion          int64
+	DecisionIdempotencyKey string
+	TenantID               string
+	ClusterID              string
+	Decision               string // pending|approved|rejected|self_denied|cross_cluster_denied
+	Approver               string
+	Reason                 string
+	DecidedAt              *time.Time
+	CreatedAt              time.Time
 }
 
 // AIApprovalDecisionDAO 访问 ai_approval_decisions 表。
@@ -41,18 +43,37 @@ func (d *AIApprovalDecisionDAO) Create(a AIApprovalDecision) (bool, error) {
 	}
 	_, err := conn.Exec(
 		`INSERT INTO ai_approval_decisions (approval_id, run_id, action_id, action_hash,
-		   tenant_id, cluster_id, decision, approver, reason, decided_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ApprovalID, a.RunID, a.ActionID, a.ActionHash, a.TenantID, a.ClusterID,
+		   action_version, decision_idempotency_key, tenant_id, cluster_id, decision, approver, reason, decided_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ApprovalID, a.RunID, a.ActionID, a.ActionHash,
+		nullableInt64(a.ActionVersion), nullableStr(a.DecisionIdempotencyKey), a.TenantID, a.ClusterID,
 		decision, a.Approver, nullableStr(a.Reason), nullableTime(a.DecidedAt), time.Now(),
 	)
 	if err != nil {
 		if isDuplicateKey(err) {
+			var existingHash string
+			var existingVersion sql.NullInt64
+			var existingKey sql.NullString
+			if lookupErr := conn.QueryRow(`SELECT action_hash, action_version,
+				decision_idempotency_key FROM ai_approval_decisions WHERE approval_id = ?`, a.ApprovalID).
+				Scan(&existingHash, &existingVersion, &existingKey); lookupErr != nil {
+				return false, lookupErr
+			}
+			if existingHash != a.ActionHash || existingVersion.Int64 != a.ActionVersion || existingKey.String != a.DecisionIdempotencyKey {
+				return false, ErrIdempotencyPayloadMismatch
+			}
 			return false, nil
 		}
 		return false, err
 	}
 	return true, nil
+}
+
+func nullableInt64(value int64) interface{} {
+	if value == 0 {
+		return nil
+	}
+	return value
 }
 
 // ListByRunTx 在给定事务内列出 Run 的审批决定（恢复一致性快照）。

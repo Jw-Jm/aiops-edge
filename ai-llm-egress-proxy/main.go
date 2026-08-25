@@ -67,6 +67,14 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if len(cfg.providerKeys) == 0 || strings.TrimSpace(cfg.proxyToken) == "" {
+			http.Error(w, "proxy credentials are not configured", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
 	mux.HandleFunc("/v1/proxy/", cfg.handleProxy)
 
 	addr := ":" + firstNonEmpty(os.Getenv("PROXY_PORT"), "8080")

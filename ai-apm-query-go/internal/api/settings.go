@@ -301,8 +301,10 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetInternalLLMSettings handles GET /api/v1/settings/llm/internal
-// 仅供内部服务(ai-orchestrator)使用，返回解密后的真实 API Key。
+// GetInternalLLMSettings handles GET /api/v1/settings/llm/internal.
+// The control plane exposes only routing metadata. Provider credentials live
+// exclusively in the egress-proxy Secret and never cross into orchestrator
+// memory, checkpoints, responses, or logs.
 // F-14：认证强度升级——除 X-Internal-Token（service token）外，还必须校验 Ed25519
 // TrustedRequestContext（issuer/audience/signature）+ 固定 llm.config.read capability
 // （system principal），不再仅凭共享 token 放行。internal-only routing 保持。
@@ -321,10 +323,13 @@ func (h *Handler) GetInternalLLMSettings(w http.ResponseWriter, r *http.Request)
 	}
 	settingsMu.RLock()
 	defer settingsMu.RUnlock()
-	real := settings.LLM
-	real.APIKey = decryptAPIKey(real.APIKey)
+	llm := settings.LLM
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"data": real,
+		"data": map[string]interface{}{
+			"provider": llm.Provider,
+			"model":    llm.Model,
+			"base_url": llm.BaseURL,
+		},
 	})
 }
 

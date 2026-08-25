@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/biz"
+	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 	"github.com/observability-platform/ai-apm-query-go/internal/k8sboundary"
 	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
@@ -120,18 +121,24 @@ type Handler struct {
 	// runDAO 读写 ai_runs；outboxDAO 记录 Run 创建后的可靠派发；
 	// eventDAO 读写 ai_run_events（sequence/幂等）；planDAO/toolDAO/actionDAO/cmdDAO
 	// 读写 Plan/Step/Tool/Action/ControlCommand（重启恢复，Plan C）。
-	runDAO          *store.AIRunDAO
-	outboxDAO       *store.AIRunOutboxDAO
-	eventDAO        *store.AIRunEventDAO
-	planDAO         *store.AIPlanStepDAO
-	hypothesisDAO   *store.AIHypothesisDAO
-	toolDAO         *store.AIToolRunDAO
-	actionDAO       *store.AIActionDAO
-	cmdDAO          *store.AIControlCommandDAO
-	approvalDAO     *store.AIApprovalDecisionDAO
-	attemptDAO      *store.AIActionAttemptDAO
-	verificationDAO *store.AIVerificationDAO
-	actionPreflight *ActionPreflightService
+	runDAO            *store.AIRunDAO
+	outboxDAO         *store.AIRunOutboxDAO
+	eventDAO          *store.AIRunEventDAO
+	planDAO           *store.AIPlanStepDAO
+	hypothesisDAO     *store.AIHypothesisDAO
+	toolDAO           *store.AIToolRunDAO
+	actionDAO         *store.AIActionDAO
+	actionOutboxDAO   *store.AIActionOutboxDAO
+	cmdDAO            *store.AIControlCommandDAO
+	approvalDAO       *store.AIApprovalDecisionDAO
+	attemptDAO        *store.AIActionAttemptDAO
+	reconciliationDAO *store.AIActionReconciliationDAO
+	verificationDAO   *store.AIVerificationDAO
+	actionPreflight   *ActionPreflightService
+	// Test seams for the durable Action dispatcher. Production leaves these nil
+	// and crosses the signed executor client only through executeApprovedAction.
+	actionDispatchExecute   func(*store.AIAction, *store.AIApprovalDecision) (contract.ActionResult, error)
+	actionDispatchReconcile func(*store.AIAction) (contract.ActionResult, error)
 	// A1：Runtime execution Lease + Runtime Commit（并发权威）。
 	leaseDAO    *store.RuntimeLeaseDAO
 	commitDAO   *store.RuntimeCommitDAO
@@ -193,7 +200,9 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.hypothesisDAO = &store.AIHypothesisDAO{}
 	h.toolDAO = &store.AIToolRunDAO{}
 	h.actionDAO = &store.AIActionDAO{}
+	h.actionOutboxDAO = &store.AIActionOutboxDAO{}
 	h.attemptDAO = &store.AIActionAttemptDAO{}
+	h.reconciliationDAO = &store.AIActionReconciliationDAO{}
 	h.cmdDAO = &store.AIControlCommandDAO{}
 	h.approvalDAO = &store.AIApprovalDecisionDAO{}
 	h.verificationDAO = &store.AIVerificationDAO{}

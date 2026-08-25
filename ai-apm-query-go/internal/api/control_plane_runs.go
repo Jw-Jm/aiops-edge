@@ -380,9 +380,26 @@ func (h *Handler) internalControlPlaneRunUnfinished(w http.ResponseWriter, r *ht
 	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && l <= 1000 {
 		limit = l
 	}
+	workerKind := strings.TrimSpace(r.URL.Query().Get("worker_kind"))
+	var afterCreatedAt *time.Time
+	if raw := strings.TrimSpace(r.URL.Query().Get("after_created_at")); raw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
+			return
+		}
+		afterCreatedAt = &parsed
+	}
+	afterRunID := strings.TrimSpace(r.URL.Query().Get("after_run_id"))
 	// A2-02：Recovery Scanner——只返回需要恢复的候选（无活跃 Lease / 不在 retry backoff），
 	// 有活跃 Lease 的 Run 由当前 owner 继续，不列为候选（避免双 executor 抢同一活跃 Run）。
-	candidates, err := h.leaseDAO.ScanRecoveryCandidates(limit)
+	var candidates []store.RecoveryCandidate
+	var err error
+	if workerKind != "" {
+		candidates, err = h.leaseDAO.ScanRecoveryCandidatesForWorker(workerKind, limit, afterCreatedAt, afterRunID)
+	} else {
+		candidates, err = h.leaseDAO.ScanRecoveryCandidates(limit)
+	}
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_scan_failed"})
 		return
@@ -396,9 +413,16 @@ func (h *Handler) internalControlPlaneRunUnfinished(w http.ResponseWriter, r *ht
 			"intent": c.Intent, "target_resource_id": c.TargetResourceID,
 			"action_mode": c.ActionMode, "owner_id": c.OwnerID, "epoch": c.Epoch,
 			"wait_kind": c.WaitKind, "retry_attempt": c.RetryAttempt,
+			"created_at": c.CreatedAt,
 		})
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"runs": out, "total": len(out), "recovery_candidates": true})
+	response := map[string]interface{}{"runs": out, "total": len(out), "recovery_candidates": true}
+	if len(candidates) > 0 {
+		last := candidates[len(candidates)-1]
+		response["next_after_created_at"] = last.CreatedAt.UTC().Format(time.RFC3339Nano)
+		response["next_after_run_id"] = last.RunID
+	}
+	respondJSON(w, http.StatusOK, response)
 }
 
 // recordControlCommand 幂等记录 control command（command_id 唯一，供重启恢复）。

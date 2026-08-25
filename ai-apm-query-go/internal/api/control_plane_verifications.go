@@ -41,6 +41,13 @@ func (h *Handler) internalControlPlaneVerificationAppend(w http.ResponseWriter, 
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "INVALID_OBSERVATION_WINDOW"})
 		return
 	}
+	derivedStatus, err := deriveVerificationStatus(body.Checks)
+	if err != nil || derivedStatus != strings.ToLower(strings.TrimSpace(body.Status)) {
+		respondJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{
+			"error": "VERIFICATION_STATUS_NOT_DERIVED", "derived_status": derivedStatus,
+		})
+		return
+	}
 	now := time.Now()
 	created, err := h.verificationDAO.Create(store.AIVerification{
 		VerificationID: body.VerificationID, RunID: runID, ActionID: body.ActionID,
@@ -54,8 +61,38 @@ func (h *Handler) internalControlPlaneVerificationAppend(w http.ResponseWriter, 
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"verification_id": body.VerificationID, "created": created, "status": body.Status,
+		"verification_id": body.VerificationID, "created": created, "replayed": !created, "status": body.Status,
 	})
+}
+
+// deriveVerificationStatus is the server-owned Verification Policy V1. The
+// orchestrator may provide observations, but cannot elevate an observation to
+// passed unless the checks deterministically prove it.
+func deriveVerificationStatus(raw json.RawMessage) (string, error) {
+	var checks []struct {
+		EffectSize *float64 `json:"effect_size"`
+		SideEffect *bool    `json:"side_effect"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &checks) != nil || len(checks) == 0 {
+		return "inconclusive", nil
+	}
+	seen := false
+	for _, check := range checks {
+		if check.SideEffect != nil && *check.SideEffect {
+			return "regressed", nil
+		}
+		if check.EffectSize == nil {
+			continue
+		}
+		seen = true
+		if *check.EffectSize <= 0 {
+			return "failed", nil
+		}
+	}
+	if !seen {
+		return "inconclusive", nil
+	}
+	return "passed", nil
 }
 
 func validVerificationStatus(status string) bool {

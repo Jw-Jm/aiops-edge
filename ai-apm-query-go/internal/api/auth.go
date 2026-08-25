@@ -549,6 +549,19 @@ func (h *Handler) RequireAnyRoleForWrite(roles []string, next http.HandlerFunc) 
 	}
 }
 
+// RequireAnyRole applies the authoritative role check to both reads and
+// writes. Action projections contain remediation details, so action list/detail
+// access is restricted to the same admin/approver roles as decisions.
+func (h *Handler) RequireAnyRole(roles []string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !hasAnyRole(r, roles) {
+			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 func hasAnyRole(r *http.Request, roles []string) bool {
 	authCtx, ok := requestAuthorizationContext(r)
 	if !ok || authCtx.UserID == "" || store.GetDB() == nil {
@@ -719,8 +732,8 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// P19.6: /api/v1/settings/llm/internal 是 orchestrator 拉取真实 LLM 配置
-		// （含解密 API Key）的内部端点，由 GetInternalLLMSettings 自行用 X-Internal-Token
+		// P19.6: /api/v1/settings/llm/internal is orchestrator routing metadata
+		// only; provider credentials are held by the egress proxy.
 		// 鉴权（无 JWT fallback），与 /internal/v1/* 同 internal-boundary 模式。
 		// 公共 AuthMiddleware 在此放行，避免 orchestrator 拿不到 LLM key（真实环境 AUTH 接线缺陷）。
 		if path == "/api/v1/settings/llm/internal" {

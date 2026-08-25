@@ -437,7 +437,7 @@ type ActionExecutionContext struct {
 	ResourceVersion string          `json:"resource_version"` // TOCTOU precondition
 	ClusterID       string          `json:"cluster_id"`
 	Namespace       string          `json:"namespace"`
-	Operation       string          `json:"operation"` // patch/scale/restart（白名单）
+	Operation       string          `json:"operation"` // patch/scale（白名单）
 	TargetSpec      json.RawMessage `json:"target_spec"`
 	CredentialRef   string          `json:"credential_ref"`
 	ApprovedAt      string          `json:"approved_at"`
@@ -447,7 +447,7 @@ type ActionExecutionContext struct {
 // ActionResult 是 executor 返回的执行结果（回写 ai_actions，非本服务 SoT）。
 type ActionResult struct {
 	ActionID        string `json:"action_id"`
-	Status          string `json:"status"` // success | failed | execution_unknown | rejected | rollback_required
+	Status          string `json:"status"` // execute: success|failed|execution_unknown|rejected|rollback_required; reconcile: applied|not_applied|drift|unknown
 	ObservedUID     string `json:"observed_uid"`
 	ObservedVersion string `json:"observed_version"`
 	Message         string `json:"message"`
@@ -466,9 +466,9 @@ func (c ActionExecutionContext) Validate() error {
 		return errors.New("operation is required")
 	}
 	switch c.Operation {
-	case "patch", "scale", "restart":
+	case "patch", "scale":
 	default:
-		return fmt.Errorf("unsupported operation %q (allowed: patch|scale|restart)", c.Operation)
+		return fmt.Errorf("unsupported operation %q (allowed: patch|scale)", c.Operation)
 	}
 	return nil
 }

@@ -240,7 +240,8 @@ class ControlPlaneClient:
         claims = self._claims(run_id=run_id, capability=CP_RUNS_RECOVER, tenant_id=tenant_id)
         return self._get(f"/internal/v1/control-plane/runs/{run_id}", claims)
 
-    def list_unfinished(self, *, tenant_id: str) -> list:
+    def list_unfinished(self, *, tenant_id: str, worker_kind: str = "investigation",
+                        after_created_at: str = "", after_run_id: str = "") -> list:
         # A0-05（F-18）：全局 unfinished 扫描用独立 system capability
         # control_plane.runs.recover.global。
         # 注意：query-api 对 TrustedRequestContext 的 validateCommon 要求 tenant_id 是有效
@@ -248,7 +249,22 @@ class ControlPlaneClient:
         # （ScanUnfinishedLimit 扫全部非终态 Run）。因此这里传调用方传入的 tenant_id
         #（必须是有效 UUID）以满足签名格式要求；扫描仍是全局的。
         claims = self._claims(run_id=str(uuid.uuid4()), capability=CP_RUNS_RECOVER_GLOBAL, tenant_id=tenant_id)
-        return self._get("/internal/v1/control-plane/runs/unfinished", claims).get("runs", [])
+        query = []
+        if worker_kind:
+            query.append(f"worker_kind={worker_kind}")
+        if after_created_at:
+            query.append(f"after_created_at={after_created_at}")
+        if after_run_id:
+            query.append(f"after_run_id={after_run_id}")
+        path = "/internal/v1/control-plane/runs/unfinished"
+        if query:
+            from urllib.parse import quote
+            encoded = []
+            for item in query:
+                key, value = item.split("=", 1)
+                encoded.append(f"{key}={quote(value, safe='')}")
+            path += "?" + "&".join(encoded)
+        return self._get(path, claims).get("runs", [])
 
     # ── platform settings ───────────────────────────────────────────────
     def get_recovery_policy(self, *, tenant_id: Optional[str] = None) -> dict:

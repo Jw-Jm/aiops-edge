@@ -3,8 +3,14 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 )
+
+// ErrIdempotencyPayloadMismatch means an idempotency key was reused with a
+// different immutable payload. Callers must surface this as a conflict rather
+// than returning the existing projection as if the request were a replay.
+var ErrIdempotencyPayloadMismatch = errors.New("idempotency payload mismatch")
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AIAction：ai_actions（P10 完整闭环 Plan C）。
@@ -13,36 +19,36 @@ import (
 
 // AIAction DB 实体。
 type AIAction struct {
-	ActionID          string
-	RunID             string
-	TenantID          string
-	ClusterID         string
-	ActionType        string
-	ActionHash        string
-	HashSchemaVersion int
-	ActionVersion     int64
-	ProposedBy        string
-	PolicyVersion     string
-	PreflightStatus   string
+	ActionID           string
+	RunID              string
+	TenantID           string
+	ClusterID          string
+	ActionType         string
+	ActionHash         string
+	HashSchemaVersion  int
+	ActionVersion      int64
+	ProposedBy         string
+	PolicyVersion      string
+	PreflightStatus    string
 	TargetResourceType string
-	IdempotencyKey    string
-	ProposedRisk      string
-	AuthoritativeRisk string
-	Status            string
-	DryRun            bool
-	Params            []byte
-	Result            []byte
+	IdempotencyKey     string
+	ProposedRisk       string
+	AuthoritativeRisk  string
+	Status             string
+	DryRun             bool
+	Params             []byte
+	Result             []byte
 	// Stage D 接线（0007）：executor 执行字段。
-	TargetName       string
-	TargetUID        string
-	ResourceVersion  string
-	Namespace        string
-	Operation        string
-	ExecutionStatus  string
-	ExecutedAt       *time.Time
-	ErrorCode        string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	TargetName      string
+	TargetUID       string
+	ResourceVersion string
+	Namespace       string
+	Operation       string
+	ExecutionStatus string
+	ExecutedAt      *time.Time
+	ErrorCode       string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // AIActionDAO 访问 ai_actions 表。
@@ -86,6 +92,14 @@ func (d *AIActionDAO) Create(a AIAction) (bool, error) {
 	)
 	if err != nil {
 		if isDuplicateKey(err) {
+			var existingHash string
+			lookupErr := conn.QueryRow(`SELECT action_hash FROM ai_actions WHERE run_id = ? AND idempotency_key = ? LIMIT 1`, a.RunID, a.IdempotencyKey).Scan(&existingHash)
+			if lookupErr != nil {
+				return false, fmt.Errorf("%w: existing action lookup: %v", ErrIdempotencyPayloadMismatch, lookupErr)
+			}
+			if existingHash != a.ActionHash {
+				return false, ErrIdempotencyPayloadMismatch
+			}
 			return false, nil
 		}
 		return false, err

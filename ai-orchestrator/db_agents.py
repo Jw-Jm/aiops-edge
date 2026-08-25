@@ -170,9 +170,35 @@ class KnowledgeStore:
     页面管理（list/search/add/delete）与 AI 语义检索共用单一真源，消除双写不一致。
     MySQL knowledge_base 表已删除（migrations/0001_business_tables.sql 同步移除建表）。"""
 
+    _rag_ready_paths: set[str] = set()
+
+    @staticmethod
+    def _rag():
+        """Resolve the RAG store after test/runtime env initialization.
+
+        Several service modules import ``rag`` before the deployment data
+        directory is injected. Reusing that singleton silently writes/reads a
+        different Chroma path. Rebind it when AIOPS_DATA_DIR changes.
+        """
+        import os
+        import rag as rag_module
+        expected = os.path.join(os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops"), "ops-cases")
+        current = getattr(rag_module.rag, "_persist_dir", None)
+        if current != expected:
+            rag_module.rag = rag_module.RAGStore(expected)
+        if expected not in KnowledgeStore._rag_ready_paths:
+            try:
+                # Runtime normally receives pre-created collections from the
+                # bootstrap Job; local/test data directories may be new.
+                rag_module.RAGStore.ensure_collections(persist_dir=expected)
+                KnowledgeStore._rag_ready_paths.add(expected)
+            except Exception:
+                pass
+        return rag_module.rag
+
     def add(self, title: str, content: str, source: str = "manual", tags: str = "", code_ref: dict = None) -> str:
         try:
-            from rag import rag
+            rag = self._rag()
             return rag.add_knowledge(title, content, source=source, tags=tags,
                                      service=(code_ref or {}).get("service", "") if isinstance(code_ref, dict) else "")
         except Exception:
@@ -180,7 +206,7 @@ class KnowledgeStore:
 
     def search(self, q: str):
         try:
-            from rag import rag
+            rag = self._rag()
             items = rag.list_all(type_filter="knowledge", q=q, limit=50)
             return {"items": items, "total": len(items)}
         except Exception:
@@ -188,7 +214,7 @@ class KnowledgeStore:
 
     def list(self, page=1, size=50):
         try:
-            from rag import rag
+            rag = self._rag()
             items = rag.list_all(type_filter="knowledge", limit=size, offset=(page - 1) * size)
             total = len(rag.list_all(type_filter="knowledge", limit=100000))
             return {"items": items, "total": total}
@@ -197,7 +223,7 @@ class KnowledgeStore:
 
     def delete(self, kid):
         try:
-            from rag import rag
+            rag = self._rag()
             return rag.delete(str(kid))
         except Exception:
             return False

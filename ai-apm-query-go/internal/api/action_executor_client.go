@@ -113,20 +113,38 @@ func (c *ActionExecutionClient) Execute(ctx contract.ActionExecutionContext) (co
 	var res contract.ActionResult
 	if err := json.Unmarshal(respBody, &res); err != nil {
 		res = contract.ActionResult{
-			ActionID: ctx.ActionID, Status: httpStatusToExecutionStatus(resp.StatusCode),
+			ActionID: ctx.ActionID, Status: nonJSONExecutionStatus(resp.StatusCode),
 			Message: "executor returned non-JSON: " + strings.TrimSpace(string(respBody)),
 		}
 	}
 	return res, true, nil
 }
 
+func nonJSONExecutionStatus(status int) string {
+	switch status {
+	case http.StatusForbidden, http.StatusConflict:
+		return "rejected"
+	default:
+		// A response that cannot be decoded is not proof that no mutation
+		// occurred; keep it unknown and force real-state reconciliation.
+		return "execution_unknown"
+	}
+}
+
 // Reconcile 在 execution_unknown 后调用 executor 判定目标实际状态（不盲目 retry）。
-func (c *ActionExecutionClient) Reconcile(actionID, targetUID, expectedSpec string) (contract.ActionResult, bool, error) {
+func (c *ActionExecutionClient) Reconcile(ctx contract.ActionExecutionContext) (contract.ActionResult, bool, error) {
 	var zero contract.ActionResult
-	payload := map[string]string{
-		"action_id":     actionID,
-		"target_uid":    targetUID,
-		"expected_spec": expectedSpec,
+	payload := map[string]interface{}{
+		"action_id":        ctx.ActionID,
+		"action_hash":      ctx.ActionHash,
+		"approval_id":      ctx.ApprovalID,
+		"cluster_id":       ctx.ClusterID,
+		"target_uid":       ctx.TargetUID,
+		"target_name":      ctx.TargetName,
+		"resource_version": ctx.ResourceVersion,
+		"namespace":        ctx.Namespace,
+		"operation":        ctx.Operation,
+		"target_spec":      json.RawMessage(ctx.TargetSpec),
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -150,23 +168,9 @@ func (c *ActionExecutionClient) Reconcile(actionID, targetUID, expectedSpec stri
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var res contract.ActionResult
 	if err := json.Unmarshal(respBody, &res); err != nil {
-		res = contract.ActionResult{ActionID: actionID, Status: "reconciled"}
+		res = contract.ActionResult{ActionID: ctx.ActionID, Status: "execution_unknown", Message: "executor returned non-JSON reconciliation response"}
 	}
 	return res, true, nil
-}
-
-// httpStatusToExecutionStatus 把 executor 的非 JSON/非 2xx 响应映射为稳定执行状态。
-func httpStatusToExecutionStatus(status int) string {
-	switch {
-	case status == http.StatusForbidden:
-		return "rejected" // EXECUTION_MODE=disabled
-	case status == http.StatusServiceUnavailable:
-		return "rejected" // approved 但 verify key 未配置
-	case status == http.StatusConflict:
-		return "rejected" // TOCTOU drift
-	default:
-		return "failed"
-	}
 }
 
 // executeApprovedAction 实现 Stage D 执行闭环（handler 调用）：
@@ -192,7 +196,15 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 		}
 		return prev, nil
 	}
-	targetSpec, _ := json.Marshal(action.Params)
+	// Params are already canonical JSON. Marshaling []byte would turn the
+	// immutable object specification into a base64 JSON string.
+	targetSpec := json.RawMessage(action.Params)
+	if len(targetSpec) == 0 {
+		targetSpec = json.RawMessage(`{}`)
+	}
+	if !json.Valid(targetSpec) {
+		return contract.ActionResult{}, errors.New("action params are not valid JSON")
+	}
 	ctx := contract.ActionExecutionContext{
 		ActionID:        action.ActionID,
 		ActionHash:      action.ActionHash,
@@ -217,21 +229,30 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 	// Persist the attempt before crossing the mutation boundary. A missing or
 	// duplicate attempt is a hard stop: the executor must never be called for an
 	// action that cannot be reconciled after a response loss.
-	attemptID := newActionAttemptID()
+	attemptID := deterministicActionAttemptID(action.ActionID, action.ActionVersion)
 	startedAt := time.Now()
 	if h.attemptDAO != nil {
+		requestBody, marshalErr := json.Marshal(ctx)
+		if marshalErr != nil {
+			return contract.ActionResult{}, fmt.Errorf("marshal action request: %w", marshalErr)
+		}
+		digest := sha256.Sum256(requestBody)
 		created, createErr := h.attemptDAO.Create(store.AIActionAttempt{
 			AttemptID: attemptID, ActionID: action.ActionID, RunID: action.RunID,
 			TenantID: action.TenantID, ClusterID: action.ClusterID,
-			IdempotencyKey: action.IdempotencyKey, ActionHash: action.ActionHash,
-			Status: "running", ExecutorID: "ai-action-executor", RequestJSON: targetSpec,
+			IdempotencyKey: fmt.Sprintf("%s:%d", action.ActionID, actionVersion(action)), ActionHash: action.ActionHash,
+			RequestDigestSHA256: hex.EncodeToString(digest[:]),
+			Status:              "running", ExecutorID: "ai-action-executor", RequestJSON: requestBody,
 			StartedAt: &startedAt, CreatedAt: startedAt,
 		})
 		if createErr != nil {
 			return contract.ActionResult{}, fmt.Errorf("action attempt persistence failed: %w", createErr)
 		}
 		if !created {
-			return contract.ActionResult{}, errors.New("action attempt already exists; reconcile before retry")
+			// A process may have died after the executor applied the mutation but
+			// before the response reached Query API. The deterministic Attempt ID
+			// fences a second mutation; reconcile is the only safe next step.
+			return h.reconcileAfterDuplicateAttempt(action, ctx)
 		}
 	}
 	recordAttempt := func(status string, result []byte, errorCode string) error {
@@ -289,14 +310,34 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 		// Reconcile against the original immutable action specification.  The
 		// result field is the executor response and cannot describe the expected
 		// object state after a timeout.
-		rec, _, _ := client.Reconcile(action.ActionID, action.TargetUID, string(action.Params))
+		rec, reached, recErr := client.Reconcile(ctx)
+		if !reached || recErr != nil {
+			if attemptErr := recordAttempt("execution_unknown", nil, contract.ErrorCodeExecutionUnknown); attemptErr != nil {
+				return res, attemptErr
+			}
+			if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", nil, contract.ErrorCodeExecutionUnknown); updateErr != nil {
+				return res, updateErr
+			}
+			return res, nil
+		}
 		recResultJSON, _ := json.Marshal(rec)
-		if attemptErr := recordAttempt("execution_unknown", recResultJSON, contract.ErrorCodeExecutionUnknown); attemptErr != nil {
+		if h.reconciliationDAO != nil {
+			if _, persistErr := h.reconciliationDAO.Create(store.AIActionReconciliation{
+				ReconciliationID: newActionAttemptID(), AttemptID: attemptID, ActionID: action.ActionID,
+				ActionHash: action.ActionHash, Status: rec.Status, ObservedUID: rec.ObservedUID,
+				ObservedVersion: rec.ObservedVersion, ObservedJSON: recResultJSON, CreatedAt: time.Now(),
+			}); persistErr != nil {
+				return res, persistErr
+			}
+		}
+		reconcileStatus := normalizeReconcileActionStatus(rec.Status)
+		if attemptErr := recordAttempt(reconcileStatus, recResultJSON, contract.ErrorCodeExecutionUnknown); attemptErr != nil {
 			return res, attemptErr
 		}
-		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, "execution_unknown", recResultJSON, contract.ErrorCodeExecutionUnknown); updateErr != nil {
+		if updateErr := h.actionDAO.UpdateExecution(action.ActionID, reconcileStatus, recResultJSON, contract.ErrorCodeExecutionUnknown); updateErr != nil {
 			return res, updateErr
 		}
+		return rec, nil
 	default:
 		if attemptErr := recordAttempt("failed", resultJSON, res.Message); attemptErr != nil {
 			return res, attemptErr
@@ -308,6 +349,46 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 	return res, nil
 }
 
+func actionVersion(a *store.AIAction) int64 {
+	if a.ActionVersion > 0 {
+		return a.ActionVersion
+	}
+	return 1
+}
+
+func (h *Handler) reconcileAfterDuplicateAttempt(action *store.AIAction, ctx contract.ActionExecutionContext) (contract.ActionResult, error) {
+	client := currentActionExecutor()
+	if client == nil {
+		return contract.ActionResult{ActionID: action.ActionID, Status: "execution_unknown"}, errors.New("executor client not configured")
+	}
+	rec, reached, err := client.Reconcile(ctx)
+	if err != nil || !reached {
+		return contract.ActionResult{ActionID: action.ActionID, Status: "execution_unknown"}, err
+	}
+	status := normalizeReconcileActionStatus(rec.Status)
+	rec.Status = status
+	resultJSON, _ := json.Marshal(rec)
+	if h.actionDAO != nil {
+		if err := h.actionDAO.UpdateExecution(action.ActionID, status, resultJSON, ""); err != nil {
+			return rec, err
+		}
+	}
+	return rec, nil
+}
+
+func normalizeReconcileActionStatus(status string) string {
+	switch status {
+	case "applied", "success":
+		return "success"
+	case "not_applied", "failed", "reconcile_required":
+		return "failed"
+	case "drift", "rejected":
+		return "rejected"
+	default:
+		return "execution_unknown"
+	}
+}
+
 func newActionAttemptID() string {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -316,6 +397,19 @@ func newActionAttemptID() string {
 	raw[6] = (raw[6] & 0x0f) | 0x40
 	raw[8] = (raw[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+func deterministicActionAttemptID(actionID string, version int64) string {
+	if version <= 0 {
+		version = 1
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("aiops-action-attempt:%s:%d", actionID, version)))
+	// UUID-shaped deterministic identifier; uniqueness is fenced by the
+	// action/version idempotency key in MySQL.
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x50
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func formatApprovedAt(t *time.Time) string {

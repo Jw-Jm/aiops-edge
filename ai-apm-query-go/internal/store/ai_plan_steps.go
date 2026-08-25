@@ -1,9 +1,11 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -15,24 +17,25 @@ import (
 
 // AIPlanStep DB 实体。
 type AIPlanStep struct {
-	StepID      string
-	RunID       string
+	StepID       string
+	RunID        string
 	ParentStepID string
-	Seq         int
-	StepType    string
-	Status      string
-	ClusterID   string
-	Description string
-	BudgetUsed  int
-	DependsOn   []string
-	Parameters  []byte
-	Attempt     int
-	Outcome     string
-	ResultRef   string
-	StartedAt   *time.Time
-	CompletedAt *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	Seq          int
+	StepType     string
+	Status       string
+	ClusterID    string
+	Description  string
+	BudgetUsed   int
+	DependsOn    []string
+	Parameters   []byte
+	Attempt      int
+	Outcome      string
+	ResultRef    string
+	StartedAt    *time.Time
+	CompletedAt  *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	PayloadHash  string
 }
 
 // AIPlanStepDAO 访问 ai_plan_steps 表。
@@ -45,6 +48,11 @@ func (d *AIPlanStepDAO) Create(s AIPlanStep) (bool, error) {
 		return false, errors.New("mysql unavailable")
 	}
 	depends, _ := json.Marshal(s.DependsOn)
+	payloadHash := s.PayloadHash
+	if payloadHash == "" {
+		hash := sha256.Sum256(append(append([]byte{}, depends...), s.Parameters...))
+		payloadHash = fmt.Sprintf("%x", hash[:])
+	}
 	status := s.Status
 	if status == "" {
 		status = "pending"
@@ -52,16 +60,23 @@ func (d *AIPlanStepDAO) Create(s AIPlanStep) (bool, error) {
 	_, err := conn.Exec(
 		`INSERT INTO ai_plan_steps (step_id, run_id, parent_step_id, seq, step_type, status,
 		   cluster_id, description, budget_used, depends_on, parameters, attempt, outcome,
-		   result_ref, started_at, completed_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   result_ref, payload_hash, started_at, completed_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.StepID, s.RunID, nullableStr(s.ParentStepID), s.Seq, s.StepType,
 		status, nullableStr(s.ClusterID), s.Description,
 		s.BudgetUsed, depends, s.Parameters, s.Attempt, nullableStr(s.Outcome),
-		nullableStr(s.ResultRef), nullableTime(s.StartedAt), nullableTime(s.CompletedAt),
+		nullableStr(s.ResultRef), payloadHash, nullableTime(s.StartedAt), nullableTime(s.CompletedAt),
 		time.Now(), time.Now(),
 	)
 	if err != nil {
 		if isDuplicateKey(err) {
+			var existingHash string
+			if lookupErr := conn.QueryRow(`SELECT payload_hash FROM ai_plan_steps WHERE step_id = ?`, s.StepID).Scan(&existingHash); lookupErr != nil {
+				return false, lookupErr
+			}
+			if existingHash != payloadHash {
+				return false, ErrIdempotencyPayloadMismatch
+			}
 			return false, nil
 		}
 		return false, err

@@ -42,7 +42,7 @@ spec:
               value: {{ .Values.llmEgressProxy.allowlist | default "api.deepseek.com,api.openai.com" | quote }}
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10

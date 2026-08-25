@@ -255,19 +255,62 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 	if h.hypothesisDAO != nil {
 		if hypotheses, hypothesisErr := h.hypothesisDAO.ListByRun(runID); hypothesisErr == nil {
 			runView["hypotheses"] = hypothesesToMaps(hypotheses)
+			rootCause, confidence := deriveRunRootCause(hypotheses)
+			runView["root_cause"] = rootCause
+			runView["confidence"] = confidence
 		}
 	}
 	if h.actionDAO != nil {
 		if actions, actionErr := h.actionDAO.ListByRun(runID); actionErr == nil {
 			runView["actions"] = actionsToMaps(actions)
+			if len(actions) > 0 {
+				runView["latest_action"] = actionsToMaps(actions[len(actions)-1:])[0]
+			}
 		}
 	}
 	if h.approvalDAO != nil {
 		if approvals, approvalErr := h.approvalDAO.ListByRun(runID); approvalErr == nil {
 			runView["approvals"] = approvalsToMaps(approvals)
+			if len(approvals) > 0 {
+				runView["latest_approval"] = approvalsToMaps(approvals[len(approvals)-1:])[0]
+			}
+		}
+	}
+	if h.verificationDAO != nil {
+		if verifications, verificationErr := h.verificationDAO.ListByRun(runID); verificationErr == nil {
+			runView["verifications"] = verificationsToMaps(verifications)
+			if len(verifications) > 0 {
+				runView["latest_verification"] = verificationsToMaps(verifications[len(verifications)-1:])[0]
+			}
+		}
+	}
+	if h.attemptDAO != nil {
+		if attempts, attemptErr := h.attemptDAO.ListByRun(runID); attemptErr == nil {
+			runView["attempts"] = actionAttemptsToMaps(attempts)
+			if len(attempts) > 0 {
+				runView["latest_attempt"] = actionAttemptsToMaps(attempts[len(attempts)-1:])[0]
+			}
 		}
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"run": runView})
+}
+
+// deriveRunRootCause is the server-owned projection rule used by the browser.
+// Only an evidence-confirmed hypothesis can become a root cause; transient
+// graph text or client-side ordering is never treated as authoritative.
+func deriveRunRootCause(hypotheses []store.AIHypothesis) (string, float64) {
+	rootCause := ""
+	confidence := 0.0
+	for _, hypothesis := range hypotheses {
+		if !hypothesis.ConfirmedByEvidence || hypothesis.Content == "" {
+			continue
+		}
+		if rootCause == "" || hypothesis.Confidence > confidence {
+			rootCause = hypothesis.Content
+			confidence = hypothesis.Confidence
+		}
+	}
+	return rootCause, confidence
 }
 
 // GetRunToolsPublic handles GET /api/v1/ai/runs/{id}/tools（C2-4：UI Tool activity 只展示

@@ -74,7 +74,7 @@ type ActionPreflightResult struct {
 }
 
 type ActionPreflightService struct {
-	resolver     ActionTargetResolver
+	resolver      ActionTargetResolver
 	policyVersion string
 }
 
@@ -110,6 +110,24 @@ func (s *ActionPreflightService) Resolve(ctx context.Context, input PreflightInp
 		}
 		if number, ok := replicas.(float64); !ok || number < 0 || number > 10000 || number != float64(int(number)) {
 			return ActionPreflightResult{}, errors.New("params.replicas must be an integer between 0 and 10000")
+		}
+	} else {
+		// Patch is intentionally limited to metadata annotations. The same
+		// structured payload is sent to the executor and used by reconciliation;
+		// arbitrary JSON patches would make the approval hash an incomplete
+		// description of the mutation surface.
+		metadata, ok := object["metadata"].(map[string]any)
+		annotations, annotationsOK := metadata["annotations"].(map[string]any)
+		if !ok || !annotationsOK || len(annotations) == 0 {
+			return ActionPreflightResult{}, errors.New("patch requires params.metadata.annotations")
+		}
+		for key, value := range annotations {
+			if !strings.HasPrefix(key, "aiops.observability.io/") && !strings.HasPrefix(key, "aio-action-executor/") {
+				return ActionPreflightResult{}, fmt.Errorf("patch annotation %q is outside the allowlist", key)
+			}
+			if text, ok := value.(string); !ok || len(text) > 256 {
+				return ActionPreflightResult{}, fmt.Errorf("patch annotation %q must be a string of at most 256 bytes", key)
+			}
 		}
 	}
 	identity, err := s.resolver.ResolveDeployment(ctx, input.ClusterID, input.Namespace, input.TargetName)

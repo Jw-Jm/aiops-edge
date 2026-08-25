@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,20 +146,106 @@ func TestApprovedModeRequiresRealExecutionCapability(t *testing.T) {
 	}
 }
 
-func TestReconcileNeverBlindRetry(t *testing.T) {
+func TestReconcileReturnsSuccessOnlyWhenRealStateMatches(t *testing.T) {
 	s := newTestServer(ModeApproved)
+	s.readReconcileStateFn = func(ReconcileRequest) (reconcileObserved, error) {
+		return reconcileObserved{UID: "uid-x", ResourceVersion: "rv-2", Replicas: 2}, nil
+	}
 	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
-		map[string]string{"action_id": "act-x", "target_uid": "uid-x", "expected_spec": "s"})
+		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
+			TargetSpec: json.RawMessage(`{"replicas":2}`)})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reconcile failed: %d", rec.Code)
 	}
 	var res ActionResult
 	_ = json.Unmarshal(rec.Body.Bytes(), &res)
-	// 必须含 reconcile-before-retry 语义（禁止对未知写操作盲目 retry）。
-	if res.Status != "reconciled" {
-		t.Fatalf("expected reconciled, got %s", res.Status)
+	if res.Status != "applied" {
+		t.Fatalf("expected applied only after matching state, got %s", res.Status)
 	}
-	if len(res.Message) == 0 {
-		t.Fatalf("reconcile must return message")
+	if !strings.Contains(res.Message, "no retry") {
+		t.Fatalf("reconcile message must state no retry, got %s", res.Message)
+	}
+}
+
+func TestReconcileRequiresRealReadCapability(t *testing.T) {
+	s := newTestServer(ModeApproved)
+	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
+		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
+			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing read capability must fail closed, got %d", rec.Code)
+	}
+	var res ActionResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Status != "execution_unknown" {
+		t.Fatalf("missing read capability must stay unknown, got %s", res.Status)
+	}
+}
+
+func TestReconcileRejectsUnsignedContext(t *testing.T) {
+	s := newTestServer(ModeApproved)
+	body, _ := json.Marshal(ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale", TargetSpec: json.RawMessage(`{"replicas":2}`)})
+	req := httptest.NewRequest(http.MethodPost, "/v1/executor/reconcile", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleReconcile(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unsigned reconcile must be rejected, got %d", rec.Code)
+	}
+}
+
+func TestReconcileDoesNotAuthorizeBlindRetry(t *testing.T) {
+	s := newTestServer(ModeApproved)
+	s.readReconcileStateFn = func(ReconcileRequest) (reconcileObserved, error) {
+		return reconcileObserved{UID: "uid-x", ResourceVersion: "rv-3", Replicas: 1}, nil
+	}
+	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
+		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
+			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reconcile failed: %d", rec.Code)
+	}
+	var res ActionResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Status != "not_applied" {
+		t.Fatalf("unmatched desired state must require review, got %s", res.Status)
+	}
+	if strings.Contains(strings.ToLower(res.Message), "retry now") {
+		t.Fatalf("reconcile must not authorize blind retry: %s", res.Message)
+	}
+}
+
+func TestReconcileReportsDriftWhenUIDChanges(t *testing.T) {
+	s := newTestServer(ModeApproved)
+	s.readReconcileStateFn = func(ReconcileRequest) (reconcileObserved, error) {
+		return reconcileObserved{UID: "uid-new", ResourceVersion: "rv-3", Replicas: 2}, nil
+	}
+	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
+		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-old", TargetName: "orders", Operation: "scale",
+			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("UID drift must be a conflict, got %d", rec.Code)
+	}
+	var res ActionResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Status != "drift" {
+		t.Fatalf("UID drift must be reported as drift, got %s", res.Status)
+	}
+}
+
+func TestReconcileReportsUnknownWhenReadFails(t *testing.T) {
+	s := newTestServer(ModeApproved)
+	s.readReconcileStateFn = func(ReconcileRequest) (reconcileObserved, error) {
+		return reconcileObserved{}, errors.New("kubernetes timeout")
+	}
+	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
+		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
+			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("read failure must be unavailable, got %d", rec.Code)
+	}
+	var res ActionResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Status != "execution_unknown" {
+		t.Fatalf("read failure must remain unknown, got %s", res.Status)
 	}
 }

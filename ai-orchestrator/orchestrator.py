@@ -122,22 +122,34 @@ from dual_agent import parse_subtasks, run_subtasks, merge_review
 _LLM_KEY_HOLDER = {"api_key": ""}
 
 
+def _llm_boundary_ready() -> bool:
+    """LLM egress is proxy-only; LLM_MOCK is the sole non-network bypass."""
+    if os.environ.get("LLM_MOCK", "").lower() in ("1", "true", "yes", "on"):
+        return True
+    return bool(os.environ.get("LLM_PROXY_URL", "").strip() and os.environ.get("LLM_PROXY_TOKEN", "").strip())
+
+
 def _llm_key_ready() -> bool:
     """判断是否具备真实 LLM 调用条件。
     注意: cfg(llm_config) 里 api_key 已被 set_llm_config 安全剔除(只存 _LLM_KEY_HOLDER),
     因此必须检查 _LLM_KEY_HOLDER 而非 cfg.get('api_key'), 否则真实 key 存在时也会被误判为
     '无 key' 而全部走 mock/跳过 —— 这正是"LLM 并未实际调用"的根因。
 
-    兼容直接注入的运行时配置（例如测试替身或旧版调用方）：生产路径仍由
-    set_llm_config() 将 key 放入 holder，只有 holder 为空时才读取 brain.llm_config。
+    set_llm_config() only receives the proxy ingress token; a provider key is
+    never accepted as a capability signal.
     """
-    if _LLM_KEY_HOLDER.get("api_key"):
-        return True
+    # A deterministic mock provider is not a credential path and remains
+    # available to unit tests/dev diagnostics without weakening proxy-only
+    # production egress.
     try:
         cfg = getattr(brain, "llm_config", None)
-        return isinstance(cfg, dict) and bool(cfg.get("api_key"))
+        if isinstance(cfg, dict) and cfg.get("provider") == "mock" and bool(cfg.get("api_key")):
+            return True
     except Exception:
+        pass
+    if not _llm_boundary_ready():
         return False
+    return bool(_LLM_KEY_HOLDER.get("api_key"))
 
 
 def _is_llm_failure(text) -> bool:
@@ -1487,7 +1499,12 @@ def _persist_verification_result(state: AgentState, scope: ScopeView, result: di
             before_snapshot={"raw": state.get("before_metrics", "")},
             after_snapshot={"raw": result.get("after_metrics", "")},
             observation_window_seconds=60,
-            checks=[{"effect_size": result.get("verify_effect_size"),
+            # Query API derives the verdict from the checks.  Keep the measured
+            # delta for audit, while effect_size is a boolean policy signal so
+            # a positive-but-insufficient improvement cannot be mislabeled as
+            # passed by a second implementation.
+            checks=[{"effect_size": 1.0 if result.get("verify_pass") else 0.0,
+                     "measured_effect_size": result.get("verify_effect_size"),
                      "side_effect": result.get("verify_side_effect")}],
             summary=" ".join(str(m) for m in result.get("messages", [])),
         )
@@ -1781,10 +1798,26 @@ class BrainOrchestrator:
     def __init__(self, db_path=None):
         import os as _os
         import tempfile
+        self._stateless_worker = _os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {"1", "true", "yes", "on"}
+        self.llm_config = None
+        if self._stateless_worker:
+            # Investigation workers rebuild work from query-api Run snapshots and
+            # leases. They must not open the legacy SQLite session/checkpoint DB.
+            self._db_path = ""
+            self._conn = None
+            self.checkpointer = MemorySaver()
+            self._async_saver_initialized = False
+            self._async_saver_loop = None
+            self._async_conn = None
+            self.graph = build_graph(checkpointer=self.checkpointer, mode="full")
+            self.chat_graph = build_graph(checkpointer=self.checkpointer, mode="chat")
+            self.dual_graph = build_graph(checkpointer=self.checkpointer, mode="dual")
+            from skill_registry import _init_defaults
+            _init_defaults()
+            return
         if db_path is None:
             data_dir = _os.environ.get("AIOPS_DATA_DIR", "/var/lib/aiops")
             db_path = _os.path.join(data_dir, "ai-sessions.db")
-        self.llm_config = None
         # 持久化目录不可写（本机/无 PVC 环境）时降级到临时目录，绝不阻断 import orchestrator
         try:
             _os.makedirs(_os.path.dirname(db_path), exist_ok=True)
@@ -1834,6 +1867,8 @@ class BrainOrchestrator:
         - 解法: 检测当前 running loop 与 saver 绑定的 loop 是否一致且仍存活；
           不一致时关闭旧 aiosqlite 连接并重建 saver（同一 db 文件，checkpoint 不丢）。
         """
+        if self._stateless_worker:
+            return
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:

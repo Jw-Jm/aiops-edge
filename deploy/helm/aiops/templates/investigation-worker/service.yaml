@@ -1,0 +1,15 @@
+{{- if .Values.investigationWorker.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-investigation-worker
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-investigation-worker
+spec:
+  selector:
+    app: ai-investigation-worker
+  ports:
+    - port: 8080
+      targetPort: 8080
+{{- end }}

@@ -1,0 +1,74 @@
+{{- if .Values.investigationWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-investigation-worker
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-investigation-worker
+spec:
+  replicas: {{ .Values.investigationWorker.replicas | default 2 }}
+  selector:
+    matchLabels:
+      app: ai-investigation-worker
+  template:
+    metadata:
+      labels:
+        app: ai-investigation-worker
+    spec:
+      serviceAccountName: ai-orchestrator
+      containers:
+        - name: investigation-worker
+          image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ .Values.investigationWorker.image.tag }}
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn"]
+          args: ["investigation_app:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AIOPS_DEPLOYMENT_MODE
+              value: "production"
+            - name: INVESTIGATION_WORKER_MODE
+              value: "true"
+            - name: INVESTIGATION_RUNTIME_ENABLED
+              value: "1"
+            - name: LEGACY_FLOW_RUNTIME_ENABLED
+              value: "0"
+            - name: LEGACY_DIRECT_MUTATIONS_ENABLED
+              value: "0"
+            - name: QUERY_API_URL
+              value: {{ .Values.aiOrchestrator.queryApiUrl | quote }}
+            - name: INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
+            - name: TRUSTED_CONTEXT_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: ORCHESTRATOR_TO_QUERY_SIGNING_KEY }
+            - name: QUERY_TO_ORCHESTRATOR_VERIFY_KEYS
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_VERIFY_KEYS }
+            - name: QUERY_TO_ORCHESTRATOR_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
+            - name: LLM_MOCK
+              value: {{ .Values.aiOrchestrator.llmMock | quote }}
+{{- if .Values.llmEgressProxy.enabled }}
+            - name: LLM_PROXY_URL
+              value: "http://ai-llm-egress-proxy:8080"
+            - name: LLM_PROXY_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: LLM_PROXY_TOKEN }
+{{- end }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.investigationWorker.resources | nindent 12 }}
+{{- end }}

@@ -46,6 +46,7 @@ const GLOBAL_PATHS = [
   '/ai/session',
   '/ai/knowledge',
   '/ai/runs',
+  '/ai/actions',
   '/ai/skills',
   '/ai/workflows',
   '/ai/flows',
@@ -111,6 +112,9 @@ export interface RunSummary {
   actions?: { action_id: string; action_type: string; status: string; authoritative_risk?: string; execution_status?: string; target_name?: string; target_uid?: string }[]
   approvals?: { approval_id: string; action_id: string; decision: string; approver?: string; reason?: string }[]
   hypotheses?: { hypothesis_id: string; content: string; confidence: number; status: string; confirmed_by_evidence?: boolean }[]
+  latest_action?: { action_id: string; action_type: string; status: string; authoritative_risk?: string; execution_status?: string; target_name?: string; target_uid?: string }
+  latest_verification?: { verification_id: string; action_id: string; status: string; summary?: string } | null
+  verifications?: { verification_id: string; action_id: string; status: string; summary?: string }[]
 }
 export interface CreateRunResponse {
   run_id: string
@@ -125,6 +129,41 @@ export const getRun = (runId: string) => api.get<{ run: RunSummary }>(`/ai/runs/
 export const createRun = (data: Record<string, unknown>) =>
   api.post<CreateRunResponse>('/ai/runs', data)
 
+// ===== Canonical Action approval/read model =====
+export interface ActionProjection {
+  action_id: string
+  run_id: string
+  cluster_id?: string
+  action_type: string
+  action_hash: string
+  hash_schema_version: number
+  action_version: number
+  policy_version?: string
+  preflight_status: string
+  target_resource_type: string
+  status: 'proposed' | 'approved' | 'rejected' | string
+  dry_run: boolean
+  target_name: string
+  target_uid: string
+  resource_version: string
+  namespace: string
+  operation: string
+  execution_status: string
+  error_code?: string
+  created_at?: string
+  updated_at?: string
+}
+export const listActions = (params?: { status?: string; limit?: number }) =>
+  api.get<{ actions: ActionProjection[]; count: number }>('/ai/actions', { params })
+export const getAction = (actionId: string) =>
+  api.get<ActionProjection>(`/ai/actions/${encodeURIComponent(actionId)}`)
+export const decideAction = (actionId: string, body: {
+  decision: 'approved' | 'rejected'
+  reason?: string
+  idempotency_key: string
+  action_version: number
+}) => api.post(`/ai/actions/${encodeURIComponent(actionId)}/decision`, body)
+
 export interface RunEvent {
   sequence?: number
   event_id?: string
@@ -138,30 +177,63 @@ export async function streamRunEvents(
   runId: string,
   onEvent: (event: RunEvent) => void,
   signal?: AbortSignal,
+  options?: { afterSequence?: number; maxReconnects?: number },
 ): Promise<void> {
   const auth = localStorage.getItem('token')
-  const response = await fetch(`/api/v1/ai/runs/${encodeURIComponent(runId)}/events`, {
-    headers: {
-      Accept: 'text/event-stream',
-      ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
-    },
-    signal,
-  })
-  if (!response.ok || !response.body) throw new Error(`Run SSE failed: ${response.status}`)
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
+  let afterSequence = options?.afterSequence ?? 0
+  let lastEventId = afterSequence > 0 ? String(afterSequence) : ''
+  const maxReconnects = Math.max(0, options?.maxReconnects ?? 5)
+  let reconnects = 0
   while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const frames = buffer.split('\n\n')
-    buffer = frames.pop() ?? ''
-    for (const frame of frames) {
-      const data = frame.split('\n').find((line) => line.startsWith('data:'))?.slice(5).trim()
-      if (!data) continue
-      try { onEvent(JSON.parse(data) as RunEvent) } catch { /* ignore comments/heartbeats */ }
+    const query = afterSequence > 0 ? `?after_sequence=${afterSequence}` : ''
+    const response = await fetch(`/api/v1/ai/runs/${encodeURIComponent(runId)}/events${query}`, {
+      headers: {
+        Accept: 'text/event-stream',
+        ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
+        ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      },
+      signal,
+    })
+    if (!response.ok || !response.body) {
+      if (reconnects++ >= maxReconnects) throw new Error(`Run SSE failed: ${response.status}`)
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** reconnects, 8000)))
+      continue
     }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const frames = buffer.split('\n\n')
+      buffer = frames.pop() ?? ''
+      for (const frame of frames) {
+        const frameId = frame.split('\n').find((line) => line.startsWith('id:'))?.slice(3).trim()
+        if (frameId && /^\d+$/.test(frameId)) {
+          const sequence = Number(frameId)
+          if (sequence > afterSequence) {
+            afterSequence = sequence
+            lastEventId = frameId
+          }
+        }
+        const data = frame.split('\n').find((line) => line.startsWith('data:'))?.slice(5).trim()
+        if (!data) continue
+        try {
+          const event = JSON.parse(data) as RunEvent
+          if (typeof event.sequence === 'number' && event.sequence > afterSequence) {
+            afterSequence = event.sequence
+            lastEventId = String(event.sequence)
+          }
+          onEvent(event)
+        } catch { /* ignore comments/heartbeats */ }
+      }
+    }
+    // A clean close is still reconnectable until the bounded budget is spent;
+    // Last-Event-ID/after_sequence prevents replay gaps after disconnects.
+    if (signal?.aborted) return
+    if (reconnects++ >= maxReconnects) return
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** reconnects, 8000)))
   }
 }
 

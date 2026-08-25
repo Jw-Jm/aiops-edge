@@ -81,10 +81,11 @@ const InvestigationDetailView: React.FC = () => {
         const actions = Array.isArray(r.actions) ? r.actions : []
         const approvals = Array.isArray(r.approvals) ? r.approvals : []
         const hypotheses = Array.isArray(r.hypotheses) ? r.hypotheses : []
-        const latestAction = actions[actions.length - 1]
+        const latestAction = r.latest_action ?? actions[actions.length - 1]
         const latestApproval = latestAction
           ? approvals.filter((a: any) => a.action_id === latestAction.action_id).slice(-1)[0]
           : undefined
+        const latestVerification = r.latest_verification ?? (Array.isArray(r.verifications) ? r.verifications[r.verifications.length - 1] : undefined)
         setDetail({
           runId: r.run_id,
           scope: {
@@ -104,14 +105,14 @@ const InvestigationDetailView: React.FC = () => {
             id: String(h.hypothesis_id ?? ''), claim: String(h.content ?? ''),
             support: Number(h.confidence ?? 0), contradictions: [], missing: [],
           })),
-          rootCause: r.root_cause ?? 'unknown',
-          confidence: r.confidence ?? 0,
+          rootCause: String(r.root_cause || ''),
+          confidence: Number(r.confidence || 0),
           action: latestAction ? {
             status: String(latestAction.status ?? 'proposed'),
             risk: String(latestAction.authoritative_risk ?? 'R0'),
             approver: latestApproval?.approver ?? null,
             execution: latestAction.execution_status ?? null,
-            verification: null,
+            verification: latestVerification?.status ?? null,
           } : { status: 'created', risk: 'R0', approver: null, execution: null, verification: null },
         })
       })

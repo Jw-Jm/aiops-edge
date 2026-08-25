@@ -1,8 +1,10 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -18,6 +20,7 @@ type AIHypothesis struct {
 	ConfirmedByEvidence bool
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	PayloadHash         string
 }
 
 type AIHypothesisDAO struct{}
@@ -31,15 +34,28 @@ func (d *AIHypothesisDAO) Create(h AIHypothesis) (bool, error) {
 	if h.ConfirmedByEvidence {
 		confirmed = 1
 	}
+	status := firstNonEmptyStr2(h.Status, "proposed")
+	payloadHash := h.PayloadHash
+	if payloadHash == "" {
+		hash := sha256.Sum256([]byte(fmt.Sprintf("%s|%.8f|%s|%t", h.Content, h.Confidence, status, h.ConfirmedByEvidence)))
+		payloadHash = fmt.Sprintf("%x", hash[:])
+	}
 	_, err := conn.Exec(
 		`INSERT INTO ai_hypotheses (hypothesis_id, run_id, tenant_id, cluster_id, content,
-		   confidence, status, confirmed_by_evidence, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   confidence, status, confirmed_by_evidence, payload_hash, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		h.HypothesisID, h.RunID, h.TenantID, h.ClusterID, h.Content, h.Confidence,
-		firstNonEmptyStr2(h.Status, "proposed"), confirmed, time.Now(), time.Now(),
+		status, confirmed, payloadHash, time.Now(), time.Now(),
 	)
 	if err != nil {
 		if isDuplicateKey(err) {
+			var existingHash string
+			if lookupErr := conn.QueryRow(`SELECT payload_hash FROM ai_hypotheses WHERE hypothesis_id = ?`, h.HypothesisID).Scan(&existingHash); lookupErr != nil {
+				return false, lookupErr
+			}
+			if existingHash != payloadHash {
+				return false, ErrIdempotencyPayloadMismatch
+			}
 			return false, nil
 		}
 		return false, err

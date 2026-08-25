@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -32,6 +33,39 @@ type AIActionAttempt struct {
 // failed or duplicate insert because that would create an untracked mutation.
 type AIActionAttemptDAO struct{}
 
+func (d *AIActionAttemptDAO) ListByRun(runID string) ([]AIActionAttempt, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	rows, err := conn.Query(`SELECT attempt_id, action_id, run_id, tenant_id, cluster_id,
+		idempotency_key, action_hash, request_digest_sha256, status, executor_id,
+		request_json, result_json, error_code, started_at, finished_at, created_at
+		FROM ai_action_attempts WHERE run_id = ? ORDER BY created_at ASC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AIActionAttempt, 0)
+	for rows.Next() {
+		var a AIActionAttempt
+		var started, finished sql.NullTime
+		if err := rows.Scan(&a.AttemptID, &a.ActionID, &a.RunID, &a.TenantID, &a.ClusterID,
+			&a.IdempotencyKey, &a.ActionHash, &a.RequestDigestSHA256, &a.Status, &a.ExecutorID,
+			&a.RequestJSON, &a.ResultJSON, &a.ErrorCode, &started, &finished, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		if started.Valid {
+			a.StartedAt = &started.Time
+		}
+		if finished.Valid {
+			a.FinishedAt = &finished.Time
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (d *AIActionAttemptDAO) Create(a AIActionAttempt) (bool, error) {
 	conn := GetDB()
 	if conn == nil {
@@ -50,6 +84,16 @@ func (d *AIActionAttemptDAO) Create(a AIActionAttempt) (bool, error) {
 	)
 	if err != nil {
 		if isDuplicateKey(err) {
+			var existingHash, existingDigest string
+			lookupErr := conn.QueryRow(`SELECT action_hash, request_digest_sha256
+				FROM ai_action_attempts WHERE attempt_id = ?`, a.AttemptID).Scan(&existingHash, &existingDigest)
+			if lookupErr != nil {
+				return false, lookupErr
+			}
+			requestedDigest := firstNonEmptyStr2(a.RequestDigestSHA256, a.ActionHash)
+			if existingHash != a.ActionHash || existingDigest != requestedDigest {
+				return false, ErrIdempotencyPayloadMismatch
+			}
 			return false, nil
 		}
 		return false, err

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { Alert, Button, Drawer, Input, Modal, Segmented, Space, Table, Tag, message } from 'antd'
-import { listApprovalTasks, approveTask, rejectTask } from '../../api/client'
+import { listActions, decideAction, type ActionProjection } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty, StatusBadge, type StatusTone } from '../../components/ui/PageKit'
 import { useAuthStore } from '../../store/authStore'
 import { fmtTime } from '../../lib/format'
@@ -86,11 +86,21 @@ const Approvals: React.FC = () => {
 
   const load = useCallback(() => {
     setLoading(true)
-    const params = tab === 'all' ? {} : { status: tab }
-    listApprovalTasks(params)
+    const params = tab === 'all' ? {} : { status: tab === 'waiting' ? 'proposed' : tab }
+    listActions(params)
       .then((r) => {
-        const list = (r.data as any)?.tasks || []
-        setRows(Array.isArray(list) ? list : [])
+        const list = Array.isArray(r.data?.actions) ? r.data.actions : []
+        setRows(list.map((action: ActionProjection) => ({
+          ...action,
+          id: action.action_id,
+          source: 'canonical_action',
+          service: action.target_name,
+          plan: `${action.operation} ${action.target_resource_type}/${action.target_name} (${action.namespace})`,
+          script: JSON.stringify({ operation: action.operation, target: action.target_name, namespace: action.namespace }, null, 2),
+          risk_score: undefined,
+          risk_reason: `preflight=${action.preflight_status}, hash=v${action.hash_schema_version}:${action.action_hash}`,
+          status: action.status === 'proposed' ? 'waiting' : action.status,
+        })))
       })
       .catch(() => { setRows([]); message.error('加载审批任务失败') })
       .finally(() => setLoading(false))
@@ -102,7 +112,10 @@ const Approvals: React.FC = () => {
     if (!approveTarget) return
     setActing(true)
     try {
-      await approveTask(approveTarget.id)
+      await decideAction(approveTarget.action_id, {
+        decision: 'approved', action_version: approveTarget.action_version,
+        idempotency_key: `ui-approve-${approveTarget.action_id}-${approveTarget.action_version}`,
+      })
       message.success('已批准，环境操作将执行')
       setApproveTarget(null)
       load()
@@ -117,7 +130,12 @@ const Approvals: React.FC = () => {
     if (!rejectTarget) return
     setActing(true)
     try {
-      await rejectTask(rejectTarget.id, rejectReason.trim() || undefined)
+      const reason = rejectReason.trim()
+      if (!reason) { message.error('驳回必须填写原因'); return }
+      await decideAction(rejectTarget.action_id, {
+        decision: 'rejected', reason, action_version: rejectTarget.action_version,
+        idempotency_key: `ui-reject-${rejectTarget.action_id}-${rejectTarget.action_version}`,
+      })
       message.success('已驳回，环境操作不会执行')
       setRejectTarget(null)
       setRejectReason('')

@@ -81,7 +81,9 @@ func (h *Handler) decideActionPublic(w http.ResponseWriter, r *http.Request, act
 		return
 	}
 	var req ActionDecisionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
@@ -146,6 +148,11 @@ func (h *Handler) decideAction(ctx context.Context, actionID string, auth Author
 		existing.Decision = existingDecision
 		existing.ActionVersion = existingVersion
 		existing.Replay = true
+		_ = tx.QueryRowContext(ctx, `SELECT COALESCE(r.status, '') FROM ai_actions a
+			LEFT JOIN ai_runs r ON r.run_id = a.run_id WHERE a.action_id = ?`, actionID).Scan(&existing.RunStatus)
+		if existing.Decision == "approved" {
+			_ = tx.QueryRowContext(ctx, `SELECT command_id FROM ai_action_outbox WHERE action_id = ? AND action_version = ? LIMIT 1`, actionID, existingVersion).Scan(&existing.CommandID)
+		}
 		return existing, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -170,6 +177,15 @@ func (h *Handler) decideAction(ctx context.Context, actionID string, auth Author
 	if action.tenantID != auth.TenantID || action.actionVersion != req.ActionVersion || action.hashSchemaVersion != 2 ||
 		action.preflightStatus != "passed" || action.dryRun != 0 || action.status != "proposed" ||
 		action.targetUID == "" || action.resourceVersion == "" {
+		return ActionDecisionResult{}, errActionDecisionConflict
+	}
+	canonicalHash, hashErr := contract.CanonicalActionHash(contract.CanonicalActionPayloadV2{
+		Version: 1, ActionType: "kubernetes", ResourceType: "deployment",
+		Namespace: action.namespace, TargetName: action.targetName,
+		TargetUID: action.targetUID, ResourceVersion: action.resourceVersion,
+		Operation: action.operation, Params: action.params, PolicyVersion: "action-policy-v1",
+	})
+	if hashErr != nil || canonicalHash != action.actionHash {
 		return ActionDecisionResult{}, errActionDecisionConflict
 	}
 	if action.proposedBy.Valid && action.proposedBy.String == auth.UserID {
@@ -200,6 +216,9 @@ func (h *Handler) decideAction(ctx context.Context, actionID string, auth Author
 		approvalID, action.runID, action.actionID, action.actionHash, action.actionVersion,
 		req.IdempotencyKey, action.tenantID, action.clusterID, decision, auth.UserID,
 		nullableString(req.Reason), now, now); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			return ActionDecisionResult{}, errActionDecisionIdempotency
+		}
 		return ActionDecisionResult{}, fmt.Errorf("%w: insert decision: %v", errActionDecisionUnavailable, err)
 	}
 
