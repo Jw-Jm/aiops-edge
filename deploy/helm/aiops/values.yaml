@@ -333,6 +333,8 @@ aiOrchestrator:
   systemClusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
+  dataStorageClass: ""
+  dataStorage: 5Gi
   llmMock: "false"
   # Canonical persistent Investigation runtime switches. Legacy flow and
   # investigator runtimes stay disabled; mutations are executor-owned.
