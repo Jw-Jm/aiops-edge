@@ -66,4 +66,7 @@ if ! rg -Uq 'name: LEGACY_FLOW_RUNTIME_ENABLED[[:space:]]+value: "0"' "${rendere
   exit 1
 fi
 
+echo "[deployment-contracts] Fresh Install Helm/image/Secret/RBAC contracts"
+bash "${repo_root}/deploy/scripts/test-deployment-contracts.sh"
+
 echo "AIOps workflow gates passed (mutation remains disabled)."
