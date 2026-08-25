@@ -324,7 +324,7 @@ git commit -m "feat: add canonical action preflight"
 - Consumes: `POST /api/v1/ai/actions/{action_id}/decision` body `{decision, reason, idempotency_key, action_version}` and JWT-derived `AuthorizationContext`.
 - Produces: one immutable approval decision and, when approved, one pending Action command plus atomic Run transition `awaiting_approval -> executing`.
 
-- [ ] **Step 1: Write handler tests for derived identity and stale hashes**
+- [x] **Step 1: Write handler tests for derived identity and stale hashes**
 
 ```go
 func TestApproveActionDerivesApproverAndEnqueuesAtomically(t *testing.T) {
@@ -341,13 +341,13 @@ func TestApproveActionDerivesApproverAndEnqueuesAtomically(t *testing.T) {
 
 Add separate tests for self-approval, cross-tenant access, stale `action_version`, duplicate idempotency key with same body, duplicate key with different body, and rejection.
 
-- [ ] **Step 2: Run tests and confirm the route is missing**
+- [x] **Step 2: Run tests and confirm the route is missing**
 
 Run: `cd ai-apm-query-go && go test ./internal/api -run 'ApproveAction|RejectAction|ActionDecision' -count=1`
 
 Expected: FAIL with 404 or undefined service.
 
-- [ ] **Step 3: Define the public request without approver or action hash**
+- [x] **Step 3: Define the public request without approver or action hash**
 
 ```go
 type ActionDecisionRequest struct {
@@ -360,7 +360,7 @@ type ActionDecisionRequest struct {
 
 Only `approved` and `rejected` are accepted. `reason` is required for rejection. The handler obtains `Approver` from `AuthorizationContext.UserID` and tenant from `AuthorizationContext.TenantID`.
 
-- [ ] **Step 4: Implement one transaction in `ActionCommandService.Decide`**
+- [x] **Step 4: Implement one transaction in `ActionCommandService.Decide`**
 
 ```go
 type ActionDecisionResult struct {
@@ -378,11 +378,11 @@ func (s *ActionCommandService) Decide(ctx context.Context, actionID string,
 
 Inside the transaction: lock Action and Run; verify tenant/run/cluster; require hash schema V2 and `preflight_status=passed`; reject `auth.UserID == action.ProposedBy`; compare action version; derive action hash from the row; insert decision; update Action status; CAS the Run. For approval, insert Action outbox in the same transaction. For rejection, transition Run to `cancelled` and append `action.rejected`.
 
-- [ ] **Step 5: Make duplicate decisions exact-replay only**
+- [x] **Step 5: Make duplicate decisions exact-replay only**
 
 `AIApprovalDecisionDAO.CreateOrReplayTx` must return the stored row when `action_id + decision_idempotency_key` exists. If decision, action version, reason digest or approver differs, return `IDEMPOTENCY_KEY_REUSED` and map it to HTTP 409.
 
-- [ ] **Step 6: Add a MySQL-authoritative approval-role wrapper and register the route**
+- [x] **Step 6: Add a MySQL-authoritative approval-role wrapper and register the route**
 
 ```go
 func (h *Handler) RequireAnyRoleForWrite(roles []string, next http.HandlerFunc) http.HandlerFunc {
@@ -398,13 +398,13 @@ func (h *Handler) RequireAnyRoleForWrite(roles []string, next http.HandlerFunc) 
 
 `hasAnyRole` must load the current user from MySQL exactly once and compare its stored role against `admin|approver`; JWT role claims and `X-Internal-Role` are ignored. `ActionPublicHandler` routes `POST /{id}/decision` before `/{id}/execute`. Protect Action list/detail/decision with the same `admin|approver` role policy because payloads contain sensitive remediation details.
 
-- [ ] **Step 7: Run API and store tests**
+- [x] **Step 7: Run API and store tests**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/store -run 'ActionDecision|Approval|ActionOutbox' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit the decision command**
+- [x] **Step 8: Commit the decision command**
 
 ```bash
 git add ai-apm-query-go

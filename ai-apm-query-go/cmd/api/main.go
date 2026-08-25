@@ -332,10 +332,10 @@ func main() {
 	// Evidence 只读投影由 query-api 持有（不再代理 orchestrator 内存注册表）。
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/evidences", handler.GetRunEvidencesPublic)
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/evidences/{evidenceID}", handler.GetRunEvidencePublic)
-	// Stage D 接线（报告 §29）：公共 action 执行端点（GET 详情放行；POST execute 需 admin）。
-	// GET /api/v1/ai/actions/{id} → 详情；POST /api/v1/ai/actions/{id}/execute → 经 executor 执行。
-	mux.HandleFunc("/api/v1/ai/actions/", handler.RequireRoleForWrite("admin", handler.ActionPublicHandler))
-	mux.HandleFunc("/api/v1/ai/actions", handler.RequireRoleForWrite("admin", handler.ActionPublicHandler))
+	// Action control plane：GET 详情只需 canonical tenant，写操作按动作类型授权；
+	// decision 允许 admin/approver，execute 仍由 executor 策略要求 admin。
+	mux.HandleFunc("/api/v1/ai/actions/", handler.RequireAnyRoleForWrite([]string{"admin", "approver"}, handler.ActionPublicHandler))
+	mux.HandleFunc("/api/v1/ai/actions", handler.RequireAnyRoleForWrite([]string{"admin", "approver"}, handler.ActionPublicHandler))
 	// P10 (V9.3 Phase 10)：/api/v1/ai/runs 由 query-api 作为 Run 持久化 owner 处理。
 	// POST=创建（JWT 鉴权 + 写 outbox 可靠派发），GET=列表（当前 tenant）。不再代理到 orchestrator。
 	mux.HandleFunc("/api/v1/ai/runs", func(w http.ResponseWriter, r *http.Request) {

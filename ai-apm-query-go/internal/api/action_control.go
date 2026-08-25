@@ -33,8 +33,17 @@ func (h *Handler) ActionPublicHandler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	rest := strings.TrimPrefix(path, actionExecPrefix)
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	// /api/v1/ai/actions/{id}/decision
+	if len(parts) == 2 && parts[1] == "decision" && r.Method == http.MethodPost {
+		h.decideActionPublic(w, r, parts[0])
+		return
+	}
 	// /api/v1/ai/actions/{id}/execute
 	if len(parts) == 2 && parts[1] == "execute" && r.Method == http.MethodPost {
+		if !hasRole(r, "admin") {
+			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+			return
+		}
 		h.executeActionPublic(w, r, parts[0])
 		return
 	}
@@ -63,25 +72,25 @@ func (h *Handler) getActionPublic(w http.ResponseWriter, r *http.Request, action
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"action_id":         action.ActionID,
-		"run_id":            action.RunID,
-		"tenant_id":         action.TenantID,
-		"cluster_id":        action.ClusterID,
-		"action_type":       action.ActionType,
-		"action_hash":       action.ActionHash,
-		"idempotency_key":   action.IdempotencyKey,
-		"proposed_risk":     action.ProposedRisk,
+		"action_id":          action.ActionID,
+		"run_id":             action.RunID,
+		"tenant_id":          action.TenantID,
+		"cluster_id":         action.ClusterID,
+		"action_type":        action.ActionType,
+		"action_hash":        action.ActionHash,
+		"idempotency_key":    action.IdempotencyKey,
+		"proposed_risk":      action.ProposedRisk,
 		"authoritative_risk": action.AuthoritativeRisk,
-		"status":            action.Status,
-		"dry_run":           action.DryRun,
-		"target_name":       action.TargetName,
-		"target_uid":        action.TargetUID,
-		"resource_version":  action.ResourceVersion,
-		"namespace":         action.Namespace,
-		"operation":         action.Operation,
-		"execution_status":  action.ExecutionStatus,
-		"error_code":        action.ErrorCode,
-		"result":            json.RawMessage(action.Result),
+		"status":             action.Status,
+		"dry_run":            action.DryRun,
+		"target_name":        action.TargetName,
+		"target_uid":         action.TargetUID,
+		"resource_version":   action.ResourceVersion,
+		"namespace":          action.Namespace,
+		"operation":          action.Operation,
+		"execution_status":   action.ExecutionStatus,
+		"error_code":         action.ErrorCode,
+		"result":             json.RawMessage(action.Result),
 	})
 }
 
@@ -117,8 +126,8 @@ func (h *Handler) executeActionPublic(w http.ResponseWriter, r *http.Request, ac
 	result, execErr := h.executeApprovedAction(action, approval)
 	if execErr != nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"error":    contract.ErrorCodeExecutorUnavailable,
-			"message":  execErr.Error(),
+			"error":     contract.ErrorCodeExecutorUnavailable,
+			"message":   execErr.Error(),
 			"action_id": actionID,
 		})
 		return

@@ -532,6 +532,40 @@ func (h *Handler) RequireRoleForWrite(role string, next http.HandlerFunc) http.H
 	}
 }
 
+// RequireAnyRoleForWrite protects mutating endpoints that have more than one
+// canonical operator role (for example action approval: admin or approver).
+// The role check always reads the MySQL authority table and fails closed.
+func (h *Handler) RequireAnyRoleForWrite(roles []string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			next(w, r)
+			return
+		}
+		if !hasAnyRole(r, roles) {
+			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func hasAnyRole(r *http.Request, roles []string) bool {
+	authCtx, ok := requestAuthorizationContext(r)
+	if !ok || authCtx.UserID == "" || store.GetDB() == nil {
+		return false
+	}
+	u, err := (&store.UserDAO{}).GetByUUID(authCtx.UserID)
+	if err != nil || u == nil || u.Status != 1 {
+		return false
+	}
+	for _, role := range roles {
+		if strings.TrimSpace(role) != "" && u.Role == role {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Token 撤销（G1 安全加固）──
 // revokedTokens 按原始 JWT 字符串撤销（登出/单 token 失效）；
 // revokedUsers 按用户名撤销（删除/禁用用户后其全部 token 立即失效）。

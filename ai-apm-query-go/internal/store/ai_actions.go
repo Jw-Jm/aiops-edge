@@ -19,6 +19,12 @@ type AIAction struct {
 	ClusterID         string
 	ActionType        string
 	ActionHash        string
+	HashSchemaVersion int
+	ActionVersion     int64
+	ProposedBy        string
+	PolicyVersion     string
+	PreflightStatus   string
+	TargetResourceType string
 	IdempotencyKey    string
 	ProposedRisk      string
 	AuthoritativeRisk string
@@ -52,14 +58,27 @@ func (d *AIActionDAO) Create(a AIAction) (bool, error) {
 	if !a.DryRun {
 		dryRun = 0
 	}
+	hashSchemaVersion := a.HashSchemaVersion
+	if hashSchemaVersion == 0 {
+		hashSchemaVersion = 1
+	}
+	actionVersion := a.ActionVersion
+	if actionVersion == 0 {
+		actionVersion = 1
+	}
+	policyVersion := firstNonEmptyStr2(a.PolicyVersion, "action-policy-v1")
+	preflightStatus := firstNonEmptyStr2(a.PreflightStatus, "unresolved")
+	resourceType := firstNonEmptyStr2(a.TargetResourceType, "deployment")
 	_, err := conn.Exec(
 		`INSERT INTO ai_actions (action_id, run_id, tenant_id, cluster_id, action_type,
-		   action_hash, idempotency_key, proposed_risk, authoritative_risk, status, dry_run,
-		   target_name, target_uid, resource_version, namespace, operation, execution_status,
-		   params_json, result_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   action_hash, hash_schema_version, action_version, proposed_by, policy_version,
+		   preflight_status, target_resource_type, idempotency_key, proposed_risk,
+		   authoritative_risk, status, dry_run, target_name, target_uid, resource_version,
+		   namespace, operation, execution_status, params_json, result_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ActionID, a.RunID, a.TenantID, a.ClusterID, a.ActionType, a.ActionHash,
-		a.IdempotencyKey, firstNonEmptyStr2(a.ProposedRisk, "R0"), firstNonEmptyStr2(a.AuthoritativeRisk, "R0"),
+		hashSchemaVersion, actionVersion, nullableStr(a.ProposedBy), policyVersion, preflightStatus,
+		resourceType, a.IdempotencyKey, firstNonEmptyStr2(a.ProposedRisk, "R0"), firstNonEmptyStr2(a.AuthoritativeRisk, "R0"),
 		firstNonEmptyStr2(a.Status, "proposed"), dryRun,
 		a.TargetName, a.TargetUID, a.ResourceVersion, a.Namespace, a.Operation,
 		firstNonEmptyStr2(a.ExecutionStatus, "proposed"),

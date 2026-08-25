@@ -78,6 +78,35 @@ func TestRequireRoleForWrite(t *testing.T) {
 	}
 }
 
+func TestRequireAnyRoleForWriteAcceptsApprover(t *testing.T) {
+	h := &Handler{}
+	called := false
+	next := func(w http.ResponseWriter, r *http.Request) { called = true }
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	prev := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(prev) })
+	mock.ExpectQuery("SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE user_uuid = \\\\?").
+		WithArgs("approver-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "username", "password_hash", "display_name", "role", "email", "status", "scope", "is_approver", "created_at"}).
+			AddRow(1, "approver-1", "approver", "x", "Approver", "approver", "", 1, "", 1, time.Now()))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/actions/a1/decision", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "approver-1", TenantID: "tenant-1"})
+	rec := httptest.NewRecorder()
+	h.RequireAnyRoleForWrite([]string{"admin", "approver"}, next)(rec, req)
+	if rec.Code == http.StatusForbidden || !called {
+		t.Fatalf("approver should be accepted: status=%d called=%v", rec.Code, called)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestIsCanonicalProtectedRouteQueryEndpoints 验证 P12 AUTH 修复：只读查询端点纳入
 // canonical-protected route（消除 legacy 端点一律 403 的 AUTH BLOCKER），写端点保持 fail-closed。
 func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
