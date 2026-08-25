@@ -42,6 +42,12 @@ const (
 	ErrorCodeClaimIDExpired     = "CLAIM_ID_EXPIRED"
 	ErrorCodeToolLeaseLost      = "TOOL_LEASE_LOST"
 	ErrorCodeToolResultStale    = "TOOL_RESULT_STALE"
+	// Stage D 接线（报告 §29）：executor 执行结果状态机。
+	ErrorCodeActionNotApproved      = "ACTION_NOT_APPROVED"      // action 未 approved，拒绝执行
+	ErrorCodeActionAlreadyExecuted  = "ACTION_ALREADY_EXECUTED"  // durable idempotency：已执行过
+	ErrorCodeExecutorRejected       = "EXECUTOR_REJECTED"        // executor 拒绝（含 disabled 403）
+	ErrorCodeExecutionUnknown       = "EXECUTION_UNKNOWN"        // 外部 mutation 状态未知，需 reconcile
+	ErrorCodeExecutorUnavailable    = "EXECUTOR_UNAVAILABLE"     // executor 不可达
 )
 
 // HTTPStatusCode maps a unified error code to its canonical V9.2 §58 HTTP status.

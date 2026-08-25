@@ -67,6 +67,19 @@ spec:
             - name: QUERY_TO_ORCHESTRATOR_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
+            # Stage D 接线（报告 §29）：query-api 是 ai-action-executor 的唯一调用方。
+            # AI_ACTION_EXECUTOR_URL 指向 executor 服务；signed context 用独立
+            # AI_ACTION_EXECUTOR_SIGNING_KEY 签发（不复用 QUERY_TO_ORCHESTRATOR_SIGNING_KEY），
+            # executor 持对应公钥（EXECUTOR_VERIFY_KEYS）验签。
+            # 未配置时 action 执行端点 fail-closed（EXECUTOR_UNAVAILABLE）。
+            - name: AI_ACTION_EXECUTOR_URL
+              value: {{ .Values.queryApi.actionExecutorUrl | default "http://ai-action-executor:8080" | quote }}
+            - name: AI_ACTION_EXECUTOR_SIGNING_KEY
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: AI_ACTION_EXECUTOR_SIGNING_KEY }
+            - name: EXECUTOR_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: EXECUTOR_TOKEN }
             - name: MYSQL_HOST
               value: {{ .Values.queryApi.mysqlHost | default "mysql" | quote }}
             - name: MYSQL_PORT

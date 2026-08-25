@@ -643,6 +643,12 @@ func isCanonicalProtectedRoute(path string) bool {
 	if strings.HasPrefix(path, "/api/v1/ai/runs/") && strings.HasSuffix(path, "/tools") {
 		return true
 	}
+	// Stage D 接线：/api/v1/ai/actions/{id}(/execute)——action 详情/执行端点。
+	// canonical 鉴权（JWT + tenant 成员）由 AuthMiddleware 完成；POST execute 需 admin
+	// （RequireRoleForWrite 在 main.go 注册时套用）。handler 内部再做 action tenant 归属校验。
+	if strings.HasPrefix(path, "/api/v1/ai/actions") {
+		return true
+	}
 	// A0-04（11.11.4）：/api/v1/metrics/query——typed RED metrics（带 service + concrete
 	// canonical cluster），QueryMetrics 已改为 canonical tenant + concrete cluster fail-closed；
 	// 任意 PromQL 直通已关闭（无 service → 400），不构成任意 PromQL 透传面。

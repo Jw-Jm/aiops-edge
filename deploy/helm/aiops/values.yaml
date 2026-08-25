@@ -91,6 +91,12 @@ secrets:
   queryToOrchestratorToken: ""
   queryToOrchestratorSigningKey: ""        # Ed25519 private key, raw 32-byte, base64 (signer: query-api only)
   queryToOrchestratorVerifyKeys: ""        # Ed25519 public key(s), base64, comma-separated (verifier: orchestrator only)
+  # ── Stage D: ai-action-executor (报告 §29) ──
+  # query-api → executor 方向：EXECUTOR_TOKEN 为共享 token（disabled 时 executor 兜底校验）；
+  # aiActionExecutorSigningKey 为 query-api 签发 signed ActionExecutionContext 的 Ed25519 私钥
+  # （executor 持对应公钥 EXECUTOR_VERIFY_KEYS 验签，仅 realMutation=true 时强制）。
+  executorToken: ""
+  aiActionExecutorSigningKey: ""           # Ed25519 private key, base64 (signer: query-api only)
 
 # ---------------------------------------------------------------------------
 # 中间件：enabled=true 由 Chart 内部拉起；enabled=false 走 external 复用已有实例

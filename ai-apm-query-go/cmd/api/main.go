@@ -122,6 +122,19 @@ func main() {
 	} else {
 		api.ConfigureRunInvocationIssuer(issuer)
 	}
+	// Stage D 接线（报告 §29）：query-api → ai-action-executor 客户端。
+	// 用独立 Ed25519 私钥（AI_ACTION_EXECUTOR_SIGNING_KEY）签发 signed ActionExecutionContext，
+	// 避免复用 QUERY_TO_ORCHESTRATOR_SIGNING_KEY（那会同时改变 RunInvocation issuer 行为）。
+	// executor 持对应公钥（EXECUTOR_VERIFY_KEYS）验签。
+	// 未配置 AI_ACTION_EXECUTOR_URL 或签名私钥时执行端点 fail-closed（EXECUTOR_UNAVAILABLE），
+	// 不产生未签名/不可达的静默执行。
+	if err := api.ConfigureActionExecutionClient(
+		os.Getenv("AI_ACTION_EXECUTOR_URL"),
+		os.Getenv("AI_ACTION_EXECUTOR_SIGNING_KEY"),
+		os.Getenv("EXECUTOR_TOKEN"),
+	); err != nil {
+		log.Printf("ai-action-executor client disabled (Stage D execute endpoint fail-closed): %v", err)
+	}
 	if vmURL := os.Getenv("VICTORIA_METRICS_URL"); vmURL != "" {
 		handler.SetVMURL(vmURL)
 	}
@@ -293,6 +306,10 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/runs/{runID}", handler.GetRunPublic)
 	// C2-4：公共 Run Tool activity（真实 ai_tool_runs，不推断冒充）→ 只读工具执行事实。
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/tools", handler.GetRunToolsPublic)
+	// Stage D 接线（报告 §29）：公共 action 执行端点（GET 详情放行；POST execute 需 admin）。
+	// GET /api/v1/ai/actions/{id} → 详情；POST /api/v1/ai/actions/{id}/execute → 经 executor 执行。
+	mux.HandleFunc("/api/v1/ai/actions/", handler.RequireRoleForWrite("admin", handler.ActionPublicHandler))
+	mux.HandleFunc("/api/v1/ai/actions", handler.RequireRoleForWrite("admin", handler.ActionPublicHandler))
 	// P10 (V9.3 Phase 10)：/api/v1/ai/runs 由 query-api 作为 Run 持久化 owner 处理。
 	// POST=创建（JWT 鉴权 + 写 outbox 可靠派发），GET=列表（当前 tenant）。不再代理到 orchestrator。
 	mux.HandleFunc("/api/v1/ai/runs", func(w http.ResponseWriter, r *http.Request) {

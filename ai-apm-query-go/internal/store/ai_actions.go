@@ -26,8 +26,17 @@ type AIAction struct {
 	DryRun            bool
 	Params            []byte
 	Result            []byte
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// Stage D 接线（0007）：executor 执行字段。
+	TargetName       string
+	TargetUID        string
+	ResourceVersion  string
+	Namespace        string
+	Operation        string
+	ExecutionStatus  string
+	ExecutedAt       *time.Time
+	ErrorCode        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // AIActionDAO 访问 ai_actions 表。
@@ -46,11 +55,15 @@ func (d *AIActionDAO) Create(a AIAction) (bool, error) {
 	_, err := conn.Exec(
 		`INSERT INTO ai_actions (action_id, run_id, tenant_id, cluster_id, action_type,
 		   action_hash, idempotency_key, proposed_risk, authoritative_risk, status, dry_run,
+		   target_name, target_uid, resource_version, namespace, operation, execution_status,
 		   params_json, result_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ActionID, a.RunID, a.TenantID, a.ClusterID, a.ActionType, a.ActionHash,
 		a.IdempotencyKey, firstNonEmptyStr2(a.ProposedRisk, "R0"), firstNonEmptyStr2(a.AuthoritativeRisk, "R0"),
-		firstNonEmptyStr2(a.Status, "proposed"), dryRun, a.Params, a.Result, time.Now(), time.Now(),
+		firstNonEmptyStr2(a.Status, "proposed"), dryRun,
+		a.TargetName, a.TargetUID, a.ResourceVersion, a.Namespace, a.Operation,
+		firstNonEmptyStr2(a.ExecutionStatus, "proposed"),
+		a.Params, a.Result, time.Now(), time.Now(),
 	)
 	if err != nil {
 		if isDuplicateKey(err) {
@@ -79,7 +92,8 @@ func (d *AIActionDAO) ListByRunTx(tx *sql.Tx, runID string) ([]AIAction, error) 
 	rows, err := tx.Query(
 		`SELECT action_id, run_id, tenant_id, cluster_id, action_type, action_hash,
 		   idempotency_key, proposed_risk, authoritative_risk, status, dry_run,
-		   params_json, result_json, created_at, updated_at
+		   target_name, target_uid, resource_version, namespace, operation, execution_status,
+		   params_json, result_json, executed_at, error_code, created_at, updated_at
 		 FROM ai_actions WHERE run_id = ? ORDER BY created_at ASC`, runID)
 	if err != nil {
 		return nil, err
@@ -89,12 +103,19 @@ func (d *AIActionDAO) ListByRunTx(tx *sql.Tx, runID string) ([]AIAction, error) 
 	for rows.Next() {
 		var a AIAction
 		var dryRun int
+		var executedAt sql.NullTime
 		if err := rows.Scan(&a.ActionID, &a.RunID, &a.TenantID, &a.ClusterID, &a.ActionType,
 			&a.ActionHash, &a.IdempotencyKey, &a.ProposedRisk, &a.AuthoritativeRisk,
-			&a.Status, &dryRun, &a.Params, &a.Result, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.Status, &dryRun, &a.TargetName, &a.TargetUID, &a.ResourceVersion, &a.Namespace,
+			&a.Operation, &a.ExecutionStatus, &a.Params, &a.Result, &executedAt, &a.ErrorCode,
+			&a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		a.DryRun = dryRun == 1
+		if executedAt.Valid {
+			t := executedAt.Time
+			a.ExecutedAt = &t
+		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -109,7 +130,8 @@ func (d *AIActionDAO) ListByRun(runID string) ([]AIAction, error) {
 	rows, err := conn.Query(
 		`SELECT action_id, run_id, tenant_id, cluster_id, action_type, action_hash,
 		   idempotency_key, proposed_risk, authoritative_risk, status, dry_run,
-		   params_json, result_json, created_at, updated_at
+		   target_name, target_uid, resource_version, namespace, operation, execution_status,
+		   params_json, result_json, executed_at, error_code, created_at, updated_at
 		 FROM ai_actions WHERE run_id = ? ORDER BY created_at ASC`, runID)
 	if err != nil {
 		return nil, err
@@ -119,15 +141,72 @@ func (d *AIActionDAO) ListByRun(runID string) ([]AIAction, error) {
 	for rows.Next() {
 		var a AIAction
 		var dryRun int
+		var executedAt sql.NullTime
 		if err := rows.Scan(&a.ActionID, &a.RunID, &a.TenantID, &a.ClusterID, &a.ActionType,
 			&a.ActionHash, &a.IdempotencyKey, &a.ProposedRisk, &a.AuthoritativeRisk,
-			&a.Status, &dryRun, &a.Params, &a.Result, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.Status, &dryRun, &a.TargetName, &a.TargetUID, &a.ResourceVersion, &a.Namespace,
+			&a.Operation, &a.ExecutionStatus, &a.Params, &a.Result, &executedAt, &a.ErrorCode,
+			&a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		a.DryRun = dryRun == 1
+		if executedAt.Valid {
+			t := executedAt.Time
+			a.ExecutedAt = &t
+		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// GetByID 按 action_id 读取单个 Action（含 executor 执行字段）。
+func (d *AIActionDAO) GetByID(actionID string) (*AIAction, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	var a AIAction
+	var dryRun int
+	var executedAt sql.NullTime
+	err := conn.QueryRow(
+		`SELECT action_id, run_id, tenant_id, cluster_id, action_type, action_hash,
+		   idempotency_key, proposed_risk, authoritative_risk, status, dry_run,
+		   target_name, target_uid, resource_version, namespace, operation, execution_status,
+		   params_json, result_json, executed_at, error_code, created_at, updated_at
+		 FROM ai_actions WHERE action_id = ?`, actionID).
+		Scan(&a.ActionID, &a.RunID, &a.TenantID, &a.ClusterID, &a.ActionType,
+			&a.ActionHash, &a.IdempotencyKey, &a.ProposedRisk, &a.AuthoritativeRisk,
+			&a.Status, &dryRun, &a.TargetName, &a.TargetUID, &a.ResourceVersion, &a.Namespace,
+			&a.Operation, &a.ExecutionStatus, &a.Params, &a.Result, &executedAt, &a.ErrorCode,
+			&a.CreatedAt, &a.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	a.DryRun = dryRun == 1
+	if executedAt.Valid {
+		t := executedAt.Time
+		a.ExecutedAt = &t
+	}
+	return &a, nil
+}
+
+// UpdateExecution 持久化 executor 执行结果（durable idempotency，报告 §29）。
+// 仅更新 execution_status/result_json/executed_at/error_code，不触碰 immutable 字段。
+func (d *AIActionDAO) UpdateExecution(actionID, executionStatus string, result []byte, errorCode string) error {
+	conn := GetDB()
+	if conn == nil {
+		return errors.New("mysql unavailable")
+	}
+	now := time.Now()
+	_, err := conn.Exec(
+		`UPDATE ai_actions SET execution_status = ?, result_json = ?, error_code = ?,
+		   executed_at = ?, updated_at = ? WHERE action_id = ? AND execution_status NOT IN ('success','failed','rejected','rollback_required')`,
+		executionStatus, result, errorCode, now, now, actionID,
+	)
+	return err
 }
 
 func firstNonEmptyStr2(vals ...string) string {

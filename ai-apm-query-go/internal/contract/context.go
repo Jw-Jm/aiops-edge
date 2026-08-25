@@ -396,3 +396,58 @@ func (result ToolResult) Validate() error {
 	}
 	return nil
 }
+
+// ActionExecutionContext 是 query-api → ai-action-executor 的执行上下文（Stage D，报告 §29）。
+//
+// 安全边界：Action Execution Result 权威持久化在 query-api/MySQL（ai_actions），
+// ai-action-executor 不是第二套 Action SoT。query-api 用自身 Ed25519 私钥
+// （QUERY_TO_ORCHESTRATOR_SIGNING_KEY）按 executor 的签名机制（Ed25519 over body
+// SHA256，X-Executor-Signature header）签发，executor 持对应公钥（EXECUTOR_VERIFY_KEYS）验签。
+//
+// 字段与 ai-action-executor 的 ActionExecutionContext JSON 严格对应（action_id /
+// action_hash / approval_id / target_uid / target_name / resource_version / cluster_id /
+// namespace / operation / target_spec / credential_ref / approved_at / executed_by）。
+type ActionExecutionContext struct {
+	ActionID        string          `json:"action_id"`          // 绑定 immutable action 身份
+	ActionHash      string          `json:"action_hash"`        // 绑定 immutable action
+	ApprovalID      string          `json:"approval_id"`
+	TargetUID       string          `json:"target_uid"`         // 执行前重新读取校验（TOCTOU）
+	TargetName      string          `json:"target_name"`        // K8s lookup 用
+	ResourceVersion string          `json:"resource_version"`   // TOCTOU precondition
+	ClusterID       string          `json:"cluster_id"`
+	Namespace       string          `json:"namespace"`
+	Operation       string          `json:"operation"`          // patch/scale/restart（白名单）
+	TargetSpec      json.RawMessage `json:"target_spec"`
+	CredentialRef   string          `json:"credential_ref"`
+	ApprovedAt      string          `json:"approved_at"`
+	ExecutedBy      string          `json:"executed_by"`
+}
+
+// ActionResult 是 executor 返回的执行结果（回写 ai_actions，非本服务 SoT）。
+type ActionResult struct {
+	ActionID        string `json:"action_id"`
+	Status          string `json:"status"` // success | failed | execution_unknown | rejected | rollback_required
+	ObservedUID     string `json:"observed_uid"`
+	ObservedVersion string `json:"observed_version"`
+	Message         string `json:"message"`
+	ExecutedAt      string `json:"executed_at"`
+}
+
+// Validate 校验 ActionExecutionContext 的必填安全字段。
+func (c ActionExecutionContext) Validate() error {
+	if c.ActionID == "" || c.ActionHash == "" || c.TargetUID == "" {
+		return errors.New("action_id, action_hash and target_uid are required")
+	}
+	if c.TargetName == "" {
+		return errors.New("target_name is required")
+	}
+	if c.Operation == "" {
+		return errors.New("operation is required")
+	}
+	switch c.Operation {
+	case "patch", "scale", "restart":
+	default:
+		return fmt.Errorf("unsupported operation %q (allowed: patch|scale|restart)", c.Operation)
+	}
+	return nil
+}
