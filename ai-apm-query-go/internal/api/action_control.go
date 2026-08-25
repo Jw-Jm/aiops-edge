@@ -86,7 +86,7 @@ func (h *Handler) listActionsPublic(w http.ResponseWriter, r *http.Request) {
 	query := `SELECT action_id, run_id, cluster_id, action_type, action_hash, hash_schema_version,
 		action_version, proposed_by, policy_version, preflight_status, target_resource_type,
 		status, dry_run, target_name, target_uid, resource_version, namespace, operation,
-		execution_status, error_code, created_at, updated_at
+		execution_status, error_code, params_json, created_at, updated_at
 		FROM ai_actions WHERE tenant_id = ?`
 	args := []interface{}{authCtx.TenantID}
 	if status != "" {
@@ -108,10 +108,11 @@ func (h *Handler) listActionsPublic(w http.ResponseWriter, r *http.Request) {
 		var actionVersion int64
 		var hashSchema, dryRun int
 		var statusValue, targetName, targetUID, resourceVersion, namespace, operation, executionStatus, errorCode string
+		var paramsJSON []byte
 		var createdAt, updatedAt interface{}
 		if err := rows.Scan(&actionID, &runID, &clusterID, &actionType, &hash, &hashSchema, &actionVersion,
 			&proposedBy, &policy, &preflight, &resourceType, &statusValue, &dryRun, &targetName, &targetUID,
-			&resourceVersion, &namespace, &operation, &executionStatus, &errorCode, &createdAt, &updatedAt); err != nil {
+			&resourceVersion, &namespace, &operation, &executionStatus, &errorCode, &paramsJSON, &createdAt, &updatedAt); err != nil {
 			respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "action_read_failed"})
 			return
 		}
@@ -122,7 +123,7 @@ func (h *Handler) listActionsPublic(w http.ResponseWriter, r *http.Request) {
 			"target_resource_type": resourceType, "status": statusValue, "dry_run": dryRun != 0,
 			"target_name": targetName, "target_uid": targetUID, "resource_version": resourceVersion,
 			"namespace": namespace, "operation": operation, "execution_status": executionStatus,
-			"error_code": errorCode, "created_at": createdAt, "updated_at": updatedAt,
+			"error_code": errorCode, "params": json.RawMessage(paramsJSON), "created_at": createdAt, "updated_at": updatedAt,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -165,6 +166,7 @@ func (h *Handler) getActionPublic(w http.ResponseWriter, r *http.Request, action
 		"resource_version":   action.ResourceVersion,
 		"namespace":          action.Namespace,
 		"operation":          action.Operation,
+		"params":             json.RawMessage(action.Params),
 		"execution_status":   action.ExecutionStatus,
 		"error_code":         action.ErrorCode,
 		"result":             json.RawMessage(action.Result),

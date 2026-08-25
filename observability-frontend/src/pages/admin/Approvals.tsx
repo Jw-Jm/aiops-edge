@@ -212,6 +212,15 @@ const Approvals: React.FC = () => {
   const renderDetail = () => {
     if (!detail) return null
     const rv = riskStars(detail.risk_score)
+    const canonicalFields = [
+      ['目标 UID', detail.target_uid],
+      ['ResourceVersion', detail.resource_version],
+      ['Action hash', detail.action_hash],
+      ['Hash schema', detail.hash_schema_version],
+      ['Action version', detail.action_version],
+      ['Policy version', detail.policy_version],
+      ['Preflight', detail.preflight_status],
+    ].filter(([, value]) => value !== undefined && value !== null && value !== '')
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <Space wrap size={16}>
@@ -220,6 +229,18 @@ const Approvals: React.FC = () => {
           <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>服务：{detail.service || '—'}</span>
           <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>创建：{fmtTime(detail.created_at)}</span>
         </Space>
+        <div data-testid="canonical-action-fields" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+          {canonicalFields.map(([label, value]) => (
+            <div key={label as string} style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>{label}</div>
+              <code style={{ display: 'block', overflowWrap: 'anywhere', fontSize: 12 }}>{String(value)}</code>
+            </div>
+          ))}
+        </div>
+        <div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>规范化参数</div>
+          <pre data-testid="canonical-action-params" style={codeBlockStyle}>{JSON.stringify(detail.params ?? {}, null, 2)}</pre>
+        </div>
 
         <div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>风险等级</div>
@@ -299,7 +320,7 @@ const Approvals: React.FC = () => {
 
       {/* 批准二次确认：显式展示将执行的命令 + 风险说明 */}
       <Modal title="批准执行确认" open={!!approveTarget} onCancel={() => setApproveTarget(null)}
-        okText="确认批准执行" cancelText="取消" width={640} destroyOnClose
+        okText="确认批准执行" cancelText="取消" width={640} destroyOnHidden
         okButtonProps={{ loading: acting, style: { background: 'var(--success)', borderColor: 'var(--success)' } }}
         onOk={doApprove}>
         <Alert type="warning" showIcon style={{ marginBottom: 14 }}
@@ -324,14 +345,14 @@ const Approvals: React.FC = () => {
       {/* 驳回二次确认 + 可选原因（写入审计） */}
       <Modal title="驳回确认" open={!!rejectTarget}
         onCancel={() => { setRejectTarget(null); setRejectReason('') }}
-        okText="确认驳回" cancelText="取消" destroyOnClose
+        okText="确认驳回" cancelText="取消" destroyOnHidden
         okButtonProps={{ danger: true, loading: acting }}
         onOk={doReject}>
         <Alert type="info" showIcon style={{ marginBottom: 14 }}
           message="驳回后该环境操作将不会执行，记录将留痕。" />
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>将驳回的命令</div>
         <pre style={codeBlockStyle}>{rejectTarget?.script || '（无命令）'}</pre>
-        <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>驳回原因（可选，写入审计）</div>
+        <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>驳回原因（必填，写入审计）</div>
         <Input.TextArea rows={3} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)}
           placeholder="如：命令风险过高 / 已通过其他方式处理 / 误告警…"
           maxLength={500} showCount />

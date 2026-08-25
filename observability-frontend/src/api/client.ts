@@ -149,6 +149,7 @@ export interface ActionProjection {
   namespace: string
   operation: string
   execution_status: string
+  params?: Record<string, unknown>
   error_code?: string
   created_at?: string
   updated_at?: string

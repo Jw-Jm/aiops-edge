@@ -13,6 +13,6 @@ test-orchestrator:
 	cd ai-orchestrator && ./.venv314/bin/python -m pytest tests -q
 
 test-frontend:
-	cd observability-frontend && npm run build
+	cd observability-frontend && npm run test:run && npm run build
 
 test-workflow-all: test-workflow-contract test-query-go test-executor test-orchestrator test-frontend

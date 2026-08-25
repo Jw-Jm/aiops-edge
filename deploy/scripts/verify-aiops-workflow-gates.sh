@@ -26,8 +26,8 @@ echo "[G1-G3] Orchestrator tests"
 echo "[G5] Action executor tests"
 (cd ai-action-executor && go test ./... -count=1)
 
-echo "[G4] Frontend build"
-(cd observability-frontend && npm run build)
+echo "[G4] Frontend tests and build"
+(cd observability-frontend && npm run test:run && npm run build)
 
 if command -v helm >/dev/null 2>&1; then
   echo "[G5] Helm render and mutation/RBAC checks"

@@ -429,7 +429,7 @@ git commit -m "feat: add canonical action approval command"
 - Consumes: pending `ai_action_outbox` rows and stored approved Action V2.
 - Produces: one signed `ActionExecutionContext`, one durable Attempt, Action execution status and legal Run progression. The public `/execute` endpoint becomes enqueue/status semantics and never directly crosses the mutation boundary.
 
-- [ ] **Step 1: Write a lost-response dispatcher test**
+- [x] **Step 1: Write a lost-response dispatcher test**
 
 ```go
 func TestActionDispatchLostResponseLeavesUnknownAndDoesNotRedeliverMutation(t *testing.T) {
@@ -442,23 +442,23 @@ func TestActionDispatchLostResponseLeavesUnknownAndDoesNotRedeliverMutation(t *t
 }
 ```
 
-- [ ] **Step 2: Run the test and confirm the action dispatcher is absent**
+- [x] **Step 2: Run the test and confirm the action dispatcher is absent**
 
 Run: `cd ai-apm-query-go && go test ./internal/api -run ActionDispatch -count=1`
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement outbox claim fencing matching Run dispatch semantics**
+- [x] **Step 3: Implement outbox claim fencing matching Run dispatch semantics**
 
 `AIActionOutboxDAO` exposes `ScanPending(limit)`, `Claim(commandID, owner, lease)`, `Deliver(commandID, fence)` and `Retry(commandID, fence, nextRetry)`. `Deliver` and `Retry` must require owner, epoch and token hash from the current claim.
 
-- [ ] **Step 4: Persist Attempt before executor I/O**
+- [x] **Step 4: Persist Attempt before executor I/O**
 
 Create the Attempt with `attempt_id=command_id`, `idempotency_key=action_id:action_version`, stored action hash and the exact signed request digest. A duplicate Attempt never calls Executor; it routes to Task 5 reconciliation.
 
 Before signing, rebuild `CanonicalActionPayloadV2` from the locked Action row and require the recomputed hash to equal `action.ActionHash`. Pass parameters as `json.RawMessage(action.Params)`; do not `json.Marshal([]byte)` because that produces a base64 JSON string instead of the immutable object specification.
 
-- [ ] **Step 5: Map executor outcomes to Action and Run state**
+- [x] **Step 5: Map executor outcomes to Action and Run state**
 
 ```text
 success           -> Action success           -> Run executing -> verifying
@@ -470,21 +470,21 @@ timeout/no response/execution_unknown -> Action execution_unknown; Run stays exe
 
 Each update appends a deterministic Run event in the same database transaction. Never transition Run to success directly from execution.
 
-- [ ] **Step 6: Change `/execute` to an idempotent compatibility endpoint**
+- [x] **Step 6: Change `/execute` to an idempotent compatibility endpoint**
 
 If approved and no command exists, enqueue it. If a command exists, return current Action/Attempt status. Add `Deprecation: true` and `Sunset` response headers. Remove the synchronous `executeApprovedAction` call from the HTTP handler.
 
-- [ ] **Step 7: Start `RunActionDispatchLoop` only in the Query API dispatch role**
+- [x] **Step 7: Start `RunActionDispatchLoop` only in the Query API dispatch role**
 
 Use the same application context cancellation and shutdown behavior as `RunDispatchLoop`. Expose queue depth and oldest pending age metrics.
 
-- [ ] **Step 8: Run focused tests**
+- [x] **Step 8: Run focused tests**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/store -run 'ActionDispatch|ActionAttempt|ActionPublic' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit durable Action dispatch**
+- [x] **Step 9: Commit durable Action dispatch**
 
 ```bash
 git add ai-apm-query-go
@@ -508,7 +508,7 @@ git commit -m "feat: dispatch approved actions durably"
 - Consumes: a signed immutable `ActionReconcileContext` and an `execution_unknown` Attempt.
 - Produces: exactly one of `applied`, `not_applied`, `drift`, `unknown`; a durable reconciliation row; and a legal Action/Run transition.
 
-- [ ] **Step 1: Add executor tests for all four reconciliation outcomes**
+- [x] **Step 1: Add executor tests for all four reconciliation outcomes**
 
 ```go
 func TestReconcileScaleApplied(t *testing.T) {
@@ -520,13 +520,13 @@ func TestReconcileScaleApplied(t *testing.T) {
 
 Add cases for replicas unchanged (`not_applied`), UID changed (`drift`) and Kubernetes GET failure (`unknown`).
 
-- [ ] **Step 2: Run tests and confirm the current synthetic result**
+- [x] **Step 2: Run tests and confirm the current synthetic result**
 
 Run: `cd ai-action-executor && go test ./... -run Reconcile -count=1`
 
 Expected: FAIL because the handler returns `reconciled` without reading the target.
 
-- [ ] **Step 3: Define and validate the signed reconcile context**
+- [x] **Step 3: Define and validate the signed reconcile context**
 
 ```go
 type ActionReconcileContext struct {
@@ -544,15 +544,15 @@ type ActionReconcileContext struct {
 
 Require all identity fields. Allow only `patch` and `scale`.
 
-- [ ] **Step 4: Implement real GET and operation-specific comparison**
+- [x] **Step 4: Implement real GET and operation-specific comparison**
 
 For `scale`, compare `spec.replicas`. For the controlled `patch`, compare the exact executor-owned annotation. UID mismatch is `drift`; transport/decode/RBAC errors are `unknown`. Include observed UID/resourceVersion/object digest in the response, not the full Secret-bearing object.
 
-- [ ] **Step 5: Remove both false-reconciled fallbacks**
+- [x] **Step 5: Remove both false-reconciled fallbacks**
 
 Delete the Executor's constant `reconciled` response and change Query API's non-JSON mapping from `reconciled` to `unknown` with `EXECUTOR_INVALID_RESPONSE`.
 
-- [ ] **Step 6: Persist reconciliation before changing Action state**
+- [x] **Step 6: Persist reconciliation before changing Action state**
 
 `ActionReconciler` inserts `ai_action_reconciliations`; exact duplicate attempt returns the stored result. Map outcomes:
 
@@ -563,7 +563,7 @@ drift       -> Action rejected -> Run failed
 unknown     -> keep Action execution_unknown and Run executing; retry with bounded backoff
 ```
 
-- [ ] **Step 7: Run Query API and Executor tests**
+- [x] **Step 7: Run Query API and Executor tests**
 
 Run: `cd ai-action-executor && go test ./... -count=1`
 
@@ -571,7 +571,7 @@ Run: `cd ai-apm-query-go && go test ./internal/contract ./internal/api ./interna
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit real reconciliation**
+- [x] **Step 8: Commit real reconciliation**
 
 ```bash
 git add ai-action-executor ai-apm-query-go
@@ -596,7 +596,7 @@ git commit -m "fix: reconcile unknown actions from real target state"
 - Consumes: a Run in `verifying`, a successful immutable Action and frozen before-window references.
 - Produces: durable Verification with `passed|failed|regressed|inconclusive`; atomic Run terminal commit and events.
 
-- [ ] **Step 1: Add failing tests for truthful verification mapping**
+- [x] **Step 1: Add failing tests for truthful verification mapping**
 
 ```python
 @pytest.mark.asyncio
@@ -608,29 +608,29 @@ async def test_regressed_verification_commits_regressed():
 
 Add `passed -> success`, failed observer -> `partial` or `failed` by policy, and missing post-window -> `inconclusive` without success.
 
-- [ ] **Step 2: Run focused tests and confirm no worker closes action verification**
+- [x] **Step 2: Run focused tests and confirm no worker closes action verification**
 
 Run: `cd ai-orchestrator && ./.venv312/bin/python -m pytest tests/test_verification_worker.py -q`
 
 Expected: FAIL because `verification_worker.py` is absent.
 
-- [ ] **Step 3: Define verification policy V1**
+- [x] **Step 3: Define verification policy V1**
 
 For controlled Kubernetes actions, always verify target UID and desired operation result. If pre-action SLI evidence exists, also compare error rate and p95 latency over equal frozen windows. A target mismatch or worsened SLI is `regressed`; unreadable dependencies are `inconclusive`; a constant `pass=true` field is not accepted.
 
-- [ ] **Step 4: Make Verification inserts exact-idempotent**
+- [x] **Step 4: Make Verification inserts exact-idempotent**
 
 Calculate `payload_hash` from action ID/hash, before/after evidence IDs, window and checks. Same verification ID/hash replays the stored row; a different hash returns `IDEMPOTENCY_KEY_REUSED`.
 
-- [ ] **Step 5: Implement the verification worker**
+- [x] **Step 5: Implement the verification worker**
 
 The worker leases Runs in `verifying`, obtains read-only observations through ToolRun/Evidence, appends Verification, then calls terminal commit. It never receives Action Executor credentials.
 
-- [ ] **Step 6: Append terminal events atomically**
+- [x] **Step 6: Append terminal events atomically**
 
 Append `verification.completed` followed by `run.completed`; both use stable event IDs based on `verification_id`. Ensure the terminal commit checks lease epoch/token and expected Run state/version.
 
-- [ ] **Step 7: Run verification and state-machine tests**
+- [x] **Step 7: Run verification and state-machine tests**
 
 Run: `cd ai-orchestrator && ./.venv312/bin/python -m pytest tests/test_verification_worker.py tests/test_investigation_runtime.py -q`
 
@@ -638,7 +638,7 @@ Run: `cd ai-apm-query-go && go test ./internal/api ./internal/store -run 'Verifi
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit verification closure**
+- [x] **Step 8: Commit verification closure**
 
 ```bash
 git add ai-apm-query-go ai-orchestrator
@@ -664,17 +664,17 @@ git commit -m "feat: verify actions and close run terminal state"
 - Consumes: explicit worker kind `investigation|verification|action_reconcile`, status filters and `after_created_at/after_run_id` cursor.
 - Produces: starvation-free recovery pages and exact idempotency semantics for every durable subaggregate.
 
-- [ ] **Step 1: Write a failing recovery starvation test**
+- [x] **Step 1: Write a failing recovery starvation test**
 
 Create 200 old `awaiting_approval` rows and one newer `investigating` row. Assert an Investigation scan returns the `investigating` row instead of an empty consumable page.
 
-- [ ] **Step 2: Run the recovery test**
+- [x] **Step 2: Run the recovery test**
 
 Run: `cd ai-apm-query-go && go test ./internal/store -run RecoveryCandidate -count=1`
 
 Expected: FAIL with the current all-nonterminal `LIMIT` query.
 
-- [ ] **Step 3: Replace implicit filtering with worker-owned status sets**
+- [x] **Step 3: Replace implicit filtering with worker-owned status sets**
 
 ```text
 investigation: created, planning, investigating
@@ -685,19 +685,19 @@ waiting states: awaiting_confirmation, awaiting_approval; not worker candidates
 
 Use keyset pagination `(created_at, run_id) > (?, ?)` and never filter returned rows again in Python.
 
-- [ ] **Step 4: Add payload hash comparisons to all Create methods**
+- [x] **Step 4: Add payload hash comparisons to all Create methods**
 
 On duplicate key: load the existing row in the same transaction. If hashes match, return the existing object and `replayed=true`; if hashes differ, return typed `ErrIdempotencyKeyReused`. Apply this to Action, Approval, PlanStep, Hypothesis and Verification.
 
-- [ ] **Step 5: Return existing projections to Orchestrator**
+- [x] **Step 5: Return existing projections to Orchestrator**
 
 Internal append endpoints return `{created, replayed, payload_hash, resource}`. Orchestrator must use the returned stored resource rather than the newly generated in-memory payload after a replay.
 
-- [ ] **Step 6: Add recovery metrics**
+- [x] **Step 6: Add recovery metrics**
 
 Expose candidate count and oldest age by worker kind, lease-loss count, scan error count and replay/hash-conflict count. Alert when oldest actionable candidate exceeds twice the configured recovery interval.
 
-- [ ] **Step 7: Run recovery and idempotency suites**
+- [x] **Step 7: Run recovery and idempotency suites**
 
 Run: `cd ai-apm-query-go && go test ./internal/store ./internal/api -run 'Recovery|Idempotency|Hypothesis|PlanStep|Verification' -count=1`
 
@@ -705,7 +705,7 @@ Run: `cd ai-orchestrator && ./.venv312/bin/python -m pytest tests/test_investiga
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit recovery and replay fixes**
+- [x] **Step 8: Commit recovery and replay fixes**
 
 ```bash
 git add ai-apm-query-go ai-orchestrator
@@ -731,7 +731,7 @@ git commit -m "fix: make workflow recovery and aggregates deterministic"
 - Consumes: `GET /api/v1/ai/runs/{id}`, `GET /api/v1/ai/actions?status=...`, `POST /actions/{id}/decision`, Run SSE sequence IDs.
 - Produces: typed `RunProjection`, canonical approval center and reconnecting SSE client.
 
-- [ ] **Step 1: Add a failing Run projection test**
+- [x] **Step 1: Add a failing Run projection test**
 
 ```go
 func TestRunProjectionDerivesRootCauseFromConfirmedHypothesis(t *testing.T) {
@@ -740,11 +740,11 @@ func TestRunProjectionDerivesRootCauseFromConfirmedHypothesis(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Implement a server-owned aggregate DTO**
+- [x] **Step 2: Implement a server-owned aggregate DTO**
 
 Include Run identity/status, ordered plan steps, evidence summaries, hypotheses, derived root cause/confidence, latest Action/version, latest decision, latest Attempt, latest Verification and last event sequence. The frontend must not derive authority from transient graph node names.
 
-- [ ] **Step 3: Add canonical Action list and decision client methods**
+- [x] **Step 3: Add canonical Action list and decision client methods**
 
 ```ts
 export const listActions = (params?: { status?: string }) => api.get<ActionListResponse>('/ai/actions', { params })
@@ -754,23 +754,23 @@ export const decideAction = (id: string, body: ActionDecisionRequest) =>
 
 Remove `listApprovalTasks`, `approveTask` and `rejectTask` imports from `Approvals.tsx`.
 
-- [ ] **Step 4: Add frontend test tooling**
+- [x] **Step 4: Add frontend test tooling**
 
 Add `vitest`, `jsdom`, `@testing-library/react` and `@testing-library/user-event` as dev dependencies and scripts `test` and `test:run`. Lockfile changes are committed with `package.json`.
 
-- [ ] **Step 5: Write approval UI tests**
+- [x] **Step 5: Write approval UI tests**
 
 Test that the page renders target UID/resourceVersion, action hash/version, canonical parameters, risk and proposer; approval sends no approver/hash; self-approval or stale-version 409 displays the server error; rejected Actions cannot execute.
 
-- [ ] **Step 6: Implement SSE resume and bounded reconnect**
+- [x] **Step 6: Implement SSE resume and bounded reconnect**
 
 Parse `id:` from every frame, retain the largest sequence, send `Last-Event-ID` on reconnect, retry with capped exponential backoff and jitter, and refetch the Run projection after reconnect or retention errors. Abort stops both the current fetch and retry timer.
 
-- [ ] **Step 7: Derive investigation details only from the projection**
+- [x] **Step 7: Derive investigation details only from the projection**
 
 Replace `r.root_cause ?? 'unknown'` fallbacks with the server projection. Display the durable plan, hypotheses, Action, approval, Attempt and Verification timeline.
 
-- [ ] **Step 8: Run frontend and API verification**
+- [x] **Step 8: Run frontend and API verification**
 
 Run: `cd ai-apm-query-go && go test ./internal/api -run 'RunProjection|ActionList' -count=1`
 
@@ -780,7 +780,7 @@ Run: `cd observability-frontend && npm run build`
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit the canonical UI cutover**
+- [x] **Step 9: Commit the canonical UI cutover**
 
 ```bash
 git add ai-apm-query-go observability-frontend
@@ -807,31 +807,31 @@ git commit -m "feat: switch approvals and investigation UI to canonical workflow
 - Consumes: proxy URL/token and provider/model metadata.
 - Produces: production Orchestrator with no Provider key, no direct LLM egress and readiness based on required Investigation capabilities.
 
-- [ ] **Step 1: Add tests proving the internal settings endpoint omits API keys**
+- [x] **Step 1: Add tests proving the internal settings endpoint omits API keys**
 
 Assert `/settings/llm/internal` never serializes `api_key` or `apiKey`, even when the stored encrypted key exists.
 
-- [ ] **Step 2: Add readiness dependency tests**
+- [x] **Step 2: Add readiness dependency tests**
 
 Test 503 for missing Query API, signing issuer, dispatcher/recovery heartbeat or production LLM proxy; test 200 only when all required Investigation dependencies pass.
 
-- [ ] **Step 3: Remove Orchestrator direct-key fallback**
+- [x] **Step 3: Remove Orchestrator direct-key fallback**
 
 `_fetch_saved_llm_config` must return `None` when `LLM_PROXY_URL` or `LLM_PROXY_TOKEN` is missing in production. Delete the branch that reads `cfg.api_key`. Keep local mock mode explicit through `LLM_MOCK=true`.
 
-- [ ] **Step 4: Restrict provider keys to the proxy Secret**
+- [x] **Step 4: Restrict provider keys to the proxy Secret**
 
 The proxy reads provider keys from its own Secret environment. Query API returns provider/model/base URL metadata only. Redact Authorization headers and request bodies from proxy logs.
 
-- [ ] **Step 5: Enable the proxy and orchestrator egress policy in production values**
+- [x] **Step 5: Enable the proxy and orchestrator egress policy in production values**
 
 Set `llmEgressProxy.enabled=true`; add `ai-orchestrator` to egress canary services; allow Orchestrator only to Query API, LLM proxy and DNS. The proxy alone receives external TCP 443 allowlist egress.
 
-- [ ] **Step 6: Implement capability readiness**
+- [x] **Step 6: Implement capability readiness**
 
 Return structured checks for `run_persistence`, `query_api`, `signing`, `recovery_worker`, `dispatch_queue`, `checkpoint_mode` and `llm_proxy`. Required check failures return 503; optional Chat/marketplace failures appear under `degraded_capabilities` without masking Investigation readiness.
 
-- [ ] **Step 7: Run service and Helm tests**
+- [x] **Step 7: Run service and Helm tests**
 
 Run: `cd ai-apm-query-go && go test ./internal/api -run 'LLMSettings|Ready' -count=1`
 
@@ -843,7 +843,7 @@ Run: `helm lint deploy/helm/aiops -f deploy/helm/aiops/values-prod.yaml`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit production isolation**
+- [x] **Step 8: Commit production isolation**
 
 ```bash
 git add ai-apm-query-go ai-orchestrator ai-llm-egress-proxy deploy/helm/aiops
@@ -870,7 +870,7 @@ git commit -m "security: enforce llm proxy and capability readiness"
 - Consumes: signed Investigation invocation and MySQL-backed control-plane recovery.
 - Produces: a stateless, multi-replica Investigation Worker without SQLite/Chroma PVC; the existing Orchestrator remains the Chat/legacy gateway during contract migration.
 
-- [ ] **Step 1: Add a failing test that Investigation mode never initializes SQLite**
+- [x] **Step 1: Add a failing test that Investigation mode never initializes SQLite**
 
 ```python
 def test_investigation_app_has_no_local_checkpointer(monkeypatch):
@@ -880,27 +880,27 @@ def test_investigation_app_has_no_local_checkpointer(monkeypatch):
     assert not hasattr(app.state, "sqlite_connection")
 ```
 
-- [ ] **Step 2: Compile the Investigation graph without a local checkpointer**
+- [x] **Step 2: Compile the Investigation graph without a local checkpointer**
 
 The durable frontier is reconstructed from Run, PlanStep, ToolRun, Evidence, Action and Verification. Chat continues using its existing SQLite checkpointer until separated; canonical Investigation must never call `_ensure_async_checkpointer`.
 
-- [ ] **Step 3: Build a narrow FastAPI app**
+- [x] **Step 3: Build a narrow FastAPI app**
 
 Expose only `/internal/v1/run-invocations`, `/health`, `/readyz` and `/metrics`. Reuse signature validation, dispatcher and recovery modules. Do not register Chat, marketplace, legacy task, scheduler or session routes.
 
-- [ ] **Step 4: Add a dedicated Helm Deployment**
+- [x] **Step 4: Add a dedicated Helm Deployment**
 
 Use two replicas in production, no PVC, read-only ServiceAccount, no database Secret, and egress only to Query API, LLM proxy and DNS. Point Query API `ORCHESTRATOR_URL` for Investigation dispatch to the new Service.
 
-- [ ] **Step 5: Keep legacy Orchestrator single-replica but remove Investigation ownership**
+- [x] **Step 5: Keep legacy Orchestrator single-replica but remove Investigation ownership**
 
 It may retain Chat/SQLite temporarily. Reject `ai.investigate` on its public/internal ingress after the dispatch cutover, preventing two worker populations from owning the same Run.
 
-- [ ] **Step 6: Test two-worker lease competition**
+- [x] **Step 6: Test two-worker lease competition**
 
 Start two dispatcher instances against the same fake control plane and assert exactly one claims the Run while the other receives a fencing conflict and performs no Tool I/O.
 
-- [ ] **Step 7: Run Python and Helm verification**
+- [x] **Step 7: Run Python and Helm verification**
 
 Run: `cd ai-orchestrator && ./.venv312/bin/python -m pytest tests/test_investigation_app.py tests/test_investigation_dispatcher.py tests/test_investigation_recovery_startup.py -q`
 
@@ -908,7 +908,7 @@ Run: `helm template aiops deploy/helm/aiops -f deploy/helm/aiops/values-prod.yam
 
 Expected: Investigation Worker resources are present and its pod spec has no `orchestrator-data` mount.
 
-- [ ] **Step 8: Commit worker isolation**
+- [x] **Step 8: Commit worker isolation**
 
 ```bash
 git add ai-orchestrator ai-apm-query-go deploy/helm/aiops
@@ -933,31 +933,31 @@ git commit -m "refactor: isolate stateless investigation workers"
 - Consumes: real Query API handlers, disposable MySQL, Investigation Worker, fake deterministic data sources and fake signed Executor.
 - Produces: executable G0-G5 release evidence.
 
-- [ ] **Step 1: Create a deterministic local topology**
+- [x] **Step 1: Create a deterministic local topology**
 
 Compose MySQL, schema migrator, Query API, Investigation Worker, fake data sources and fake Executor. Use fixed tenant/cluster IDs and generated ephemeral signing keys. No test connects to a real cluster or Provider LLM.
 
-- [ ] **Step 2: Add the read-only golden-path test**
+- [x] **Step 2: Add the read-only golden-path test**
 
 Assert `create -> outbox -> accept -> planning -> investigating -> ToolRun -> Evidence -> Hypothesis -> verifying -> success -> SSE replay`, with one Run/invocation identity and monotonically increasing event sequence.
 
-- [ ] **Step 3: Add the controlled-action golden-path test**
+- [x] **Step 3: Add the controlled-action golden-path test**
 
 Assert `awaiting_approval -> decision -> action outbox -> Attempt -> Executor -> verifying -> Verification -> success`; verify the approval identity and action hash/version at every boundary.
 
-- [ ] **Step 4: Add rejection and authorization tests**
+- [x] **Step 4: Add rejection and authorization tests**
 
 Cover non-admin, self-approval, cross-tenant Action access, stale action version, changed payload with reused idempotency key and unsupported operation.
 
-- [ ] **Step 5: Add failure injection at every durable boundary**
+- [x] **Step 5: Add failure injection at every durable boundary**
 
 Kill or drop responses after Run accept, ToolRun begin, data-source result, Evidence consume, approval commit, mutation apply, reconcile GET and terminal commit. Assert no duplicate Tool I/O, no duplicate mutation and eventual legal state.
 
-- [ ] **Step 6: Add SSE disconnect and retention tests**
+- [x] **Step 6: Add SSE disconnect and retention tests**
 
 Disconnect after a known sequence, reconnect with `Last-Event-ID`, and assert no gaps or duplicates. For a sequence older than retention, require a typed retention response and full projection refresh.
 
-- [ ] **Step 7: Add Make targets**
+- [x] **Step 7: Add Make targets**
 
 ```make
 test-workflow-contract:
@@ -970,13 +970,13 @@ test-workflow-all:
 	cd observability-frontend && npm run test:run && npm run build
 ```
 
-- [ ] **Step 8: Run the full gate locally**
+- [x] **Step 8: Run the full gate locally**
 
 Run: `make test-workflow-all`
 
 Expected: PASS with no skipped canonical workflow test. Environment-only real-cluster tests may remain opt-in, but the fake signed Executor path is mandatory in CI.
 
-- [ ] **Step 9: Commit release gates**
+- [x] **Step 9: Commit release gates**
 
 ```bash
 git add tests Makefile .github
@@ -1021,7 +1021,7 @@ Set `ACTION_DISPATCH_ENABLED=true` with Executor still `EXECUTION_MODE=disabled`
 
 After G0-G5 pass and a human change approval exists, enable `EXECUTION_MODE=approved` plus `realMutation=true` only for one namespace, one Deployment and `patch` operation. Keep `scale` disabled for the first canary. Observe outbox delay, Attempt count, reconcile backlog, verification outcome and Run terminal state.
 
-- [ ] **Step 6: Define automatic rollback triggers**
+- [x] **Step 6: Define automatic rollback triggers**
 
 Immediately set `EXECUTION_MODE=disabled` and `ACTION_DISPATCH_ENABLED=false` when any of these occurs: duplicate Attempt/mutation, Action hash mismatch, unresolved execution older than two reconcile intervals, verification regression, cross-tenant denial, lease fencing failure or missing audit event. Schema remains in place during rollback.
 
@@ -1033,7 +1033,7 @@ Return HTTP 410 for `/ops/tasks/{id}/approve`, `/ops/tasks/{id}/reject` and dire
 
 Record exact deployed image tags, migration version, feature flags, G0-G5 test command outputs, canary target, start/end time, rollback decision and known limitations. Do not mark controlled action complete without a real reconcile and independent verification record.
 
-- [ ] **Step 9: Run final verification and commit cleanup**
+- [x] **Step 9: Run final verification and commit cleanup**
 
 Run: `make test-workflow-all`
 
@@ -1059,14 +1059,15 @@ fencing、确定性 Attempt、真实签名 reconcile 四态、独立 Verificatio
 recovery、canonical Run/Action 投影、LLM proxy 隔离、stateless Investigation Worker、
 跨服务故障契约和发布门禁均已落盘。最终命令
 `./deploy/scripts/verify-aiops-workflow-gates.sh` 全部通过（Go、4 个 workflow contract、
-Python 1166 passed/1 skipped、Executor、前端构建、Helm lint/render/RBAC）。
+Python 1167 passed/1 skipped、Executor、前端 4 tests passed + build、Helm lint/render/RBAC）。
 
-以下两项保持未勾选是有意的外部发布条件，不是代码缺口：
+Task 8 Step 4-5 已在本轮补齐：Vitest、jsdom、Testing Library、审批 UI 测试和 SSE
+断线恢复测试已提交并通过。当前唯一未勾选的是 Task 12 的真实发布条件：
 
-- Task 8 Step 4-5：仓库没有安装 Vitest/Testing Library，当前门禁以 TypeScript/Vite 构建和
-  deterministic workflow contract 代替；引入前端测试依赖需单独批准依赖下载。
 - Task 12 Step 5：真实集群单目标 canary 需要人工变更审批、真实目标 namespace 和签名
   Executor，当前环境未执行；生产仍保持 `EXECUTION_MODE=disabled`、`realMutation=false`。
+- Task 12 Step 1-4、7-8 属于实际部署/稳定发布后的运行步骤，必须在 Step 5 完成后按
+  runbook 记录真实镜像、目标、时间窗口、回滚结论和旧写路径移除证据，不能用本地测试替代。
 
 - **G0 — Action identity:** canonical payload hash includes target UID/resourceVersion, operation, normalized params and policy version; stale approval and mismatched replay return 409.
 - **G1 — Approval authority:** approver comes from JWT/MySQL role truth; self-approval and cross-tenant decisions are rejected; approval and Action outbox are atomic.

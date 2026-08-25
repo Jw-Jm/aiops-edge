@@ -109,14 +109,14 @@ func TestListActionsIsTenantScopedReadModel(t *testing.T) {
 		WithArgs("tenant-1", "proposed", 10).
 		WillReturnRows(sqlmock.NewRows([]string{"action_id", "run_id", "cluster_id", "action_type", "action_hash", "hash_schema_version",
 			"action_version", "proposed_by", "policy_version", "preflight_status", "target_resource_type", "status", "dry_run",
-			"target_name", "target_uid", "resource_version", "namespace", "operation", "execution_status", "error_code", "created_at", "updated_at"}).
+			"target_name", "target_uid", "resource_version", "namespace", "operation", "execution_status", "error_code", "params_json", "created_at", "updated_at"}).
 			AddRow("action-1", "run-1", "cluster-1", "scale", "hash-1", 2, 1, "owner-1", "action-policy-v1", "passed", "deployment",
-				"proposed", 0, "orders", "uid-1", "rv-1", "prod", "scale", "proposed", "", time.Now(), time.Now()))
+				"proposed", 0, "orders", "uid-1", "rv-1", "prod", "scale", "proposed", "", []byte(`{"replicas":2}`), time.Now(), time.Now()))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/actions?status=proposed&limit=10", strings.NewReader(""))
 	req = withAuthorizationContext(req, AuthorizationContext{UserID: "approver-1", TenantID: "tenant-1"})
 	rec := httptest.NewRecorder()
 	h.ActionPublicHandler(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "action-1") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "action-1") || !strings.Contains(rec.Body.String(), `"replicas":2`) {
 		t.Fatalf("unexpected list response %d: %s", rec.Code, rec.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
