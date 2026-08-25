@@ -25,6 +25,16 @@ helm lint deploy/helm/aiops
 ./deploy/scripts/verify-aiops-workflow-gates.sh
 ```
 
+### 本机验证记录（2026-08-25）
+
+在当前工作区执行了以下本机门禁，均以退出码 0 完成：
+
+- `make test-workflow-all`：Go、4 个 workflow contract、Action Executor、Python `1167 passed/1 skipped`、前端 `4 tests passed` 和生产构建。
+- `./deploy/scripts/verify-aiops-workflow-gates.sh`：Helm lint/render、RBAC 和生产安全开关检查通过。
+- 本机验证保持 `EXECUTION_MODE=disabled`、`realMutation=false`；未连接真实 Kubernetes 集群，未执行任何真实 mutation。
+
+上述证据只证明本地代码和 dry-run/禁写安全边界成立，不替代真实集群单目标 canary、人工变更审批和 canary 观察窗口。
+
 ## 阶段化发布
 
 ### 1. Schema + shadow
