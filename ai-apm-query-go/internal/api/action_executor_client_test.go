@@ -82,6 +82,44 @@ func TestActionExecutionClient_SignatureMatchesExecutor(t *testing.T) {
 	}
 }
 
+func TestActionExecutionClient_ResponseLossRequiresReconcile(t *testing.T) {
+	priv, _ := makeExecutorKeypair(t)
+	encoded := base64.RawURLEncoding.EncodeToString(priv)
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path == "/v1/executor/execute" {
+			// An empty/non-JSON response is not evidence that the mutation did not
+			// happen; the client must surface execution_unknown.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.URL.Path != "/v1/executor/reconcile" {
+			t.Fatalf("unexpected executor path: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"action_id":"act-1","status":"applied","message":"already applied"}`))
+	}))
+	defer srv.Close()
+	if err := ConfigureActionExecutionClient(srv.URL, encoded, ""); err != nil {
+		t.Fatal(err)
+	}
+	client := currentActionExecutor()
+	ctx := contract.ActionExecutionContext{ActionID: "act-1", ActionHash: "h1", ApprovalID: "ap-1",
+		TargetUID: "uid-1", TargetName: "target", ResourceVersion: "rv-1", ClusterID: "c1",
+		Namespace: "aiops-canary", Operation: "patch", TargetSpec: []byte(`{"metadata":{"annotations":{"aiops.observability.io/validation":"1"}}}`)}
+	res, reached, err := client.Execute(ctx)
+	if err != nil || !reached || res.Status != "execution_unknown" {
+		t.Fatalf("response loss must become execution_unknown, reached=%v res=%+v err=%v", reached, res, err)
+	}
+	reconciled, reached, err := client.Reconcile(ctx)
+	if err != nil || !reached || reconciled.Status != "applied" {
+		t.Fatalf("reconcile result=%+v reached=%v err=%v", reconciled, reached, err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected one execute and one reconcile request, got %d", requests)
+	}
+}
+
 func TestExecuteApprovedAction_Success_Persists(t *testing.T) {
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()

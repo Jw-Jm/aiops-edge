@@ -98,6 +98,14 @@ type server struct {
 	readCurrentStateFn   func(ActionExecutionContext) (string, string, bool, error)
 	patchTargetFn        func(ActionExecutionContext, string) error
 	readReconcileStateFn func(ReconcileRequest) (reconcileObserved, error)
+	// Local validation seams are nil/false by default and are populated only by
+	// explicit test harness configuration. They never participate in the normal
+	// production path.
+	dispatchGate           chan struct{}
+	dispatchGateActionID   string
+	dispatchGateFile       string
+	dropResponseAfterApply bool
+	dropResponseActionID   string
 }
 
 // ReconcileRequest is the immutable Action context needed to decide whether
@@ -161,6 +169,15 @@ func main() {
 		results:       map[string]ActionResult{},
 		credBrokerURL: os.Getenv("CREDENTIAL_BROKER_URL"),
 		verifyKeyB64:  os.Getenv("EXECUTOR_VERIFY_KEYS"),
+	}
+	// Deterministic local-validation fault injection is opt-in and cannot be
+	// enabled while the executor is disabled. Production deployments leave
+	// LOCAL_VALIDATION_ENABLED unset.
+	if os.Getenv("LOCAL_VALIDATION_ENABLED") == "true" && mode != ModeDisabled {
+		s.dispatchGateActionID = strings.TrimSpace(os.Getenv("LOCAL_VALIDATION_FAULT_ACTION_ID"))
+		s.dispatchGateFile = strings.TrimSpace(os.Getenv("LOCAL_VALIDATION_DISPATCH_GATE_FILE"))
+		s.dropResponseAfterApply = os.Getenv("LOCAL_VALIDATION_DROP_RESPONSE_AFTER_APPLY") == "true"
+		s.dropResponseActionID = s.dispatchGateActionID
 	}
 	// F5 已废除：若 POD_SA_ACCESS=true 则启用真实 K8s mutation（in-cluster SA + 限定 RBAC）。
 	if os.Getenv("POD_SA_ACCESS") == "true" {
@@ -232,6 +249,7 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.waitForDispatchGate(ctx.ActionID)
 	if err := validateExecutionConfig(s.mode, s.k8sEnabled, s.verifyKeyB64); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, ActionResult{
 			ActionID: ctx.ActionID, Status: "rejected",
@@ -277,6 +295,11 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		execMsg = "real K8s mutation applied (verified): action=" + ctx.ActionID + " target=" + ctx.TargetUID +
 			" op=" + ctx.Operation + " ns=" + ctx.Namespace
 		log.Printf("EXECUTE (approved+real): %s (uid=%s rv=%s)", execMsg, observedUID, observedVersion)
+		if s.dropResponseAfterApply && s.dropResponseActionID == ctx.ActionID {
+			// The patch has already been applied. Aborting the HTTP response forces
+			// Query API into execution_unknown so it must reconcile before retrying.
+			panic(http.ErrAbortHandler)
+		}
 	}
 	res := ActionResult{
 		ActionID: ctx.ActionID, Status: execStatus,
@@ -288,6 +311,33 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	s.results[ctx.ActionID] = res
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, res)
+}
+
+// waitForDispatchGate pauses one explicitly selected local-validation action.
+// A channel is used by unit tests; a gate file is used by the local harness so
+// an operator can change the target object before releasing dispatch.
+func (s *server) waitForDispatchGate(actionID string) {
+	if s.dispatchGateActionID == "" || s.dispatchGateActionID != actionID {
+		return
+	}
+	if s.dispatchGate != nil {
+		<-s.dispatchGate
+		return
+	}
+	if s.dispatchGateFile == "" {
+		return
+	}
+	deadline := time.Now().Add(10 * time.Minute)
+	for {
+		if _, err := os.Stat(s.dispatchGateFile); os.IsNotExist(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("local validation dispatch gate timed out for action=%s", actionID)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // readCurrentState 重新读取目标实际状态（TOCTOU 防护，真实 K8s）。
