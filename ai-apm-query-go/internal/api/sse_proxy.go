@@ -92,7 +92,7 @@ func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {
 	for _, e := range evs {
 		writeSSE(w, "run_event", map[string]interface{}{
 			"sequence": e.Sequence, "event_id": e.EventID, "event_type": e.EventType,
-			"payload": string(e.Payload),
+			"payload": json.RawMessage(e.Payload),
 		})
 	}
 	if flusher != nil {
@@ -117,7 +117,7 @@ func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {
 				for _, e := range evs {
 					writeSSE(w, "run_event", map[string]interface{}{
 						"sequence": e.Sequence, "event_id": e.EventID, "event_type": e.EventType,
-						"payload": string(e.Payload),
+						"payload": json.RawMessage(e.Payload),
 					})
 					if e.Sequence > afterSeq {
 						afterSeq = e.Sequence
@@ -154,6 +154,9 @@ func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {
 // writeSSE 写一个 SSE 事件帧。
 func writeSSE(w http.ResponseWriter, event string, data map[string]interface{}) {
 	raw, _ := json.Marshal(data)
+	if sequence, ok := data["sequence"].(int64); ok && sequence > 0 {
+		_, _ = fmt.Fprintf(w, "id: %d\n", sequence)
+	}
 	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, raw)
 }
 

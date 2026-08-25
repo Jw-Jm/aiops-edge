@@ -2103,6 +2103,13 @@ class BrainOrchestrator:
                     yield {"type": "tool_end", "tool_call_id": tool_id,
                            "name": tool_node_map[node_name], "status": "success",
                            "arguments": {}, "result": friendly_result}
+                if node_name == "rca":
+                    root_cause = str(node_data.get("rca_root_cause") or "").strip()
+                    if root_cause and root_cause != "unknown":
+                        yield {"type": "hypothesis", "content": root_cause,
+                               "confidence": float(node_data.get("rca_confidence") or 0),
+                               "status": "proposed",
+                               "confirmed_by_evidence": bool(node_data.get("rca_evidence"))}
                 if node_name == "collect" and "k8sgpt_diagnose" in explicit_tools:
                     tool_id = f"tool_k8sgpt_{step_num}"
                     k8sgpt_error = node_data.get("k8sgpt_error", "")
@@ -2233,7 +2240,6 @@ class BrainOrchestrator:
             err_detail = str(e)[:300]
             print(f"[stream_sync] DAG 执行异常: {err_detail}")
             yield {"type": "error", "text": f"分析执行异常: {err_detail}"}
-            yield {"type": "done", "text": ""}
 
     async def approve_and_resume(self, thread_id: str, approved: bool = True):
         """Resume interrupted graph with approval decision. (async — 调用方需 await)"""

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -94,7 +95,8 @@ func checkWorkloadKindMatch(signed, body string) error {
 }
 
 // beginToolRun 包装 internal query 的 ToolRun 开始（B1-02）。返回 toolRunContext（nil=不包装）。
-// 幂等命中（同 idempotency_key 已存在）→ 返回 trc + idempotent=true（调用方不再执行，直接返回）。
+// 幂等命中（同 idempotency_key 已存在）→ 返回 trc + idempotent=true；running/terminal
+// 均只重放持久化记录，不再次访问数据源。
 func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID string) (*toolRunContext, bool, error) {
 	if err := validateToolRunRequest(req); err != nil {
 		return nil, false, err
@@ -112,23 +114,42 @@ func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID st
 		}
 		return trc, false, nil
 	}
-	// 幂等命中（P0-TOOL-04）：同 (run_id, idempotency_key, args_hash) 已有 ToolRun 且非 running →
-	// 不重复真实查询，返回既有。同 idempotency_key 但 args_hash 不同 → 409 IDEMPOTENCY_KEY_REUSED。
+	// 幂等命中（P0-TOOL-04）：同 (run_id, idempotency_key, args_hash) 已有 ToolRun →
+	// 不重复真实查询，返回既有（running 也只返回 202）。同 key 不同 args → 409。
 	if trc.IdempotencyKey != "" {
 		exists, err := h.toolDAO.GetByIdemKey(trc.RunID, trc.IdempotencyKey)
 		if err == nil && exists != nil {
 			if exists.ArgsHash != "" && exists.ArgsHash != trc.ArgsHash {
 				return nil, false, &toolIdempotencyReusedError{}
 			}
-			if exists.Status != "running" {
-				return trc, true, nil
-			}
+			// Both terminal and running duplicates are replayed without any
+			// datasource I/O.  Running callers receive a 202 envelope and may
+			// poll/retry the same idempotency key.
+			trc.Existing = exists
+			return trc, true, nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "ToolRun idempotency lookup failed"}
 		}
 	}
 	// 创建 ToolRun 记录；失败（非幂等冲突）→ 不执行（fail-closed，避免无审计的真实查询）。
 	// 注意：只有"已存在完成结果"才算 idempotent；INSERT 失败绝不能当作幂等（否则静默跳过真实查询）。
-	if !h.startToolRun(trc) {
-		return nil, false, nil
+	created, createErr := h.startToolRun(trc)
+	if createErr != nil {
+		return nil, false, &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "ToolRun persistence unavailable"}
+	}
+	if !created {
+		// A concurrent insert won the idempotency race.  Fetch the durable
+		// record and replay it instead of executing an unwrapped query.
+		exists, lookupErr := h.toolDAO.GetByIdemKey(trc.RunID, trc.IdempotencyKey)
+		if lookupErr != nil || exists == nil {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "ToolRun idempotency record unavailable"}
+		}
+		if exists.ArgsHash != "" && exists.ArgsHash != trc.ArgsHash {
+			return nil, false, &toolIdempotencyReusedError{}
+		}
+		trc.Existing = exists
+		return trc, true, nil
 	}
 	// P0-TOOL-02：pre-I/O server-side Lease fencing——任何 datasource I/O 前校验 Run 非终态
 	// + owner/epoch/token 匹配 + Lease 未过期。失败 → 返回 fencing error（调用方不执行，
@@ -150,6 +171,14 @@ func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID st
 		}
 	}
 	return trc, false, nil
+}
+
+func (h *Handler) respondToolReplay(w http.ResponseWriter, trc *toolRunContext) {
+	status := http.StatusOK
+	if trc == nil || trc.Existing == nil || trc.Existing.Status == "running" {
+		status = http.StatusAccepted
+	}
+	respondJSON(w, status, toolReplayEnvelope(trc))
 }
 
 // endToolRun 包装 internal query 的 ToolRun 结束并返回 ToolResultEnvelope。
@@ -177,7 +206,7 @@ func qualityStatus(q string) string {
 func (h *Handler) execToolQuery(w http.ResponseWriter, rctx *internalQueryCtx, req *internalQueryRequest, exec func() ([]byte, error)) {
 	trc, idempotent, err := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
 	if idempotent {
-		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
+		h.respondToolReplay(w, trc)
 		return
 	}
 	if err != nil {
@@ -221,7 +250,7 @@ func (h *Handler) InternalQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if idempotent {
-		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
+		h.respondToolReplay(w, trc)
 		return
 	}
 	pts, err := h.metricsRepo.ServiceRED(r.Context(), query.Scope{
@@ -368,7 +397,7 @@ func (h *Handler) InternalQueryKubernetes(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if idempotent {
-		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
+		h.respondToolReplay(w, trc)
 		return
 	}
 	// 请求可选 namespace（默认 all）用于 Pod 过滤

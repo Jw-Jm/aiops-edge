@@ -73,6 +73,12 @@ func (h *Handler) InternalControlPlaneRunRouter(w http.ResponseWriter, r *http.R
 		case "actions":
 			h.internalControlPlaneActionAppend(w, r, id)
 			return
+		case "hypotheses":
+			h.internalControlPlaneHypothesisAppend(w, r, id)
+			return
+		case "plan-steps":
+			h.internalControlPlanePlanStepAppend(w, r, id)
+			return
 		case "approvals":
 			h.internalControlPlaneApprovalAppend(w, r, id)
 			return
@@ -385,7 +391,10 @@ func (h *Handler) internalControlPlaneRunUnfinished(w http.ResponseWriter, r *ht
 	out := make([]map[string]interface{}, 0, len(candidates))
 	for _, c := range candidates {
 		out = append(out, map[string]interface{}{
-			"run_id": c.RunID, "owner_id": c.OwnerID, "epoch": c.Epoch,
+			"run_id": c.RunID, "request_id": c.RequestID, "invocation_id": c.InvocationID,
+			"tenant_id": c.TenantID, "cluster_id": c.ClusterID, "status": c.Status,
+			"intent": c.Intent, "target_resource_id": c.TargetResourceID,
+			"action_mode": c.ActionMode, "owner_id": c.OwnerID, "epoch": c.Epoch,
 			"wait_kind": c.WaitKind, "retry_attempt": c.RetryAttempt,
 		})
 	}

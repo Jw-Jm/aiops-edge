@@ -37,9 +37,30 @@ type RunLeaseHolder struct {
 	RetryBefore  *time.Time
 	RetryAttempt int
 	// P0-LEASE-01：server_now / lease_expires_at / lease_remaining_ms 用 DB time 返回。
-	ServerNow       time.Time
+	ServerNow        time.Time
 	LeaseRemainingMS int64
-	ClaimSource     string // LIVE_INVOCATION | RECOVERY
+	ClaimSource      string // LIVE_INVOCATION | RECOVERY
+}
+
+// RecoveryCandidate is the durable Run envelope needed to reconstruct an
+// AcceptedInvocation after an orchestrator restart.  Lease-only metadata is
+// insufficient because request/tenant/cluster/intent are not recoverable from
+// the lease row and must be preserved in the control-plane response.
+type RecoveryCandidate struct {
+	RunID            string
+	RequestID        string
+	InvocationID     string
+	TenantID         string
+	ClusterID        string
+	Status           string
+	Intent           string
+	TargetResourceID string
+	ActionMode       string
+	OwnerID          string
+	Epoch            int64
+	WaitKind         string
+	RetryBefore      *time.Time
+	RetryAttempt     int
 }
 
 // RuntimeLeaseDAO 访问 ai_runs lease 列 + ai_run_claims。
@@ -68,6 +89,7 @@ func NewLeaseToken() (string, string) {
 //     否则原子抢占 epoch 递增，写 claim 历史。
 //   - claim_id 已存在但 executor/token 不同 → ErrClaimIDReused。
 //   - retry 等待中 → ErrRetryBackoff。
+//
 // 所有时间判定用 DB time（CURRENT_TIMESTAMP(3)），不依赖进程时钟。
 func (d *RuntimeLeaseDAO) Claim(runID, ownerID string, leaseSeconds int, caller ...ClaimRequest) (RunLeaseHolder, error) {
 	conn := GetDB()
@@ -285,17 +307,19 @@ func (d *RuntimeLeaseDAO) Release(runID string, epoch int64, tokenHash string) e
 //
 // 有活跃 Lease 的 Run 由当前 owner 继续，不列为恢复候选（避免双 executor 抢同一个活跃 Run）。
 // 分页 limit>0。
-func (d *RuntimeLeaseDAO) ScanRecoveryCandidates(limit int) ([]RunLeaseHolder, error) {
+func (d *RuntimeLeaseDAO) ScanRecoveryCandidates(limit int) ([]RecoveryCandidate, error) {
 	conn := GetDB()
 	if conn == nil {
 		return nil, errors.New("mysql unavailable")
 	}
-	q := `SELECT run_id, lease_owner_id, lease_epoch, lease_claim_id, lease_token_hash,
-		   lease_expires_at, runtime_wait_kind, retry_not_before, retry_attempt
-		 FROM ai_runs
-		 WHERE status NOT IN ('success','partial','failed','regressed','cancelled')
-		   AND (lease_owner_id IS NULL OR lease_expires_at IS NULL OR lease_expires_at < CURRENT_TIMESTAMP(3))
-		   AND (runtime_wait_kind <> 'retry' OR retry_not_before IS NULL OR retry_not_before <= CURRENT_TIMESTAMP(3))`
+	q := `SELECT r.run_id, r.request_id, COALESCE(o.invocation_id, ''), r.tenant_id,
+		   COALESCE(r.primary_cluster_id, ''), r.status, r.intent,
+		   COALESCE(r.target_resource_id, ''), r.action_mode, r.lease_owner_id,
+		   r.lease_epoch, r.runtime_wait_kind, r.retry_not_before, r.retry_attempt
+		 FROM ai_runs r LEFT JOIN ai_run_outbox o ON o.run_id = r.run_id
+		 WHERE r.status NOT IN ('success','partial','failed','regressed','cancelled')
+		   AND (r.lease_owner_id IS NULL OR r.lease_expires_at IS NULL OR r.lease_expires_at < CURRENT_TIMESTAMP(3))
+		   AND (r.runtime_wait_kind <> 'retry' OR r.retry_not_before IS NULL OR r.retry_not_before <= CURRENT_TIMESTAMP(3))`
 	var rows *sql.Rows
 	var err error
 	if limit > 0 {
@@ -307,23 +331,19 @@ func (d *RuntimeLeaseDAO) ScanRecoveryCandidates(limit int) ([]RunLeaseHolder, e
 		return nil, err
 	}
 	defer rows.Close()
-	out := []RunLeaseHolder{}
+	out := []RecoveryCandidate{}
 	for rows.Next() {
-		var h RunLeaseHolder
-		var owner, claimID, tokenHash, waitKind sql.NullString
+		var h RecoveryCandidate
+		var owner, waitKind sql.NullString
 		var epoch, retryAttempt sql.NullInt64
-		var expires, retryBefore sql.NullTime
-		if err := rows.Scan(&h.RunID, &owner, &epoch, &claimID, &tokenHash, &expires,
-			&waitKind, &retryBefore, &retryAttempt); err != nil {
+		var retryBefore sql.NullTime
+		if err := rows.Scan(&h.RunID, &h.RequestID, &h.InvocationID, &h.TenantID,
+			&h.ClusterID, &h.Status, &h.Intent, &h.TargetResourceID, &h.ActionMode,
+			&owner, &epoch, &waitKind, &retryBefore, &retryAttempt); err != nil {
 			return nil, err
 		}
 		h.OwnerID = owner.String
 		h.Epoch = epoch.Int64
-		h.ClaimID = claimID.String
-		h.TokenHash = tokenHash.String
-		if expires.Valid {
-			h.ExpiresAt = expires.Time
-		}
 		h.WaitKind = waitKind.String
 		if retryBefore.Valid {
 			h.RetryBefore = &retryBefore.Time

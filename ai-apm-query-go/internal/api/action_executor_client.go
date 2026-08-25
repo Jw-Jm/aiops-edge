@@ -286,7 +286,10 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 		}
 	case "execution_unknown":
 		// reconcile-before-retry：先调 executor 判定目标实际状态，不盲目 retry。
-		rec, _, _ := client.Reconcile(action.ActionID, action.TargetUID, string(action.Result))
+		// Reconcile against the original immutable action specification.  The
+		// result field is the executor response and cannot describe the expected
+		// object state after a timeout.
+		rec, _, _ := client.Reconcile(action.ActionID, action.TargetUID, string(action.Params))
 		recResultJSON, _ := json.Marshal(rec)
 		if attemptErr := recordAttempt("execution_unknown", recResultJSON, contract.ErrorCodeExecutionUnknown); attemptErr != nil {
 			return res, attemptErr

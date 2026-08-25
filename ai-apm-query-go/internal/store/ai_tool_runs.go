@@ -290,12 +290,35 @@ func (d *AIToolRunDAO) GetByIdemKey(runID, idemKey string) (*AIToolRun, error) {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		`SELECT tool_run_id, run_id, status, idempotency_key, args_hash
+		`SELECT tool_run_id, run_id, status, idempotency_key, args_hash,
+		   result_json, error_code, error_message, result_quality, result_complete,
+		   result_truncated, result_count, result_digest_sha256, eligible_for_evidence,
+		   query_window_start, query_window_end
 		 FROM ai_tool_runs WHERE run_id = ? AND idempotency_key = ?`,
 		runID, idemKey)
 	var t AIToolRun
-	if err := row.Scan(&t.ToolRunID, &t.RunID, &t.Status, &t.IdempotencyKey, &t.ArgsHash); err != nil {
+	var errorCode, errorMessage, quality, digest sql.NullString
+	var complete, truncated, eligible sql.NullInt64
+	var count sql.NullInt64
+	var windowStart, windowEnd sql.NullTime
+	if err := row.Scan(&t.ToolRunID, &t.RunID, &t.Status, &t.IdempotencyKey, &t.ArgsHash,
+		&t.Result, &errorCode, &errorMessage, &quality, &complete, &truncated, &count,
+		&digest, &eligible, &windowStart, &windowEnd); err != nil {
 		return nil, err
+	}
+	t.ErrorCode = errorCode.String
+	t.ErrorMessage = errorMessage.String
+	t.ResultQuality = quality.String
+	t.ResultComplete = complete.Int64 != 0
+	t.ResultTruncated = truncated.Int64 != 0
+	t.ResultCount = count.Int64
+	t.ResultDigestSHA256 = digest.String
+	t.EligibleForEvidence = eligible.Int64 != 0
+	if windowStart.Valid {
+		t.QueryWindowStart = &windowStart.Time
+	}
+	if windowEnd.Valid {
+		t.QueryWindowEnd = &windowEnd.Time
 	}
 	return &t, nil
 }

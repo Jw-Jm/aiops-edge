@@ -1,18 +1,22 @@
 import pytest
 
 from investigation_dispatcher import AcceptedInvocation
-from investigation_runtime import InvestigationRuntime
+from invocation_scope import current_execution_lease_token
+from investigation_runtime import InvestigationRuntime, _runtime_events
 
 
 class Lease:
     def __init__(self):
         self.checked = 0
         self.closed = 0
+        self._token = "lease-token"
+        self.commits = []
 
     def check_active(self):
         self.checked += 1
 
     def commit(self, **kwargs):
+        self.commits.append(kwargs)
         return {"status": kwargs["target"]}
 
     def close(self):
@@ -52,6 +56,23 @@ class Brain:
         return [{"type": "evidence", "id": "ev-1"}]
 
 
+class LeaseAwareBrain:
+    def __init__(self):
+        self.token = ""
+
+    async def investigate(self, item, lease):
+        self.token = current_execution_lease_token()
+        return [{"type": "evidence", "id": "ev-1"}]
+
+
+class OutcomeBrain:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    async def investigate(self, item, lease):
+        return self.outcome
+
+
 def item():
     return AcceptedInvocation(
         run_id="22222222-2222-4222-8222-222222222222",
@@ -86,3 +107,49 @@ async def test_execute_progresses_investigating_verifying_and_success():
     assert [name for name, _ in cp.transitions] == ["planning", "investigating", "verifying"]
     assert leases.lease.checked >= 1
     assert leases.lease.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_binds_ephemeral_lease_token_for_tools():
+    cp = ControlPlane()
+    leases = LeaseExecutor()
+    brain = LeaseAwareBrain()
+    runtime = InvestigationRuntime(control_plane=cp, lease_executor=leases, brain=brain)
+    work = await runtime.accept(item())
+    await runtime.execute(work)
+    assert brain.token == "lease-token"
+
+
+@pytest.mark.asyncio
+async def test_execute_commits_failed_outcome_instead_of_false_success():
+    cp = ControlPlane()
+    leases = LeaseExecutor()
+    runtime = InvestigationRuntime(
+        control_plane=cp, lease_executor=leases,
+        brain=OutcomeBrain({"status": "failed", "events": [], "error_code": "QUERY_FAILED"}),
+    )
+    work = await runtime.accept(item())
+    await runtime.execute(work)
+    assert leases.lease.commits[-1]["target"] == "failed"
+    assert leases.lease.commits[-1]["result"]["error_code"] == "QUERY_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_execute_preserves_partial_outcome():
+    cp = ControlPlane()
+    leases = LeaseExecutor()
+    runtime = InvestigationRuntime(
+        control_plane=cp, lease_executor=leases,
+        brain=OutcomeBrain({"status": "partial", "events": [{"type": "evidence"}]}),
+    )
+    work = await runtime.accept(item())
+    await runtime.execute(work)
+    assert leases.lease.commits[-1]["target"] == "partial"
+
+
+def test_runtime_event_ids_are_stable_for_retries():
+    first = _runtime_events([{"type": "progress", "node": "collect"}],
+                            invocation_id=item().invocation_id, target="success", result={})
+    second = _runtime_events([{"type": "progress", "node": "collect"}],
+                             invocation_id=item().invocation_id, target="success", result={})
+    assert [event["event_id"] for event in first] == [event["event_id"] for event in second]

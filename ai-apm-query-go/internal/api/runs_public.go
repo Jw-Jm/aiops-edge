@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -45,9 +46,33 @@ func randomUUID() string {
 	return string(dst)
 }
 
+// idempotencyRequestID turns an arbitrary client retry key into a stable,
+// canonical UUID.  request_id is also carried in the signed RunInvocation
+// contract, so accepting raw browser strings here would create a Run that the
+// orchestrator cannot authenticate.  Keeping the original key out of the
+// contract avoids adding a second persistence column while preserving retry
+// stability per tenant.
+func idempotencyRequestID(tenantID, key string) string {
+	h := sha256.Sum256([]byte("aiops:idempotency:" + tenantID + ":" + key))
+	b := h[:16]
+	b[6] = (b[6] & 0x0f) | 0x50 // UUIDv5-shaped deterministic identifier
+	b[8] = (b[8] & 0x3f) | 0x80
+	dst := make([]byte, 36)
+	hex.Encode(dst[0:8], b[0:4])
+	dst[8] = '-'
+	hex.Encode(dst[9:13], b[4:6])
+	dst[13] = '-'
+	hex.Encode(dst[14:18], b[6:8])
+	dst[18] = '-'
+	hex.Encode(dst[19:23], b[8:10])
+	dst[23] = '-'
+	hex.Encode(dst[24:36], b[10:16])
+	return string(dst)
+}
+
 // createRunPublicRequest 是公共 Run 创建请求体。
-// idempotency_key（客户端幂等键）非必填；提供则映射为 request_id（唯一域
-// (tenant_id, request_id)），使同一 idempotency_key 重试返回首次创建结果（P1-1）。
+// idempotency_key（客户端幂等键）非必填；提供则稳定映射为 canonical
+// request_id（唯一域 (tenant_id, request_id)），使同一 key 重试返回首次创建结果。
 type createRunPublicRequest struct {
 	TenantID       string `json:"tenant_id"`
 	ClusterID      string `json:"cluster_id"`      // 必填：调查必须有目标 cluster（P1-1 禁空 cluster 非法 multi-cluster scope）
@@ -98,6 +123,9 @@ func (h *Handler) CreateRunPublic(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	runID := randomUUID()
 	requestID := req.IdempotencyKey
+	if requestID != "" {
+		requestID = idempotencyRequestID(auth.TenantID, requestID)
+	}
 	if requestID == "" {
 		requestID = randomUUID()
 	}
@@ -136,7 +164,15 @@ func (h *Handler) CreateRunPublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !created {
-		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "RUN_ALREADY_EXISTS"})
+		existing, getErr := h.runDAO.GetByTenantRequestID(auth.TenantID, requestID)
+		if getErr != nil || existing == nil {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "RUN_ALREADY_EXISTS"})
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"run_id": existing.RunID, "request_id": existing.RequestID,
+			"status": existing.Status, "created_at": existing.CreatedAt.Format(time.RFC3339),
+		})
 		return
 	}
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
@@ -207,7 +243,31 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"run": airunToMap(run)})
+	runView := airunToMap(run)
+	// The public detail view is an aggregate read model.  It keeps the UI from
+	// manufacturing empty plan/action state while each write domain remains
+	// owned by its DAO/control-plane endpoint.
+	if h.planDAO != nil {
+		if steps, stepErr := h.planDAO.ListByRun(runID); stepErr == nil {
+			runView["plan_steps"] = planStepsToMaps(steps)
+		}
+	}
+	if h.hypothesisDAO != nil {
+		if hypotheses, hypothesisErr := h.hypothesisDAO.ListByRun(runID); hypothesisErr == nil {
+			runView["hypotheses"] = hypothesesToMaps(hypotheses)
+		}
+	}
+	if h.actionDAO != nil {
+		if actions, actionErr := h.actionDAO.ListByRun(runID); actionErr == nil {
+			runView["actions"] = actionsToMaps(actions)
+		}
+	}
+	if h.approvalDAO != nil {
+		if approvals, approvalErr := h.approvalDAO.ListByRun(runID); approvalErr == nil {
+			runView["approvals"] = approvalsToMaps(approvals)
+		}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"run": runView})
 }
 
 // GetRunToolsPublic handles GET /api/v1/ai/runs/{id}/tools（C2-4：UI Tool activity 只展示

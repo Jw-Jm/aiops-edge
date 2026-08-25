@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 )
 
 func TestControlPlaneActionAppend(t *testing.T) {
@@ -22,7 +23,7 @@ func TestControlPlaneActionAppend(t *testing.T) {
 
 	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/actions",
 		"control_plane.runs.mutate",
-		`{"action_id":"act-1","action_type":"restart","action_hash":"abc123","idempotency_key":"k1","proposed_risk":"R2","authoritative_risk":"R3","status":"proposed","dry_run":true,"params":{"x":1}}`,
+		`{"action_id":"act-1","action_type":"restart","action_hash":"abc123","idempotency_key":"k1","proposed_risk":"R2","authoritative_risk":"R3","status":"proposed","dry_run":true,"target_name":"orders","target_uid":"uid-1","resource_version":"rv-7","namespace":"prod","operation":"patch","params":{"x":1}}`,
 		nil)
 	rec := httptest.NewRecorder()
 	c.h.InternalControlPlaneRunRouter(rec, req)
@@ -51,6 +52,38 @@ func TestControlPlaneApprovalAppend(t *testing.T) {
 	c.h.InternalControlPlaneRunRouter(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations not met: %v", err)
+	}
+}
+
+func TestControlPlaneHypothesisAndPlanStepAppend(t *testing.T) {
+	c := newCPHandler(t)
+	mock, cleanup := setupAPIStore(t)
+	defer cleanup()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
+		WillReturnRows(airunMockRows("run-1", "investigating", 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_hypotheses")).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/hypotheses",
+		"control_plane.runs.mutate", `{"hypothesis_id":"hyp-1","content":"database saturation","confidence":0.8}`, nil)
+	rec := httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected hypothesis 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
+		WillReturnRows(airunMockRows("run-1", "investigating", 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_plan_steps")).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	req = c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/plan-steps",
+		"control_plane.runs.mutate", `{"step_id":"step-1","seq":1,"step_type":"collect","description":"collect metrics"}`,
+		func(ctx *contract.TrustedRequestContext) { ctx.Nonce = "22222222-2222-4222-8222-222222222222" })
+	rec = httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected plan step 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations not met: %v", err)

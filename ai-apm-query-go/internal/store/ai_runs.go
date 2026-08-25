@@ -182,6 +182,23 @@ func (d *AIRunDAO) Get(runID string) (*AIRun, error) {
 	return scanAIRun(row)
 }
 
+// GetByTenantRequestID reads the canonical idempotency record for a tenant.
+// The tenant predicate is part of the lookup so a retry cannot reveal or
+// replay another tenant's Run.
+func (d *AIRunDAO) GetByTenantRequestID(tenantID, requestID string) (*AIRun, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	row := conn.QueryRow(
+		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
+		   target_resource_id, time_range_start, time_range_end, status, state_version,
+		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence
+		 FROM ai_runs WHERE tenant_id = ? AND request_id = ?`, tenantID, requestID)
+	return scanAIRun(row)
+}
+
 // GetTx 在给定事务内按 run_id 读取（供恢复一致性快照，P1-4）。
 func (d *AIRunDAO) GetTx(tx *sql.Tx, runID string) (*AIRun, error) {
 	row := tx.QueryRow(

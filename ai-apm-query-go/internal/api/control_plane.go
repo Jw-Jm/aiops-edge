@@ -77,5 +77,8 @@ func (h *Handler) authorizeControlPlaneForRun(r *http.Request, capability, expec
 	if ictx.TenantID != "" && run.TenantID != ictx.TenantID {
 		return nil, nil, &internalQueryError{Code: contract.ErrorCodeTenantAccessDenied, Message: "run tenant does not match signed tenant"}
 	}
+	if ictx.ClusterID != "" && run.PrimaryClusterID != "" && run.PrimaryClusterID != ictx.ClusterID {
+		return nil, nil, &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "run cluster does not match signed cluster"}
+	}
 	return ictx, run, nil
 }

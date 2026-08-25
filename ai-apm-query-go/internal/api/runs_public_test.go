@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,10 +68,11 @@ func TestCreateRunPublic(t *testing.T) {
 	mock.ExpectCommit()
 
 	req := authRunRequest(t, map[string]interface{}{
-		"tenant_id":   "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
-		"cluster_id":  "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
-		"intent":      "investigate",
-		"action_mode": "read_only",
+		"tenant_id":       "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+		"cluster_id":      "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+		"idempotency_key": "browser-retry-1",
+		"intent":          "investigate",
+		"action_mode":     "read_only",
 	})
 	w := httptest.NewRecorder()
 	h.CreateRunPublic(w, req)
@@ -83,6 +85,9 @@ func TestCreateRunPublic(t *testing.T) {
 	}
 	if resp["status"] != "created" || resp["run_id"] == "" || resp["request_id"] == "" {
 		t.Fatalf("bad resp: %v", resp)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(resp["request_id"].(string)) {
+		t.Fatalf("request_id must be a UUID even when client key is arbitrary: %v", resp["request_id"])
 	}
 }
 
@@ -124,10 +129,20 @@ func TestCreateRunPublicExistingOnDuplicate(t *testing.T) {
 			"kubernetes_identity_uid", "created_at", "updated_at"}).
 			AddRow(1, "91771a6e-9c2d-11f1-8271-bea176fe9f9f", "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
 				"p65", "p65", "prod", "cn", nil, "active", nil, time.Now(), time.Now()))
-	// CreateWithOutbox：事务内 ai_runs 唯一键冲突 → existing
+	// CreateWithOutbox：事务内 ai_runs 唯一键冲突 → 查询并重放原 Run
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_runs")).
 		WillReturnError(errors.New("Error 1062: Duplicate entry 'x' for key 'uq_ai_runs_tenant_request'"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id, tenant_id")).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "request_id", "tenant_id", "principal",
+			"principal_type", "session_id", "scope_kind", "primary_cluster_id", "intent",
+			"action_mode", "target_type", "target_resource_id", "time_range_start",
+			"time_range_end", "status", "state_version", "parent_run_id", "created_at",
+			"updated_at", "finished_at", "last_event_sequence"}).
+			AddRow("existing-run", "existing-request", "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+				"user-1", "user", nil, "single_cluster", "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+				"investigate", "read_only", "service", "orders", nil, nil, "created", 0, nil,
+				time.Now(), time.Now(), nil, 0))
 
 	req := authRunRequest(t, map[string]interface{}{
 		"tenant_id":  "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
@@ -136,8 +151,11 @@ func TestCreateRunPublicExistingOnDuplicate(t *testing.T) {
 	})
 	w := httptest.NewRecorder()
 	h.CreateRunPublic(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 replay, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"run_id":"existing-run"`) {
+		t.Fatalf("duplicate did not replay original run: %s", w.Body.String())
 	}
 }
 

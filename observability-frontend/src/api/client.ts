@@ -107,6 +107,10 @@ export interface RunSummary {
   created_at?: string | null
   root_cause?: string | null
   confidence?: number | null
+  plan_steps?: { step_id: string; seq: number; step_type: string; status: string; description?: string }[]
+  actions?: { action_id: string; action_type: string; status: string; authoritative_risk?: string; execution_status?: string; target_name?: string; target_uid?: string }[]
+  approvals?: { approval_id: string; action_id: string; decision: string; approver?: string; reason?: string }[]
+  hypotheses?: { hypothesis_id: string; content: string; confidence: number; status: string; confirmed_by_evidence?: boolean }[]
 }
 export interface CreateRunResponse {
   run_id: string

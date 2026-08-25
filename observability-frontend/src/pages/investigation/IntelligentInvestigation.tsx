@@ -77,6 +77,14 @@ const InvestigationDetailView: React.FC = () => {
           }
         } catch { /* 拉取失败 → 空态 */ }
         if (cancelled) return
+        const planSteps = Array.isArray(r.plan_steps) ? r.plan_steps : []
+        const actions = Array.isArray(r.actions) ? r.actions : []
+        const approvals = Array.isArray(r.approvals) ? r.approvals : []
+        const hypotheses = Array.isArray(r.hypotheses) ? r.hypotheses : []
+        const latestAction = actions[actions.length - 1]
+        const latestApproval = latestAction
+          ? approvals.filter((a: any) => a.action_id === latestAction.action_id).slice(-1)[0]
+          : undefined
         setDetail({
           runId: r.run_id,
           scope: {
@@ -87,12 +95,24 @@ const InvestigationDetailView: React.FC = () => {
           },
           intent: r.intent ?? '—',
           status: r.status ?? 'created',
-          plan: [],
+          plan: planSteps.map((s: any) => ({
+            step: String(s.description ?? s.step_type ?? s.step_id ?? ''),
+            tool: String(s.step_type ?? ''), status: String(s.status ?? 'pending'),
+          })),
           evidence,
-          hypothesis: [],
+          hypothesis: hypotheses.map((h: any) => ({
+            id: String(h.hypothesis_id ?? ''), claim: String(h.content ?? ''),
+            support: Number(h.confidence ?? 0), contradictions: [], missing: [],
+          })),
           rootCause: r.root_cause ?? 'unknown',
           confidence: r.confidence ?? 0,
-          action: { status: 'created', risk: 'R0', approver: null, execution: null, verification: null },
+          action: latestAction ? {
+            status: String(latestAction.status ?? 'proposed'),
+            risk: String(latestAction.authoritative_risk ?? 'R0'),
+            approver: latestApproval?.approver ?? null,
+            execution: latestAction.execution_status ?? null,
+            verification: null,
+          } : { status: 'created', risk: 'R0', approver: null, execution: null, verification: null },
         })
       })
       .catch(() => { if (!cancelled) setDetail(EMPTY_DETAIL) })
@@ -167,7 +187,9 @@ const InvestigationDetailView: React.FC = () => {
           </Card>
         </Col>
         <Col span={24}>
-          <Card title="Hypothesis / Root Cause / Action" size="small">
+          <Card title="Plan / Hypothesis / Root Cause / Action" size="small">
+            {d.plan.length > 0 && <Steps size="small" current={Math.max(0, d.plan.findIndex((s) => s.status !== 'success'))}
+              items={d.plan.map((s) => ({ title: `${s.tool || 'step'} · ${s.status}`, description: s.step }))} />}
             {d.hypothesis.length === 0 ? <Text type="secondary">暂无持久化假设或动作记录</Text> : d.hypothesis.map((h) => (
               <Collapse key={h.id} size="small" items={[{
                 key: h.id,
@@ -184,6 +206,11 @@ const InvestigationDetailView: React.FC = () => {
                 ),
               }]} />
             ))}
+            {d.action.status !== 'created' && <Descriptions size="small" column={1} style={{ marginTop: 12 }}>
+              <Descriptions.Item label="Action 状态"><Badge status="warning" text={d.action.status} /> 风险 <Tag>{d.action.risk}</Tag></Descriptions.Item>
+              <Descriptions.Item label="审批人">{d.action.approver ?? '未审批'}</Descriptions.Item>
+              <Descriptions.Item label="执行状态">{d.action.execution ?? '未执行'}</Descriptions.Item>
+            </Descriptions>}
           </Card>
         </Col>
       </Row>

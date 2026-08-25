@@ -51,8 +51,8 @@ func TestStreamRunEventsRejectsExpiredCursor(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/runs/run-1/events", nil)
 	req = withAuthorizationContext(req, AuthorizationContext{
-		UserID: "91480408-9c2d-11f1-8271-bea176fe9f9f",
-		TenantID: "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+		UserID:    "91480408-9c2d-11f1-8271-bea176fe9f9f",
+		TenantID:  "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
 		SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	})
 	rec := httptest.NewRecorder()
@@ -105,5 +105,11 @@ func TestStreamRunEventsReplayWritesEvents(t *testing.T) {
 	}
 	if !strings.Contains(body, `"event_id":"e1"`) {
 		t.Fatalf("expected e1 in SSE body, got: %q", body)
+	}
+	if !strings.Contains(body, `"payload":{"x":1}`) {
+		t.Fatalf("event payload must remain JSON, got: %q", body)
+	}
+	if !strings.Contains(body, "id: 1\n") {
+		t.Fatalf("event sequence must be exposed as SSE id, got: %q", body)
 	}
 }

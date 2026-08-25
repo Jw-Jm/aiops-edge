@@ -28,6 +28,13 @@ type controlPlaneBodyAction struct {
 	Status            string          `json:"status"`
 	DryRun            bool            `json:"dry_run"`
 	Params            json.RawMessage `json:"params"`
+	// Executor safety identity is persisted with the proposal, not inferred at
+	// execution time (TOCTOU protection).
+	TargetName      string `json:"target_name"`
+	TargetUID       string `json:"target_uid"`
+	ResourceVersion string `json:"resource_version"`
+	Namespace       string `json:"namespace"`
+	Operation       string `json:"operation"`
 }
 
 // controlPlaneBodyApproval 是 approval 持久化请求体。
@@ -38,6 +45,25 @@ type controlPlaneBodyApproval struct {
 	Decision   string `json:"decision"`
 	Approver   string `json:"approver"`
 	Reason     string `json:"reason"`
+}
+
+type controlPlaneBodyHypothesis struct {
+	HypothesisID        string  `json:"hypothesis_id"`
+	Content             string  `json:"content"`
+	Confidence          float64 `json:"confidence"`
+	Status              string  `json:"status"`
+	ConfirmedByEvidence bool    `json:"confirmed_by_evidence"`
+}
+
+type controlPlaneBodyPlanStep struct {
+	StepID      string          `json:"step_id"`
+	Seq         int             `json:"seq"`
+	StepType    string          `json:"step_type"`
+	Status      string          `json:"status"`
+	ClusterID   string          `json:"cluster_id"`
+	Description string          `json:"description"`
+	DependsOn   []string        `json:"depends_on"`
+	Parameters  json.RawMessage `json:"parameters"`
 }
 
 // internalControlPlaneActionAppend 处理 POST .../runs/{id}/actions。
@@ -61,7 +87,8 @@ func (h *Handler) internalControlPlaneActionAppend(w http.ResponseWriter, r *htt
 		ActionType: body.ActionType, ActionHash: body.ActionHash, IdempotencyKey: body.IdempotencyKey,
 		ProposedRisk: body.ProposedRisk, AuthoritativeRisk: body.AuthoritativeRisk,
 		Status: firstNonEmpty(body.Status, "proposed"), DryRun: body.DryRun,
-		Params: body.Params,
+		Params: body.Params, TargetName: body.TargetName, TargetUID: body.TargetUID,
+		ResourceVersion: body.ResourceVersion, Namespace: body.Namespace, Operation: body.Operation,
 	})
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "action_persist_failed"})
@@ -98,4 +125,62 @@ func (h *Handler) internalControlPlaneApprovalAppend(w http.ResponseWriter, r *h
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"approval_id": body.ApprovalID, "created": created})
+}
+
+// internalControlPlaneHypothesisAppend persists an RCA hypothesis generated
+// by the investigation worker.  It is deliberately separate from evidence:
+// hypotheses are claims, while evidence remains immutable observation data.
+func (h *Handler) internalControlPlaneHypothesisAppend(w http.ResponseWriter, r *http.Request, runID string) {
+	_, run, err := h.authorizeControlPlaneForRun(r, "control_plane.runs.mutate", "ai-orchestrator", runID)
+	if err != nil {
+		respondInternalQueryError(w, err)
+		return
+	}
+	var body controlPlaneBodyHypothesis
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
+		return
+	}
+	if body.HypothesisID == "" || body.Content == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
+		return
+	}
+	created, err := h.hypothesisDAO.Create(store.AIHypothesis{
+		HypothesisID: body.HypothesisID, RunID: runID, TenantID: run.TenantID,
+		ClusterID: run.PrimaryClusterID, Content: body.Content, Confidence: body.Confidence,
+		Status: firstNonEmpty(body.Status, "proposed"), ConfirmedByEvidence: body.ConfirmedByEvidence,
+	})
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "hypothesis_persist_failed"})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"hypothesis_id": body.HypothesisID, "created": created})
+}
+
+func (h *Handler) internalControlPlanePlanStepAppend(w http.ResponseWriter, r *http.Request, runID string) {
+	_, run, err := h.authorizeControlPlaneForRun(r, "control_plane.runs.mutate", "ai-orchestrator", runID)
+	if err != nil {
+		respondInternalQueryError(w, err)
+		return
+	}
+	var body controlPlaneBodyPlanStep
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
+		return
+	}
+	if body.StepID == "" || body.StepType == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
+		return
+	}
+	clusterID := firstNonEmpty(body.ClusterID, run.PrimaryClusterID)
+	created, err := h.planDAO.Create(store.AIPlanStep{
+		StepID: body.StepID, RunID: runID, Seq: body.Seq, StepType: body.StepType,
+		Status: firstNonEmpty(body.Status, "success"), ClusterID: clusterID,
+		Description: body.Description, DependsOn: body.DependsOn, Parameters: body.Parameters,
+	})
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "plan_step_persist_failed"})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"step_id": body.StepID, "created": created})
 }

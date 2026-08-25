@@ -66,7 +66,8 @@ type toolRunContext struct {
 	RunID          string
 	TenantID       string
 	ClusterID      string
-	ArgsHash       string // P0-TOOL-04：幂等域 (run_id, idempotency_key, args_hash)
+	ArgsHash       string           // P0-TOOL-04：幂等域 (run_id, idempotency_key, args_hash)
+	Existing       *store.AIToolRun // durable replay record, when idempotency matches
 }
 
 // newToolRunFromRequest 从 internalQueryRequest + rctx 构造 toolRunContext（无 tool_run_id 则 nil）。
@@ -146,9 +147,9 @@ func toolArgsHash(req *internalQueryRequest) string {
 
 // startToolRun 幂等开始一个 ToolRun 记录（B1-02：query-api 作为 ToolRun owner）。
 // 返回 false 表示同 idempotency_key 已存在（不重复真实查询，直接返回既有）。
-func (h *Handler) startToolRun(trc *toolRunContext) bool {
+func (h *Handler) startToolRun(trc *toolRunContext) (bool, error) {
 	if trc == nil || h.toolDAO == nil {
-		return true // 无 tool context 或 DAO 不可用 → 不包装（调用方仍执行）
+		return true, nil // 无 tool context 或 DAO 不可用 → 不包装（调用方仍执行）
 	}
 	idemKey := trc.IdempotencyKey
 	if idemKey == "" {
@@ -164,12 +165,12 @@ func (h *Handler) startToolRun(trc *toolRunContext) bool {
 	})
 	if err != nil {
 		log.Printf("toolrun start create failed (fail-closed, NOT idempotent): %v", err)
-		return false // 创建失败：不执行（fail-closed）
+		return false, err // 创建失败：不执行（fail-closed）
 	}
 	if created {
 		cp.inc("tool_started")
 	}
-	return created
+	return created, nil
 }
 
 // finishToolRun 结束 ToolRun 并写入 data-quality / result 字段。
@@ -248,6 +249,44 @@ func buildEnvelope(trc *toolRunContext, quality string, data []byte, errMsg stri
 		if json.Unmarshal(data, &arr) == nil {
 			env.Count = len(arr)
 		}
+	}
+	return env
+}
+
+// toolReplayEnvelope reconstructs the exact durable result envelope for a
+// duplicate request.  A duplicate must never fall through to the data source,
+// and returning only {idempotent:true} loses the original result for clients.
+func toolReplayEnvelope(trc *toolRunContext) ToolResultEnvelope {
+	if trc == nil || trc.Existing == nil {
+		return ToolResultEnvelope{Quality: "failed", Data: json.RawMessage(`null`)}
+	}
+	existing := trc.Existing
+	quality := existing.ResultQuality
+	if quality == "" {
+		quality = qualityStatus(existing.Status)
+	}
+	running := existing.Status == "running"
+	if quality == "none" || running {
+		// The envelope quality domain is complete|partial|failed; HTTP 202 plus
+		// this marker represents an in-flight durable ToolRun.
+		quality = "partial"
+	}
+	env := buildEnvelope(trc, quality, existing.Result, existing.ErrorMessage)
+	if existing.ResultDigestSHA256 != "" {
+		env.Digest = existing.ResultDigestSHA256
+	}
+	env.Truncated = existing.ResultTruncated
+	env.Count = int(existing.ResultCount)
+	if existing.QueryWindowStart != nil {
+		env.QueryWindowStart = existing.QueryWindowStart.UTC().Format(time.RFC3339)
+	}
+	if existing.QueryWindowEnd != nil {
+		env.QueryWindowEnd = existing.QueryWindowEnd.UTC().Format(time.RFC3339)
+	}
+	if existing.ErrorMessage != "" {
+		env.SourceErrors = []string{existing.ErrorMessage}
+	} else if running {
+		env.SourceErrors = []string{"TOOL_RUNNING"}
 	}
 	return env
 }

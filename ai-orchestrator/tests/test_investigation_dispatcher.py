@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +48,16 @@ class RecordingRuntime(BlockingRuntime):
         return await super().accept(item)
 
 
+class TerminalRuntime(BlockingRuntime):
+    async def accept(self, item):
+        return SimpleNamespace(invocation=item, status="success", lease=None)
+
+
+class WrappedRuntime(BlockingRuntime):
+    async def accept(self, item):
+        return SimpleNamespace(invocation=item, status="planning")
+
+
 @pytest.mark.asyncio
 async def test_accept_returns_before_worker_finishes():
     runtime = BlockingRuntime()
@@ -88,3 +99,35 @@ async def test_queue_saturation_does_not_claim_second_run():
     with pytest.raises(asyncio.QueueFull):
         await dispatcher.accept(invocation("run-b", "inv-b"))
     assert runtime.accept_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_duplicate_is_not_enqueued_or_executed():
+    runtime = TerminalRuntime()
+    dispatcher = InvestigationDispatcher(runtime, capacity=1)
+    await dispatcher.start()
+    try:
+        result = await dispatcher.accept(invocation())
+        assert result.duplicate is True
+        await asyncio.sleep(0)
+        assert runtime.finished is False
+        assert dispatcher.queued_count("inv-a") == 0
+    finally:
+        await dispatcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_cleans_pending_for_wrapped_runtime_work():
+    runtime = WrappedRuntime()
+    dispatcher = InvestigationDispatcher(runtime, capacity=1)
+    await dispatcher.start()
+    try:
+        await dispatcher.accept(invocation())
+        await asyncio.wait_for(runtime.started.wait(), timeout=1)
+        runtime.release.set()
+        await asyncio.wait_for(asyncio.sleep(0), timeout=1)
+        await asyncio.wait_for(dispatcher._queue.join(), timeout=1)
+        assert dispatcher.queued_count("inv-a") == 0
+    finally:
+        runtime.release.set()
+        await dispatcher.stop()

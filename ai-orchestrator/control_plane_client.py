@@ -188,6 +188,54 @@ class ControlPlaneClient:
             "expected_version": expected_version, "command_id": command_id,
         })
 
+    def append_action(self, *, run_id: str, tenant_id: str, cluster_id: str,
+                      action_id: str, action_type: str, action_hash: str,
+                      idempotency_key: str, proposed_risk: str = "R0",
+                      authoritative_risk: str = "R0", status: str = "proposed",
+                      dry_run: bool = True, params: Optional[Mapping[str, Any]] = None,
+                      target_name: str = "", target_uid: str = "",
+                      resource_version: str = "", namespace: str = "",
+                      operation: str = "") -> dict:
+        """Persist an action proposal; never executes the data-plane mutation."""
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE,
+                              tenant_id=tenant_id, cluster_id=cluster_id,
+                              scope_kind="cluster" if cluster_id else "run")
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/actions", claims, {
+            "action_id": action_id, "action_type": action_type,
+            "action_hash": action_hash, "idempotency_key": idempotency_key,
+            "proposed_risk": proposed_risk, "authoritative_risk": authoritative_risk,
+            "status": status, "dry_run": dry_run, "params": dict(params or {}),
+            "target_name": target_name, "target_uid": target_uid,
+            "resource_version": resource_version, "namespace": namespace,
+            "operation": operation,
+        })
+
+    def append_hypothesis(self, *, run_id: str, tenant_id: str, cluster_id: str,
+                          hypothesis_id: str, content: str, confidence: float = 0.0,
+                          status: str = "proposed", confirmed_by_evidence: bool = False) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE,
+                              tenant_id=tenant_id, cluster_id=cluster_id,
+                              scope_kind="cluster" if cluster_id else "run")
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/hypotheses", claims, {
+            "hypothesis_id": hypothesis_id, "content": content,
+            "confidence": confidence, "status": status,
+            "confirmed_by_evidence": confirmed_by_evidence,
+        })
+
+    def append_plan_step(self, *, run_id: str, tenant_id: str, cluster_id: str,
+                         step_id: str, seq: int, step_type: str,
+                         status: str = "success", description: str = "",
+                         depends_on: Optional[list[str]] = None,
+                         parameters: Optional[Mapping[str, Any]] = None) -> dict:
+        claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE,
+                              tenant_id=tenant_id, cluster_id=cluster_id,
+                              scope_kind="cluster" if cluster_id else "run")
+        return self._post(f"/internal/v1/control-plane/runs/{run_id}/plan-steps", claims, {
+            "step_id": step_id, "seq": seq, "step_type": step_type,
+            "status": status, "cluster_id": cluster_id, "description": description,
+            "depends_on": list(depends_on or []), "parameters": dict(parameters or {}),
+        })
+
     def get(self, *, run_id: str, tenant_id: str) -> dict:
         claims = self._claims(run_id=run_id, capability=CP_RUNS_RECOVER, tenant_id=tenant_id)
         return self._get(f"/internal/v1/control-plane/runs/{run_id}", claims)

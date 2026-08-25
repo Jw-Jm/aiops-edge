@@ -124,6 +124,7 @@ type Handler struct {
 	outboxDAO       *store.AIRunOutboxDAO
 	eventDAO        *store.AIRunEventDAO
 	planDAO         *store.AIPlanStepDAO
+	hypothesisDAO   *store.AIHypothesisDAO
 	toolDAO         *store.AIToolRunDAO
 	actionDAO       *store.AIActionDAO
 	cmdDAO          *store.AIControlCommandDAO
@@ -187,6 +188,7 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.outboxDAO = &store.AIRunOutboxDAO{}
 	h.eventDAO = &store.AIRunEventDAO{}
 	h.planDAO = &store.AIPlanStepDAO{}
+	h.hypothesisDAO = &store.AIHypothesisDAO{}
 	h.toolDAO = &store.AIToolRunDAO{}
 	h.actionDAO = &store.AIActionDAO{}
 	h.attemptDAO = &store.AIActionAttemptDAO{}

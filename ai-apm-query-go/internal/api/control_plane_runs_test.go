@@ -123,7 +123,7 @@ func TestControlPlaneRunTransitionCAS(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c.h.InternalControlPlaneRunRouter(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200, got %d: %s (mock: %v)", rec.Code, rec.Body.String(), mock.ExpectationsWereMet())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations not met: %v", err)
@@ -183,19 +183,28 @@ func TestControlPlaneRunUnfinishedRequiresGlobalCapability(t *testing.T) {
 
 func TestControlPlaneRunUnfinishedGlobalCapability(t *testing.T) {
 	c := newCPHandler(t)
+	c.h.leaseDAO = &store.RuntimeLeaseDAO{}
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()
-	// 正确 capability + ScanRecoveryCandidates（A2-02）返回空列表（sqlmock 需匹配查询）。
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, lease_owner_id")).
-		WillReturnRows(sqlmock.NewRows([]string{"run_id", "lease_owner_id", "lease_epoch",
-			"lease_claim_id", "lease_token_hash", "lease_expires_at", "runtime_wait_kind",
-			"retry_not_before", "retry_attempt"}))
+	// Recovery 必须返回重建 AcceptedInvocation 所需的完整 Run 元数据，
+	// 而不是只有 lease 字段，否则 orchestrator 重启后无法恢复。
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT r.run_id, r.request_id, COALESCE(o.invocation_id, '')")).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "request_id", "invocation_id",
+			"tenant_id", "primary_cluster_id", "status", "intent", "target_resource_id",
+			"action_mode", "lease_owner_id", "lease_epoch", "runtime_wait_kind",
+			"retry_not_before", "retry_attempt"}).
+			AddRow("run-1", "req-1", "inv-1", "tenant-1", "cluster-1", "planning",
+				"diagnose", "service-a", "read_only", nil, 2, "none", nil, 0))
 	req := c.cpReq(t, http.MethodGet, "/internal/v1/control-plane/runs/unfinished?limit=10",
 		"control_plane.runs.recover.global", "", nil)
 	rec := httptest.NewRecorder()
 	c.h.InternalControlPlaneRunRouter(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"invocation_id":"inv-1"`) ||
+		!strings.Contains(rec.Body.String(), `"tenant_id":"tenant-1"`) {
+		t.Fatalf("recovery response omitted invocation metadata: %s", rec.Body.String())
 	}
 }
 

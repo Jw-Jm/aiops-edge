@@ -83,6 +83,38 @@ func (d *AIApprovalDecisionDAO) ListByRunTx(tx *sql.Tx, runID string) ([]AIAppro
 	return out, rows.Err()
 }
 
+// ListByRun lists approvals for a public Run aggregate view.
+func (d *AIApprovalDecisionDAO) ListByRun(runID string) ([]AIApprovalDecision, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	rows, err := conn.Query(
+		`SELECT approval_id, run_id, action_id, action_hash, tenant_id, cluster_id,
+		   decision, approver, reason, decided_at, created_at
+		 FROM ai_approval_decisions WHERE run_id = ? ORDER BY created_at ASC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AIApprovalDecision{}
+	for rows.Next() {
+		var a AIApprovalDecision
+		var reason sql.NullString
+		var decided sql.NullTime
+		if err := rows.Scan(&a.ApprovalID, &a.RunID, &a.ActionID, &a.ActionHash, &a.TenantID,
+			&a.ClusterID, &a.Decision, &a.Approver, &reason, &decided, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		a.Reason = reason.String
+		if decided.Valid {
+			a.DecidedAt = &decided.Time
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // GetApprovedApproval 返回该 action 的最新 approved 审批决定（Stage D 执行前置条件）。
 // 用于 query-api 签发 ActionExecutionContext 前确认该 action 已被 approved。
 func (d *AIApprovalDecisionDAO) GetApprovedApproval(actionID string) (*AIApprovalDecision, error) {

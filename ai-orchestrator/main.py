@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import base64
+import hashlib
 import os
 import time
 import re
@@ -47,6 +48,7 @@ scheduler = AsyncIOScheduler()
 # 优雅关闭时一并停止，避免进程退出后线程泄漏。
 _flow_sched = None
 _kg_sched = None
+_investigation_recovery_task = None
 
 # P13 真实接线：ManualBoundary 单例（唯一 Run 创建入口人工触发边界，P0-5）
 from manual_boundary import ManualBoundary as _ManualBoundary, ManualTriggerDenied as _ManualTriggerDenied
@@ -142,8 +144,9 @@ async def lifespan(app: FastAPI):
     # === startup ===
     # Durable Run recovery is best-effort at startup; the queue/lease boundary
     # remains fail-closed if query-api is unavailable.
+    global _investigation_recovery_task
     if os.environ.get("QUERY_API_URL") and _investigation_runtime_enabled():
-        asyncio.create_task(_recover_investigations_on_startup())
+        _investigation_recovery_task = asyncio.create_task(_investigation_recovery_loop())
     # 1. APScheduler 定时异常扫描
     try:
         scheduler.add_job(_scheduled_anomaly_scan, 'interval', minutes=5,
@@ -268,6 +271,10 @@ async def lifespan(app: FastAPI):
 
     # === shutdown ===
     global _investigation_dispatcher
+    if _investigation_recovery_task is not None:
+        _investigation_recovery_task.cancel()
+        await asyncio.gather(_investigation_recovery_task, return_exceptions=True)
+        _investigation_recovery_task = None
     if _investigation_dispatcher is not None:
         try:
             await _investigation_dispatcher.stop()
@@ -375,15 +382,109 @@ class _InvestigationBrainAdapter:
 
     async def investigate(self, item, lease):
         events = []
+        status = "success"
+        error_code = ""
+        final_text = ""
+        proposal = None
+        plan_events = []
+        hypothesis_events = []
+        plan_persist_error = ""
+        saw_done = False
         if item.request_context is None:
             raise RuntimeError("RUN_CONTEXT_REQUIRED")
+        # read_only Investigations are reports, not approval-gated mutation
+        # workflows.  Use the chat graph so they do not manufacture a
+        # suggestion and then get stuck in an approval state.
+        mode = "chat" if item.action_mode == "read_only" else "full"
         async for event in _get_brain().stream_sync(
             item.intent or "diagnosis", item.service or "", item.message or "",
-            item.invocation_id, mode="full", request_context=item.request_context,
+            item.invocation_id, mode=mode, request_context=item.request_context,
         ):
             lease.check_active()
             events.append(event)
-        return events
+            if isinstance(event, dict):
+                event_type = str(event.get("type") or event.get("event_type") or "")
+                if event_type == "error":
+                    status = "failed"
+                    error_code = str(event.get("error") or "BRAIN_ERROR")
+                elif event_type == "suggestion" and item.action_mode != "read_only":
+                    status = "awaiting_approval"
+                    proposal = event
+                elif event_type == "progress":
+                    plan_events.append(event)
+                elif event_type == "hypothesis":
+                    hypothesis_events.append(event)
+                elif event_type == "tool_end":
+                    tool_status = str(event.get("status") or "").lower()
+                    if tool_status in {"failed", "unavailable"}:
+                        status = "failed"
+                        error_code = str(event.get("error") or f"TOOL_{tool_status.upper()}")
+                    elif tool_status == "no_data" and status == "success":
+                        status = "partial"
+                        error_code = "NO_DATA"
+                if event_type == "done":
+                    saw_done = True
+                    final_text = str(event.get("text") or "")
+        if status == "success" and (not saw_done or not final_text.strip()):
+            status = "partial"
+            error_code = error_code or ("INCOMPLETE_STREAM" if not saw_done else "NO_DATA")
+        if plan_events:
+            from control_plane_client import ControlPlaneClient
+            cp = ControlPlaneClient()
+            try:
+                for index, event in enumerate(plan_events, start=1):
+                    node = str(event.get("node") or "step")
+                    step_id = str(uuid.uuid5(uuid.UUID(item.run_id), f"plan:{node}:{index}"))
+                    cp.append_plan_step(
+                        run_id=item.run_id, tenant_id=item.tenant_id, cluster_id=item.cluster_id,
+                        step_id=step_id, seq=int(event.get("step") or index), step_type=node,
+                        status="failed" if status == "failed" else "success",
+                        description=str(event.get("text") or node),
+                    )
+            except Exception as exc:  # noqa: BLE001 - plan is an audit projection
+                plan_persist_error = str(exc)[:200]
+        if hypothesis_events:
+            from control_plane_client import ControlPlaneClient
+            cp = ControlPlaneClient()
+            try:
+                for index, event in enumerate(hypothesis_events, start=1):
+                    hypothesis_id = str(uuid.uuid5(uuid.UUID(item.run_id),
+                                                   f"hypothesis:{item.invocation_id}:{index}"))
+                    confidence = min(1.0, max(0.0, float(event.get("confidence") or 0)))
+                    cp.append_hypothesis(
+                        run_id=item.run_id, tenant_id=item.tenant_id, cluster_id=item.cluster_id,
+                        hypothesis_id=hypothesis_id, content=str(event.get("content") or ""),
+                        confidence=confidence, status=str(event.get("status") or "proposed"),
+                        confirmed_by_evidence=bool(event.get("confirmed_by_evidence")),
+                    )
+            except Exception as exc:  # noqa: BLE001 - hypothesis is an audit projection
+                plan_persist_error = plan_persist_error or str(exc)[:200]
+        if proposal and item.action_mode == "plan_only":
+            script = str(proposal.get("script") or "")
+            if script:
+                from control_plane_client import ControlPlaneClient
+                action_id = str(uuid.uuid5(uuid.UUID(item.run_id), f"action:{item.invocation_id}"))
+                action_hash = hashlib.sha256(script.encode("utf-8")).hexdigest()
+                risk_value = float(proposal.get("risk_score") or 0)
+                risk_label = f"R{min(5, max(0, round(risk_value * 5)))}"
+                ControlPlaneClient().append_action(
+                    run_id=item.run_id, tenant_id=item.tenant_id, cluster_id=item.cluster_id,
+                    action_id=action_id, action_type="script", action_hash=action_hash,
+                    idempotency_key=f"{item.run_id}:action:{item.invocation_id}",
+                    proposed_risk=risk_label, authoritative_risk=risk_label,
+                    status="proposed", dry_run=True,
+                    params={"script": script, "plan": str(proposal.get("plan") or "")},
+                    target_name=item.resource_id, operation="patch",
+                )
+        result = {"report": final_text} if final_text else {}
+        if plan_persist_error:
+            result["plan_persist_error"] = plan_persist_error
+        return {
+            "status": status,
+            "events": events,
+            "error_code": error_code,
+            "result": result,
+        }
 
 
 async def _get_investigation_dispatcher():
@@ -416,22 +517,24 @@ async def _recover_investigations_on_startup() -> None:
         items = []
         for run in runs:
             status = str(run.get("status") or "")
-            if status not in {"planning", "investigating", "verifying"}:
+            if status not in {"created", "planning", "investigating", "verifying"}:
                 continue
             run_id = str(run.get("run_id") or "")
-            cluster_id = str(run.get("primary_cluster_id") or "")
+            cluster_id = str(run.get("cluster_id") or run.get("primary_cluster_id") or "")
             request_id = str(run.get("request_id") or "")
-            if not run_id or not cluster_id or not request_id:
+            invocation_id = str(run.get("invocation_id") or "")
+            run_tenant_id = str(run.get("tenant_id") or "")
+            if not run_id or not cluster_id or not request_id or not invocation_id or not run_tenant_id:
                 continue
             scope = InvocationScope(
                 principal_type="system", principal_id="f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c",
-                session_id=None, tenant_id=tenant_id, cluster_id=cluster_id,
+                session_id=None, tenant_id=run_tenant_id, cluster_id=cluster_id,
                 request_id=request_id, source="recovery", run_id=run_id,
-                invocation_id=request_id, workload_kind="investigation",
+                invocation_id=invocation_id, workload_kind="investigation",
             )
             items.append(AcceptedInvocation(
-                run_id=run_id, invocation_id=request_id, request_id=request_id,
-                tenant_id=tenant_id, cluster_id=cluster_id,
+                run_id=run_id, invocation_id=invocation_id, request_id=request_id,
+                tenant_id=run_tenant_id, cluster_id=cluster_id,
                 intent=str(run.get("intent") or "diagnosis"),
                 resource_id=str(run.get("target_resource_id") or ""),
                 service=str(run.get("target_resource_id") or ""),
@@ -444,6 +547,24 @@ async def _recover_investigations_on_startup() -> None:
             print(f"[startup] investigation recovery queued: {len(items)}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[startup] investigation recovery skipped: {exc}", flush=True)
+
+
+async def _investigation_recovery_loop() -> None:
+    """Continuously drain the durable recovery scanner, not just at startup.
+
+    A one-shot scan loses Runs created while the worker is restarting or while
+    query-api is temporarily unavailable.  The control plane remains the
+    source of truth; this loop only rebuilds queue items and never queries a
+    data source directly.
+    """
+    try:
+        interval = max(1, int(os.environ.get("INVESTIGATION_RECOVERY_INTERVAL_SECONDS", "30")))
+    except (TypeError, ValueError):
+        # A malformed deployment value must not kill the recovery worker.
+        interval = 30
+    while True:
+        await _recover_investigations_on_startup()
+        await asyncio.sleep(interval)
 
 PROVIDER_BACKEND = {
     "openai": "openai", "deepseek": "deepseek",

@@ -72,6 +72,13 @@ class InvestigationDispatcher:
             # Runtime.accept is deliberately before enqueue: it claims the lease
             # and persists created→planning before the 202 response is returned.
             accepted_item = await self._runtime.accept(item)
+            # A durable terminal Run is an idempotent replay after a response
+            # loss or process restart.  It has no executable lease and must not
+            # be put back on the worker queue.
+            accepted_invocation = getattr(accepted_item, "invocation", accepted_item)
+            accepted_status = str(getattr(accepted_item, "status", "") or "")
+            if accepted_status in {"success", "partial", "failed", "cancelled", "regressed"}:
+                return AcceptResult(item.run_id, item.invocation_id, True, duplicate=True)
             try:
                 self._queue.put_nowait(accepted_item)
             except asyncio.QueueFull:
@@ -80,7 +87,7 @@ class InvestigationDispatcher:
                 # must be failed closed if the queue implementation disagrees.
                 await self._runtime.reject(accepted_item, reason="DISPATCH_QUEUE_FULL")
                 raise
-            self._pending[item.invocation_id] = accepted_item
+            self._pending[getattr(accepted_invocation, "invocation_id", item.invocation_id)] = accepted_item
             return AcceptResult(item.run_id, item.invocation_id, True)
 
     async def recover(self, items: list[AcceptedInvocation]) -> None:
@@ -108,5 +115,9 @@ class InvestigationDispatcher:
             except Exception as exc:  # noqa: BLE001
                 await self._runtime.fail(item, exc)
             finally:
-                self._pending.pop(item.invocation_id, None)
+                # Runtime.accept returns AcceptedWork, while test/durable
+                # adapters may return AcceptedInvocation directly. Always
+                # remove the durable invocation key from the wrapped value.
+                invocation = getattr(item, "invocation", item)
+                self._pending.pop(getattr(invocation, "invocation_id", ""), None)
                 self._queue.task_done()

@@ -109,6 +109,7 @@ def _internal_investigation_query(*, tool_id: str, operation: str,
                                   params: dict, context: ScopeView) -> dict:
     """Run an Investigation read through the ToolRun-owned query boundary."""
     from internal_query import _load_private_key
+    from invocation_scope import current_execution_lease_token
     from internal_query_client import InternalQueryClient
     from tool_execution_context import ToolExecutionContext
     from trusted_context_issuer import TrustedContextIssuer
@@ -123,7 +124,9 @@ def _internal_investigation_query(*, tool_id: str, operation: str,
         "cluster_id": str(context.cluster_id),
         "executor_id": str(getattr(context, "executor_id", "") or ""),
         "lease_epoch": int(getattr(context, "lease_epoch", 0) or 0),
-        "lease_token": str(getattr(context, "lease_token", "") or ""),
+        # The token is intentionally not part of checkpoint state.  Workers bind
+        # it in a task-local context immediately before graph execution.
+        "lease_token": str(getattr(context, "lease_token", "") or current_execution_lease_token()),
     }
     client = InternalQueryClient(issuer=issuer)
     result = client.query(

@@ -68,6 +68,13 @@ func (h *Handler) recoverySnapshot(runID string) (map[string]interface{}, error)
 	if err != nil {
 		return nil, err
 	}
+	hypotheses := []store.AIHypothesis{}
+	if h.hypothesisDAO != nil {
+		hypotheses, err = h.hypothesisDAO.ListByRunTx(tx, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	cmds, err := h.cmdDAO.ListByRunTx(tx, runID)
 	if err != nil {
 		return nil, err
@@ -100,6 +107,7 @@ func (h *Handler) recoverySnapshot(runID string) (map[string]interface{}, error)
 		"plan_steps":          planStepsToMaps(steps),
 		"tool_runs":           toolRunsToMaps(tools),
 		"actions":             actionsToMaps(actions),
+		"hypotheses":          hypothesesToMaps(hypotheses),
 		"control_commands":    controlCommandsToMaps(cmds),
 		"approvals":           approvalsToMaps(approvals),
 		"last_event_sequence": lastSeq,
@@ -137,7 +145,8 @@ func planStepsToMaps(steps []store.AIPlanStep) []map[string]interface{} {
 	for _, s := range steps {
 		out = append(out, map[string]interface{}{
 			"step_id": s.StepID, "seq": s.Seq, "step_type": s.StepType, "status": s.Status,
-			"depends_on": s.DependsOn, "attempt": s.Attempt, "outcome": nullableStringValue(s.Outcome),
+			"description": s.Description,
+			"depends_on":  s.DependsOn, "attempt": s.Attempt, "outcome": nullableStringValue(s.Outcome),
 			"result_ref": nullableStringValue(s.ResultRef),
 		})
 	}
@@ -162,6 +171,21 @@ func actionsToMaps(actions []store.AIAction) []map[string]interface{} {
 			"action_id": a.ActionID, "action_type": a.ActionType, "action_hash": a.ActionHash,
 			"idempotency_key": a.IdempotencyKey, "status": a.Status,
 			"authoritative_risk": a.AuthoritativeRisk, "dry_run": a.DryRun,
+			"target_name": a.TargetName, "target_uid": a.TargetUID,
+			"resource_version": a.ResourceVersion, "namespace": a.Namespace,
+			"operation": a.Operation, "execution_status": a.ExecutionStatus,
+		})
+	}
+	return out
+}
+
+func hypothesesToMaps(hypotheses []store.AIHypothesis) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(hypotheses))
+	for _, h := range hypotheses {
+		out = append(out, map[string]interface{}{
+			"hypothesis_id": h.HypothesisID, "content": h.Content,
+			"confidence": h.Confidence, "status": h.Status,
+			"confirmed_by_evidence": h.ConfirmedByEvidence,
 		})
 	}
 	return out

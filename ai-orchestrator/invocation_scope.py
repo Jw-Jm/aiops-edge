@@ -15,6 +15,8 @@ Rules:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Optional, Protocol, runtime_checkable
 
@@ -184,8 +186,27 @@ class LegacyScopeAdapter:
 # 满足 @runtime_checkable ScopeView 协议的对象。
 _SNAPSHOT_FIELDS = (
     "principal_id", "session_id", "tenant_id", "cluster_id",
-    "request_id", "source", "run_id", "principal_type", "capability", "workload_kind",
+    "request_id", "source", "run_id", "invocation_id", "principal_type", "capability",
+    "workload_kind", "executor_id", "lease_epoch",
 )
+
+# Lease tokens are short-lived secrets.  They are bound to the worker task while
+# a graph is executing, but are deliberately excluded from checkpoint state.
+_LEASE_TOKEN: ContextVar[str] = ContextVar("aiops_investigation_lease_token", default="")
+
+
+@contextmanager
+def bind_execution_lease_token(token: str):
+    """Bind a lease token for the current worker task without checkpointing it."""
+    marker = _LEASE_TOKEN.set(str(token or ""))
+    try:
+        yield
+    finally:
+        _LEASE_TOKEN.reset(marker)
+
+
+def current_execution_lease_token() -> str:
+    return _LEASE_TOKEN.get()
 
 
 class ScopeViewSnapshot:
@@ -200,8 +221,8 @@ class ScopeViewSnapshot:
     __slots__ = _SNAPSHOT_FIELDS
 
     def __init__(self, principal_id="", session_id=None, tenant_id="", cluster_id="",
-                 request_id="", source="", run_id="", principal_type="user", capability="",
-                 workload_kind="chat"):
+                 request_id="", source="", run_id="", invocation_id="", principal_type="user",
+                 capability="", workload_kind="chat", executor_id="", lease_epoch=0):
         self.principal_id = str(principal_id)
         self.session_id = str(session_id) if session_id is not None else None
         self.tenant_id = str(tenant_id)
@@ -209,9 +230,12 @@ class ScopeViewSnapshot:
         self.request_id = str(request_id)
         self.source = str(source)
         self.run_id = str(run_id)
+        self.invocation_id = str(invocation_id)
         self.principal_type = str(principal_type)
         self.capability = str(capability)
         self.workload_kind = str(workload_kind or "chat")
+        self.executor_id = str(executor_id or "")
+        self.lease_epoch = int(lease_epoch or 0)
 
     @classmethod
     def to_projection(cls, view: ScopeView | None) -> dict:
@@ -221,7 +245,10 @@ class ScopeViewSnapshot:
         proj = {}
         for f in _SNAPSHOT_FIELDS:
             v = getattr(view, f, None)
-            proj[f] = (str(v) if v is not None else None)
+            if f == "lease_epoch":
+                proj[f] = int(v or 0)
+            else:
+                proj[f] = (str(v) if v is not None else None)
         # session_id 为空时规范为 None，与下游语义一致
         if not proj.get("session_id"):
             proj["session_id"] = None
@@ -244,7 +271,10 @@ class ScopeViewSnapshot:
             request_id=data.get("request_id") or "",
             source=data.get("source") or "",
             run_id=data.get("run_id") or "",
+            invocation_id=data.get("invocation_id") or "",
             principal_type=data.get("principal_type") or "user",
             capability=data.get("capability") or "",
             workload_kind=data.get("workload_kind") or "chat",
+            executor_id=data.get("executor_id") or "",
+            lease_epoch=data.get("lease_epoch") or 0,
         )
