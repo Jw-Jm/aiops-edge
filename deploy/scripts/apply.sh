@@ -5,6 +5,8 @@
 # 2) 部署 deepflow 到独立 deepflow namespace（完整装）
 # 用法: ./apply.sh
 # 默认会从当前项目源码构建带版本号的本地镜像；仅在明确设置 SKIP_IMAGE_BUILD=1 时跳过构建。
+# Fresh Install 验证请使用 `FRESH_INSTALL_VALIDATION=1 ./apply.sh`，该路径委托给
+# local-validation.sh 的 bootstrap → schema-migrator → runtime 两阶段流程。
 # =============================================================================
 set -euo pipefail
 
@@ -12,6 +14,10 @@ CHART_DIR="$(cd "$(dirname "$0")/../helm/aiops" && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/version.sh"
+
+if [[ "${FRESH_INSTALL_VALIDATION:-0}" == "1" ]]; then
+  exec "${SCRIPT_DIR}/local-validation.sh" "$@"
+fi
 
 # 确保 deepflow chart 仓库已添加
 helm repo add deepflow https://deepflowio.github.io/deepflow >/dev/null 2>&1 || true

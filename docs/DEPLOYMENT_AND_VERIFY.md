@@ -1,6 +1,6 @@
 # AIOps 平台：部署 + 本机验证指南
 
-本文档说明如何（1）在本机（OrbStack/K8s）部署并全量验证 AIOps 平台，（2）将同一份代码/Helm 部署到其他环境。目标是：**代码在本机全量验证通过后，可作为可靠基线直接部署到其他环境**。
+本文档说明如何（1）在本机（OrbStack/K8s）部署并验证 AIOps 平台，（2）将同一份代码/Helm 部署到其他环境。命令输出是唯一证据来源；未实际执行的环境项必须标记为 `BLOCKED_BY_ENV`。
 
 > 定位：当前代码为 `RUNTIME_CORRECTNESS_CANDIDATE` / `CONTROLLED_AI_INVESTIGATION_CANDIDATE` / `CONTROLLED_ACTION_CANDIDATE`。
 > 生产安全边界（`EXECUTION_MODE=disabled`、orchestrator 无 execute、Stage D 真实执行 keep disabled）按设计保持收敛态，详见《AIOps_全面代码修改报告_V2.md》§28/§29/§35。
@@ -43,12 +43,31 @@ MYSQL_ROOT_PASSWORD=<强随机> INTERNAL_TOKEN=<强随机> INGEST_API_KEY=<强�
 ./apply.sh
 ```
 
+### 2.0 Fresh Install 验证入口（推荐）
+
+从空的本机命名空间开始时，使用两阶段入口，避免运行时 Deployment 与数据库 hook 互相等待：
+
+```bash
+cd /path/to/aiops
+export LLM_PROVIDER_KEYS='deepseek:<真实 provider key>'
+./deploy/scripts/local-validation.sh --destroy --confirm-destroy
+```
+
+该命令按 `generate → build → lint/contract → bootstrap → users-init/schema-migrator → runtime → read-only validator` 顺序执行。`--destroy` 只允许删除固定的 `observability`、`deepflow`、`aiops-canary` 命名空间；没有 `--confirm-destroy` 时脚本拒绝执行。若只检查流程而不改变集群，可运行：
+
+```bash
+./deploy/scripts/local-validation.sh --dry-run --skip-deepflow
+./deploy/scripts/validate-local-stack.sh --offline
+```
+
+本地密钥生成器不会伪造 provider 凭据：必须由调用方显式提供 `LLM_PROVIDER_KEYS`，生成的文件权限为 `0600`。在线校验还会核对迁移 `0001`～`0009`、`aiops_app`/`aiops_migrator` 权限、Worker 开关、Proxy `/readyz`、Executor disabled 边界和 canary RBAC；真实指标/日志/事件、真实 provider、DeepFlow、多节点、PITR 和 Credential Broker 若未提供证据，只输出 `BLOCKED_BY_ENV`。
+
 首次部署必须注入 G5 强随机 secret（空值/占位符会渲染失败，fail-closed）。后续升级自动复用已有 `aiops-secrets`。
 
-单独重建某个镜像并更新：
+单独重建某个镜像并更新（发布标签应与 Helm 的 `global.imageTag` 完全一致）：
 ```bash
-IMAGE_TAG=v2-stageD-20260825 ./build-images.sh query-api
-kubectl set image deployment/query-api query-api=query-api:${TAG} -n observability
+IMAGE_TAG=git-<12位源码SHA> ./build-images.sh query-api
+kubectl set image deployment/query-api query-api=query-api:git-<12位源码SHA> -n observability
 ```
 
 ### 2.1 Stage D 接线（executor）密钥

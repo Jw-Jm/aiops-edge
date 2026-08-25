@@ -40,12 +40,26 @@ if command -v helm >/dev/null 2>&1; then
   # system before helm install.
   helm template aiops deploy/helm/aiops \
     -f deploy/helm/aiops/values-prod.yaml \
+    --set global.imageTag="git-gate123456" \
     --set secrets.jwtSecret="gate-jwt-012345678901234567890123456789" \
     --set secrets.llmEncryptionKey="gate-llm-012345678901234567890123456789" \
     --set secrets.internalToken="gate-internal-012345678901234567890123456789" \
     --set secrets.ingestApiKey="gate-ingest-012345678901234567890123456789" \
     --set secrets.clickhousePassword="gate-clickhouse-012345678901234567890123456789" \
     --set secrets.mysqlRootPassword="gate-mysql-012345678901234567890123456789" \
+    --set secrets.mysqlAppPassword="gate-app-012345678901234567890123456789" \
+    --set secrets.mysqlMigratorPassword="gate-migrator-012345678901234567890123456789" \
+    --set secrets.llmProxyToken="gate-proxy-token" \
+    --set secrets.llmProviderKeys="deepseek:gate-provider-key" \
+    --set secrets.orchestratorToQueryToken="gate-o2q-token" \
+    --set secrets.orchestratorToQuerySigningKey="gate-o2q-private" \
+    --set secrets.orchestratorToQueryVerifyKeys="gate-o2q-public" \
+    --set secrets.queryToOrchestratorToken="gate-q2o-token" \
+    --set secrets.queryToOrchestratorSigningKey="gate-q2o-private" \
+    --set secrets.queryToOrchestratorVerifyKeys="gate-q2o-public" \
+    --set secrets.executorToken="gate-executor-token" \
+    --set secrets.aiActionExecutorSigningKey="gate-executor-private" \
+    --set secrets.aiActionExecutorVerifyKeys="gate-executor-public" \
     >"${rendered}"
   awk 'BEGIN { RS="---" } /kind: ClusterRole/ && /name: ai-orchestrator-ops/ { print }' \
     "${rendered}" >"${role}"

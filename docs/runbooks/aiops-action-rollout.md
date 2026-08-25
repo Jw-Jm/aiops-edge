@@ -25,6 +25,28 @@ helm lint deploy/helm/aiops
 ./deploy/scripts/verify-aiops-workflow-gates.sh
 ```
 
+### Fresh Install 与只读验证
+
+本机从空环境验证必须使用两阶段入口，不能把旧的一阶段 `apply.sh` 当作 Fresh
+Install 证据：
+
+```bash
+export LLM_PROVIDER_KEYS='deepseek:<真实 provider key>'
+./deploy/scripts/local-validation.sh --destroy --confirm-destroy
+```
+
+入口会先安装基础设施并等待 `mysql-users-init`、`mysql-init`，再升级到 Query API、
+Worker、LLM Proxy、采集、前端和 disabled Executor。`--destroy` 的目标命名空间是脚本
+内置白名单，缺少 `--confirm-destroy` 会直接失败。无集群时可执行
+`./deploy/scripts/local-validation.sh --dry-run --skip-deepflow` 和
+`./deploy/scripts/validate-local-stack.sh --offline` 检查顺序与 Helm 合同。
+
+`validate-local-stack.sh` 是只读检查器：除 Pod readiness 和 `/readyz` 外，还验证
+`aiops_schema_migrations` 的 0001–0009、MySQL 双账号权限、统一 Git 镜像标签、Worker
+canonical 开关、Proxy readiness、Executor `EXECUTION_MODE=disabled`/`POD_SA_ACCESS=false`
+以及 canary 目标的最小 RBAC。真实指标/日志/事件、真实 provider、DeepFlow、多节点
+failover、PITR 和 Credential Broker 没有现场证据时必须保留 `BLOCKED_BY_ENV`，不能记为通过。
+
 ### 本机验证记录（2026-08-25）
 
 在当前工作区执行了以下本机门禁，均以退出码 0 完成：
