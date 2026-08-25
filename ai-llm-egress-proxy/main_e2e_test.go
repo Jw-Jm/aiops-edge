@@ -24,6 +24,10 @@ func fakeLLM(t *testing.T) (*httptest.Server, *string) {
 	t.Helper()
 	var receivedAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.Error(w, "unexpected upstream path: "+r.URL.Path, http.StatusBadRequest)
+			return
+		}
 		receivedAuth = r.Header.Get("Authorization")
 		_, _ = w.Write([]byte(`{"id":"fake","choices":[]}`))
 	}))

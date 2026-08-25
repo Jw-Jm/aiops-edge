@@ -187,78 +187,10 @@ func main() {
 		_, _ = fmt.Fprintf(w, `{"spans":%d}`, count)
 	})
 
-	mux.HandleFunc("/v1/logs", func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.Header.Get("X-Tenant-ID")
-		// Phase 5：X-Tenant-ID 缺失不再静默兜底 "default"，改为 fail-closed 拒绝。
-		if tenantID == "" {
-			http.Error(w, "missing X-Tenant-ID header", http.StatusBadRequest)
-			return
-		}
-
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-		if err != nil {
-			http.Error(w, "body too large or read error", http.StatusRequestEntityTooLarge)
-			return
-		}
-		defer r.Body.Close()
-
-		var req model.OTLPLogRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			http.Error(w, "json unmarshal: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		count := 0
-		for _, rl := range req.ResourceLogs {
-			resourceAttrs := extractAttributes(rl.Resource.Attributes)
-			serviceName := resourceAttrs["service.name"]
-			if serviceName == "" {
-				serviceName = "unknown"
-			}
-
-			for _, sl := range rl.ScopeLogs {
-				for _, lr := range sl.LogRecords {
-					ts := parseNanoTimestamp(lr.TimeUnixNano)
-
-					logAttrs := extractAttributes(lr.Attributes)
-					// merge resource attrs
-					merged := make(map[string]string, len(resourceAttrs)+len(logAttrs))
-					for k, v := range resourceAttrs {
-						merged[k] = v
-					}
-					for k, v := range logAttrs {
-						merged[k] = v
-					}
-
-					record := &model.LogRecord{
-						TenantID:    tenantID,
-						ClusterID:   clusterID,
-						Timestamp:   ts,
-						ServiceName: serviceName,
-						Severity:    lr.SeverityText,
-						Body:        sanitizeLogBody(lr.Body.StringValue),
-						Attributes:  merged,
-						TraceID:     lr.TraceID,
-						SpanID:      lr.SpanID,
-						TimeBucket:  ts.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
-						Date:        ts.Format("2006-01-02"),
-					}
-					// V9.3 Phase 14：legacy CH logWriter 已删除，日志只走 new 链 VictoriaLogs
-					// （ModeNew 真实发送）。失败仅记日志（可观测），不伪装成功。
-					if telRT.Enabled() {
-						if res := telRT.WriteLog(record.TenantID, record.ClusterID, record.ServiceName, record.Severity, record.Body, record.Timestamp); res.Status != "ok" {
-							log.Printf("VLogs write failed (tenant=%s service=%s): code=%s msg=%s", record.TenantID, record.ServiceName, res.ErrorCode, res.Message)
-						}
-					}
-					count++
-				}
-			}
-		}
-
-		log.Printf("Pipeline: processed %d log records for tenant %s", count, tenantID)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"logs":%d}`, count)
-	})
+	writeLog := func(tenantID, clusterID, service, level, body string, ts time.Time) telemetry.WriteResult {
+		return telRT.WriteLog(tenantID, clusterID, service, level, body, ts)
+	}
+	mux.Handle("/v1/logs", newOTLPLogsHandler(clusterID, maxBody, writeLog))
 
 	// DeepFlow native protocol endpoint
 	mux.HandleFunc("/v1/deepflow", dfReceiver.ServeHTTP)
@@ -336,6 +268,83 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
 	}
+}
+
+type logWriteFunc func(tenantID, clusterID, service, level, body string, ts time.Time) telemetry.WriteResult
+
+// newOTLPLogsHandler acknowledges a log batch only after every record has been
+// accepted by the configured durable sink. Retryable sink failures use 503 so
+// OTLP clients retain and retry the batch instead of deleting it after a false
+// 200 response.
+func newOTLPLogsHandler(clusterID string, maxBody int64, writeLog logWriteFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if writeLog == nil {
+			http.Error(w, "log sink unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		tenantID := r.Header.Get("X-Tenant-ID")
+		if tenantID == "" {
+			http.Error(w, "missing X-Tenant-ID header", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+		if err != nil {
+			http.Error(w, "body too large or read error", http.StatusRequestEntityTooLarge)
+			return
+		}
+		defer r.Body.Close()
+
+		var req model.OTLPLogRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "json unmarshal: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		count := 0
+		for _, rl := range req.ResourceLogs {
+			resourceAttrs := extractAttributes(rl.Resource.Attributes)
+			serviceName := resourceAttrs["service.name"]
+			if serviceName == "" {
+				serviceName = "unknown"
+			}
+			for _, sl := range rl.ScopeLogs {
+				for _, lr := range sl.LogRecords {
+					ts := parseNanoTimestamp(lr.TimeUnixNano)
+					logAttrs := extractAttributes(lr.Attributes)
+					merged := make(map[string]string, len(resourceAttrs)+len(logAttrs))
+					for k, v := range resourceAttrs {
+						merged[k] = v
+					}
+					for k, v := range logAttrs {
+						merged[k] = v
+					}
+					record := &model.LogRecord{
+						TenantID: tenantID, ClusterID: clusterID, Timestamp: ts,
+						ServiceName: serviceName, Severity: lr.SeverityText,
+						Body: sanitizeLogBody(lr.Body.StringValue), Attributes: merged,
+						TraceID: lr.TraceID, SpanID: lr.SpanID,
+						TimeBucket: ts.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
+						Date:       ts.Format("2006-01-02"),
+					}
+					res := writeLog(record.TenantID, record.ClusterID, record.ServiceName, record.Severity, record.Body, record.Timestamp)
+					if res.Status != "ok" {
+						log.Printf("VLogs write failed (tenant=%s service=%s): code=%s msg=%s", record.TenantID, record.ServiceName, res.ErrorCode, res.Message)
+						status := http.StatusInternalServerError
+						if res.Retryable {
+							status = http.StatusServiceUnavailable
+						}
+						http.Error(w, "log sink write failed: "+res.Message, status)
+						return
+					}
+					count++
+				}
+			}
+		}
+
+		log.Printf("Pipeline: processed %d log records for tenant %s", count, tenantID)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"logs":%d}`, count)
+	})
 }
 
 // extractAttributes converts OTel attribute list to flat map

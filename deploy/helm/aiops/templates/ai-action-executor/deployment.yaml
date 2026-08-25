@@ -43,13 +43,13 @@ spec:
             - name: POD_SA_ACCESS
               value: {{ .Values.aiActionExecutor.realMutation | default false | quote }}
             # D-Gate（readiness）：approved 模式必须验签已签名执行上下文。
-            # realMutation=true 时注入 query-api 签发公钥。
+            # realMutation=true 时注入 query-api 为 executor 独立签发的公钥。
 {{- if .Values.aiActionExecutor.realMutation }}
             - name: EXECUTOR_VERIFY_KEYS
               valueFrom:
                 secretKeyRef:
                   name: aiops-secrets
-                  key: QUERY_TO_ORCHESTRATOR_VERIFY_KEYS
+                  key: AI_ACTION_EXECUTOR_VERIFY_KEYS
 {{- end }}
           readinessProbe:
             httpGet:

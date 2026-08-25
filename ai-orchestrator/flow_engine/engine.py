@@ -1,4 +1,6 @@
 # flow_engine/engine.py
+from __future__ import annotations
+
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field

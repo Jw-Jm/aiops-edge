@@ -6,6 +6,34 @@ import (
 	"testing"
 )
 
+func TestProviderTargetPathStripsProviderSegment(t *testing.T) {
+	target, err := providerTarget("https://api.openai.com", "chat/completions", "model=gpt-4o")
+	if err != nil {
+		t.Fatalf("providerTarget: %v", err)
+	}
+	if target.Path != "/v1/chat/completions" {
+		t.Fatalf("target path = %q, want /v1/chat/completions", target.Path)
+	}
+	if target.RawQuery != "model=gpt-4o" {
+		t.Fatalf("target query = %q, want model=gpt-4o", target.RawQuery)
+	}
+}
+
+func TestConfiguredAllowlistControlsProvider(t *testing.T) {
+	cfg := &proxyConfig{
+		providerKeys: map[string]string{"deepseek": "sk-test"},
+		baseURLs:     map[string]string{"deepseek": "https://api.deepseek.com"},
+		allowlist:    map[string]struct{}{"api.deepseek.com": {}},
+	}
+	if !cfg.providerAllowlisted("deepseek") {
+		t.Fatal("configured host allowlist should permit deepseek")
+	}
+	cfg.allowlist = map[string]struct{}{"api.openai.com": {}}
+	if cfg.providerAllowlisted("deepseek") {
+		t.Fatal("configured allowlist should reject a provider outside the configured hosts")
+	}
+}
+
 func TestAllowlisted(t *testing.T) {
 	if !allowlisted("deepseek") || !allowlisted("openai") {
 		t.Fatal("deepseek/openai should be allowlisted")

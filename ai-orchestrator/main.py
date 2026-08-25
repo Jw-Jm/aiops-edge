@@ -1,4 +1,6 @@
 """AI Orchestrator v5 — FastAPI + LangGraph + arq + ChromaDB + Detector"""
+from __future__ import annotations
+
 import json
 import base64
 import os
@@ -202,7 +204,7 @@ async def lifespan(app: FastAPI):
 
             def _kg_build_job():
                 try:
-                    _r = _kg_build_all("default")
+                    _r = _kg_build_all(os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", "default"))
                     _t = _r.get("total", {})
                     print(
                         f"[kg] 定时重建完成: nodes+{_t.get('nodes_added', 0)} "
@@ -374,6 +376,7 @@ def _fetch_saved_llm_config() -> dict | None:
         qa = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
         token = os.environ.get("INTERNAL_TOKEN", "")
         proxy_url = os.environ.get("LLM_PROXY_URL", "")
+        proxy_token = os.environ.get("LLM_PROXY_TOKEN", "")
         # F-14：用 TrustedRequestContext（capability=llm.config.read）签发，不再仅凭共享 token。
         from contracts import TrustedRequestContext as _TRC  # noqa: F401  # 兼容 legacy
         context = {
@@ -391,11 +394,16 @@ def _fetch_saved_llm_config() -> dict | None:
         provider = cfg.get("provider", "openai")
         norm, backend = _normalize_provider(provider)
         if proxy_url:
-            # F-14：key 由 proxy 独占——orchestrator 只持 provider/model，key 由 proxy 注入。
+            # F-14：provider key 由 proxy 独占。CrewAI/OpenAI-compatible clients
+            # require a non-empty api_key, so the proxy token occupies that client
+            # credential slot; the proxy consumes it for ingress auth and replaces
+            # Authorization with the provider key before forwarding.
+            if not proxy_token:
+                return None
             return {
-                "api_key": "",  # 不持有外部 key；由 proxy 注入
+                "api_key": proxy_token,
                 "model": cfg.get("model", "gpt-4o"),
-                "base_url": proxy_url.rstrip("/") + "/v1",
+                "base_url": proxy_url.rstrip("/") + "/v1/proxy/" + norm,
                 "provider": norm,
                 "backend": backend,
             }

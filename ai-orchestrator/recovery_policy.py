@@ -1,13 +1,20 @@
 """恢复白名单策略（安全边界）。
 
 审批制恢复执行前，恢复命令必须命中白名单；白名单可在设置中配置，默认含安全边界。
-存储：MySQL platform_settings 表的 `recovery_policy` 键（JSON），失败降级为默认白名单。
+存储：由 query-api control-plane 统一读写 `platform_settings` 表的
+`recovery_policy` 键（JSON），失败降级为默认白名单。
 """
 import json
 
-from db import get_conn
-
 _SETTING_KEY = "recovery_policy"
+
+def _new_client():
+    from control_plane_client import ControlPlaneClient
+    return ControlPlaneClient()
+
+
+# 测试可替换；生产实现始终是 query-api control-plane 客户端。
+_client_factory = _new_client
 
 # 默认安全边界：允许安全恢复操作，禁止删除/清数据等危险操作。
 DEFAULT_POLICY = {
@@ -38,42 +45,25 @@ def _default():
 
 
 def get_policy() -> dict:
-    """读取恢复白名单（MySQL，失败降级默认）。"""
-    conn = get_conn()
-    if conn is not None:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT value FROM platform_settings WHERE config_key=%s", (_SETTING_KEY,))
-                row = cur.fetchone()
-            conn.close()
-            if row and row.get("value"):
-                return json.loads(row["value"])
-        except Exception:
-            conn.close()
+    """读取恢复白名单（经 query-api，失败降级默认）。"""
+    try:
+        response = _client_factory().get_recovery_policy()
+        policy = response.get("policy") if isinstance(response, dict) else None
+        if isinstance(policy, dict):
+            return policy
+    except Exception:
+        pass
     return _default()
 
 
 def set_policy(policy: dict) -> bool:
-    """保存恢复白名单（MySQL）。"""
-    conn = get_conn()
-    if conn is None:
+    """保存恢复白名单（经 query-api control-plane）。"""
+    if not isinstance(policy, dict):
         return False
     try:
-        value = json.dumps(policy)
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO platform_settings (config_key, value) VALUES (%s, %s) "
-                "ON DUPLICATE KEY UPDATE value=VALUES(value)",
-                (_SETTING_KEY, value),
-            )
-        conn.commit()
-        conn.close()
-        return True
+        response = _client_factory().set_recovery_policy(policy)
+        return bool(response.get("ok", True)) if isinstance(response, dict) else False
     except Exception:
-        try:
-            conn.close()
-        except Exception:
-            pass
         return False
 
 

@@ -88,6 +88,11 @@ func TestMissingActionHashRejected(t *testing.T) {
 
 func TestApprovedModeExecutesWithCleanTOCTOU(t *testing.T) {
 	s := newTestServer(ModeApproved)
+	s.k8sEnabled = true
+	s.readCurrentStateFn = func(ActionExecutionContext) (string, string, bool, error) {
+		return "uid-1", "rv-1", false, nil
+	}
+	s.patchTargetFn = func(ActionExecutionContext, string) error { return nil }
 	rec := postJSON(http.HandlerFunc(s.handleExecute), "/v1/executor/execute", execBody())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -123,22 +128,20 @@ func TestApprovedModeRejectsUnsignedContext(t *testing.T) {
 	}
 }
 
-func TestApprovedModeDoesNotImplyRealExecution(t *testing.T) {
-	// F5 已废除：approved 模式若无 POD_SA_ACCESS（k8sEnabled=false）→ 明确"mutation NOT applied"，
-	// 不伪装成真实动作已执行；approved + k8sEnabled 才执行真实 patch（本单测不启用 k8s）。
+func TestApprovedModeRequiresRealExecutionCapability(t *testing.T) {
+	// approved 模式没有 K8s mutation client 时必须 fail-closed，不能把未执行记录为 success。
 	s := newTestServer(ModeApproved)
 	rec := postJSON(http.HandlerFunc(s.handleExecute), "/v1/executor/execute", execBody())
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when mutation capability is unavailable, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var res ActionResult
 	_ = json.Unmarshal(rec.Body.Bytes(), &res)
-	if res.Status != "success" {
-		t.Fatalf("expected success (recorded), got %s", res.Status)
+	if res.Status == "success" {
+		t.Fatalf("approved execution without mutation capability must not return success")
 	}
-	// k8sEnabled=false → 明确 NOT applied（不得伪装成真实 mutation）。
-	if !strings.Contains(res.Message, "mutation NOT applied") {
-		t.Fatalf("message must state mutation not applied without SA access, got: %s", res.Message)
+	if !strings.Contains(res.Message, "Kubernetes mutation capability") {
+		t.Fatalf("message must explain unavailable Kubernetes mutation capability, got: %s", res.Message)
 	}
 }
 

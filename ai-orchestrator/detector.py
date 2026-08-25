@@ -1,4 +1,6 @@
 """异常检测引擎 — 3 算法融合投票 + 多维指纹提取"""
+from __future__ import annotations
+
 import statistics
 from collections import deque
 from dataclasses import dataclass, field

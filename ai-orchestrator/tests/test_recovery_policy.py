@@ -1,6 +1,49 @@
 # 恢复白名单安全测试（对应 C6 修复：移除 curl 任意 URL，防 SSRF）。
 import pytest
+import recovery_policy
 from recovery_policy import check_allowed, DEFAULT_POLICY
+
+
+class _FakeControlPlaneClient:
+    def __init__(self, payload=None, error=None):
+        self.payload = payload
+        self.error = error
+        self.saved = None
+
+    def get_recovery_policy(self):
+        if self.error:
+            raise self.error
+        return self.payload
+
+    def set_recovery_policy(self, policy):
+        if self.error:
+            raise self.error
+        self.saved = policy
+        return {"ok": True}
+
+
+def test_policy_reads_from_query_api_control_plane(monkeypatch):
+    fake = _FakeControlPlaneClient({"policy": {"allow": ["kubectl scale"], "deny": []}})
+    monkeypatch.setattr(recovery_policy, "_client_factory", lambda: fake)
+
+    assert recovery_policy.get_policy() == {"allow": ["kubectl scale"], "deny": []}
+
+
+def test_policy_write_uses_query_api_control_plane(monkeypatch):
+    fake = _FakeControlPlaneClient()
+    monkeypatch.setattr(recovery_policy, "_client_factory", lambda: fake)
+    policy = {"allow": ["kubectl scale"], "deny": ["rm -rf"]}
+
+    assert recovery_policy.set_policy(policy) is True
+    assert fake.saved == policy
+
+
+def test_policy_control_plane_failure_falls_back_or_reports_false(monkeypatch):
+    fake = _FakeControlPlaneClient(error=RuntimeError("query-api unavailable"))
+    monkeypatch.setattr(recovery_policy, "_client_factory", lambda: fake)
+
+    assert recovery_policy.get_policy() == DEFAULT_POLICY
+    assert recovery_policy.set_policy({"allow": [], "deny": []}) is False
 
 
 def test_allow_safe_recovery():

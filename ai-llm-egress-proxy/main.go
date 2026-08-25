@@ -8,14 +8,16 @@
 //   - 记录审计（谁/何时/哪个 provider/请求量），便于回答"哪个 agent 用了哪个 LLM"。
 //
 // 接口：
-//   POST /v1/proxy/{provider}/chat     → 转发到对应 provider 的 chat/completions
-//   POST /v1/proxy/{provider}/models   → 转发到 provider 的 models 列表
-//   GET  /healthz
+//
+//	POST /v1/proxy/{provider}/chat     → 转发到对应 provider 的 chat/completions
+//	POST /v1/proxy/{provider}/models   → 转发到 provider 的 models 列表
+//	GET  /healthz
 //
 // 配置：
-//   LLM_PROVIDER_KEYS = "deepseek:sk-...,openai:sk-..."  （逗号分隔 provider:key）
-//   LLM_ALLOWLIST     = "api.deepseek.com,api.openai.com" （逗号分隔允许域名，默认上面两个）
-//   PROXY_TOKEN       = 调用方（orchestrator）出示的共享 token（默认不启用）
+//
+//	LLM_PROVIDER_KEYS = "deepseek:sk-...,openai:sk-..."  （逗号分隔 provider:key）
+//	LLM_ALLOWLIST     = "api.deepseek.com,api.openai.com" （逗号分隔允许域名，默认上面两个）
+//	PROXY_TOKEN       = 调用方（orchestrator）出示的共享 token（默认不启用）
 package main
 
 import (
@@ -29,21 +31,24 @@ import (
 )
 
 type proxyConfig struct {
-	providerKeys map[string]string // provider -> api key
-	baseURLs     map[string]string // provider -> base https URL
+	providerKeys map[string]string   // provider -> api key
+	baseURLs     map[string]string   // provider -> base https URL
+	allowlist    map[string]struct{} // allowed provider names or provider hostnames
 	proxyToken   string
 	client       *http.Client
 }
 
 func main() {
+	baseURLs := map[string]string{
+		"deepseek": "https://api.deepseek.com",
+		"openai":   "https://api.openai.com",
+	}
 	cfg := &proxyConfig{
 		providerKeys: map[string]string{},
-		baseURLs: map[string]string{
-			"deepseek": "https://api.deepseek.com",
-			"openai":   "https://api.openai.com",
-		},
-		proxyToken: os.Getenv("PROXY_TOKEN"),
-		client:     &http.Client{},
+		baseURLs:     baseURLs,
+		allowlist:    parseAllowlist(os.Getenv("LLM_ALLOWLIST"), baseURLs),
+		proxyToken:   os.Getenv("PROXY_TOKEN"),
+		client:       &http.Client{},
 	}
 	// LLM_PROVIDER_KEYS = "deepseek:sk-...,openai:sk-..."
 	for _, kv := range strings.Split(os.Getenv("LLM_PROVIDER_KEYS"), ",") {
@@ -73,15 +78,17 @@ func main() {
 
 // handleProxy 转发到 allowlist 的 LLM provider。
 func (c *proxyConfig) handleProxy(w http.ResponseWriter, r *http.Request) {
-	// PROXY_TOKEN 鉴权（调用方 orchestrator 出示）。
-	if c.proxyToken != "" && r.Header.Get("X-Proxy-Token") != c.proxyToken {
+	// PROXY_TOKEN 鉴权（调用方 orchestrator 出示）。CrewAI/OpenAI-compatible
+	// clients naturally send the token as Authorization, while direct callers may
+	// use the explicit X-Proxy-Token header.
+	if c.proxyToken != "" && proxyTokenFromRequest(r) != c.proxyToken {
 		http.Error(w, "unauthorized proxy token", http.StatusForbidden)
 		return
 	}
 	// path: /v1/proxy/{provider}/{...rest}
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/proxy/")
 	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) == 0 || parts[0] == "" {
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		http.Error(w, "missing provider", http.StatusBadRequest)
 		return
 	}
@@ -97,26 +104,91 @@ func (c *proxyConfig) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 只允许 allowlist 域名（安全边界，default-deny egress）。
-	if !allowlisted(provider) {
+	if !c.providerAllowlisted(provider) {
 		http.Error(w, "provider not allowlisted", http.StatusForbidden)
 		return
 	}
-	// 转发路径：{base}/{rest}，rest 如 chat/completions、models。
-	targetPath := base + "/v1/" + strings.TrimLeft(rest, "/")
-	target, err := url.Parse(targetPath)
+	// The provider segment is routing metadata and must not be forwarded.
+	target, err := providerTarget(base, parts[1], r.URL.RawQuery)
 	if err != nil {
 		http.Error(w, "bad target", http.StatusBadRequest)
 		return
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
+	// NewSingleHostReverseProxy joins its target path with the incoming request
+	// path. Keep the proxy target host-only and put the fully constructed API path
+	// on the request; otherwise the /v1 prefix would be duplicated.
+	proxy := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: target.Scheme, Host: target.Host})
 	// 注入 provider API key（只在本 proxy 内持有）。
 	originalAuth := r.Header.Get("Authorization")
+	originalURL := *r.URL
 	r.Host = target.Host
-	r.URL = target
+	r.URL.Path = target.Path
+	r.URL.RawPath = target.RawPath
+	r.URL.RawQuery = target.RawQuery
 	r.Header.Set("Authorization", "Bearer "+apiKey)
 	proxy.ServeHTTP(w, r)
 	// 恢复（不影响后续）
 	r.Header.Set("Authorization", originalAuth)
+	r.URL = &originalURL
+}
+
+func providerTarget(base, path, rawQuery string) (*url.URL, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("missing provider API path")
+	}
+	target, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return nil, fmt.Errorf("invalid provider base URL")
+	}
+	target.Path = strings.TrimRight(target.Path, "/") + "/v1/" + strings.TrimLeft(path, "/")
+	target.RawQuery = rawQuery
+	return target, nil
+}
+
+func proxyTokenFromRequest(r *http.Request) string {
+	if token := r.Header.Get("X-Proxy-Token"); token != "" {
+		return token
+	}
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+func parseAllowlist(raw string, baseURLs map[string]string) map[string]struct{} {
+	allowed := map[string]struct{}{}
+	values := strings.Split(raw, ",")
+	if strings.TrimSpace(raw) == "" {
+		for provider, base := range baseURLs {
+			if !allowlisted(provider) {
+				continue
+			}
+			allowed[strings.ToLower(provider)] = struct{}{}
+			if parsed, err := url.Parse(base); err == nil && parsed.Hostname() != "" {
+				allowed[strings.ToLower(parsed.Hostname())] = struct{}{}
+			}
+		}
+		return allowed
+	}
+	for _, value := range values {
+		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+			allowed[value] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+func (c *proxyConfig) providerAllowlisted(provider string) bool {
+	if len(c.allowlist) == 0 {
+		return allowlisted(provider)
+	}
+	if _, ok := c.allowlist[strings.ToLower(provider)]; ok {
+		return true
+	}
+	base := c.baseURLs[provider]
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	_, ok := c.allowlist[strings.ToLower(parsed.Hostname())]
+	return ok
 }
 
 func allowlisted(provider string) bool {

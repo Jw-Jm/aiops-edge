@@ -33,6 +33,7 @@ OPERATION_ROUTES: Dict[str, tuple] = {
     "traces": ("/internal/v1/query/traces", "observability.traces.read"),
     "alerts": ("/internal/v1/query/alerts", "observability.alerts.read"),
     "topology": ("/internal/v1/query/topology", "observability.topology.read"),
+    "middleware": ("/internal/v1/query/topology/middleware", "observability.topology.read"),
     "kubernetes": ("/internal/v1/query/kubernetes", "kubernetes.resources.read"),
     "changes": ("/internal/v1/query/changes", "changes.read"),
     "knowledge": ("/internal/v1/query/knowledge", "knowledge.search"),

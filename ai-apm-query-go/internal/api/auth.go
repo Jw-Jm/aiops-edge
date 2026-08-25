@@ -603,14 +603,14 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/dashboard/resources",
 		"/api/v1/capacity/forecast",
 		"/api/v1/capacity/instances",
-		"/api/v1/ai/runs", // P12：Run API 只读代理（JWT+tenant 校验后进 ProxyAI → orchestrator）
-		"/api/v1/me",      // Phase E：前端用户信息端点（JWT + canonical tenant 授权）
-		"/api/v1/settings/llm",              // LLM 设置：GET 读当前配置 / POST 保存（admin 由 RequireRoleForWrite 校验）
-		"/api/v1/settings/llm/test",         // LLM 连接测试（admin 由 RequireRole 校验）
-		"/api/v1/settings/llm/models",       // 拉取模型列表（admin 由 RequireRole 校验）
-		"/api/v1/settings/llm/history",      // LLM 配置历史
-		"/api/v1/settings/llm/providers",    // LLM provider 列表/创建
-		"/api/v1/ai/chat": // P19.6：对话型 canonical-protected 路由。query-api 完成 JWT+tenant+cluster
+		"/api/v1/ai/runs",                // P12：Run API 只读代理（JWT+tenant 校验后进 ProxyAI → orchestrator）
+		"/api/v1/me",                     // Phase E：前端用户信息端点（JWT + canonical tenant 授权）
+		"/api/v1/settings/llm",           // LLM 设置：GET 读当前配置 / POST 保存（admin 由 RequireRoleForWrite 校验）
+		"/api/v1/settings/llm/test",      // LLM 连接测试（admin 由 RequireRole 校验）
+		"/api/v1/settings/llm/models",    // 拉取模型列表（admin 由 RequireRole 校验）
+		"/api/v1/settings/llm/history",   // LLM 配置历史
+		"/api/v1/settings/llm/providers", // LLM provider 列表/创建
+		"/api/v1/ai/chat":                // P19.6：对话型 canonical-protected 路由。query-api 完成 JWT+tenant+cluster
 		// 解析 + ai.chat capability 签名后转发 orchestrator /internal/v1/chat（SSE 流式）。
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
 		return true
@@ -667,7 +667,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 
 		// Public endpoints: health, login, OPTIONS. LLM settings, including
 		// the non-secret status endpoint, require an authorization context.
-		if path == "/health" || path == "/api/v1/health" ||
+		if path == "/health" || path == "/livez" || path == "/readyz" || path == "/api/v1/health" ||
 			path == "/metrics" || // 自监控：query-api 自身 Prometheus 指标，供 VM 免鉴权抓取
 			path == "/api/v1/auth/login" || path == "/api/v1/login" ||
 			r.Method == "OPTIONS" {

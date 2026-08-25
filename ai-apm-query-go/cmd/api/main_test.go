@@ -2,11 +2,18 @@ package main
 
 import (
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/base64"
 	"testing"
 
 	trustedauth "github.com/observability-platform/ai-apm-query-go/internal/auth"
 )
+
+func TestRequireDatabaseFailsClosedWhenUnavailable(t *testing.T) {
+	if _, err := requireDatabase(func() *sql.DB { return nil }); err == nil {
+		t.Fatal("requireDatabase should fail when MySQL is unavailable")
+	}
+}
 
 func TestTrustedContextVerifyConfigFromEnvAcceptsRotatingPublicKeys(t *testing.T) {
 	first := make(ed25519.PublicKey, ed25519.PublicKeySize)

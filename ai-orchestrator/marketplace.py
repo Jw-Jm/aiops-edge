@@ -3,6 +3,8 @@
 安装流程: staging → 逃逸检查 → 唯一性 → 签名校验 → rename 落盘 → 记库 → reload。
 安全决策: 外部 skill 的 tools 只能引用已有注册工具名（skill_loader 校验），不执行外部代码。
 """
+from __future__ import annotations
+
 import base64
 import hashlib
 import json

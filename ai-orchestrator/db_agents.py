@@ -1,4 +1,6 @@
 """Agent/Report/Knowledge/Rule 四个 Store。MySQL 不可用降级为内存。"""
+from __future__ import annotations
+
 import json
 import db
 

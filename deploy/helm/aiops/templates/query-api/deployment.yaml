@@ -97,10 +97,10 @@ spec:
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: ADMIN_INITIAL_PASSWORD }
           readinessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /readyz, port: 8080 }
             initialDelaySeconds: 10
           livenessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /livez, port: 8080 }
             initialDelaySeconds: 20
           resources:
             {{- toYaml .Values.queryApi.resources | nindent 12 }}

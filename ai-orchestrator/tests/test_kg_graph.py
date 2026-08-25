@@ -1,6 +1,32 @@
 import kg_graph
 
 
+class _FakeKnowledgeGraphClient:
+    def __init__(self):
+        self.calls = []
+
+    def knowledge_graph(self, operation, body, *, write=False):
+        self.calls.append((operation, body, write))
+        if operation == "upsert_node":
+            return {"id": 42, "created": True}
+        return {"nodes": [], "edges": []}
+
+
+def test_kg_node_upsert_uses_query_api_control_plane(monkeypatch):
+    fake = _FakeKnowledgeGraphClient()
+    monkeypatch.setattr(kg_graph, "_control_plane_factory", lambda: fake)
+
+    node_id = kg_graph.upsert_node("service", "orders", {"cluster_id": "cluster-1"})
+
+    assert node_id == 42
+    assert fake.calls == [(
+        "upsert_node",
+        {"type": "service", "name": "orders", "cluster_id": "cluster-1",
+         "props": {"cluster_id": "cluster-1", "created_by": "auto"}},
+        True,
+    )]
+
+
 def test_pod_to_service_name_deployment():
     # deployment 型：候选含去最后两段 -hash-random
     assert "query-api" in kg_graph._pod_to_service_name("query-api-7966f8dbb8-sjswt")

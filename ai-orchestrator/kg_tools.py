@@ -1,9 +1,8 @@
 """知识图谱查询工具（LLM 可调用，返回 markdown 证据链）。
 
-数据全部来自 kg_graph 封装（图查询）与 change_events 表（变更详情）。
-DB 不可达时返回"知识图谱暂不可用"，绝不抛异常。
+数据全部来自 kg_graph 封装；图谱事实与变更详情由 query-api 持有。
+边界不可达时返回"知识图谱暂不可用"，绝不抛异常。
 """
-from db import db_available, get_conn
 import kg_graph
 
 
@@ -13,9 +12,6 @@ def kg_evidence_tool(service: str, cluster_id: str = "default") -> str:
     service = (service or "").strip()
     if not service:
         return "请指定服务名"
-    if not db_available():
-        return "知识图谱暂不可用"
-
     node = kg_graph.get_node("service", service, cluster_id)
     if node is None:
         return (f"知识图谱中未找到服务 {service!r}（cluster_id={cluster_id}），"
@@ -50,29 +46,20 @@ def kg_evidence_tool(service: str, cluster_id: str = "default") -> str:
                 infra.append(n)
 
     changes = []
-    try:
-        conn = get_conn()
-        if conn is not None:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, cluster_id, service, change_type, operator, "
-                        "content, created_at FROM change_events "
-                        "WHERE service=%s AND cluster_id=%s "
-                        "ORDER BY created_at DESC LIMIT 5",
-                        (service, cluster_id))
-                    for r in cur.fetchall():
-                        changes.append({
-                            "id": int(r["id"]),
-                            "change_type": str(r.get("change_type") or ""),
-                            "operator": str(r.get("operator") or ""),
-                            "created_at": str(r.get("created_at") or ""),
-                            "content": str(r.get("content") or "")[:200],
-                        })
-            finally:
-                conn.close()
-    except Exception:
-        changes = []
+    for e in nb.get("edges", []):
+        if e.get("type") != "HAS_CHANGE" or int(e.get("src_id", -1)) != node_id:
+            continue
+        change = node_map.get(int(e.get("dst_id", -1)))
+        if not change or change.get("type") != "change":
+            continue
+        props = change.get("props", {})
+        changes.append({
+            "id": props.get("change_id", change.get("name", "")),
+            "change_type": str(props.get("change_type", "")),
+            "operator": str(props.get("operator", "")),
+            "created_at": str(props.get("created_at", "")),
+            "content": str(props.get("content") or props.get("summary") or "")[:200],
+        })
 
     lines = [
         f"# 知识图谱证据链：{service}（cluster_id={cluster_id}）",

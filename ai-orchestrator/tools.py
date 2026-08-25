@@ -186,7 +186,7 @@ def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_conte
             if not name or name.endswith("(deleted)"):
                 continue
             if cluster_id:
-                props = _json_loads(r.get("props_json"))
+                props = _json_loads(r.get("props", r.get("props_json")))
                 if str(props.get("cluster_id", "")) != str(cluster_id):
                     continue
             svcs.add(name)

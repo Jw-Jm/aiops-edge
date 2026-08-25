@@ -37,19 +37,26 @@ type ErrorStat struct {
 
 // TopologyEdge 一条服务调用边（GlobalTopology / SyncTopologyCatalog）。
 type TopologyEdge struct {
-	Source string
-	Target string
-	Calls  int64
-	Errors int64
-	AvgNs  float64
+	Source string  `json:"source"`
+	Target string  `json:"target"`
+	Calls  int64   `json:"calls"`
+	Errors int64   `json:"errors"`
+	AvgNs  float64 `json:"avg_ns"`
 }
 
 // TopologyNode 一个服务节点聚合（GlobalTopology）。
 type TopologyNode struct {
-	Service string
-	Calls   int64
-	Errors  int64
-	AvgNs   float64
+	Service string  `json:"service"`
+	Calls   int64   `json:"calls"`
+	Errors  int64   `json:"errors"`
+	AvgNs   float64 `json:"avg_ns"`
+}
+
+// MiddlewareDependency 是服务到中间件的结构化事实行，供知识图谱构建使用。
+type MiddlewareDependency struct {
+	Service  string `json:"service_name"`
+	Database string `json:"db_system"`
+	Calls    int64  `json:"calls"`
 }
 
 // ServiceNS 一个服务→namespace 聚合行（GlobalTopology ns 标注）。
@@ -409,12 +416,31 @@ func (r *TopologyRepository) TraceServiceSeq(ctx context.Context, scope Topology
 	return out, nil
 }
 
+// MiddlewareDependencies 查询近 24h 服务调用的 db_system 聚合。
+func (r *TopologyRepository) MiddlewareDependencies(ctx context.Context, scope TopologyScope) ([]MiddlewareDependency, error) {
+	where := topoServiceWhere(scope, "") + " AND db_system != '' AND start_time >= now() - INTERVAL 24 HOUR"
+	sql := fmt.Sprintf(
+		"SELECT service_name, db_system, count() AS calls FROM observability.trace_spans WHERE %s GROUP BY service_name, db_system LIMIT 200",
+		where)
+	rows, err := r.ch.QueryJSON(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MiddlewareDependency, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, MiddlewareDependency{
+			Service: str(row, "service_name"), Database: str(row, "db_system"), Calls: toInt64Val(row, "calls"),
+		})
+	}
+	return out, nil
+}
+
 // NodeMetrics 一个节点的指标卡聚合（TopologyNodeDetail）。
 type NodeMetrics struct {
-	Calls   int64
-	Errors  int64
-	AvgMS   float64
-	MaxMS   float64
+	Calls  int64
+	Errors int64
+	AvgMS  float64
+	MaxMS  float64
 }
 
 // NodeTrendPoint 一个节点的分钟级趋势点（TopologyNodeDetail）。

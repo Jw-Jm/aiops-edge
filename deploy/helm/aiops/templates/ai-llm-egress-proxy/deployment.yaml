@@ -38,6 +38,8 @@ spec:
                 secretKeyRef:
                   name: aiops-secrets
                   key: LLM_PROVIDER_KEYS
+            - name: LLM_ALLOWLIST
+              value: {{ .Values.llmEgressProxy.allowlist | default "api.deepseek.com,api.openai.com" | quote }}
           readinessProbe:
             httpGet:
               path: /healthz

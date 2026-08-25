@@ -40,16 +40,16 @@ type internalQueryRequest struct {
 	Offset    int      `json:"offset"`
 	TopK      int      `json:"top_k"`
 	// B1 ToolRun 上下文（可选；缺失时不做 ToolRun 审计包装）。
-	ToolRunID     string `json:"tool_run_id"`
+	ToolRunID      string `json:"tool_run_id"`
 	IdempotencyKey string `json:"idempotency_key"`
-	ExecutorID    string `json:"executor_id"`
-	LeaseEpoch    int64  `json:"lease_epoch"`
+	ExecutorID     string `json:"executor_id"`
+	LeaseEpoch     int64  `json:"lease_epoch"`
 	// P0-TOOL-02：Lease token（明文）——Tool 执行前 server-side fencing 用。
 	//   缺失则不做 ToolRun 包装（无 Lease 保护的查询不写 ToolRun，避免无审计数据面访问）。
 	LeaseToken string `json:"lease_token"`
 	// P0-TOOL-01：真实 run_id（Investigation Run 的 UUID）。缺失 → fail-closed 拒绝执行
 	// （不得写 run_id='' 的孤儿 ToolRun）。
-	RunID string `json:"run_id"`
+	RunID            string `json:"run_id"`
 	QueryWindowStart string `json:"query_window_start"` // RFC3339 绝对时间（Investigation 创建时冻结）
 	QueryWindowEnd   string `json:"query_window_end"`
 }
@@ -298,6 +298,24 @@ func (h *Handler) InternalQueryTopology(w http.ResponseWriter, r *http.Request) 
 			return nil, eerr
 		}
 		return json.Marshal(map[string]interface{}{"nodes": nodes, "edges": edges})
+	})
+}
+
+// InternalQueryTopologyMiddleware handles POST /internal/v1/query/topology/middleware.
+func (h *Handler) InternalQueryTopologyMiddleware(w http.ResponseWriter, r *http.Request) {
+	rctx, req, err := decodeInternalRequest(r, "observability.topology.read")
+	if err != nil {
+		respondInternalQueryError(w, err)
+		return
+	}
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		rows, err := h.topoRepo.MiddlewareDependencies(r.Context(), query.TopologyScope{
+			TenantID: rctx.TenantID, ClusterID: rctx.ClusterID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"middleware": rows, "total": len(rows)})
 	})
 }
 

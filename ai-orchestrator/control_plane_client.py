@@ -29,9 +29,14 @@ CP_RUNS_RECOVER = "control_plane.runs.recover"
 CP_RUNS_RECOVER_GLOBAL = "control_plane.runs.recover.global"
 CP_EVENTS_APPEND = "control_plane.events.append"
 CP_EVENTS_REPLAY = "control_plane.events.replay"
+CP_SETTINGS_READ = "control_plane.settings.read"
+CP_SETTINGS_WRITE = "control_plane.settings.write"
+CP_KNOWLEDGE_GRAPH_READ = "control_plane.knowledge_graph.read"
+CP_KNOWLEDGE_GRAPH_WRITE = "control_plane.knowledge_graph.write"
 
 # orchestrator system principal 的固定 canonical UUID（非用户/Agent）。
 SYSTEM_PRINCIPAL_ID = "f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c"
+DEFAULT_SYSTEM_TENANT_ID = "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
 _CP_LIFETIME_SECONDS = 30
 _DEFAULT_TIMEOUT = 10
 
@@ -98,7 +103,8 @@ class ControlPlaneClient:
 
     # ── claims 构造（system principal，scope_kind=run）────────────────────
     def _claims(self, *, run_id: str, capability: str, tenant_id: str,
-                request_id: Optional[str] = None) -> dict:
+                request_id: Optional[str] = None, cluster_id: str = "",
+                scope_kind: str = "run") -> dict:
         now = datetime.now(timezone.utc)
         return {
             "version": 1,
@@ -111,8 +117,8 @@ class ControlPlaneClient:
             "principal_id": SYSTEM_PRINCIPAL_ID,
             "session_id": "",  # system principal 必须空 session
             "tenant_id": tenant_id,
-            "scope_kind": "run",
-            "cluster_id": "",
+            "scope_kind": scope_kind,
+            "cluster_id": cluster_id,
             "capability": capability,
             "source": "control-plane",
             "issued_at": now,
@@ -192,6 +198,44 @@ class ControlPlaneClient:
         #（必须是有效 UUID）以满足签名格式要求；扫描仍是全局的。
         claims = self._claims(run_id=str(uuid.uuid4()), capability=CP_RUNS_RECOVER_GLOBAL, tenant_id=tenant_id)
         return self._get("/internal/v1/control-plane/runs/unfinished", claims).get("runs", [])
+
+    # ── platform settings ───────────────────────────────────────────────
+    def get_recovery_policy(self, *, tenant_id: Optional[str] = None) -> dict:
+        """读取由 query-api 持有的恢复策略配置。"""
+        claims = self._claims(
+            run_id=str(uuid.uuid4()), capability=CP_SETTINGS_READ,
+            tenant_id=tenant_id or os.environ.get("AIOPS_SYSTEM_TENANT_ID", DEFAULT_SYSTEM_TENANT_ID),
+        )
+        return self._get("/internal/v1/control-plane/settings/recovery-policy", claims)
+
+    def set_recovery_policy(self, policy: Mapping[str, Any], *, tenant_id: Optional[str] = None) -> dict:
+        """写入由 query-api 持有的恢复策略配置。"""
+        claims = self._claims(
+            run_id=str(uuid.uuid4()), capability=CP_SETTINGS_WRITE,
+            tenant_id=tenant_id or os.environ.get("AIOPS_SYSTEM_TENANT_ID", DEFAULT_SYSTEM_TENANT_ID),
+        )
+        return self._post(
+            "/internal/v1/control-plane/settings/recovery-policy", claims,
+            {"policy": dict(policy)},
+        )
+
+    def knowledge_graph(self, operation: str, body: Mapping[str, Any], *, write: bool = False,
+                        tenant_id: Optional[str] = None) -> dict:
+        """Call the query-api-owned knowledge graph persistence boundary."""
+        payload = {"operation": operation, **dict(body)}
+        cluster_id = str(payload.get("cluster_id") or "")
+        for nested_key in ("props", "edge_props"):
+            nested = payload.get(nested_key)
+            if not cluster_id and isinstance(nested, Mapping):
+                cluster_id = str(nested.get("cluster_id") or "")
+        claims = self._claims(
+            run_id=str(uuid.uuid4()),
+            capability=CP_KNOWLEDGE_GRAPH_WRITE if write else CP_KNOWLEDGE_GRAPH_READ,
+            tenant_id=tenant_id or os.environ.get("AIOPS_SYSTEM_TENANT_ID", DEFAULT_SYSTEM_TENANT_ID),
+            cluster_id=cluster_id,
+            scope_kind="cluster" if cluster_id else "run",
+        )
+        return self._post("/internal/v1/control-plane/knowledge-graph", claims, payload)
 
     # ── lease / commit（B2-01 / A1）────────────────────────────────────────
     def claim_lease(self, *, run_id: str, tenant_id: str, owner_id: str,

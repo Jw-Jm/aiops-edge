@@ -1,24 +1,20 @@
 """AIOps 平台知识图谱构建管线（纯函数模块，可独立测试）。
 
-数据源：
-- MySQL `aiops.topology_nodes` / `aiops.topology_relations`（属性图存储，props_json 为 JSON 字符串）。
-- ClickHouse `observability.service_topology`（服务调用边，HTTP 访问）。
-- query-api `/infrastructure/nodes`、`/infrastructure/pods`（K8s 基础设施，内部 HTTP + X-Internal-Token）。
-- MySQL `aiops.change_events`（变更事件，最近 7 天）。
+数据源与持久化均经 query-api 内部边界访问：
+- 事实查询走 canonical `/internal/v1/query/*`。
+- 属性图读写走 `/internal/v1/control-plane/knowledge-graph`。
 
 约定：
 - 节点/边去重键见各 upsert 函数；`created_by`/`cluster_id` 存放在 props_json 内。
-- 本模块不 import main / db.py，独立维护 `_get_conn()`（pymysql）。
+- 本模块不 import `db.py`、`pymysql` 或 ClickHouse client。
 - 所有 build_* 函数容错：任何外部依赖不可达时把异常记入返回统计的 errors 列表，绝不抛出。
 
-环境变量：
-- MYSQL_HOST/MYSQL_PORT/MYSQL_USER/MYSQL_PASSWORD/MYSQL_DB
-- CLICKHOUSE_HOST/CLICKHOUSE_PORT/CLICKHOUSE_USER/CLICKHOUSE_PASSWORD
-- QUERY_API_URL / INTERNAL_TOKEN
+环境变量：QUERY_API_URL、INTERNAL_TOKEN、TRUSTED_CONTEXT_PRIVATE_KEY、AIOPS_SYSTEM_TENANT_ID。
 """
 import json
 import os
 from collections import deque
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 # ═══════════════════════════════════════════════════════════════
@@ -35,21 +31,14 @@ REL_TYPES = {
     "RAISES", "CAUSED_BY", "MENTIONED_IN",
 }
 
-# 环境配置（模块加载时读取一次，测试可覆盖）
-_MYSQL_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
-_MYSQL_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
-_MYSQL_USER = os.environ.get("MYSQL_USER", "root")
-_MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
-_MYSQL_DB = os.environ.get("MYSQL_DB", "aiops")
-
-_CH_HOST = os.environ.get("CLICKHOUSE_HOST", "clickhouse.observability.svc.cluster.local")
-_CH_PORT = os.environ.get("CLICKHOUSE_PORT", "8123")
-_CH_USER = os.environ.get("CLICKHOUSE_USER", "default")
-_CH_PASSWORD = os.environ.get("CLICKHOUSE_PASSWORD", "")
-
-_QUERY_API_URL = os.environ.get(
-    "QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
-_INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
+_SYSTEM_TENANT_ID = os.environ.get(
+    "AIOPS_SYSTEM_TENANT_ID", "7ed01afc-cc79-4ecd-8767-a2befa6168ad")
+_SYSTEM_CLUSTER_ID = os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", "default")
+_QUERY_TOOLS = {
+    "topology": "query_topology.v1",
+    "kubernetes": "query_k8s.v1",
+    "changes": "query_changes.v1",
+}
 
 # 每次 build 统计（模块级，由 build_* 重置后读取）
 _STATS = {
@@ -70,15 +59,31 @@ _JSON_KEYS = ("nodes_added", "nodes_updated", "nodes_skipped",
 #  内部工具
 # ═══════════════════════════════════════════════════════════════
 
-def _get_conn():
-    """独立的 pymysql 连接（不依赖 db.py，避免耦合）。"""
-    import pymysql
-    return pymysql.connect(
-        host=_MYSQL_HOST, port=_MYSQL_PORT,
-        user=_MYSQL_USER, password=_MYSQL_PASSWORD, database=_MYSQL_DB,
-        charset="utf8mb4", autocommit=False,
-        cursorclass=pymysql.cursors.DictCursor,
-    )
+def _control_plane_factory():
+    from control_plane_client import ControlPlaneClient
+    return ControlPlaneClient()
+
+
+def _kg_request(operation: str, body: dict, *, write: bool = False) -> dict:
+    return _control_plane_factory().knowledge_graph(operation, body, write=write)
+
+
+def _query_source(operation: str, cluster_id: str, params: Optional[dict] = None) -> dict:
+    """Read source facts through the canonical query-api boundary."""
+    from internal_query_client import InternalQueryClient
+    from trusted_context_issuer import TrustedContextIssuer
+    from internal_query import _load_private_key
+    from uuid import uuid4
+
+    private_key = _load_private_key(os.environ.get("TRUSTED_CONTEXT_PRIVATE_KEY", ""))
+    client = InternalQueryClient(issuer=TrustedContextIssuer(private_key=private_key))
+    result = client.query(
+        tool_id=_QUERY_TOOLS[operation], operation=operation,
+        tenant_id=_SYSTEM_TENANT_ID, cluster_id=str(cluster_id),
+        params=params or {}, context_ref=f"knowledge-graph:{operation}:{uuid4()}")
+    body = result.body
+    data = body.get("data") if isinstance(body, dict) else None
+    return data if isinstance(data, dict) else body
 
 
 def _json_loads(s):
@@ -108,44 +113,6 @@ def _reset_stats():
 
 def _snapshot() -> dict:
     return {k: _STATS[k] for k in _JSON_KEYS} | {"errors": list(_STATS["errors"])}
-
-
-def _ch_query(sql: str, params: Optional[dict] = None) -> list:
-    """执行 ClickHouse SELECT（HTTP），返回 dict 行列表；失败抛异常由调用方捕获。"""
-    import base64
-    import urllib.parse
-    import urllib.request
-    url = (f"http://{_CH_HOST}:{_CH_PORT}/?query="
-           + urllib.parse.quote(sql) + "&default_format=JSONEachRow")
-    if params:
-        for k, v in params.items():
-            url += f"&param_{k}=" + urllib.parse.quote(str(v))
-    req = urllib.request.Request(url)
-    if _CH_PASSWORD:
-        token = base64.b64encode(f"{_CH_USER}:{_CH_PASSWORD}".encode()).decode()
-        req.add_header("Authorization", f"Basic {token}")
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
-    rows = []
-    for line in raw.splitlines():
-        if line.strip():
-            try:
-                rows.append(json.loads(line))
-            except Exception:
-                pass
-    return rows
-
-
-def _qa_get(path: str) -> dict:
-    """GET query-api 内部接口（带 X-Internal-Token）；失败抛异常由调用方捕获。"""
-    import urllib.request
-    url = _QUERY_API_URL.rstrip("/") + path
-    headers = {}
-    if _INTERNAL_TOKEN:
-        headers["X-Internal-Token"] = _INTERNAL_TOKEN
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
 def _extract_items(payload) -> list:
@@ -223,21 +190,16 @@ def _pod_to_service_name(pod_name: Optional[str]) -> list:
 
 
 def _find_node_id(node_type: str, node_name: str) -> Optional[int]:
-    """查 topology_nodes 返回 id；不存在返回 None。"""
+    """通过 query-api 查图节点 id；不存在返回 None。"""
     if not node_name:
         return None
-    conn = _get_conn()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM topology_nodes WHERE type=%s AND name=%s ORDER BY id LIMIT 1",
-                (node_type, node_name))
-            row = cur.fetchone()
-            return int(row["id"]) if row else None
+        entity = _kg_request("find_node", {
+            "type": node_type, "name": node_name, "cluster_id": "",
+        }).get("entity")
+        return int(entity["id"]) if entity else None
     except Exception:
         return None
-    finally:
-        conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -256,49 +218,16 @@ def upsert_node(type_, name, props: dict) -> int:
     cluster_id = str(props.get("cluster_id", "default"))
     props["cluster_id"] = cluster_id
     props.setdefault("created_by", "auto")
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, props_json, created_at, updated_at "
-                "FROM topology_nodes WHERE type=%s AND name=%s ORDER BY id",
-                (type_, name))
-            existing = None
-            for r in cur.fetchall():
-                if str(_json_loads(r.get("props_json")).get("cluster_id", "default")) == cluster_id:
-                    existing = r
-                    break
-            if existing is not None:
-                old = _json_loads(existing.get("props_json"))
-                if old.get("created_by") == "manual":
-                    # 人工节点不可被管线自动修改
-                    _STATS["nodes_skipped"] += 1
-                    conn.rollback()
-                    return int(existing["id"])
-                merged = dict(old)
-                merged.update(props)
-                cur.execute(
-                    "UPDATE topology_nodes SET props_json=%s, updated_at=CURRENT_TIMESTAMP "
-                    "WHERE id=%s",
-                    (_json_dumps(merged), existing["id"]))
-                _STATS["nodes_updated"] += 1
-                conn.commit()
-                return int(existing["id"])
-            cur.execute(
-                "INSERT INTO topology_nodes (type, name, props_json, created_at, updated_at) "
-                "VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                (type_, name, _json_dumps(props)))
-            _STATS["nodes_added"] += 1
-            conn.commit()
-            return int(cur.lastrowid)
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        conn.close()
+    result = _kg_request("upsert_node", {
+        "type": type_, "name": name, "cluster_id": cluster_id, "props": props,
+    }, write=True)
+    if result.get("skipped"):
+        _STATS["nodes_skipped"] += 1
+    elif result.get("created"):
+        _STATS["nodes_added"] += 1
+    else:
+        _STATS["nodes_updated"] += 1
+    return int(result["id"])
 
 
 def upsert_edge(src_id, dst_id, rel_type, props: dict) -> int:
@@ -306,108 +235,42 @@ def upsert_edge(src_id, dst_id, rel_type, props: dict) -> int:
     props = dict(props)
     props.setdefault("cluster_id", "default")
     props.setdefault("created_by", "auto")
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, props_json FROM topology_relations "
-                "WHERE src_id=%s AND dst_id=%s AND type=%s ORDER BY id LIMIT 1",
-                (src_id, dst_id, rel_type))
-            row = cur.fetchone()
-            if row is not None:
-                merged = dict(_json_loads(row.get("props_json")))
-                merged.update(props)
-                cur.execute(
-                    "UPDATE topology_relations SET props_json=%s "
-                    "WHERE id=%s",
-                    (_json_dumps(merged), row["id"]))
-                _STATS["edges_updated"] += 1
-                conn.commit()
-                return int(row["id"])
-            cur.execute(
-                "INSERT INTO topology_relations (src_id, dst_id, type, props_json, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                (src_id, dst_id, rel_type, _json_dumps(props)))
-            _STATS["edges_added"] += 1
-            conn.commit()
-            return int(cur.lastrowid)
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        conn.close()
+    result = _kg_request("upsert_edge", {
+        "src_id": int(src_id), "dst_id": int(dst_id),
+        "cluster_id": str(props.get("cluster_id", "default")),
+        "edge_type": rel_type, "edge_props": props,
+    }, write=True)
+    if result.get("created"):
+        _STATS["edges_added"] += 1
+    else:
+        _STATS["edges_updated"] += 1
+    return int(result["id"])
 
 
 # ═══════════════════════════════════════════════════════════════
 #  构建函数
 # ═══════════════════════════════════════════════════════════════
 
-def build_from_traces(cluster_id: str = "default") -> dict:
-    """从 ClickHouse observability.service_topology 拉最近调用边，建 service 节点与 DEPENDS_ON 边。
-
-    先探测表结构（SELECT * ... LIMIT 1），失败回退 DESCRIBE TABLE，再按发现字段写聚合查询。
-    CH 不可达时异常进 errors 列表，不抛出。
-    """
+def build_from_traces(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
+    """从 query-api canonical topology 事实建 service 节点与依赖边。"""
     _reset_stats()
-    # 1) 探测字段
-    cols = []
     try:
-        probe = _ch_query("SELECT * FROM observability.service_topology LIMIT 1")
-        if probe:
-            cols = list(probe[0].keys())
-        else:
-            desc = _ch_query("DESCRIBE TABLE observability.service_topology")
-            cols = [str(d.get("name", "")) for d in desc if d.get("name")]
-    except Exception as e:
-        _STATS["errors"].append(f"traces probe: {e}")
-        return _snapshot()
-    colset = set(cols)
-
-    def pick(candidates, default):
-        for c in candidates:
-            if c in colset:
-                return c
-        return default
-
-    src_col = pick(["source_service", "source", "src_service"], "source_service")
-    tgt_col = pick(["target_service", "target", "dst_service"], "target_service")
-    call_col = pick(["call_count", "calls", "count"], "call_count")
-    err_col = pick(["error_count", "errors", "errs", "error"], "error_count")
-
-    filters = []
-    if "cluster_id" in colset:
-        filters.append("cluster_id = {cluster_id:String}")
-    if "time_bucket" in colset:
-        filters.append("time_bucket >= now() - INTERVAL 1440 MINUTE")
-    sql = (f"SELECT {src_col} AS _src, {tgt_col} AS _tgt, "
-           f"sum({call_col}) AS _calls, sum({err_col}) AS _errors "
-           f"FROM observability.service_topology")
-    if filters:
-        sql += " WHERE " + " AND ".join(filters)
-    sql += " GROUP BY _src, _tgt"
-
-    # 2) 聚合查询
-    try:
-        rows = _ch_query(sql, params={"cluster_id": cluster_id})
+        payload = _query_source("topology", cluster_id, {"minutes": 1440})
     except Exception as e:
         _STATS["errors"].append(f"traces query: {e}")
         return _snapshot()
 
-    # 3) 落库
-    for r in rows:
-        src = str(r.get("_src") or "").strip()
-        tgt = str(r.get("_tgt") or "").strip()
+    for r in payload.get("edges", []) if isinstance(payload, dict) else []:
+        src = str(r.get("source") or r.get("source_service") or "").strip()
+        tgt = str(r.get("target") or r.get("target_service") or "").strip()
         if not src or not tgt or src == tgt:
             continue
         try:
             sid = upsert_node("service", src, {"cluster_id": cluster_id, "created_by": "auto"})
             did = upsert_node("service", tgt, {"cluster_id": cluster_id, "created_by": "auto"})
             upsert_edge(sid, did, "DEPENDS_ON", {
-                "calls": int(r.get("_calls") or 0),
-                "errors": int(r.get("_errors") or 0),
+                "calls": int(r.get("calls") or 0),
+                "errors": int(r.get("errors") or 0),
                 "cluster_id": cluster_id,
                 "created_by": "auto",
             })
@@ -416,34 +279,25 @@ def build_from_traces(cluster_id: str = "default") -> dict:
     return _snapshot()
 
 
-def build_from_k8s(cluster_id: str = "default") -> dict:
+def build_from_k8s(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
     """从 query-api 拉 K8s 节点/Pod，建 node/pod 节点与 RUNS_ON 边（pod→node）。
 
     响应格式容错解析 {items:[...]} / {data:[...]} / {nodes|pods:[...]} / 直接数组。
     异常捕获进 errors 列表，不抛出。
     """
     _reset_stats()
-    # 集群节点：从 MySQL clusters 表取真实集群名（kubeconfig != 'mock'），兜底用 cluster_id
     cluster_name = cluster_id
+    payload = {}
     try:
-        conn = _get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT name FROM clusters WHERE kubeconfig != 'mock' AND status='active' ORDER BY id LIMIT 1")
-                row = cur.fetchone()
-                if row and row.get("name"):
-                    cluster_name = row["name"]
-        finally:
-            conn.close()
-    except Exception:
-        pass
+        payload = _query_source("kubernetes", cluster_id, {"namespace": "all"})
+    except Exception as e:
+        _STATS["errors"].append(f"k8s query: {e}")
     cid = upsert_node("cluster", cluster_name, {
         "cluster_id": cluster_id, "created_by": "auto",
     })
 
     try:
-        payload = _qa_get("/infrastructure/nodes")
-        for n in _extract_items(payload):
+        for n in (payload.get("node_details") or []) if isinstance(payload, dict) else []:
             try:
                 name, status, capacity = _node_fields(n)
                 if not name:
@@ -461,8 +315,7 @@ def build_from_k8s(cluster_id: str = "default") -> dict:
         _STATS["errors"].append(f"k8s nodes fetch: {e}")
 
     try:
-        payload = _qa_get("/infrastructure/pods")
-        for p in _extract_items(payload):
+        for p in (payload.get("pods") or []) if isinstance(payload, dict) else []:
             try:
                 name, namespace, status, node_name = _pod_fields(p)
                 if not name:
@@ -495,54 +348,42 @@ def build_from_k8s(cluster_id: str = "default") -> dict:
     return _snapshot()
 
 
-def attach_changes(cluster_id: str = "default") -> dict:
-    """从 MySQL change_events 读最近 7 天变更，建 change 节点 + HAS_CHANGE 边（service→change）。
-
-    change_events 表不存在时跳过（返回空统计）；查询失败进 errors 列表，不抛出。
-    """
+def attach_changes(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
+    """从 canonical changes 查询读取最近 7 天变更，建 change 节点与 HAS_CHANGE 边。"""
     _reset_stats()
     try:
-        conn = _get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, cluster_id, service, change_type, operator, created_at "
-                    "FROM change_events "
-                    "WHERE created_at >= NOW() - INTERVAL 7 DAY AND cluster_id = %s "
-                    "ORDER BY created_at",
-                    (cluster_id,))
-                rows = cur.fetchall()
-            conn.commit()
-        finally:
-            conn.close()
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        payload = _query_source("changes", cluster_id, {"since": since, "limit": 200})
+        rows = payload.get("changes", []) if isinstance(payload, dict) else []
     except Exception as e:
-        msg = str(e).lower()
-        if "doesn't exist" in msg or "does not exist" in msg or "1146" in msg:
-            return _snapshot()  # 表未建，跳过
         _STATS["errors"].append(f"changes fetch: {e}")
         return _snapshot()
 
     for r in rows:
         try:
-            cid = int(r["id"])
+            cid = str(r.get("change_id") or r.get("id") or "")
+            if not cid:
+                continue
             change_name = f"change-{cid}"
             chnode_id = upsert_node("change", change_name, {
                 "change_id": cid,
                 "change_type": str(r.get("change_type") or ""),
-                "operator": str(r.get("operator") or ""),
-                "service": str(r.get("service") or ""),
-                "created_at": str(r.get("created_at") or ""),
+                "operator": str(r.get("actor") or r.get("operator") or ""),
+                "service": str(r.get("service") or r.get("service_name") or ""),
+                "created_at": str(r.get("start_time") or r.get("created_at") or ""),
+                "summary": str(r.get("summary") or r.get("content") or ""),
+                "revision": str(r.get("revision") or ""),
                 "cluster_id": cluster_id,
                 "created_by": "auto",
             })
-            svc = str(r.get("service") or "").strip()
+            svc = str(r.get("service") or r.get("service_name") or "").strip()
             if svc:
                 sid = upsert_node("service", svc, {"cluster_id": cluster_id, "created_by": "auto"})
                 upsert_edge(sid, chnode_id, "HAS_CHANGE", {
                     "change_id": cid,
                     "change_type": str(r.get("change_type") or ""),
-                    "operator": str(r.get("operator") or ""),
-                    "created_at": str(r.get("created_at") or ""),
+                    "operator": str(r.get("actor") or r.get("operator") or ""),
+                    "created_at": str(r.get("start_time") or r.get("created_at") or ""),
                     "cluster_id": cluster_id,
                 })
         except Exception as e:
@@ -550,19 +391,16 @@ def attach_changes(cluster_id: str = "default") -> dict:
     return _snapshot()
 
 
-def attach_middleware(cluster_id: str = "default") -> dict:
+def attach_middleware(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
     """从 trace_spans 的 db_system 字段挖掘 service→middleware 依赖边。
 
     例: orders 调用了 MySQL → middleware 节点 mysql + DEPENDS_ON 边。
     CH 不可达或表缺失时异常进 errors 列表，不抛出。
     """
     _reset_stats()
-    sql = ("SELECT service_name, db_system, count() AS c "
-           "FROM observability.trace_spans "
-           "WHERE db_system != '' AND start_time >= now() - INTERVAL 24 HOUR "
-           "GROUP BY service_name, db_system LIMIT 200")
     try:
-        rows = _ch_query(sql)
+        payload = _query_source("middleware", cluster_id, {"minutes": 1440})
+        rows = payload.get("middleware", []) if isinstance(payload, dict) else []
     except Exception as e:
         _STATS["errors"].append(f"middleware query: {e}")
         return _snapshot()
@@ -588,7 +426,7 @@ def attach_middleware(cluster_id: str = "default") -> dict:
     return _snapshot()
 
 
-def build_all(cluster_id: str = "default") -> dict:
+def build_all(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
     """依次执行 traces / k8s / middleware / changes 四条管线并汇总统计。"""
     traces = build_from_traces(cluster_id)
     k8s = build_from_k8s(cluster_id)
@@ -611,32 +449,19 @@ def build_all(cluster_id: str = "default") -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def _load_graph():
-    """全量加载节点/边（内存图，节点数 <10 万）。返回 (node_rows, rel_rows)。"""
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, type, name, props_json, created_at, updated_at "
-                "FROM topology_nodes")
-            node_rows = cur.fetchall()
-            cur.execute(
-                "SELECT id, src_id, dst_id, type, props_json, created_at "
-                "FROM topology_relations")
-            rel_rows = cur.fetchall()
-        conn.commit()
-        return node_rows, rel_rows
-    finally:
-        conn.close()
+    """从 query-api 加载全量图快照（节点数 <10 万）。"""
+    payload = _kg_request("snapshot", {"cluster_id": ""})
+    return payload.get("nodes", []), payload.get("edges", [])
 
 
 def _node_dict(r) -> dict:
-    props = _json_loads(r.get("props_json"))
+    props = _json_loads(r.get("props", r.get("props_json")))
     return {
         "id": int(r["id"]),
         "type": r["type"],
         "name": r["name"],
         "props": props,
-        "cluster_id": str(props.get("cluster_id", "default")),
+        "cluster_id": str(r.get("cluster_id", props.get("cluster_id", "default"))),
         "created_by": props.get("created_by", ""),
         "created_at": str(r.get("created_at") or ""),
         "updated_at": str(r.get("updated_at") or ""),
@@ -644,35 +469,24 @@ def _node_dict(r) -> dict:
 
 
 def _edge_dict(r) -> dict:
+    props = _json_loads(r.get("props", r.get("props_json")))
     return {
         "id": int(r["id"]),
-        "src_id": int(r["src_id"]),
-        "dst_id": int(r["dst_id"]),
+        "src_id": int(r.get("src_id", r.get("src"))),
+        "dst_id": int(r.get("dst_id", r.get("dst"))),
         "type": r["type"],
-        "props": _json_loads(r.get("props_json")),
+        "props": props,
         "created_at": str(r.get("created_at") or ""),
     }
 
 
 def get_node(type_, name, cluster_id: str = "default") -> Optional[dict]:
-    """按 (type, name, cluster_id) 查节点；不存在或 DB 不可用时返回 None。"""
+    """按 (type, name, cluster_id) 经 query-api 查节点。"""
     try:
-        conn = _get_conn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, type, name, props_json, created_at, updated_at "
-                    "FROM topology_nodes WHERE type=%s AND name=%s ORDER BY id",
-                    (type_, name))
-                rows = cur.fetchall()
-            conn.commit()
-        finally:
-            conn.close()
-        for r in rows:
-            d = _node_dict(r)
-            if d["cluster_id"] == str(cluster_id):
-                return d
-        return None
+        entity = _kg_request("find_node", {
+            "type": type_, "name": name, "cluster_id": str(cluster_id),
+        }).get("entity")
+        return _node_dict(entity) if entity else None
     except Exception:
         return None
 
@@ -794,28 +608,7 @@ def reconcile() -> int:
 
     返回标记数。保留原 updated_at（保持 stale 状态，避免下次又被误判为活跃）。
     """
-    marked = 0
-    conn = _get_conn()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT n.id, n.props_json FROM topology_nodes n "
-                "WHERE n.updated_at < NOW() - INTERVAL 7 DAY "
-                "AND n.id NOT IN (SELECT src_id FROM topology_relations "
-                "                 UNION SELECT dst_id FROM topology_relations)")
-            for r in cur.fetchall():
-                props = _json_loads(r.get("props_json"))
-                if props.get("created_by") != "auto":
-                    continue
-                if props.get("status") == "stale":
-                    continue
-                props["status"] = "stale"
-                cur.execute(
-                    "UPDATE topology_nodes SET props_json=%s, updated_at=updated_at "
-                    "WHERE id=%s",
-                    (_json_dumps(props), r["id"]))
-                marked += 1
-            conn.commit()
-        return marked
-    finally:
-        conn.close()
+        return int(_kg_request("reconcile", {}, write=True).get("marked", 0))
+    except Exception:
+        return 0

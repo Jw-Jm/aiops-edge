@@ -2,6 +2,8 @@
 上线后往 data/knowledge_cases.json 追加新案例，重启或定时调用本模块即可增量导入，
 不会重复插入已存在的案例（按 symptom 去重）。也可通过 API/脚本手动触发。
 """
+from __future__ import annotations
+
 import hashlib
 import json
 import logging

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"flag"
@@ -80,6 +81,23 @@ func runInvocationIssuerFromEnv() (*trustedauth.RunInvocationIssuer, error) {
 	return trustedauth.NewRunInvocationIssuer(privateKey, serviceToken)
 }
 
+// requireDatabase makes the Query API fail closed during startup when its
+// authoritative persistence dependency is unavailable. The getter is injected
+// for a deterministic unit test; production passes store.GetDB.
+func requireDatabase(getter func() *sql.DB) (*sql.DB, error) {
+	if getter == nil {
+		return nil, fmt.Errorf("mysql getter is not configured")
+	}
+	db := getter()
+	if db == nil {
+		return nil, fmt.Errorf("mysql unavailable")
+	}
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("mysql ping failed: %w", err)
+	}
+	return db, nil
+}
+
 func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
 	chHost := flag.String("ch-host", "clickhouse.observability.svc.cluster.local", "ClickHouse host")
@@ -89,6 +107,11 @@ func main() {
 	// 默认 api：HTTP + dispatch + alert 同进程（兼容既有单进程部署）。
 	role := flag.String("role", "api", "runtime role: api | run-dispatch | alert-eval")
 	flag.Parse()
+
+	db, err := requireDatabase(store.GetDB)
+	if err != nil {
+		log.Fatalf("query-api startup blocked: %v", err)
+	}
 
 	if h := os.Getenv("CLICKHOUSE_HOST"); h != "" {
 		*chHost = h
@@ -101,13 +124,11 @@ func main() {
 	// 1) 只读 readiness check：校验 schema 版本 + checksum 已就绪（缺失/漂移则 fail-closed）。
 	// 2) DML-only bootstrap seed（初始默认面板等幂等数据）。
 	// 所有 DDL 与一次性 backfill 由 schema-migrator（aiops_migrator）在初始化 Job 中执行。
-	if db := store.GetDB(); db != nil {
-		if err := migrations.RequireCurrent(db); err != nil {
-			log.Fatalf("schema not ready (read-only checksum check): %v", err)
-		}
-		if err := store.EnsureBootstrapData(db); err != nil {
-			log.Fatalf("bootstrap data: %v", err)
-		}
+	if err := migrations.RequireCurrent(db); err != nil {
+		log.Fatalf("schema not ready (read-only checksum check): %v", err)
+	}
+	if err := store.EnsureBootstrapData(db); err != nil {
+		log.Fatalf("bootstrap data: %v", err)
 	}
 
 	handler := api.NewHandler(*chHost, *chPort)
@@ -158,7 +179,7 @@ func main() {
 		api.SetAlertCH(handler)
 		handler.StartAlertEvaluation()
 	}
-	if db := store.GetDB(); db != nil {
+	if db != nil {
 		// admin 初始密码从环境变量注入（生产必设）；未设置时生成随机强密码并打印一次性提示。
 		adminPW := os.Getenv("ADMIN_INITIAL_PASSWORD")
 		if adminPW == "" {
@@ -174,6 +195,7 @@ func main() {
 	api.InitK8sRules()
 
 	mux := http.NewServeMux()
+	health := api.NewHealthHandler(store.GetDB, migrations.RequireCurrent)
 
 	// Auth routes (no auth required)
 	mux.HandleFunc("/api/v1/auth/login", handler.Login)
@@ -198,10 +220,11 @@ func main() {
 	mux.HandleFunc("/api/v1/clusters/", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 
 	// Health (no auth required)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
+	mux.HandleFunc("/livez", health.Livez)
+	mux.HandleFunc("/readyz", health.Readyz)
+	// Compatibility endpoint: /health remains liveness-only and is not used as
+	// the Kubernetes readiness signal.
+	mux.HandleFunc("/health", health.Livez)
 	// Canonical resource resolution is the supported cluster-scoped boundary.
 	mux.HandleFunc("/api/v1/resources/resolve", handler.ResolveResource)
 
@@ -419,6 +442,7 @@ func main() {
 	mux.HandleFunc("/internal/v1/query/traces", handler.InternalQueryTraces)
 	mux.HandleFunc("/internal/v1/query/alerts", handler.InternalQueryAlerts)
 	mux.HandleFunc("/internal/v1/query/topology", handler.InternalQueryTopology)
+	mux.HandleFunc("/internal/v1/query/topology/middleware", handler.InternalQueryTopologyMiddleware)
 	mux.HandleFunc("/internal/v1/query/kubernetes", handler.InternalQueryKubernetes)
 	mux.HandleFunc("/internal/v1/query/changes", handler.InternalQueryChanges)
 	mux.HandleFunc("/internal/v1/query/knowledge", handler.InternalQueryKnowledge)
@@ -426,6 +450,8 @@ func main() {
 	mux.HandleFunc("/internal/v1/control-plane/runs", handler.InternalControlPlaneRunRouter)
 	mux.HandleFunc("/internal/v1/control-plane/runs/", handler.InternalControlPlaneRunRouter)
 	mux.HandleFunc("/internal/v1/control-plane/recovery/snapshot", handler.InternalControlPlaneRecovery)
+	mux.HandleFunc("/internal/v1/control-plane/settings/recovery-policy", handler.InternalControlPlaneRecoveryPolicy)
+	mux.HandleFunc("/internal/v1/control-plane/knowledge-graph", handler.InternalControlPlaneKnowledgeGraph)
 	// A2-01：共享 TrustedRequest replay guard 显式消费（system principal + control_plane.replay.consume）。
 	mux.HandleFunc("/internal/v1/security/replay/consume", handler.SecurityReplayConsume)
 	// 27.14：Evidence 一次消费（/internal/v1/control-plane/tools/{id}/evidence/consume）。

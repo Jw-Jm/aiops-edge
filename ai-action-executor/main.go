@@ -11,16 +11,18 @@
 //   - 不为第二套 Action SoT：权威 Action/Approval/Execution Result 持久化留在 Query API/MySQL。
 //
 // 接口：
-//   POST /v1/executor/execute   ← Query API（签名 ActionExecutionContext）
-//   GET  /v1/executor/status/{action_id}
-//   POST /v1/executor/reconcile ← execution_unknown 后 Reconcile 目标实际状态
-//   GET  /healthz
+//
+//	POST /v1/executor/execute   ← Query API（签名 ActionExecutionContext）
+//	GET  /v1/executor/status/{action_id}
+//	POST /v1/executor/reconcile ← execution_unknown 后 Reconcile 目标实际状态
+//	GET  /healthz
 //
 // 配置：
-//   EXECUTION_MODE       = disabled | manual | approved （默认 disabled）
-//   EXECUTOR_TOKEN       = Query API 出示的共享 token（可选）
-//   CREDENTIAL_BROKER_URL= Credential Broker 地址（short-lived scoped credential）
-//   EXECUTION_LOG_DIR    = 执行审计日志目录（可选）
+//
+//	EXECUTION_MODE       = disabled | manual | approved （默认 disabled）
+//	EXECUTOR_TOKEN       = Query API 出示的共享 token（可选）
+//	CREDENTIAL_BROKER_URL= Credential Broker 地址（short-lived scoped credential）
+//	EXECUTION_LOG_DIR    = 执行审计日志目录（可选）
 package main
 
 import (
@@ -53,29 +55,29 @@ const (
 
 // ActionExecutionContext 是 Query API 签发的执行上下文。
 type ActionExecutionContext struct {
-	ActionID         string `json:"action_id"`
-	ActionHash       string `json:"action_hash"` // 绑定 immutable action 身份
-	ApprovalID       string `json:"approval_id"`
-	TargetUID        string `json:"target_uid"`         // 目标对象 UID（执行前重新读取校验）
-	TargetName       string `json:"target_name"`        // 目标对象 name（K8s lookup 用）
-	ResourceVersion  string `json:"resource_version"`   // TOCTOU：执行前校验当前版本一致
-	ClusterID        string `json:"cluster_id"`
-	Namespace        string `json:"namespace"`
-	Operation        string `json:"operation"` // patch/scale/restart 等（白名单）
-	TargetSpec       json.RawMessage `json:"target_spec"`
-	CredentialRef    string `json:"credential_ref"` // 经 Credential Broker 换 short-lived scope
-	ApprovedAt       string `json:"approved_at"`
-	ExecutedBy       string `json:"executed_by"`
+	ActionID        string          `json:"action_id"`
+	ActionHash      string          `json:"action_hash"` // 绑定 immutable action 身份
+	ApprovalID      string          `json:"approval_id"`
+	TargetUID       string          `json:"target_uid"`       // 目标对象 UID（执行前重新读取校验）
+	TargetName      string          `json:"target_name"`      // 目标对象 name（K8s lookup 用）
+	ResourceVersion string          `json:"resource_version"` // TOCTOU：执行前校验当前版本一致
+	ClusterID       string          `json:"cluster_id"`
+	Namespace       string          `json:"namespace"`
+	Operation       string          `json:"operation"` // patch/scale/restart 等（白名单）
+	TargetSpec      json.RawMessage `json:"target_spec"`
+	CredentialRef   string          `json:"credential_ref"` // 经 Credential Broker 换 short-lived scope
+	ApprovedAt      string          `json:"approved_at"`
+	ExecutedBy      string          `json:"executed_by"`
 }
 
 // ActionResult 是执行结果（回写 Query API，非本服务 SoT）。
 type ActionResult struct {
-	ActionID      string `json:"action_id"`
-	Status        string `json:"status"` // success | failed | execution_unknown | rejected | rollback_required
-	ObservedUID   string `json:"observed_uid"`
+	ActionID        string `json:"action_id"`
+	Status          string `json:"status"` // success | failed | execution_unknown | rejected | rollback_required
+	ObservedUID     string `json:"observed_uid"`
 	ObservedVersion string `json:"observed_version"`
-	Message       string `json:"message"`
-	ExecutedAt    string `json:"executed_at"`
+	Message         string `json:"message"`
+	ExecutedAt      string `json:"executed_at"`
 }
 
 type server struct {
@@ -90,6 +92,10 @@ type server struct {
 	k8sToken   string
 	k8sHost    string
 	httpClient *http.Client
+	// Function seams keep the execution state machine testable without requiring
+	// a live Kubernetes API server. Production uses the methods below directly.
+	readCurrentStateFn func(ActionExecutionContext) (string, string, bool, error)
+	patchTargetFn      func(ActionExecutionContext, string) error
 }
 
 // newK8sClient 初始化 in-cluster K8s client（SA token + service host）。
@@ -136,6 +142,9 @@ func main() {
 	// F5 已废除：若 POD_SA_ACCESS=true 则启用真实 K8s mutation（in-cluster SA + 限定 RBAC）。
 	if os.Getenv("POD_SA_ACCESS") == "true" {
 		s.newK8sClient()
+	}
+	if err := validateExecutionConfig(s.mode, s.k8sEnabled, s.verifyKeyB64); err != nil {
+		log.Fatalf("invalid execution configuration: %v", err)
 	}
 	log.Printf("ai-action-executor running EXECUTION_MODE=%s k8sEnabled=%v", mode, s.k8sEnabled)
 
@@ -200,6 +209,13 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if err := validateExecutionConfig(s.mode, s.k8sEnabled, s.verifyKeyB64); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, ActionResult{
+			ActionID: ctx.ActionID, Status: "rejected",
+			Message: "Kubernetes mutation capability unavailable: " + err.Error(),
+		})
+		return
+	}
 
 	// D-02：TOCTOU —— 执行前重新读取目标实际 UID/resourceVersion，确认无漂移。
 	observedUID, observedVersion, drift, err := s.readCurrentState(ctx)
@@ -221,9 +237,10 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	// 真实执行（F5 已废除）：EXECUTION_MODE=approved + POD_SA_ACCESS=true → 经 in-cluster SA
 	// 对目标 deployment 执行受控真实 patch（白名单 operation + If-Match resourceVersion precondition）。
 	// 保留 rollback 能力：patch 后记录 before/after，供 reconcile/rollback 恢复。
-	execMsg := "TOCTOU clean; mutation recorded"
-	execStatus := "success"
+	execMsg := "manual mode; mutation not applied"
+	execStatus := "dry_run"
 	if s.mode == ModeApproved && s.k8sEnabled {
+		execStatus = "success"
 		if err := s.patchTarget(ctx, observedVersion); err != nil {
 			// 真实写失败 → failed（不伪报 success）
 			execStatus = "failed"
@@ -237,14 +254,11 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		execMsg = "real K8s mutation applied (verified): action=" + ctx.ActionID + " target=" + ctx.TargetUID +
 			" op=" + ctx.Operation + " ns=" + ctx.Namespace
 		log.Printf("EXECUTE (approved+real): %s (uid=%s rv=%s)", execMsg, observedUID, observedVersion)
-	} else if s.mode == ModeApproved {
-		execMsg = "approved but POD_SA_ACCESS not set; mutation NOT applied (recorded)"
-		log.Printf("EXECUTE (approved, no k8s): %s", execMsg)
 	}
 	res := ActionResult{
 		ActionID: ctx.ActionID, Status: execStatus,
 		ObservedUID: observedUID, ObservedVersion: observedVersion,
-		Message: execMsg,
+		Message:    execMsg,
 		ExecutedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	s.mu.Lock()
@@ -257,6 +271,9 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 // 返回 (observedUID, observedVersion, drift, err)。drift = 读取到的 UID/version 与请求不一致。
 // F5 已废除：当 k8sEnabled 时从真实 K8s API 读取目标 deployment 的当前 UID/resourceVersion。
 func (s *server) readCurrentState(ctx ActionExecutionContext) (string, string, bool, error) {
+	if s.readCurrentStateFn != nil {
+		return s.readCurrentStateFn(ctx)
+	}
 	if s.k8sEnabled {
 		ns := ctx.Namespace
 		if ns == "" {
@@ -315,6 +332,9 @@ func (s *server) k8sReadDeployment(namespace, name string) (string, string, erro
 
 // patchTarget 对目标 deployment 执行真实 strategic merge patch（F5 已废除，经 in-cluster SA）。
 func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string) error {
+	if s.patchTargetFn != nil {
+		return s.patchTargetFn(ctx, observedVersion)
+	}
 	if !s.k8sEnabled || s.httpClient == nil {
 		return errors.New("k8s client not configured")
 	}
@@ -357,6 +377,23 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	return nil
 }
 
+// validateExecutionConfig prevents an approved request from entering a path
+// that cannot perform a Kubernetes mutation. The process fails at startup in
+// production, and the handler repeats the check to keep tests and misconfigured
+// embeddings fail-closed as well.
+func validateExecutionConfig(mode ExecutionMode, k8sEnabled bool, verifyKeyB64 string) error {
+	if mode != ModeApproved {
+		return nil
+	}
+	if strings.TrimSpace(verifyKeyB64) == "" {
+		return errors.New("EXECUTION_MODE=approved requires EXECUTOR_VERIFY_KEYS")
+	}
+	if !k8sEnabled {
+		return errors.New("EXECUTION_MODE=approved requires a Kubernetes mutation client")
+	}
+	return nil
+}
+
 // buildPatchPayload 根据 operation 构造受控 patch（annotation / replicas 白名单）。
 func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 	switch ctx.Operation {
@@ -379,8 +416,6 @@ func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 		return "", errors.New("unsupported operation: " + ctx.Operation)
 	}
 }
-
-
 
 // handleStatus 返回某 action 的执行结果（进程内；权威在 Query API）。
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -420,7 +455,7 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 	// 安全边界原型：模拟——返回 reconciled 状态供 Query API 决定（不盲 retry）。
 	res := ActionResult{
 		ActionID: req.ActionID, Status: "reconciled",
-		Message: "execution_unknown: target state reconciled; re-execute only after confirming desired state not already applied (reconcile-before-retry)",
+		Message:    "execution_unknown: target state reconciled; re-execute only after confirming desired state not already applied (reconcile-before-retry)",
 		ExecutedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	s.mu.Lock()

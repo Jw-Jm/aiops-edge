@@ -15,13 +15,13 @@ type ChangeScope struct {
 // ChangeRecord 一条结构化变更记录（Change Agent / changes.read 的事实来源）。
 // SoT 固定 ClickHouse observability.change_records（冻结职责），不经 ProxyAI。
 type ChangeRecord struct {
-	ChangeID   string
-	Service    string
-	ChangeType string // deploy / config / scale / restart / delete
-	StartTime  string
-	Actor      string
-	Summary    string
-	Revision   string
+	ChangeID   string `json:"change_id"`
+	Service    string `json:"service"`
+	ChangeType string `json:"change_type"` // deploy / config / scale / restart / delete
+	StartTime  string `json:"start_time"`
+	Actor      string `json:"actor"`
+	Summary    string `json:"summary"`
+	Revision   string `json:"revision"`
 }
 
 // ChangeRepository 是 changes 资源域的 domain repository（V9.2 Phase 6 mandatory gap）。

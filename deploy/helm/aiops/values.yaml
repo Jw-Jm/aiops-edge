@@ -63,6 +63,8 @@ llmEgressProxy:
   image:
     repository: ai-llm-egress-proxy
     tag: v0.1.0-c04
+  # Provider hostname allowlist consumed by the proxy; values are routing policy, not secrets.
+  allowlist: "api.deepseek.com,api.openai.com"
   # 允许 proxy 出站的 LLM 目标 CIDR（default-deny egress 下只放行这些；默认 0.0.0.0/0:443
   # 即仅放行 443 到任意地址，配合 domain 校验兜底——安全场景应收敛为具体 LLM 服务商 CIDR）。
   allowlistCidrs: []
@@ -82,6 +84,9 @@ secrets:
   mysqlRootPassword: ""
   # admin 初始密码（query-api 启动种子；未设置时生成随机密码并打印一次性提示，admin 将无法用默认密码登录）
   adminInitialPassword: ""
+  # LLM proxy credentials: provider keys remain exclusively in the proxy container.
+  llmProxyToken: ""
+  llmProviderKeys: ""
   # ── V9.2 Service Identity (INTERNAL-AUTH-P0-011) — four independent credential/key groups ──
   # orchestrator → query-api direction (service credential + signing keypair)
   orchestratorToQueryToken: ""
@@ -94,9 +99,10 @@ secrets:
   # ── Stage D: ai-action-executor (报告 §29) ──
   # query-api → executor 方向：EXECUTOR_TOKEN 为共享 token（disabled 时 executor 兜底校验）；
   # aiActionExecutorSigningKey 为 query-api 签发 signed ActionExecutionContext 的 Ed25519 私钥
-  # （executor 持对应公钥 EXECUTOR_VERIFY_KEYS 验签，仅 realMutation=true 时强制）。
+  # （executor 持对应独立公钥 AI_ACTION_EXECUTOR_VERIFY_KEYS 验签）。
   executorToken: ""
   aiActionExecutorSigningKey: ""           # Ed25519 private key, base64 (signer: query-api only)
+  aiActionExecutorVerifyKeys: ""            # Ed25519 public key, base64 (verifier: executor only)
 
 # ---------------------------------------------------------------------------
 # 中间件：enabled=true 由 Chart 内部拉起；enabled=false 走 external 复用已有实例
@@ -308,6 +314,10 @@ aiOrchestrator:
   # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：orchestrator。
   image: "ai-orchestrator:v1.2.0-p20-24b157a0"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
+  # Orchestrator system scope used for canonical query/KG calls; must match a
+  # registered tenant/cluster pair in query-api.
+  systemTenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
+  systemClusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   llmMock: "false"

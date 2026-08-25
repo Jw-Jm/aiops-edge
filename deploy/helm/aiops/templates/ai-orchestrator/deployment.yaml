@@ -45,6 +45,10 @@ spec:
                 secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
             - name: AIOPS_DEPLOYMENT_MODE
               value: "production"
+            - name: AIOPS_SYSTEM_TENANT_ID
+              value: {{ .Values.aiOrchestrator.systemTenantId | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_ID
+              value: {{ .Values.aiOrchestrator.systemClusterId | quote }}
             # C2-5（CONTROLLED_AI_INVESTIGATION_CANDIDATE）：生产 Orchestrator 不持有任何
             # 观测数据源直连配置（MySQL/ClickHouse host/user/db/password）——数据面一律经
             # query-api InternalQueryClient + PersistentRunRepository 访问。
@@ -73,6 +77,19 @@ spec:
 {{- end }}
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
+{{- if .Values.llmEgressProxy.enabled }}
+            # C-04：启用代理时，orchestrator 只拿代理地址和代理 token；Provider key 只在 proxy。
+            - name: LLM_PROXY_URL
+              value: "http://ai-llm-egress-proxy:8080"
+            - name: LLM_PROXY_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: LLM_PROXY_TOKEN }
+{{- else }}
+            - name: LLM_PROXY_URL
+              value: ""
+            - name: LLM_PROXY_TOKEN
+              value: ""
+{{- end }}
             - name: AIOPS_DATA_DIR
               value: {{ .Values.aiOrchestrator.dataDir | default "/var/lib/aiops" | quote }}
             - name: KG_BUILD_INTERVAL_SECONDS

@@ -3,31 +3,17 @@
 挂载约定与 flow_api.py 一致：router 由 main.py include_router 接入。
 - 读端点不校验身份（信任 query-api 代理层已完成 JWT 鉴权），直接返回 dict。
 - 仅重算类写操作（POST /build）用 X-Internal-Token + X-Internal-Role=admin 双重校验。
-- DB 不可达时读端点返回 200 + 空数据 + error 字段，绝不 500。
+- 数据边界不可达时读端点返回 200 + 空数据 + error 字段，绝不 500。
 """
 from __future__ import annotations
 
-import json
 import os
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from db import get_conn
 import kg_graph
 
 router = APIRouter(prefix="/api/v1/ai/kg")
-
-
-def _json_loads(s):
-    if not s:
-        return {}
-    if isinstance(s, dict):
-        return dict(s)
-    try:
-        v = json.loads(s)
-        return v if isinstance(v, dict) else {}
-    except Exception:
-        return {}
 
 
 def _require_admin(request: Request):
@@ -48,33 +34,24 @@ class _BuildBody(BaseModel):
 @router.get("/graph")
 def kg_graph_full(cluster_id: str = "default"):
     """全量图（按 props_json 里的 cluster_id 过滤）。"""
-    conn = get_conn()
-    if conn is None:
-        return {"nodes": [], "edges": [], "error": "MySQL 不可用"}
-    nodes, edges = [], []
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, type, name, props_json FROM topology_nodes")
-            for r in cur.fetchall():
-                props = _json_loads(r.get("props_json"))
-                if str(props.get("cluster_id", "default")) != str(cluster_id):
-                    continue
-                nodes.append({"id": int(r["id"]), "type": r["type"],
-                              "name": r["name"], "props": props})
-            cur.execute(
-                "SELECT id, src_id, dst_id, type, props_json "
-                "FROM topology_relations")
-            for r in cur.fetchall():
-                props = _json_loads(r.get("props_json"))
-                if str(props.get("cluster_id", "default")) != str(cluster_id):
-                    continue
-                edges.append({"id": int(r["id"]), "src": int(r["src_id"]),
-                              "dst": int(r["dst_id"]), "type": r["type"],
-                              "props": props})
+        node_rows, rel_rows = kg_graph._load_graph()
+        nodes = []
+        for row in node_rows:
+            node = kg_graph._node_dict(row)
+            if node["cluster_id"] == str(cluster_id):
+                nodes.append(node)
+        allowed = {n["id"] for n in nodes}
+        edges = []
+        for row in rel_rows:
+            edge = kg_graph._edge_dict(row)
+            if edge["src_id"] not in allowed or edge["dst_id"] not in allowed:
+                continue
+            edges.append({"id": edge["id"], "src": edge["src_id"],
+                          "dst": edge["dst_id"], "type": edge["type"],
+                          "props": edge["props"]})
     except Exception as e:
         return {"nodes": [], "edges": [], "error": f"graph 查询失败: {e}"}
-    finally:
-        conn.close()
     return {"nodes": nodes, "edges": edges}
 
 
@@ -117,76 +94,40 @@ def kg_impact(service: str, cluster_id: str = "default", depth: int = 3):
 
 @router.get("/evidence")
 def kg_evidence(entity_id: int, limit: int = 10):
-    """节点关联证据：出/入边 + HAS_CHANGE 边对应的 change_events 详情。
-    change_events 表不存在时 changes 返回空数组（不 500）。"""
-    entity = None
-    relations = []
-    changes = []
-    error = ""
-    conn = get_conn()
-    if conn is None:
-        return {"entity": None, "relations": [], "changes": [],
-                "error": "MySQL 不可用"}
+    """节点关联证据：出/入边 + 图中 change 节点的结构化详情。"""
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, type, name, props_json FROM topology_nodes WHERE id=%s",
-                (entity_id,))
-            row = cur.fetchone()
-            if row is not None:
-                entity = {"id": int(row["id"]), "type": row["type"],
-                          "name": row["name"],
-                          "props": _json_loads(row.get("props_json"))}
-            cur.execute(
-                "SELECT id, src_id, dst_id, type, props_json "
-                "FROM topology_relations WHERE src_id=%s OR dst_id=%s "
-                "ORDER BY id DESC LIMIT %s",
-                (entity_id, entity_id, int(limit)))
-            for r in cur.fetchall():
-                relations.append({
-                    "id": int(r["id"]), "src_id": int(r["src_id"]),
-                    "dst_id": int(r["dst_id"]), "type": r["type"],
-                    "props": _json_loads(r.get("props_json")),
-                })
-    except Exception as e:
-        entity = None
+        node_rows, rel_rows = kg_graph._load_graph()
+        nodes = {int(row["id"]): kg_graph._node_dict(row) for row in node_rows}
+        entity = nodes.get(int(entity_id))
         relations = []
-        error = f"evidence 查询失败: {e}"
-    finally:
-        conn.close()
+        for row in rel_rows:
+            edge = kg_graph._edge_dict(row)
+            if entity_id not in (edge["src_id"], edge["dst_id"]):
+                continue
+            relations.append(edge)
+        relations.sort(key=lambda item: item["id"], reverse=True)
+        relations = relations[:max(0, int(limit))]
+    except Exception as e:
+        return {"entity": None, "relations": [], "changes": [],
+                "error": f"evidence 查询失败: {e}"}
 
-    change_ids = []
-    for r in relations:
-        if r["type"] == "HAS_CHANGE":
-            cid = r["props"].get("change_id")
-            if cid:
-                change_ids.append(str(cid))
-    if change_ids:
-        c_conn = get_conn()
-        if c_conn is None:
-            error = error or "MySQL 不可用"
-        else:
-            try:
-                with c_conn.cursor() as cur:
-                    ph = ",".join(["%s"] * len(change_ids))
-                    cur.execute(
-                        f"SELECT id, cluster_id, service, change_type, operator, "
-                        f"content, created_at FROM change_events "
-                        f"WHERE id IN ({ph}) ORDER BY created_at DESC LIMIT %s",
-                        (*change_ids, int(limit)))
-                    changes = [dict(row) for row in cur.fetchall()]
-            except Exception as e:
-                msg = str(e).lower()
-                if not ("doesn't exist" in msg or "does not exist" in msg or "1146" in msg):
-                    error = error or f"change_events 查询失败: {e}"
-                # 表不存在：changes 保持空数组
-            finally:
-                c_conn.close()
+    changes = []
+    for relation in relations:
+        if relation["type"] != "HAS_CHANGE":
+            continue
+        change = nodes.get(relation["dst_id"])
+        if change and change.get("type") == "change":
+            props = change.get("props", {})
+            changes.append({
+                "id": props.get("change_id", change["name"]),
+                "cluster_id": props.get("cluster_id", "default"),
+                "service": props.get("service", ""),
+                "change_type": props.get("change_type", ""),
+                "operator": props.get("operator", ""),
+                "created_at": props.get("created_at", ""),
+            })
 
-    result = {"entity": entity, "relations": relations, "changes": changes}
-    if error:
-        result["error"] = error
-    return result
+    return {"entity": entity, "relations": relations, "changes": changes}
 
 
 @router.post("/build")
