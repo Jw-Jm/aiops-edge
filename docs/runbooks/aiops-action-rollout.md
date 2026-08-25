@@ -49,11 +49,14 @@ failover、PITR 和 Credential Broker 没有现场证据时必须保留 `BLOCKED
 
 ### 本机验证记录（2026-08-25）
 
-在当前工作区执行了以下本机门禁，均以退出码 0 完成：
+在当前工作区 `main@92f52c1edfeb` 执行了以下代码/渲染门禁，均以退出码 0 完成：
 
-- `make test-workflow-all`：Go、4 个 workflow contract、Action Executor、Python `1167 passed/1 skipped`、前端 `4 tests passed` 和生产构建。
-- `./deploy/scripts/verify-aiops-workflow-gates.sh`：Helm lint/render、RBAC 和生产安全开关检查通过。
+- `./deploy/scripts/verify-aiops-workflow-gates.sh`：Go、workflow contract、Action Executor、Python `1168 passed/1 skipped`、前端 `4 tests passed` 和生产构建通过；Helm lint/render、RBAC 和生产安全开关也通过。
+- `bash deploy/scripts/secret-format-test.sh`、`bash deploy/scripts/test-deployment-contracts.sh`、`bash deploy/scripts/test-local-validation-contract.sh`：均通过。
+- `bash deploy/scripts/validate-local-stack.sh --offline`：通过 Helm/Secret/镜像/RBAC 合同；在线项明确输出 `BLOCKED_BY_ENV`。
 - 本机代码门禁阶段保持 `EXECUTION_MODE=disabled`、`realMutation=false`，没有修改生产 Helm 配置。
+
+在线验证器对现有 OrbStack 集群的首次只读检查因 `aiops-canary` 命名空间不存在而停止；该集群仍是旧部署状态。Fresh Install 的删除重建需要单独明确批准，未获批准前不能把旧集群结果记为 Fresh Install 通过。
 
 随后在 OrbStack 本地集群中完成了一次隔离真实 mutation 验证：
 

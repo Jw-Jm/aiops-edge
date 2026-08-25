@@ -295,3 +295,10 @@
 
   Only claim completion for checks whose command output is fresh and successful; report all `BLOCKED_BY_ENV` items explicitly.
 
+---
+
+## Execution record (2026-08-25)
+
+- **Task 1–6：完成。** RED/GREEN 合同、Secret/身份、镜像收敛、两阶段 Helm profile、Executor 最小 RBAC、Stage D 确定性故障注入和 reconcile 测试均已实现并提交。
+- **Task 7：代码与离线证据完成；在线环境项阻断。** `validate-local-stack.sh --offline`、Secret/Helm/镜像合同和文档已通过；现有 OrbStack 集群缺少 `aiops-canary`，且 Fresh Install 删除重建需要单独批准，因此未伪造在线 Fresh Install、真实数据、provider、DeepFlow 或 HA 证据。
+- **Task 8：代码门禁完成。** `main@92f52c1edfeb` 的完整 workflow gate 为 Go/Python/Executor/前端/Helm 全部通过；未跟踪的两份中文验收文档未修改、未暂存。
