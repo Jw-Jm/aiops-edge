@@ -49,14 +49,24 @@ failover、PITR 和 Credential Broker 没有现场证据时必须保留 `BLOCKED
 
 ### 本机验证记录（2026-08-25）
 
-在当前工作区 `main@92f52c1edfeb` 执行了以下代码/渲染门禁，均以退出码 0 完成：
+在最终提交 `main@eb34f73fee09744aa660f33724c7bd7441649235` 执行了以下代码/渲染门禁，均以退出码 0 完成：
 
 - `./deploy/scripts/verify-aiops-workflow-gates.sh`：Go、workflow contract、Action Executor、Python `1168 passed/1 skipped`、前端 `4 tests passed` 和生产构建通过；Helm lint/render、RBAC 和生产安全开关也通过。
 - `bash deploy/scripts/secret-format-test.sh`、`bash deploy/scripts/test-deployment-contracts.sh`、`bash deploy/scripts/test-local-validation-contract.sh`：均通过。
 - `bash deploy/scripts/validate-local-stack.sh --offline`：通过 Helm/Secret/镜像/RBAC 合同；在线项明确输出 `BLOCKED_BY_ENV`。
-- 本机代码门禁阶段保持 `EXECUTION_MODE=disabled`、`realMutation=false`，没有修改生产 Helm 配置。
+- `bash deploy/scripts/test-local-validation-contract.sh`：通过顺序、确认开关和必检项合同。
+- `IMAGE_TAG=git-eb34f73fee09 ./deploy/scripts/build-images.sh all`：9 个自研镜像均构建成功并统一使用最终 SHA 标签。
 
-在线验证器对现有 OrbStack 集群的首次只读检查因 `aiops-canary` 命名空间不存在而停止；该集群仍是旧部署状态。Fresh Install 的删除重建需要单独明确批准，未获批准前不能把旧集群结果记为 Fresh Install 通过。
+在获得明确破坏性操作授权后，OrbStack 中执行了最终 Fresh Install：
+
+```bash
+./deploy/scripts/local-validation.sh --destroy --confirm-destroy \
+  --skip-build --skip-deepflow --secret-file <0600-secret-file>
+```
+
+命令以退出码 0 完成。两阶段 Helm 安装、MySQL users/schema hooks、Query API、Worker（2 副本）、Proxy、ingest、event-collector、前端和 disabled Executor 均 Ready；迁移 `0001`～`0009`、双账号权限、Proxy `/readyz`、Worker 开关、Executor `EXECUTION_MODE=disabled`/`POD_SA_ACCESS=false`、禁用 Executor 无 canary RBAC 权限以及 canary rollout 均通过。全流程输出明确保留 `BLOCKED_BY_ENV`：真实指标/日志/事件 marker、真实 provider 响应、DeepFlow flow/span、多节点 failover、PITR 和 Credential Broker。
+
+本机代码门禁与 Fresh Install 始终保持 `EXECUTION_MODE=disabled`、`realMutation=false`，没有执行真实 Kubernetes mutation；此前独立 canary mutation 记录仍仅作为受控边界证据，不等同于生产 readiness。
 
 随后在 OrbStack 本地集群中完成了一次隔离真实 mutation 验证：
 

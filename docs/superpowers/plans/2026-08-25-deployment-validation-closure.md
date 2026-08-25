@@ -300,5 +300,5 @@
 ## Execution record (2026-08-25)
 
 - **Task 1–6：完成。** RED/GREEN 合同、Secret/身份、镜像收敛、两阶段 Helm profile、Executor 最小 RBAC、Stage D 确定性故障注入和 reconcile 测试均已实现并提交。
-- **Task 7：代码与离线证据完成；在线环境项阻断。** `validate-local-stack.sh --offline`、Secret/Helm/镜像合同和文档已通过；现有 OrbStack 集群缺少 `aiops-canary`，且 Fresh Install 删除重建需要单独批准，因此未伪造在线 Fresh Install、真实数据、provider、DeepFlow 或 HA 证据。
-- **Task 8：代码门禁完成。** `main@92f52c1edfeb` 的完整 workflow gate 为 Go/Python/Executor/前端/Helm 全部通过；未跟踪的两份中文验收文档未修改、未暂存。
+- **Task 7：完成本机结构/就绪验证，环境项诚实阻断。** 在获得破坏性授权后，`main@eb34f73fee09744aa660f33724c7bd7441649235` 使用 `local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow` 完成最终 Fresh Install 并以退出码 0 结束；9 个自研镜像使用 `git-eb34f73fee09`，两阶段 Helm、迁移、账号权限、核心 Pod、Proxy、Worker、disabled Executor、RBAC 和 canary 均通过。真实数据/provider、DeepFlow、多节点、PITR 和 Credential Broker 保留 `BLOCKED_BY_ENV`。
+- **Task 8：完成。** Go/Python/Executor/前端/Helm/workflow/deployment-contract/local-validation-contract 门禁均通过；`git diff --check` 通过；两份未跟踪中文验收文档未修改、未暂存；未执行真实 Kubernetes mutation。
