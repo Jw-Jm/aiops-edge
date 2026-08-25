@@ -35,18 +35,19 @@ resolve_image_tag() {
     return 0
   fi
 
-  local version
-  if [[ -s "$VERSION_FILE" ]]; then
-    version="$(bump_patch "$(<"$VERSION_FILE")")"
-  else
-    version="$(chart_app_version)"
+  if [[ -n "${RELEASE_TAG:-}" ]]; then
+    printf '%s\n' "$RELEASE_TAG"
+    return 0
   fi
 
-  local tag="v${version}"
-  if tracked_tree_dirty; then
-    tag="${tag}-dirty.$(date -u +%Y%m%d%H%M%S)"
+  # Derive the immutable image identity from the exact source commit.
+  local sha
+  sha="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
+  if [[ -z "$sha" ]]; then
+    echo "unable to resolve Git SHA for release tag" >&2
+    return 1
   fi
-  printf '%s\n' "$tag"
+  printf 'git-%s\n' "$sha"
 }
 
 record_deployed_version() {
