@@ -10,6 +10,23 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+func TestActionWorkflowClosureMigrationContainsRequiredObjects(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0009_action_workflow_closure.sql")
+	if err != nil {
+		t.Fatalf("read 0009 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{
+		"hash_schema_version", "action_version", "proposed_by",
+		"decision_idempotency_key", "ai_action_outbox",
+		"ai_action_reconciliations", "payload_hash",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0009 migration missing %q", required)
+		}
+	}
+}
+
 // TestAIRuntimeSchemaManifest 在可用 MySQL 上跑 schema-migrator 后，逐表核对
 // V9.2 冻结 AI Runtime 表的列 / nullability / PK / unique（P1-1：字段来源
 // docs/AIOPS_DATA_MODEL_REDESIGN.md）。无 MySQL 时跳过。
