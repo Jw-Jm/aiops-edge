@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: proxy
-          image: "{{ .Values.llmEgressProxy.image.repository }}:{{ .Values.llmEgressProxy.image.tag }}"
+          image: "{{ .Values.llmEgressProxy.image.repository }}:{{ tpl .Values.llmEgressProxy.image.tag . }}"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

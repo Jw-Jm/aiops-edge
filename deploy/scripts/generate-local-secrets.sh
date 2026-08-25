@@ -45,6 +45,11 @@ if [[ -e "${output_path}" && "${force}" != "true" ]]; then
   exit 1
 fi
 
+if [[ -z "${LLM_PROVIDER_KEYS:-}" ]]; then
+  echo "LLM_PROVIDER_KEYS must be supplied explicitly; refusing to generate a fake provider credential" >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "${output_path}")"
 output_file="${output_path}"
 tmp_go_dir="$(mktemp -d "${TMPDIR:-/tmp}/aiops-generate-local-secrets.XXXXXX")"
@@ -113,7 +118,7 @@ func main() {
 		values[pair.publicName] = publicValue
 	}
 
-	values["LLM_PROVIDER_KEYS"] = "deepseek:sk-local-" + mustRandomURLBase64(24)
+	values["LLM_PROVIDER_KEYS"] = os.Getenv("LLM_PROVIDER_KEYS")
 
 	order := []string{
 		"JWT_SECRET",

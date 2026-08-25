@@ -19,7 +19,7 @@ spec:
       serviceAccountName: ai-orchestrator
       containers:
         - name: investigation-worker
-          image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ .Values.investigationWorker.image.tag }}
+          image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ tpl .Values.investigationWorker.image.tag . }}
           imagePullPolicy: IfNotPresent
           command: ["uvicorn"]
           args: ["investigation_app:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"]

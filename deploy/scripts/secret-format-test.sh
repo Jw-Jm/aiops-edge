@@ -22,6 +22,7 @@ require_cmd python3
 require_cmd rg
 
 output_env="${tmp_dir}/local-secrets.env"
+export LLM_PROVIDER_KEYS="deepseek:sk-contract-only"
 
 if [[ ! -x "${generator}" ]]; then
   echo "secret format contract failed: generator script is missing or not executable: ${generator}" >&2

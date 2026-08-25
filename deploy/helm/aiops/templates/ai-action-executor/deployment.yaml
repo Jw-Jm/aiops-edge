@@ -1,3 +1,4 @@
+{{- if .Values.aiActionExecutor.enabled }}
 # Stage D（报告 §21 / F-22）：ai-action-executor——独立生产 mutation 安全执行边界。
 # Orchestrator / Query API API Pod 均不持生产写凭据；真实 mutation 只经本边界。
 # EXECUTION_MODE=disabled 默认关闭真实执行（A-C + D 全闭环后才可开启 approved）。
@@ -18,11 +19,11 @@ spec:
       labels:
         app: ai-action-executor
     spec:
-      # F5 已废除：realMutation=true 时挂专属 SA（限定 action-test RBAC）启用真实 K8s mutation。
+      # realMutation=true 时挂专属 SA（限定 targetNamespaces RBAC）启用真实 K8s mutation。
       serviceAccountName: {{ if .Values.aiActionExecutor.realMutation }}ai-action-executor{{ else }}default{{ end }}
       containers:
         - name: executor
-          image: "{{ .Values.aiActionExecutor.image.repository }}:{{ .Values.aiActionExecutor.image.tag }}"
+          image: "{{ .Values.aiActionExecutor.image.repository }}:{{ tpl .Values.aiActionExecutor.image.tag . }}"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -72,18 +73,20 @@ spec:
       name: http
 {{- if .Values.aiActionExecutor.realMutation }}
 ---
-# F5 已废除：executor 专属 SA + 限定 action-test namespace 的 deployment patch 权限（真实 mutation）。
+# Executor 专属 SA + 目标 namespace 白名单的 Deployment get/patch 权限。
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: ai-action-executor
   namespace: {{ .Release.Namespace }}
 ---
+{{- range $targetNamespace := .Values.aiActionExecutor.targetNamespaces }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: ai-action-executor
-  namespace: action-test
+  namespace: {{ $targetNamespace }}
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -93,13 +96,15 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: ai-action-executor
-  namespace: action-test
+  namespace: {{ $targetNamespace }}
 subjects:
   - kind: ServiceAccount
     name: ai-action-executor
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ $.Release.Namespace }}
 roleRef:
   kind: Role
   name: ai-action-executor
   apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end }}
 {{- end }}

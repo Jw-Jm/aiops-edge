@@ -46,6 +46,7 @@ render() {
     --set secrets.executorToken="contract-executor-token" \
     --set secrets.aiActionExecutorSigningKey="contract-executor-private" \
     --set secrets.aiActionExecutorVerifyKeys="contract-executor-public" \
+    --set ipmiExporter.enabled=true \
     "$@" >"${output}"
 }
 
@@ -75,7 +76,7 @@ for image in \
   observability-frontend query-api ingest-pipeline ai-orchestrator \
   event-collector ai-action-executor ai-llm-egress-proxy schema-migrator ipmi-exporter
 do
-  if ! rg -n "image:.*${image}:${tag}([[:space:]]|$)" "${tmp_dir}/validation.yaml" >/dev/null; then
+  if ! rg -n "image:.*${image}:${tag}" "${tmp_dir}/validation.yaml" >/dev/null; then
     echo "contract failed: ${image} is not rendered with ${tag}" >&2
     exit 1
   fi

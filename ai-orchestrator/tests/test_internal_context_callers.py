@@ -118,6 +118,19 @@ def test_signed_query_api_request_sends_only_service_and_fresh_canonical_context
     assert timeout == 10
 
 
+def test_load_private_key_accepts_go_ed25519_64_byte_private_key(monkeypatch):
+    """The Helm generator follows Go's seed||public 64-byte private-key contract."""
+    key = Ed25519PrivateKey.generate()
+    raw64 = key.private_bytes_raw() + key.public_key().public_bytes_raw()
+    encoded = base64.urlsafe_b64encode(raw64).rstrip(b"=").decode("ascii")
+    monkeypatch.setenv("TRUSTED_CONTEXT_PRIVATE_KEY", encoded)
+
+    from internal_query import _load_private_key
+
+    loaded = _load_private_key(encoded)
+    assert loaded.private_bytes_raw() == key.private_bytes_raw()
+
+
 @pytest.mark.parametrize(
     ("missing", "error_code"),
     [

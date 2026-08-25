@@ -49,7 +49,7 @@ aiActionExecutor:
   replicas: 1
   image:
     repository: ai-action-executor
-    tag: v0.2.0-d
+    tag: "{{ .Values.global.imageTag }}"
   executionMode: disabled
   credentialBrokerUrl: ""
   targetNamespaces: []
@@ -63,7 +63,7 @@ llmEgressProxy:
   replicas: 1
   image:
     repository: ai-llm-egress-proxy
-    tag: v0.1.0-c04
+    tag: "{{ .Values.global.imageTag }}"
   # Provider hostname allowlist consumed by the proxy; values are routing policy, not secrets.
   allowlist: "api.deepseek.com,api.openai.com"
   # 允许 proxy 出站的 LLM 目标 CIDR（default-deny egress 下只放行这些；默认 0.0.0.0/0:443
@@ -160,7 +160,7 @@ mysql:
   image: "mysql:8.4"
   # V9.2 Phase 4 P4.8：schema-migrator 镜像（运行 versioned migrations，aiops_migrator 账号）。
   # V9.2 Phase6 Final Rebuild：独立构建 schema-migrator:rebuild-20260820（ai-apm-query-go/cmd/schema-migrator）。
-  migratorImage: 'schema-migrator:rebuild-20260820'
+  migratorImage: 'schema-migrator:{{ .Values.global.imageTag }}'
   storageClass: ""
   storage: 10Gi
   resources:
@@ -258,8 +258,7 @@ nodeExporterTarget: ""
 # ---------------------------------------------------------------------------
 frontend:
   enabled: true
-  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：frontend。
-  image: "observability-frontend:v1.2.0-p20-24b157a0"
+  image: "observability-frontend:{{ .Values.global.imageTag }}"
   nodePort: 30253
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
@@ -267,8 +266,7 @@ frontend:
 
 queryApi:
   enabled: true
-  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：query-api。
-  image: "query-api:v1.2.0-p20-24b157a0"
+  image: "query-api:{{ .Values.global.imageTag }}"
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -288,8 +286,7 @@ queryApi:
 
 ingest:
   enabled: true
-  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：ingest。
-  image: "ingest-pipeline:v1.2.0-p20-24b157a0"
+  image: "ingest-pipeline:{{ .Values.global.imageTag }}"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
   # 多集群纳管：本 ingest 实例所属集群 ID（V9.2 canonical identity，禁止 default）
@@ -314,8 +311,7 @@ ingest:
 
 aiOrchestrator:
   enabled: true
-  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：orchestrator。
-  image: "ai-orchestrator:v1.2.0-p20-24b157a0"
+  image: "ai-orchestrator:{{ .Values.global.imageTag }}"
   queryApiUrl: "http://query-api.observability.svc.cluster.local:8080/api/v1"
   # Orchestrator system scope used for canonical query/KG calls; must match a
   # registered tenant/cluster pair in query-api.
@@ -338,7 +334,7 @@ investigationWorker:
   replicas: 2
   image:
     repository: ai-orchestrator
-    tag: latest
+    tag: "{{ .Values.global.imageTag }}"
   resources: {}
   # 知识图谱定时重建间隔（秒）；0 关闭。默认 60s（每 1 分钟刷新一次）
   kgBuildIntervalSeconds: 60
@@ -365,8 +361,7 @@ deepflow:
 # ---------------------------------------------------------------------------
 eventCollector:
   enabled: true
-  # service-level image override（P20.4 Fresh Final Cycle 本轮 digest）：event-collector。
-  image: "event-collector:v1.2.0-p20-24b157a0"
+  image: "event-collector:{{ .Values.global.imageTag }}"
   # Phase 5：tenantId/clusterId 必须为 canonical UUID（注册后的集群 UUID）。缺失/非法
   # 组件 fail-closed 拒绝启动（禁止 default/slug/数值）。Final State：注入 V9.2 canonical identity。
   tenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"

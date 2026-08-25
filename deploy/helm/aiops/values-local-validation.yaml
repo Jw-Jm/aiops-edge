@@ -1,0 +1,35 @@
+# Fresh Install Phase E: canonical local validation runtime.
+# This profile is intentionally independent from values-prod.yaml; the caller
+# supplies global.imageTag and secrets from the current Git SHA.
+frontend:
+  enabled: true
+queryApi:
+  enabled: true
+  k8sInsecureSkipVerify: "true"
+ingest:
+  enabled: true
+aiOrchestrator:
+  enabled: false
+  llmMock: "false"
+  investigationRuntimeEnabled: "0"
+  legacyFlowRuntimeEnabled: "0"
+  investigatorEnabled: "0"
+  legacyDirectMutationsEnabled: "0"
+investigationWorker:
+  enabled: true
+  replicas: 2
+  image:
+    repository: ai-orchestrator
+    tag: "{{ .Values.global.imageTag }}"
+llmEgressProxy:
+  enabled: true
+aiActionExecutor:
+  enabled: true
+  executionMode: disabled
+  realMutation: false
+  targetNamespaces:
+    - aiops-canary
+eventCollector:
+  enabled: true
+deepflow:
+  enabled: false

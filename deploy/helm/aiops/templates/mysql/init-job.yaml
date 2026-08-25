@@ -21,7 +21,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: schema-migrator
-          image: {{ .Values.mysql.migratorImage }}
+          image: {{ tpl .Values.mysql.migratorImage . }}
           command: ["/schema-migrator"]
           env:
             - name: MYSQL_HOST

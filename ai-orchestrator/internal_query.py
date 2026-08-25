@@ -180,7 +180,17 @@ def _load_private_key(encoded: str) -> Ed25519PrivateKey:
     try:
         padded = encoded + "=" * (-len(encoded) % 4)
         raw = base64.b64decode(padded, altchars=b"-_", validate=True)
-        return Ed25519PrivateKey.from_private_bytes(raw)
+        if len(raw) == 32:
+            # Backward-compatible seed format used by existing local fixtures.
+            return Ed25519PrivateKey.from_private_bytes(raw)
+        if len(raw) == 64:
+            # Go's ed25519.PrivateKey is seed||public. Validate the public half
+            # before reducing it to cryptography's 32-byte seed representation.
+            key = Ed25519PrivateKey.from_private_bytes(raw[:32])
+            if key.public_key().public_bytes_raw() != raw[32:]:
+                raise ValueError("Ed25519 private key public half does not match seed")
+            return key
+        raise ValueError("invalid Ed25519 private key size")
     except (binascii.Error, ValueError, TypeError):
         raise TrustedContextError("invalid_signature") from None
 

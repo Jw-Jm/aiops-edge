@@ -1,0 +1,20 @@
+# Fresh Install Phase A: only stateful dependencies and migration hooks.
+# Runtime Deployments stay disabled until mysql-users-init and mysql-init finish.
+frontend:
+  enabled: false
+queryApi:
+  enabled: false
+ingest:
+  enabled: false
+aiOrchestrator:
+  enabled: false
+investigationWorker:
+  enabled: false
+eventCollector:
+  enabled: false
+llmEgressProxy:
+  enabled: false
+aiActionExecutor:
+  enabled: false
+deepflow:
+  enabled: false
