@@ -44,7 +44,7 @@ for selector in \
   app=query-api \
   app=ai-investigation-worker \
   app=ai-llm-egress-proxy \
-  app=ingest-pipeline \
+  app=ingest \
   app=event-collector \
   app=frontend
 do
@@ -82,7 +82,7 @@ for version in 0001 0002 0003 0004 0005 0006 0007 0008 0009; do
     exit 1
   fi
 done
-if ! rg -n --fixed-strings "mysql/0009-action-workflow-closure" <<<"${schema_rows}" >/dev/null; then
+if ! rg -n --fixed-strings "mysql/0009_action_workflow_closure" <<<"${schema_rows}" >/dev/null; then
   echo "0009_action_workflow_closure is missing" >&2
   exit 1
 fi
@@ -109,24 +109,37 @@ for switch in LEGACY_FLOW_RUNTIME_ENABLED LEGACY_DIRECT_MUTATIONS_ENABLED; do
 done
 kubectl -n observability exec deploy/ai-llm-egress-proxy -- wget -q -O - http://127.0.0.1:8080/readyz >/dev/null
 proxy_env="$(kubectl -n observability get deployment ai-llm-egress-proxy -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}')"
-if rg -n 'PROVIDER|API_KEY|sk-' <<<"${proxy_env}" >/dev/null; then
+if awk -F= '$1 ~ /(PROVIDER|API_KEY)/ && length($2) > 0 { found=1 } END { exit(found ? 0 : 1) }' <<<"${proxy_env}" || \
+   rg -n 'sk-[^[:space:]]+' <<<"${proxy_env}" >/dev/null; then
   echo "provider credentials were rendered as plaintext env values" >&2
   exit 1
 fi
 
 echo "[validator] RBAC least privilege"
 executor_subject="system:serviceaccount:observability:ai-action-executor"
-[[ "$(kubectl auth can-i get deployments -n aiops-canary --as="${executor_subject}")" == "yes" ]] || {
-  echo "Executor must be able to get canary deployments" >&2
-  exit 1
-}
-[[ "$(kubectl auth can-i patch deployments -n aiops-canary --as="${executor_subject}")" == "yes" ]] || {
-  echo "Executor must be able to patch canary deployments" >&2
-  exit 1
-}
-if [[ "$(kubectl auth can-i delete deployments -n aiops-canary --as=system:serviceaccount:observability:ai-action-executor)" != "no" ]]; then
-  echo "Executor delete permission must be no" >&2
-  exit 1
+if rg -n '^POD_SA_ACCESS=true$' <<<"${executor_env}" >/dev/null; then
+  [[ "$(kubectl auth can-i get deployments -n aiops-canary --as="${executor_subject}")" == "yes" ]] || {
+    echo "Approved executor must be able to get canary deployments" >&2
+    exit 1
+  }
+  [[ "$(kubectl auth can-i patch deployments -n aiops-canary --as="${executor_subject}")" == "yes" ]] || {
+    echo "Approved executor must be able to patch canary deployments" >&2
+    exit 1
+  }
+  if [[ "$(kubectl auth can-i delete deployments -n aiops-canary --as="${executor_subject}")" != "no" ]]; then
+    echo "Executor delete permission must be no" >&2
+    exit 1
+  fi
+else
+  [[ "$(kubectl auth can-i get deployments -n aiops-canary --as="${executor_subject}")" == "no" ]] || {
+    echo "Disabled executor must not have canary read permission" >&2
+    exit 1
+  }
+  [[ "$(kubectl auth can-i patch deployments -n aiops-canary --as="${executor_subject}")" == "no" ]] || {
+    echo "Disabled executor must not have canary patch permission" >&2
+    exit 1
+  }
+  echo "disabled executor has no canary RBAC permissions"
 fi
 if [[ "$(kubectl auth can-i patch deployments -n observability --as=system:serviceaccount:observability:ai-action-executor)" != "no" ]]; then
   echo "Executor cross-namespace patch permission must be no" >&2

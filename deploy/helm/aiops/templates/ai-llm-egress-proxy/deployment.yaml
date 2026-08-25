@@ -1,3 +1,4 @@
+{{- if .Values.llmEgressProxy.enabled }}
 # C-04（报告 §19）：ai-llm-egress-proxy——LLM 出站唯一代理。
 # Provider API Key 只存于本 proxy 的 Secret/env；orchestrator/agent/frontend 不持 key。
 # 默认不部署（llmEgressProxy.enabled=false），启用时 orchestrator 的 LLM 出站走本 proxy。
@@ -59,3 +60,4 @@ spec:
     - port: 8080
       targetPort: 8080
       name: http
+{{- end }}

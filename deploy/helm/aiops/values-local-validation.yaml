@@ -33,3 +33,7 @@ eventCollector:
   enabled: true
 deepflow:
   enabled: false
+# Local validation uses ephemeral storage; production backup schedules remain
+# enabled through values-prod.yaml and an explicit storage class.
+backup:
+  enabled: false

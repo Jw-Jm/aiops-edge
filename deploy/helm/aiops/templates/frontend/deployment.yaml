@@ -20,6 +20,9 @@ spec:
         - name: frontend
           image: {{ tpl .Values.frontend.image . }}
           imagePullPolicy: IfNotPresent
+          env:
+            - name: DEEPFLOW_ENABLED
+              value: {{ .Values.deepflow.enabled | quote }}
           ports:
             - containerPort: 80
           readinessProbe:

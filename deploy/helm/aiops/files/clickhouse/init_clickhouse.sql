@@ -126,3 +126,27 @@ PARTITION BY date
 ORDER BY (service, rule_id, id)
 TTL toDateTime(last_timestamp) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
+
+-- =============================================================================
+-- k8s_events: Kubernetes/IPMI events emitted by event-collector
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS observability.k8s_events
+(
+    `tenant_id` String,
+    `cluster_id` String DEFAULT 'default',
+    `ts` DateTime64(9),
+    `namespace` String,
+    `kind` String,
+    `name` String,
+    `reason` String,
+    `type` String,
+    `message` String,
+    `involved_object` String,
+    `source_component` String,
+    `source` String,
+    `node` String DEFAULT '',
+    `time_bucket` DateTime
+)
+ENGINE = ReplacingMergeTree
+ORDER BY (tenant_id, cluster_id, ts, involved_object, reason, name, message)
+TTL time_bucket + INTERVAL 30 DAY;

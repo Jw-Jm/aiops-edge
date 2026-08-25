@@ -59,6 +59,15 @@ fail_if_contains() {
   fi
 }
 
+fail_if_matches() {
+  local pattern="$1" file="$2" message="$3"
+  if rg -n "${pattern}" "${file}" >/dev/null; then
+    echo "contract failed: ${message}" >&2
+    rg -n "${pattern}" "${file}" >&2 || true
+    exit 1
+  fi
+}
+
 require_contains() {
   local pattern="$1" file="$2" message="$3"
   if ! rg -n --fixed-strings "${pattern}" "${file}" >/dev/null; then
@@ -85,12 +94,42 @@ fail_if_contains ':latest' "${tmp_dir}/validation.yaml" 'self-built images may n
 fail_if_contains 'v1.2.0-p20-24b157a0' "${tmp_dir}/validation.yaml" 'historical fixed image tags remain'
 require_contains 'MYSQL_APP_PASSWORD:' "${tmp_dir}/validation.yaml" 'app database password is not rendered'
 require_contains 'MYSQL_MIGRATOR_PASSWORD:' "${tmp_dir}/validation.yaml" 'migrator database password is not rendered'
+require_contains 'MYSQL_DATABASE' "${tmp_dir}/validation.yaml" 'MySQL database name is not configured for a fresh data directory'
+require_contains 'CREATE DATABASE IF NOT EXISTS aiops' "${tmp_dir}/validation.yaml" 'users-init does not create the application database'
+require_contains 'DEEPFLOW_ENABLED' "${tmp_dir}/validation.yaml" 'frontend does not receive the optional DeepFlow switch'
+require_contains 'CREATE TABLE IF NOT EXISTS observability.k8s_events' "${tmp_dir}/validation.yaml" 'ClickHouse bootstrap omits the event-collector table'
 
 echo "[contract] disabled executor is absent"
 render "${tmp_dir}/disabled.yaml" \
   --set aiActionExecutor.enabled=false \
   --set aiActionExecutor.realMutation=false
 fail_if_contains 'name: ai-action-executor' "${tmp_dir}/disabled.yaml" 'disabled executor resources are still rendered'
+
+echo "[contract] bootstrap contains only stateful resources"
+helm template aiops "${chart_dir}" \
+  --namespace observability \
+  -f "${chart_dir}/values-local-bootstrap.yaml" \
+  --set global.imageTag="${tag}" \
+  --set secrets.jwtSecret="contract-jwt-012345678901234567890123456789" \
+  --set secrets.llmEncryptionKey="contract-llm-012345678901234567890123456789" \
+  --set secrets.internalToken="contract-internal-012345678901234567890123456789" \
+  --set secrets.ingestApiKey="contract-ingest-012345678901234567890123456789" \
+  --set secrets.clickhousePassword="contract-clickhouse-012345678901234567890123456789" \
+  --set secrets.mysqlRootPassword="contract-root-012345678901234567890123456789" \
+  --set secrets.mysqlAppPassword="contract-app-012345678901234567890123456789" \
+  --set secrets.mysqlMigratorPassword="contract-migrator-012345678901234567890123456789" \
+  >"${tmp_dir}/bootstrap.yaml"
+for runtime_resource in \
+  '^  name: query-api$' \
+  '^  name: ai-investigation-worker$' \
+  '^  name: ai-llm-egress-proxy$' \
+  '^  name: ingest$' \
+  '^  name: frontend$' \
+  '^  name: ai-action-executor$'
+do
+  fail_if_matches "${runtime_resource}" "${tmp_dir}/bootstrap.yaml" "bootstrap renders runtime resource ${runtime_resource}"
+done
+fail_if_matches '^  name: backup-pvc$' "${tmp_dir}/bootstrap.yaml" 'bootstrap renders a backup PVC that can block Helm wait'
 
 echo "[contract] approved executor is canary scoped"
 render "${tmp_dir}/approved.yaml" \

@@ -26,6 +26,8 @@ spec:
             - name: MYSQL_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: MYSQL_ROOT_PASSWORD }
+            - name: MYSQL_DATABASE
+              value: "aiops"
           ports:
             - containerPort: 3306
           # P0-MYSQL-1: K8s exec 探针不做 $(VAR) 展开（password 会收到字面量 "$(MYSQL_ROOT_PASSWORD)"

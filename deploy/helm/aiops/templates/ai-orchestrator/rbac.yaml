@@ -1,5 +1,6 @@
-{{- if .Values.aiOrchestrator.enabled }}
-# ai-orchestrator 专用 ServiceAccount + K8s read-only RBAC。
+{{- if or .Values.aiOrchestrator.enabled .Values.investigationWorker.enabled }}
+# ai-orchestrator/investigation-worker 专用 ServiceAccount + K8s read-only RBAC。
+# worker-only deployments still need the same read-only evidence permissions.
 # 所有 mutation 必须经 query-api → ai-action-executor；该身份永远不获写权限。
 apiVersion: v1
 kind: ServiceAccount
