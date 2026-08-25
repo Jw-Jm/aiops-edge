@@ -640,13 +640,15 @@ async def run_invocations(request: Request):
         return events
 
     if os.environ.get("QUERY_API_URL"):
-        from lease_aware_execution import LeaseAwareExecutor, LeaseAcquireError
+        from lease_aware_execution import LeaseAwareExecutor, LeaseAcquireError, LeaseLostError
         lease_exec = LeaseAwareExecutor()
         try:
-            with lease_exec.lease(run_id, tenant_id):
+            with lease_exec.lease(run_id, tenant_id) as lease:
+                # P0#4/#12：进入数据面采集前校验 Lease 仍 ACTIVE（renew 连续失败 → LOST → 停止）。
+                lease.check_active()
                 collected = await _run_investigation()
                 try:
-                    lease_exec.commit(
+                    lease.commit(
                         target="success", result={"events": len(collected)},
                         events=[{"event_type": "run.completed", "payload": {"events": len(collected)}}],
                         expected_version=0,
@@ -659,6 +661,9 @@ async def run_invocations(request: Request):
                         pass
         except LeaseAcquireError as exc:
             raise HTTPException(status_code=409, detail=f"RUN_LEASE_UNAVAILABLE: {exc}") from exc
+        except LeaseLostError as exc:
+            # P0#4/#12：Lease 丢失 → 停止（不执行无 Lease 保护的数据面/动作），409 RUN_LEASE_LOST。
+            raise HTTPException(status_code=409, detail=f"RUN_LEASE_LOST: {exc}") from exc
     else:
         # 本地/单测：无真实 query-api，直接执行（不引入 Lease 边界）。
         await _run_investigation()

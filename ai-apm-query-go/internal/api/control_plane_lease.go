@@ -30,6 +30,9 @@ func (h *Handler) internalControlPlaneRunClaim(w http.ResponseWriter, r *http.Re
 	var body struct {
 		OwnerID      string `json:"owner_id"`
 		LeaseSeconds *int   `json:"lease_seconds"`
+		ClaimID      string `json:"claim_id"`
+		LeaseToken   string `json:"lease_token"`
+		ClaimSource  string `json:"claim_source"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.OwnerID == "" {
@@ -40,7 +43,14 @@ func (h *Handler) internalControlPlaneRunClaim(w http.ResponseWriter, r *http.Re
 	if body.LeaseSeconds != nil && *body.LeaseSeconds > 0 && *body.LeaseSeconds <= 300 {
 		leaseSeconds = *body.LeaseSeconds
 	}
-	holder, err := h.leaseDAO.Claim(runID, body.OwnerID, leaseSeconds)
+	// P0-LEASE-03：caller 提供 claim_id/lease_token → 精确重试；否则服务端生成。
+	var caller []store.ClaimRequest
+	if body.ClaimID != "" {
+		caller = append(caller, store.ClaimRequest{
+			ClaimID: body.ClaimID, LeaseToken: body.LeaseToken, ClaimSource: body.ClaimSource,
+		})
+	}
+	holder, err := h.leaseDAO.Claim(runID, body.OwnerID, leaseSeconds, caller...)
 	if err != nil {
 		cp.inc("lease_fencing")
 		respondLeaseError(w, err)
@@ -56,6 +66,8 @@ func (h *Handler) internalControlPlaneRunClaim(w http.ResponseWriter, r *http.Re
 		"token_hash": holder.TokenHash,
 		"expires_at": holder.ExpiresAt.UTC().Format(time.RFC3339),
 		"wait_kind":  holder.WaitKind,
+		"server_now": holder.ServerNow.UTC().Format(time.RFC3339),
+		"lease_remaining_ms": holder.LeaseRemainingMS,
 	})
 }
 
@@ -153,8 +165,14 @@ func (h *Handler) internalControlPlaneRunCommit(w http.ResponseWriter, r *http.R
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "MISSING_COMMIT_FIELDS"})
 		return
 	}
-	// 幂等命中：同 commit_id 已存在 → 返回首次结果（不重复执行）。
+	// 幂等 fast-path：同 commit_id 已存在 → 校验 payload hash（P0-COMMIT-01）。
+	//   same key + same hash      -> 返回首次结果（响应丢失重试）
+	//   same key + different hash -> 409 IDEMPOTENCY_KEY_REUSED
 	if existing, err := h.commitDAO.Get(runID, body.CommitID); err == nil {
+		if existing.PayloadHash != body.PayloadHash {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "IDEMPOTENCY_KEY_REUSED"})
+			return
+		}
 		cp.inc("commit_idempotent")
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"idempotent": true, "commit_id": existing.CommitID,
@@ -181,7 +199,11 @@ func (h *Handler) internalControlPlaneRunCommit(w http.ResponseWriter, r *http.R
 	})
 }
 
-// applyRuntimeCommitTx 在单事务内完成 Runtime Commit。
+// applyRuntimeCommitTx 在单事务内完成 Runtime Commit（P0#2/#10 修复）。
+// 事务顺序对齐报告 9.2 P0-COMMIT-02：auth → hash → fast lookup → BEGIN → SELECT Run FOR UPDATE
+// → in-tx recheck commit_id（同 hash→首次结果；不同 hash→409 IDEMPOTENCY_KEY_REUSED）→
+// 非终态 → lease fencing（DB-time）→ expected state_version → 合法状态迁移（终态不可复活）→
+// 更新 Run → append events → insert first response → COMMIT。
 func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit) error {
 	conn := store.GetDB()
 	if conn == nil {
@@ -193,6 +215,19 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 	}
 	defer tx.Rollback()
 
+	// 0) in-tx recheck commit_id（P0-COMMIT-01/02）：同 commit_id 已存在。
+	//    在锁 Run 后 recheck，避免 fast-path 之外的并发窗口。
+	if existing, err := h.commitDAO.GetTx(tx, runID, body.CommitID); err == nil {
+		// same key + same hash → return first result（幂等命中）
+		if existing.PayloadHash == body.PayloadHash {
+			return &commitIdempotentHit{Commit: existing}
+		}
+		// same key + different hash → 409 IDEMPOTENCY_KEY_REUSED
+		return &commitKeyReusedError{}
+	} else if !errors.Is(err, store.ErrCommitNotFound) {
+		return err
+	}
+
 	// 1) Lease fencing：owner + epoch + token 匹配，且 Lease 未过期（DB time）。
 	valid, err := store.LeaseFencingTx(tx, runID, body.OwnerID, body.Epoch, hashToken(body.Token))
 	if err != nil {
@@ -202,10 +237,15 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 		return store.ErrLeaseFencing
 	}
 
-	// 2) Run 状态 CAS 推进（expected_version）。
+	// 2) Run 状态合法迁移推进（P0-COMMIT-03：终态不可复活 + legal transition）。
+	//    TransitionTxValidated 内部锁 Run、读当前 status、ValidateRunTransition、CAS。
 	now := time.Now()
-	ok, err := h.runDAO.TransitionTx(tx, runID, body.Target, body.ExpectedVersion, now)
+	ok, err := h.runDAO.TransitionTxValidated(tx, runID, body.Target, body.ExpectedVersion, now)
 	if err != nil {
+		var ite *store.IllegalTransitionError
+		if errors.As(err, &ite) {
+			return ite
+		}
 		return err
 	}
 	if !ok {
@@ -231,7 +271,7 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 		}
 	}
 
-	// 4) commit 记录。
+	// 4) commit 记录（in-tx 插入，duplicate → 竞态幂等命中）。
 	commit := store.RuntimeCommit{
 		RunID: runID, CommitID: body.CommitID, PayloadHash: body.PayloadHash,
 		CommittedStateVersion: body.ExpectedVersion + 1,
@@ -251,12 +291,11 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 
 // internalControlPlaneToolEvidenceConsume handles
 // POST /internal/v1/control-plane/tools/{id}/evidence/consume（27.14 Evidence 一次消费）。
-// capability=control_plane.evidence.consume，system principal，run-scoped。
+// P0-EVID-01：授权修复——先读 body 得到真实 run_id，再对 run_id 做 control-plane 授权
+// （system principal + control_plane.evidence.consume）；tool_run_id 只用于定位 ToolRun，
+// 不当作 run_id 授权（原实现把 tool_run_id 传给 authorizeControlPlaneForRun，正常无法通过）。
+// P0-EVID-02：allowed_statuses 由服务端拥有（不接受调用方传入），fail-closed 只允许终态成功。
 func (h *Handler) internalControlPlaneToolEvidenceConsume(w http.ResponseWriter, r *http.Request, toolRunID string) {
-	if _, _, err := h.authorizeControlPlaneForRun(r, "control_plane.evidence.consume", "ai-orchestrator", toolRunID); err != nil {
-		respondInternalQueryError(w, err)
-		return
-	}
 	var body struct {
 		RunID                string          `json:"run_id"`
 		TenantID             string          `json:"tenant_id"`
@@ -269,7 +308,6 @@ func (h *Handler) internalControlPlaneToolEvidenceConsume(w http.ResponseWriter,
 		Summary              string          `json:"summary"`
 		Metadata             json.RawMessage `json:"metadata"`
 		ProvenanceFingerprint string         `json:"provenance_fingerprint"`
-		AllowedStatuses      string          `json:"allowed_statuses"` // 逗号分隔（success,partial,no_data）
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "INVALID_BODY"})
@@ -279,6 +317,14 @@ func (h *Handler) internalControlPlaneToolEvidenceConsume(w http.ResponseWriter,
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "MISSING_EVIDENCE_FIELDS"})
 		return
 	}
+	// P0-EVID-01：对真实 run_id 授权（capability=control_plane.evidence.consume，run-scoped）。
+	if _, _, err := h.authorizeControlPlaneForRun(r, "control_plane.evidence.consume", "ai-orchestrator", body.RunID); err != nil {
+		respondInternalQueryError(w, err)
+		return
+	}
+	// P0-EVID-02：allowed_statuses 服务端拥有——只允许终态成功（success/partial/no_data 视为 complete）。
+	// 不接受调用方传入（防调用方放宽 eligible 门槛）。
+	const serverOwnedAllowedStatuses = "success,partial,no_data"
 	conn := store.GetDB()
 	if conn == nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "mysql_unavailable"})
@@ -296,7 +342,7 @@ func (h *Handler) internalControlPlaneToolEvidenceConsume(w http.ResponseWriter,
 		RawRef: body.RawRef, RawDigestSHA256: body.RawDigestSHA256, Summary: body.Summary,
 		MetadataJSON: body.Metadata, ProvenanceFingerprint: body.ProvenanceFingerprint,
 		CollectedAt: time.Now(),
-	}, toolRunID, body.AllowedStatuses)
+	}, toolRunID, serverOwnedAllowedStatuses)
 	if err != nil {
 		if errors.Is(err, store.ErrEvidenceNotEligible) {
 			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "EVIDENCE_NOT_ELIGIBLE"})
@@ -331,6 +377,12 @@ func respondLeaseError(w http.ResponseWriter, err error) {
 		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "RUN_LEASE_HELD"})
 	case errors.Is(err, store.ErrLeaseFencing):
 		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "RUN_LEASE_FENCING"})
+	case errors.Is(err, store.ErrLeaseLost):
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunLeaseLost})
+	case errors.Is(err, store.ErrClaimIDReused):
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeClaimIDReused})
+	case errors.Is(err, store.ErrClaimIDExpired):
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeClaimIDExpired})
 	case errors.Is(err, store.ErrRunTerminal):
 		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunStateConflict})
 	case errors.Is(err, store.ErrRunNotFound):
@@ -339,6 +391,28 @@ func respondLeaseError(w http.ResponseWriter, err error) {
 		var rbe *store.RetryBackoffError
 		if errors.As(err, &rbe) {
 			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "RUN_RETRY_BACKOFF"})
+			return
+		}
+		var ite *store.IllegalTransitionError
+		if errors.As(err, &ite) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "ILLEGAL_RUN_TRANSITION"})
+			return
+		}
+		var ci *commitIdempotentHit
+		if errors.As(err, &ci) {
+			// P0-COMMIT-01/02：同 commit_id 且同 payload hash → 返回首次结果。
+			cp.inc("commit_idempotent")
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"idempotent": true, "commit_id": ci.Commit.CommitID,
+				"result_status": ci.Commit.ResultStatus,
+				"result":        json.RawMessage(ci.Commit.ResponseJSON),
+			})
+			return
+		}
+		var ckr *commitKeyReusedError
+		if errors.As(err, &ckr) {
+			// P0-COMMIT-01：同 commit_id 但不同 payload hash → 409 IDEMPOTENCY_KEY_REUSED。
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "IDEMPOTENCY_KEY_REUSED"})
 			return
 		}
 		var rsc *runStateConflictError
@@ -357,6 +431,10 @@ func respondLeaseError(w http.ResponseWriter, err error) {
 
 type runStateConflictError struct{}
 type commitDuplicateError struct{}
+type commitIdempotentHit struct{ Commit *store.RuntimeCommit }
+type commitKeyReusedError struct{}
 
 func (e *runStateConflictError) Error() string { return "run state version conflict" }
 func (e *commitDuplicateError) Error() string  { return "commit already exists" }
+func (e *commitIdempotentHit) Error() string   { return "commit idempotent hit" }
+func (e *commitKeyReusedError) Error() string  { return "commit idempotency key reused" }

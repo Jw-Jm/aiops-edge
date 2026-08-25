@@ -45,38 +45,36 @@ spec:
                 secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
             - name: AIOPS_DEPLOYMENT_MODE
               value: "production"
+            # C2-5（CONTROLLED_AI_INVESTIGATION_CANDIDATE）：生产 Orchestrator 不持有任何
+            # 观测数据源直连配置（MySQL/ClickHouse host/user/db/password）——数据面一律经
+            # query-api InternalQueryClient + PersistentRunRepository 访问。
+            # injectDbCredentials=true 仅用于明确标记的 legacy/本地调试 profile（默认 false fail-closed）。
+{{- if .Values.aiOrchestrator.injectDbCredentials }}
             - name: CLICKHOUSE_HOST
               value: {{ .Values.aiOrchestrator.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
               value: {{ .Values.aiOrchestrator.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
-            # P0-P13 审计紧急隔离（P0-3）：orchestrator 默认不注入 DB 直连凭据（仅经 query-api 访问）。
-            # injectDbCredentials=true 才注入；默认 false（fail-closed）。
-{{- if .Values.aiOrchestrator.injectDbCredentials }}
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
-{{- end }}
-            - name: LLM_MOCK
-              value: {{ .Values.aiOrchestrator.llmMock | quote }}
-            - name: AIOPS_DATA_DIR
-              value: {{ .Values.aiOrchestrator.dataDir | default "/var/lib/aiops" | quote }}
             - name: MYSQL_HOST
               value: {{ .Values.mysql.serviceName | default "mysql" | quote }}
             - name: MYSQL_PORT
               value: {{ .Values.mysql.port | default 3306 | quote }}
             - name: MYSQL_USER
               value: {{ .Values.mysql.user | default "aiops_app" | quote }}
-            # P0-P13 审计紧急隔离（P0-3）：默认不注入 MySQL 直连凭据（仅经 query-api 访问）。
-            # injectDbCredentials=true 才注入；默认 false（fail-closed）。
-{{- if .Values.aiOrchestrator.injectDbCredentials }}
             - name: MYSQL_PASSWORD
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: MYSQL_APP_PASSWORD }
-{{- end }}
             - name: MYSQL_DB
               value: {{ .Values.mysql.database | default "aiops" | quote }}
+{{- end }}
+            - name: LLM_MOCK
+              value: {{ .Values.aiOrchestrator.llmMock | quote }}
+            - name: AIOPS_DATA_DIR
+              value: {{ .Values.aiOrchestrator.dataDir | default "/var/lib/aiops" | quote }}
             - name: KG_BUILD_INTERVAL_SECONDS
               value: {{ .Values.aiOrchestrator.kgBuildIntervalSeconds | default 60 | quote }}
           startupProbe:

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -257,8 +258,9 @@ func parseRunResponse(b []byte) map[string]interface{} {
 }
 
 // internalControlPlaneRunCancel 处理 POST .../runs/{id}/cancel。
-// A0-01：统一走 ApplyRunControlCommandTx；expected_version 必填（*int64 区分 nil，缺省 400），
-// command_id + expected_version 端到端传参（修复 F-02 客户端丢失参数 + 服务端"先读当前 version"缺陷）。
+// A0-01 + P0#1：统一走 RunControlService.CancelTx（Public/Internal/Admin Cancel 唯一权威）。
+// expected_version 必填（*int64 区分 nil，缺省 400）；Cancel 原子失效 Run Lease（epoch++ + clear），
+// 旧 executor 后续 Renew/Commit/Tool start 全部被 Fence。
 func (h *Handler) internalControlPlaneRunCancel(w http.ResponseWriter, r *http.Request, runID string) {
 	rctx, err := authorizeInternalControlPlane(r, "control_plane.runs.mutate", "ai-orchestrator")
 	if err != nil {
@@ -275,48 +277,47 @@ func (h *Handler) internalControlPlaneRunCancel(w http.ResponseWriter, r *http.R
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "MISSING_EXPECTED_VERSION"})
 		return
 	}
-	payloadHash := controlCommandPayloadHash(runID, "cancel", body.ExpectedVersion, "cancelled")
-	cmdDAO := h.cmdDAO
-	if cmdDAO == nil {
-		cmdDAO = &store.AIControlCommandDAO{}
+	// tenant 一致性：Cancel 前校验 run 属于签名 tenant（fail-closed）。
+	if h.runControl == nil {
+		h.runControl = &RunControlService{runDAO: h.runDAO, cmdDAO: h.cmdDAO, eventDAO: h.eventDAO}
 	}
-	resp, _, err := store.ApplyRunControlCommandTx(r.Context(), runID, body.CommandID,
-		"cancel", payloadHash, cmdDAO, func(tx *sql.Tx) ([]byte, bool, error) {
-			run, gerr := h.runDAO.GetTx(tx, runID)
-			if gerr != nil {
-				return nil, false, gerr
-			}
-			if run == nil {
-				return nil, false, nil
-			}
-			if rctx.TenantID != run.TenantID {
-				return nil, false, nil
-			}
-			if !validRunTransition(run.Status, "cancelled") {
-				return nil, false, nil
-			}
-			ok, terr := h.runDAO.CancelTx(tx, runID, *body.ExpectedVersion, time.Now())
-			if terr != nil {
-				return nil, false, terr
-			}
-			if !ok {
-				return nil, false, nil
-			}
-			updated, uerr := h.runDAO.GetTx(tx, runID)
-			if uerr != nil {
-				return nil, false, uerr
-			}
-			return runToResponseJSON(updated), true, nil
-		})
-	if err != nil {
-		if err == store.ErrRunControlConflict || err == store.ErrCommandIdempotencyReused {
-			respondRunControlError(w, err)
+	// 先做 tenant 校验 + 终态快照（Cancel 权威事务内也做 CAS；此处额外校验 tenant）。
+	pre, gerr := h.runDAO.Get(runID)
+	if gerr != nil || pre == nil {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+		return
+	}
+	if rctx.TenantID != pre.TenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+		return
+	}
+	payloadHash := controlCommandPayloadHash(runID, "cancel", body.ExpectedVersion, "cancelled")
+	// requester：system principal（internal control-plane 调用方）；requester 仅用于 event/audit。
+	res := h.runControl.CancelTx(runID, body.CommandID, payloadHash, *body.ExpectedVersion, "system:control-plane")
+	if res.Error != nil {
+		if errors.Is(res.Error, store.ErrRunNotFound) || errors.Is(res.Error, store.ErrRunTerminal) {
+			respondCancelError(w, res.Error)
+			return
+		}
+		var cvc *cancelVersionConflictError
+		if errors.As(res.Error, &cvc) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunStateConflict})
+			return
+		}
+		var cir *cancelIdempotencyReusedError
+		if errors.As(res.Error, &cir) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "IDEMPOTENCY_KEY_REUSED"})
 			return
 		}
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_cancel_failed"})
 		return
 	}
-	respondJSON(w, http.StatusOK, parseRunResponse(resp))
+	cp.inc("lease_fencing") // Cancel 使 Lease 失效（epoch++）
+	if res.Run != nil {
+		respondJSON(w, http.StatusOK, map[string]interface{}{"run": airunToMap(res.Run), "cancelled": true})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"cancelled": true})
 }
 
 // internalControlPlaneRunGet 处理 GET .../runs/{id}。

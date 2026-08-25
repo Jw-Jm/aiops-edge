@@ -127,6 +127,24 @@ export const listRunEvidences = (runId: string, params: { tenant_id: string; clu
 export const getRunEvidence = (runId: string, evidenceId: string, params: { tenant_id: string; cluster_id: string }) =>
   api.get<{ evidence: RunEvidence }>(`/ai/runs/${encodeURIComponent(runId)}/evidences/${encodeURIComponent(evidenceId)}`, { params })
 
+// ===== C2-4：Run Tool Activity（真实 ai_tool_runs，不推断冒充）=====
+export interface RunTool {
+  tool_run_id: string
+  step_id?: string
+  tool_name: string
+  status: string
+  result_quality?: string
+  executor_id?: string
+  lease_epoch_at_start?: number
+  eligible_for_evidence?: boolean
+  result_digest_sha256?: string
+  result_truncated?: boolean
+  result_count?: number
+  error_message?: string
+}
+export const listRunTools = (runId: string) =>
+  api.get<{ tools: RunTool[]; total: number }>(`/ai/runs/${encodeURIComponent(runId)}/tools`)
+
 // ===== Chat Sessions =====
 export const getSession = (sid: string) => api.get(`/ai/session/${sid}`)
 

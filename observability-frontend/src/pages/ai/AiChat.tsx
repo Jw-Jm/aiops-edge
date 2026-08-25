@@ -3,7 +3,7 @@ import { Button, Input, Empty, Alert, Modal, message } from 'antd'
 import { BookOutlined, ExperimentOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import api, { TENANT_ID, getSession, executeSuggestion, finalReport, addKnowledgeCase } from '../../api/client'
+import api, { TENANT_ID, getSession, finalReport, addKnowledgeCase } from '../../api/client'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
 import { useUIStore } from '../../store/uiStore'
@@ -281,19 +281,19 @@ const AiChat: React.FC = () => {
     const script = (customScript ?? m.script ?? '').trim()
     if (!script) return
     const isCustom = !!customScript
-    // 显示执行中状态
-    setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, content: isCustom ? `⚙️ 执行自定义命令：\n${script}\n\n执行中…` : `⚙️ 确认执行建议命令：\n${script}\n\n执行中…` } : x))
-    try {
-      const r = await executeSuggestion({ thread_id: m.threadId, script, service: '', context: m.plan || '', approved: true })
-      const execResult = r.data?.exec_result || `命令已执行（无输出）\n${script}`
-      setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, kind: 'execresult', content: `✅ 已执行命令：\n${script}\n\n执行结果：\n${execResult}` } : x))
-      // 自动发起下一轮深入分析（带执行结果作为上下文）
-      await handleSend(undefined, `${script}\n---执行结果---\n${execResult}`)
-    } catch (err: any) {
-      // P0-2: 失败也要把 kind 改为 execresult，否则 suggestion 卡片忽略 content，用户看不到错误
-      const detail = err?.response?.data?.error || err?.message || '未知错误'
-      setMessages((prev) => prev.map((x) => x.id === m.id ? { ...x, kind: 'execresult', content: `❌ 执行失败：${detail}\n命令未执行。` } : x))
-    }
+    // C2-3（CONTROLLED_AI_INVESTIGATION_CANDIDATE）：封死 Chat executeSuggestion 写旁路。
+    // Chat 不直接触发真实 Action/脚本执行——任何处置执行必须经显式 Investigation Run
+    // （createRun → approval → controlled action）。此处不再调用 executeSuggestion 写端点，
+    // 改为引导用户发起显式调查。
+    setMessages((prev) => prev.map((x) => x.id === m.id ? {
+      ...x,
+      kind: 'execresult',
+      content: isCustom
+        ? `🔒 已阻止 Chat 内脚本执行（C2-3 写旁路封死）：\n\`${script}\`\n\n真实执行需发起显式智能调查（createRun → 审批 → 受控 Action）。`
+        : `🔒 处置建议不会在 Chat 内直接执行（C2-3 写旁路封死）。请发起显式智能调查以走受控 Action 链路。`,
+    } : x))
+    void isCustom
+    void customScript
   }
 
   // 需求2/3: 驳回处置建议（不执行，仅记录）

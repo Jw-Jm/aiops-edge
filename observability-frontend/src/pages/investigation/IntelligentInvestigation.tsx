@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Badge, Button, Card, Col, Collapse, Descriptions, Row, Space, Steps, Tag, Typography } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getRun, listRunEvidences } from '../../api/client'
+import { getRun, listRunEvidences, listRunTools, RunTool } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
 import { ToolResultStatus } from '../../components/ToolResultStatus'
 
@@ -39,11 +39,17 @@ const InvestigationDetailView: React.FC = () => {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
   const [detail, setDetail] = useState<InvestigationDetail>(EMPTY_DETAIL)
+  // C2-4：真实 Tool Activity（ai_tool_runs），不用图节点推断冒充。
+  const [tools, setTools] = useState<RunTool[]>([])
 
   useEffect(() => {
     // P12：接真实 Run 详情 GET /api/v1/ai/runs/:id；无数据/API 失败保持空态（不伪造 DEMO，不自动创建 Run）
     if (!runId) return
     let cancelled = false
+    // C2-4：拉取真实 ToolRun（只读工具执行事实）。
+    listRunTools(runId)
+      .then((resp) => { if (!cancelled && Array.isArray(resp.data?.tools)) setTools(resp.data.tools) })
+      .catch(() => { if (!cancelled) setTools([]) })
     getRun(runId)
       .then(async (resp) => {
         const r = resp.data?.run
@@ -111,9 +117,21 @@ const InvestigationDetailView: React.FC = () => {
           </Card>
         </Col>
         <Col span={12}>
-          <Card title="Plan DAG" size="small">
-            <Steps size="small" direction="vertical" current={3}
-              items={d.plan.map((s) => ({ title: `${s.step} · ${s.tool}`, status: 'finish' }))} />
+          <Card title="工具活动 (真实 ToolRun)" size="small"
+            extra={<Tag color="blue">C2-4 只读事实</Tag>}>
+            {/* C2-4：只展示真实 ai_tool_runs，不用图节点/计划步骤推断冒充真实工具调用。 */}
+            {tools.length === 0 ? (
+              <Text type="secondary">暂无真实 ToolRun（数据源为空，不伪造）</Text>
+            ) : (
+              <Steps size="small" direction="vertical" current={tools.length}
+                items={tools.map((t) => ({
+                  title: `${t.tool_name} · ${t.status}`,
+                  description: `quality=${t.result_quality ?? '-'} eligible=${t.eligible_for_evidence ? 'Y' : 'N'}` +
+                    (t.result_truncated ? ' truncated' : ''),
+                  status: t.status === 'success' ? 'finish'
+                    : (t.status === 'running' || t.status === 'partial' ? 'process' : 'error'),
+                }))} />
+            )}
           </Card>
         </Col>
         <Col span={12}>

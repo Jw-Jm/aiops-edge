@@ -27,6 +27,21 @@ class LeaseAcquireError(RuntimeError):
     """无法取得/保持 Run lease（fail-closed，不执行无 Lease 保护的 Run）。"""
 
 
+class LeaseLostError(RuntimeError):
+    """执行期间 Lease 丢失/不确定（P0#4/#12：ACTIVE→UNCERTAIN→LOST 停止规则）。
+
+    调用方在进入下一个数据面访问/动作前应停止，不执行无 Lease 保护的动作。
+    """
+
+
+class _LeaseState:
+    """Lease 三态（P0#4/#12）：ACTIVE（可继续）→ UNCERTAIN（renew 失败，暂缓）→ LOST（停止）。"""
+
+    ACTIVE = "active"
+    UNCERTAIN = "uncertain"
+    LOST = "lost"
+
+
 class LeaseAwareExecutor:
     """把一次 Run 执行包装为 Claim→execute→(renew loop)→Commit 的 Lease 边界。
 
@@ -61,14 +76,23 @@ class _LeaseContext:
         self._token: str = ""
         self._renew_thread: Optional[Any] = None
         self._stop = False
+        self._state = _LeaseState.ACTIVE  # P0#4/#12：Lease 三态
+        self._commit_id: Optional[str] = None  # P0#12：稳定 commit_id（重试复用）
+        self._renew_failures = 0
+        # P0-LEASE-03：caller 生成稳定 claim_id + lease_token（>=256-bit random），
+        # Claim 响应丢失后以相同 claim_id 精确重试恢复同一 Lease。
+        self._claim_id = str(uuid.uuid4())
+        self._lease_token = str(uuid.uuid4()) + str(uuid.uuid4())
 
     def __enter__(self) -> "_LeaseContext":
         holder = self._client.claim_lease(
             run_id=self._run_id, tenant_id=self._tenant_id,
             owner_id=self._owner_id, lease_seconds=self._lease_seconds,
+            claim_id=self._claim_id, lease_token=self._lease_token,
         )
         self._epoch = int(holder.get("epoch", 0))
-        self._token = str(holder.get("token", ""))
+        # P0-LEASE-03：服务端返回明文 token（= caller 提供的 lease_token，claim 成功后一致）。
+        self._token = str(holder.get("token", "") or self._lease_token)
         if not self._epoch or not self._token:
             raise LeaseAcquireError("claim lease: missing epoch/token")
         self._start_renew_loop()
@@ -79,6 +103,21 @@ class _LeaseContext:
         if self._renew_thread is not None:
             self._renew_thread.join(timeout=3)
         return False  # 不吞异常
+
+    # P0#4/#12：Lease 状态机——每次 renew 后更新 ACTIVE；renew 失败 → UNCERTAIN → LOST。
+    # LOST 状态下调用方应停止（不执行无 Lease 保护的数据面/动作）。
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def lease_lost(self) -> bool:
+        return self._state == _LeaseState.LOST
+
+    def check_active(self) -> None:
+        """在进入数据面访问/动作前调用：Lease 非 ACTIVE → 抛 LeaseLostError（停止规则）。"""
+        if self._state != _LeaseState.ACTIVE:
+            raise LeaseLostError(f"lease {self._state} for run {self._run_id}; stop before data-plane access")
 
     # ── renew loop（后台线程周期续约，防 Lease 过期被回收）────────────────
     def _start_renew_loop(self) -> None:
@@ -92,24 +131,38 @@ class _LeaseContext:
             time.sleep(RENEW_INTERVAL_SECONDS)
             if self._stop:
                 break
+            if self._state == _LeaseState.LOST:
+                break
             try:
                 self._client.renew_lease(
                     run_id=self._run_id, tenant_id=self._tenant_id,
                     owner_id=self._owner_id, epoch=int(self._epoch or 0),
                     token=self._token, lease_seconds=self._lease_seconds,
                 )
+                self._state = _LeaseState.ACTIVE
+                self._renew_failures = 0
             except ControlPlaneError:
-                # renew 失败：Lease 可能已过期/被回收。标记不再续，让最终 commit 尝试 fenced。
-                break
+                # renew 失败：Lease 可能已过期/被回收。
+                # 停止规则（P0#4/#12）：第一次失败 ACTIVE→UNCERTAIN（暂缓，仍尝试继续），
+                # 连续两次失败 → LOST（停止，不执行无 Lease 保护的数据面/动作）。
+                self._renew_failures += 1
+                if self._renew_failures >= 2:
+                    self._state = _LeaseState.LOST
+                elif self._state == _LeaseState.ACTIVE:
+                    self._state = _LeaseState.UNCERTAIN
+                if self._state == _LeaseState.LOST:
+                    break
 
     # ── Commit（执行完成：成功推进 target；失败记 failed）────────────────
     def commit(self, *, target: str, result: dict, events: list,
                expected_version: int, payload: Any = None) -> dict:
-        """原子 Runtime Commit（幂等：同 commit_id 重试返回首次结果）。"""
+        """原子 Runtime Commit（P0#12：commit_id 稳定——同一次执行的重试复用同一 commit_id，
+        幂等返回首次结果；不因重试生成新 commit_id）。"""
         payload_hash = _sha256(payload if payload is not None else result)
-        commit_id = str(uuid.uuid4())
+        if self._commit_id is None:
+            self._commit_id = str(uuid.uuid4())
         return self._client.commit(
-            run_id=self._run_id, tenant_id=self._tenant_id, commit_id=commit_id,
+            run_id=self._run_id, tenant_id=self._tenant_id, commit_id=self._commit_id,
             payload_hash=payload_hash, target=target, result=result, events=events,
             expected_version=expected_version, owner_id=self._owner_id,
             epoch=int(self._epoch or 0), token=self._token,

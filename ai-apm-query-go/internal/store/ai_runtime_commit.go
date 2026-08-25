@@ -62,6 +62,27 @@ func (d *RuntimeCommitDAO) Get(runID, commitID string) (*RuntimeCommit, error) {
 	return &c, nil
 }
 
+// GetTx 在给定事务内读取既有 commit（P0-COMMIT-02：in-tx recheck commit_id + payload hash）。
+func (d *RuntimeCommitDAO) GetTx(tx *sql.Tx, runID, commitID string) (*RuntimeCommit, error) {
+	var c RuntimeCommit
+	var firstSeq, lastSeq sql.NullInt64
+	err := tx.QueryRow(
+		`SELECT run_id, commit_id, payload_hash, committed_state_version, result_status,
+		   first_event_sequence, last_event_sequence, response_json, created_at
+		 FROM ai_runtime_commits WHERE run_id = ? AND commit_id = ? FOR UPDATE`, runID, commitID,
+	).Scan(&c.RunID, &c.CommitID, &c.PayloadHash, &c.CommittedStateVersion, &c.ResultStatus,
+		&firstSeq, &lastSeq, &c.ResponseJSON, &c.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCommitNotFound
+		}
+		return nil, err
+	}
+	c.FirstEventSequence = firstSeq.Int64
+	c.LastEventSequence = lastSeq.Int64
+	return &c, nil
+}
+
 // CreateTx 在给定事务内插入 commit 记录（幂等：同 (run_id, commit_id) 冲突返回 ErrCommitDuplicate）。
 // 供 commit 端点与 Run 状态推进 + 事件 AppendTx 同事务使用。
 func (d *RuntimeCommitDAO) CreateTx(tx *sql.Tx, c RuntimeCommit) error {

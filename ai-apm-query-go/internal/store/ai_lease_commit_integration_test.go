@@ -72,13 +72,24 @@ func TestA1LeaseCommit(t *testing.T) {
 
 	leaseDAO := &RuntimeLeaseDAO{}
 
-	// 1) executor A claim 成功（owner, epoch=1, 明文 token）
-	holderA, err := leaseDAO.Claim(runID, "executor-A", 60)
+	// P0-LEASE-03：caller 提供稳定 claim_id + lease_token（Claim 响应丢失后精确重试）。
+	callerClaimID := "caller-claim-1"
+	callerToken := "caller-token-256bit-random-value-0000000000000000000000000"
+	// 1) executor A claim 成功（owner, epoch=1, 明文 token = caller 提供的 lease_token）
+	holderA, err := leaseDAO.Claim(runID, "executor-A", 60, ClaimRequest{
+		ClaimID: callerClaimID, LeaseToken: callerToken, ClaimSource: "LIVE_INVOCATION",
+	})
 	if err != nil {
 		t.Fatalf("executor A claim: %v", err)
 	}
 	if holderA.OwnerID != "executor-A" || holderA.Epoch != 1 || holderA.Token == "" {
 		t.Fatalf("holder A wrong: %+v", holderA)
+	}
+	if holderA.Token != callerToken {
+		t.Fatalf("expected caller-provided lease_token returned, got %q", holderA.Token)
+	}
+	if holderA.ClaimID != callerClaimID {
+		t.Fatalf("expected caller claim_id preserved, got %q", holderA.ClaimID)
 	}
 
 	// 2) executor B claim 被拒（RUN_LEASE_HELD）——单 owner
@@ -87,13 +98,22 @@ func TestA1LeaseCommit(t *testing.T) {
 		t.Fatalf("executor B claim should be held, got %v", err)
 	}
 
-	// 3) 同 owner 重复 claim → 返回既有权（幂等，epoch 不变）
-	again, err := leaseDAO.Claim(runID, "executor-A", 60)
+	// 3) 同 owner 用相同 claim_id + token 精确重试 → 返回既有权（幂等，epoch 不变）
+	again, err := leaseDAO.Claim(runID, "executor-A", 60, ClaimRequest{
+		ClaimID: callerClaimID, LeaseToken: callerToken, ClaimSource: "LIVE_INVOCATION",
+	})
 	if err != nil {
-		t.Fatalf("re-claim A: %v", err)
+		t.Fatalf("exact-retry re-claim A: %v", err)
 	}
 	if again.Epoch != 1 {
 		t.Fatalf("re-claim should keep epoch=1, got %d", again.Epoch)
+	}
+	// 3b) 同 owner 但新 claim_id（不同 invocation）→ ErrClaimIDReused（防误认 exact retry）
+	_, err = leaseDAO.Claim(runID, "executor-A", 60, ClaimRequest{
+		ClaimID: "new-invocation-claim", LeaseToken: callerToken, ClaimSource: "LIVE_INVOCATION",
+	})
+	if err == nil || err != ErrClaimIDReused {
+		t.Fatalf("new claim_id should be reused-rejected, got %v", err)
 	}
 
 	// 4) renew 用正确 epoch+token → 成功

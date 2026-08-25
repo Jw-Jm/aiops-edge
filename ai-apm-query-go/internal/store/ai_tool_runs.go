@@ -282,17 +282,18 @@ func (d *AIToolRunDAO) ConvergeToolRun(tx *sql.Tx, toolRunID, runID string, stat
 	return true, nil
 }
 
-// GetByIdemKey 按 idempotency_key 查询 ToolRun（幂等命中判断）。
+// GetByIdemKey 按 idempotency_key 查询 ToolRun（幂等命中判断，P0-TOOL-04 含 args_hash）。
 func (d *AIToolRunDAO) GetByIdemKey(idemKey string) (*AIToolRun, error) {
 	conn := GetDB()
 	if conn == nil {
 		return nil, errors.New("mysql unavailable")
 	}
 	row := conn.QueryRow(
-		`SELECT tool_run_id, run_id, status, idempotency_key FROM ai_tool_runs WHERE idempotency_key = ?`,
+		`SELECT tool_run_id, run_id, status, idempotency_key, args_hash
+		 FROM ai_tool_runs WHERE idempotency_key = ?`,
 		idemKey)
 	var t AIToolRun
-	if err := row.Scan(&t.ToolRunID, &t.RunID, &t.Status, &t.IdempotencyKey); err != nil {
+	if err := row.Scan(&t.ToolRunID, &t.RunID, &t.Status, &t.IdempotencyKey, &t.ArgsHash); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -371,7 +372,11 @@ func (d *AIToolRunDAO) ListByRun(runID string) ([]AIToolRun, error) {
 	rows, err := conn.Query(
 		`SELECT tool_run_id, run_id, step_id, tenant_id, cluster_id, tool_name, status,
 		   input_json, result_json, error_code, error_message, duration_ms, started_at,
-		   completed_at, created_at, idempotency_key
+		   completed_at, created_at, idempotency_key,
+		   args_hash, executor_id, lease_epoch_at_start, deadline_at, observed_at,
+		   query_window_start, query_window_end, result_quality, result_complete,
+		   result_truncated, result_count, result_digest_sha256, eligible_for_evidence,
+		   evidence_consumed_at
 		 FROM ai_tool_runs WHERE run_id = ? ORDER BY created_at ASC`, runID)
 	if err != nil {
 		return nil, err
@@ -380,21 +385,49 @@ func (d *AIToolRunDAO) ListByRun(runID string) ([]AIToolRun, error) {
 	out := []AIToolRun{}
 	for rows.Next() {
 		var t AIToolRun
-		var step, errCode, errMsg sql.NullString
-		var started, completed sql.NullTime
+		var step, errCode, errMsg, argsHash, execID, quality, digest sql.NullString
+		var started, completed, deadline, observed, ws, we, consumed sql.NullTime
+		var leaseEpoch, resCount sql.NullInt64
+		var resComplete, resTruncated, eligible sql.NullInt64
 		if err := rows.Scan(&t.ToolRunID, &t.RunID, &step, &t.TenantID, &t.ClusterID,
 			&t.ToolName, &t.Status, &t.Input, &t.Result, &errCode, &errMsg,
-			&t.DurationMS, &started, &completed, &t.CreatedAt, &t.IdempotencyKey); err != nil {
+			&t.DurationMS, &started, &completed, &t.CreatedAt, &t.IdempotencyKey,
+			&argsHash, &execID, &leaseEpoch, &deadline, &observed, &ws, &we,
+			&quality, &resComplete, &resTruncated, &resCount, &digest, &eligible, &consumed); err != nil {
 			return nil, err
 		}
 		t.StepID = step.String
 		t.ErrorCode = errCode.String
 		t.ErrorMessage = errMsg.String
+		t.ArgsHash = argsHash.String
+		t.ExecutorID = execID.String
+		t.ResultQuality = quality.String
+		t.ResultDigestSHA256 = digest.String
+		t.LeaseEpochAtStart = leaseEpoch.Int64
+		t.ResultCount = resCount.Int64
+		t.ResultComplete = resComplete.Valid && resComplete.Int64 == 1
+		t.ResultTruncated = resTruncated.Valid && resTruncated.Int64 == 1
+		t.EligibleForEvidence = eligible.Valid && eligible.Int64 == 1
 		if started.Valid {
 			t.StartedAt = &started.Time
 		}
 		if completed.Valid {
 			t.CompletedAt = &completed.Time
+		}
+		if deadline.Valid {
+			t.DeadlineAt = &deadline.Time
+		}
+		if observed.Valid {
+			t.ObservedAt = &observed.Time
+		}
+		if ws.Valid {
+			t.QueryWindowStart = &ws.Time
+		}
+		if we.Valid {
+			t.QueryWindowEnd = &we.Time
+		}
+		if consumed.Valid {
+			t.EvidenceConsumedAt = &consumed.Time
 		}
 		out = append(out, t)
 	}

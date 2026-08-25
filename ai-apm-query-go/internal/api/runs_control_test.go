@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -12,12 +13,27 @@ import (
 func TestPublicCancelRun(t *testing.T) {
 	h, mock, cleanup := newTestRunsHandler()
 	defer cleanup()
-	// runDAO.Get → run（created）
+	// runDAO.Get → run（created）——handler 预检 tenant
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
 		WillReturnRows(airunMockRows("run-1", "created", 0))
-	// Cancel ok
+	// P0#1：RunControlService.CancelTx（无 command_id）：
+	// Begin → SELECT status,state_version FOR UPDATE (created,0) →
+	//   UPDATE cancelled + lease_epoch++ (1) →
+	//   AppendTx event (SELECT empty → UPDATE last_event_sequence → INSERT event) → Commit
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, state_version FROM ai_runs WHERE run_id = ? FOR UPDATE")).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "state_version"}).AddRow("created", 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_runs SET status = 'cancelled'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT sequence FROM ai_run_events")).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_runs SET last_event_sequence")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT last_event_sequence FROM ai_runs")).
+		WillReturnRows(sqlmock.NewRows([]string{"last_event_sequence"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_run_events")).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
 	// Get updated → cancelled
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
 		WillReturnRows(airunMockRows("run-1", "cancelled", 1))

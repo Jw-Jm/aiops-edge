@@ -36,6 +36,12 @@ const (
 	ErrorCodeApprovalScopeMismatch = "APPROVAL_SCOPE_MISMATCH"
 	ErrorCodeResourceVersionConflict = "RESOURCE_VERSION_CONFLICT"
 	ErrorCodeMaintenanceMode       = "MAINTENANCE_MODE"
+	// V2 P0 错误码合同（报告 §36 P0-ERROR）：Lease/Tool fencing。
+	ErrorCodeRunLeaseLost       = "RUN_LEASE_LOST"
+	ErrorCodeClaimIDReused      = "CLAIM_ID_REUSED"
+	ErrorCodeClaimIDExpired     = "CLAIM_ID_EXPIRED"
+	ErrorCodeToolLeaseLost      = "TOOL_LEASE_LOST"
+	ErrorCodeToolResultStale    = "TOOL_RESULT_STALE"
 )
 
 // HTTPStatusCode maps a unified error code to its canonical V9.2 §58 HTTP status.

@@ -291,6 +291,8 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/cancel", handler.PublicCancelRun)
 	// P10 (V9.3 Phase 10)：公共 Run 详情（直接读 MySQL，消除与 orchestrator 内存 RunStore 的 split-brain）。
 	mux.HandleFunc("/api/v1/ai/runs/{runID}", handler.GetRunPublic)
+	// C2-4：公共 Run Tool activity（真实 ai_tool_runs，不推断冒充）→ 只读工具执行事实。
+	mux.HandleFunc("/api/v1/ai/runs/{runID}/tools", handler.GetRunToolsPublic)
 	// P10 (V9.3 Phase 10)：/api/v1/ai/runs 由 query-api 作为 Run 持久化 owner 处理。
 	// POST=创建（JWT 鉴权 + 写 outbox 可靠派发），GET=列表（当前 tenant）。不再代理到 orchestrator。
 	mux.HandleFunc("/api/v1/ai/runs", func(w http.ResponseWriter, r *http.Request) {

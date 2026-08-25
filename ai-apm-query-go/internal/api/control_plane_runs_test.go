@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -203,19 +204,33 @@ func TestControlPlaneRunCancelCAS(t *testing.T) {
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()
 	c.h.cmdDAO = &store.AIControlCommandDAO{}
-	// 事务化（有 command_id → 先幂等检查 GetTx 空行）：
-	// Begin → GetTx(command 空行) → GetTx(run planning v0) → CancelTx → GetTx(cancelled v1) → UpsertDoneTx → Commit
+	c.h.eventDAO = &store.AIRunEventDAO{}
+	// P0#1：RunControlService.CancelTx（统一事务）：
+	// handler 预检 Get(run-1 planning v0) → Begin →
+	//   cmdDAO.GetTx(command empty) →
+	//   SELECT status,state_version FOR UPDATE (planning,0) →
+	//   UPDATE cancelled + lease_epoch++ (1) →
+	//   AppendTx event (SELECT sequence empty → UPDATE last_event_sequence → INSERT event) →
+	//   cmdDAO.CreateTx (INSERT command) → Commit
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
+		WillReturnRows(airunMockRows("run-1", "planning", 0))
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT command_id, run_id, operation")).
 		WillReturnRows(sqlmock.NewRows([]string{"command_id", "run_id", "operation",
 			"payload_json", "payload_hash", "response_json", "status", "idempotency_key",
 			"completed_at", "created_at"}))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
-		WillReturnRows(airunMockRows("run-1", "planning", 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, state_version FROM ai_runs WHERE run_id = ? FOR UPDATE")).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "state_version"}).AddRow("planning", 0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_runs SET status = 'cancelled'")).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
-		WillReturnRows(airunMockRows("run-1", "cancelled", 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT sequence FROM ai_run_events")).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_runs SET last_event_sequence")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT last_event_sequence FROM ai_runs")).
+		WillReturnRows(sqlmock.NewRows([]string{"last_event_sequence"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_run_events")).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_control_commands")).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()

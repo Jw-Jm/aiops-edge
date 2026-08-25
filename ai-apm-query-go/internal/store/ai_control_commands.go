@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// ErrCommandNotFound 表示 command 不存在。
+var ErrCommandNotFound = errors.New("control command not found")
+
+// ErrCommandDuplicate 表示 command 已存在（幂等冲突）。
+var ErrCommandDuplicate = errors.New("control command duplicate")
+
 // ─────────────────────────────────────────────────────────────────────────────
 // AIControlCommand：ai_control_commands（P10 完整闭环 Plan C + 生产收敛 A0-01）。
 // control command 幂等持久化（command_id PK + (run_id, idempotency_key) UNIQUE），
@@ -124,6 +130,9 @@ func (d *AIControlCommandDAO) Get(commandID string) (*AIControlCommand, error) {
 		   status, idempotency_key, completed_at, created_at
 		 FROM ai_control_commands WHERE command_id = ?`, commandID))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCommandNotFound
+		}
 		return nil, err
 	}
 	return c, nil
@@ -136,6 +145,9 @@ func (d *AIControlCommandDAO) GetTx(tx *sql.Tx, commandID string) (*AIControlCom
 		   status, idempotency_key, completed_at, created_at
 		 FROM ai_control_commands WHERE command_id = ?`, commandID))
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrCommandNotFound
+		}
 		return nil, err
 	}
 	return c, nil

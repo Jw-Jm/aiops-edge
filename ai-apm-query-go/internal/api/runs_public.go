@@ -202,6 +202,56 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{"run": airunToMap(run)})
 }
 
+// GetRunToolsPublic handles GET /api/v1/ai/runs/{id}/tools（C2-4：UI Tool activity 只展示
+// 真实 ToolRun/Event，不用图节点推断冒充真实工具调用）。
+// 返回 Run 的真实 ai_tool_runs（tool_run_id/step/tool/status/result_quality/executor/
+// lease_epoch/eligible_for_evidence/digest/window），无则空数组。
+func (h *Handler) GetRunToolsPublic(w http.ResponseWriter, r *http.Request) {
+	auth, ok := requestAuthorizationContext(r)
+	if !ok || auth.UserID == "" {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	runID := extractRunIDFromPath(r.URL.Path)
+	if runID == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
+		return
+	}
+	if h.runDAO == nil || h.toolDAO == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "persistence_unavailable"})
+		return
+	}
+	run, err := h.runDAO.Get(runID)
+	if err != nil || run == nil {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+		return
+	}
+	if run.TenantID != auth.TenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+		return
+	}
+	tools, err := h.toolDAO.ListByRun(runID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "tool_list_failed"})
+		return
+	}
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, map[string]interface{}{
+			"tool_run_id": t.ToolRunID, "step_id": nullableStringValue(t.StepID),
+			"tool_name": t.ToolName, "status": t.Status,
+			"result_quality": nullableStringValue(t.ResultQuality),
+			"executor_id": nullableStringValue(t.ExecutorID),
+			"lease_epoch_at_start": t.LeaseEpochAtStart,
+			"eligible_for_evidence": t.EligibleForEvidence,
+			"result_digest_sha256": nullableStringValue(t.ResultDigestSHA256),
+			"result_truncated": t.ResultTruncated, "result_count": t.ResultCount,
+			"error_message": nullableStringValue(t.ErrorMessage),
+		})
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"tools": out, "total": len(out)})
+}
+
 func nullableStringValue(s string) interface{} {
 	if s == "" {
 		return nil

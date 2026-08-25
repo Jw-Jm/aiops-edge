@@ -2,10 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
-	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,17 +41,35 @@ func (h *Handler) PublicCancelRun(w http.ResponseWriter, r *http.Request) {
 		CommandID string `json:"command_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	// 幂等写 control command（command_id 唯一）。
-	if body.CommandID != "" {
-		_ = h.recordControlCommand(runID, "cancel", body.CommandID)
+	// P0#1：Public Cancel 收敛到 RunControlService.CancelTx（唯一权威）。
+	// 与 Internal/Admin Cancel 相同：原子 set cancelled + state_version++ +
+	// lease_epoch++ / clear lease（旧 executor 被 Fence）+ append RUN_CANCELLED event +
+	// command 幂等响应。不再走 runDAO.Cancel 非原子路径。
+	if h.runControl == nil {
+		h.runControl = &RunControlService{runDAO: h.runDAO, cmdDAO: h.cmdDAO, eventDAO: h.eventDAO}
 	}
-	ok, err = h.runDAO.Cancel(runID, run.StateVersion, time.Now())
-	if err != nil {
+	payloadHash := controlCommandPayloadHash(runID, "cancel", &run.StateVersion, "cancelled")
+	res := h.runControl.CancelTx(runID, body.CommandID, payloadHash, run.StateVersion, auth.UserID)
+	if res.Error != nil {
+		if errors.Is(res.Error, store.ErrRunTerminal) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunCancelled})
+			return
+		}
+		if errors.Is(res.Error, store.ErrRunNotFound) {
+			respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
+			return
+		}
+		var cvc *cancelVersionConflictError
+		if errors.As(res.Error, &cvc) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunCancelled})
+			return
+		}
+		var cir *cancelIdempotencyReusedError
+		if errors.As(res.Error, &cir) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "IDEMPOTENCY_KEY_REUSED"})
+			return
+		}
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_cancel_failed"})
-		return
-	}
-	if !ok {
-		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeRunCancelled})
 		return
 	}
 	updated, _ := h.runDAO.Get(runID)

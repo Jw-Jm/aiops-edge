@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 	"github.com/observability-platform/ai-apm-query-go/internal/query"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,6 +44,12 @@ type internalQueryRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 	ExecutorID    string `json:"executor_id"`
 	LeaseEpoch    int64  `json:"lease_epoch"`
+	// P0-TOOL-02：Lease token（明文）——Tool 执行前 server-side fencing 用。
+	//   缺失则不做 ToolRun 包装（无 Lease 保护的查询不写 ToolRun，避免无审计数据面访问）。
+	LeaseToken string `json:"lease_token"`
+	// P0-TOOL-01：真实 run_id（Investigation Run 的 UUID）。缺失 → fail-closed 拒绝执行
+	// （不得写 run_id='' 的孤儿 ToolRun）。
+	RunID string `json:"run_id"`
 	QueryWindowStart string `json:"query_window_start"` // RFC3339 绝对时间（Investigation 创建时冻结）
 	QueryWindowEnd   string `json:"query_window_end"`
 }
@@ -72,17 +80,42 @@ func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID st
 	if h.toolDAO == nil {
 		return trc, false, nil
 	}
-	// 幂等命中：同 idempotency_key 已有 ToolRun 且非 running → 不重复真实查询，返回既有。
+	// 幂等命中（P0-TOOL-04）：同 (run_id, idempotency_key, args_hash) 已有 ToolRun 且非 running →
+	// 不重复真实查询，返回既有。同 idempotency_key 但 args_hash 不同 → 409 IDEMPOTENCY_KEY_REUSED。
 	if trc.IdempotencyKey != "" {
 		exists, err := h.toolDAO.GetByIdemKey(trc.IdempotencyKey)
-		if err == nil && exists != nil && exists.Status != "running" {
-			return trc, true, nil
+		if err == nil && exists != nil {
+			if exists.ArgsHash != "" && exists.ArgsHash != trc.ArgsHash {
+				return nil, false, &toolIdempotencyReusedError{}
+			}
+			if exists.Status != "running" {
+				return trc, true, nil
+			}
 		}
 	}
 	// 创建 ToolRun 记录；失败（非幂等冲突）→ 不执行（fail-closed，避免无审计的真实查询）。
 	// 注意：只有"已存在完成结果"才算 idempotent；INSERT 失败绝不能当作幂等（否则静默跳过真实查询）。
 	if !h.startToolRun(trc) {
 		return nil, false, nil
+	}
+	// P0-TOOL-02：pre-I/O server-side Lease fencing——任何 datasource I/O 前校验 Run 非终态
+	// + owner/epoch/token 匹配 + Lease 未过期。失败 → 返回 fencing error（调用方不执行，
+	// 防迟到/过期 executor 在取消后仍访问数据面）。
+	conn := store.GetDB()
+	if conn != nil {
+		if h.leaseDAO != nil {
+			tx, txErr := conn.Begin()
+			if txErr != nil {
+				return nil, false, txErr
+			}
+			fenceErr := h.leaseDAO.FenceToolExecutionTx(tx, trc.RunID, trc.ExecutorID, trc.LeaseEpoch, hashToken(trc.LeaseToken))
+			if txErr2 := tx.Rollback(); txErr2 != nil {
+				return nil, false, txErr2
+			}
+			if fenceErr != nil {
+				return nil, false, fenceErr
+			}
+		}
 	}
 	return trc, false, nil
 }
@@ -110,9 +143,25 @@ func qualityStatus(q string) string {
 // 调用方传入 exec（返回数据字节 + error；err==nil 视为 complete），本函数负责
 // beginToolRun / finishToolRun / 幂等命中 / ToolResultEnvelope 响应。
 func (h *Handler) execToolQuery(w http.ResponseWriter, rctx *internalQueryCtx, req *internalQueryRequest, exec func() ([]byte, error)) {
-	trc, idempotent, _ := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
+	trc, idempotent, err := h.beginToolRun(req, rctx.TenantID, rctx.ClusterID)
 	if idempotent {
 		respondJSON(w, 200, map[string]interface{}{"idempotent": true})
+		return
+	}
+	if err != nil {
+		// P0-TOOL-02：pre-I/O fencing 失败（Lease 丢失/过期/epoch 不匹配）→ 不执行数据面访问。
+		if errors.Is(err, store.ErrLeaseFencing) || errors.Is(err, store.ErrLeaseLost) {
+			cp.inc("tool_started") // 记录一次被拒的工具尝试（fail-closed）
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": contract.ErrorCodeToolLeaseLost})
+			return
+		}
+		// P0-TOOL-04：同 idempotency_key 但 args_hash 不同 → 409 IDEMPOTENCY_KEY_REUSED。
+		var tkr *toolIdempotencyReusedError
+		if errors.As(err, &tkr) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "IDEMPOTENCY_KEY_REUSED"})
+			return
+		}
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "toolrun_fencing_failed"})
 		return
 	}
 	data, err := exec()

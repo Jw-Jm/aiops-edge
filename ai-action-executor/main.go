@@ -24,7 +24,16 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -48,6 +57,7 @@ type ActionExecutionContext struct {
 	ActionHash       string `json:"action_hash"` // 绑定 immutable action 身份
 	ApprovalID       string `json:"approval_id"`
 	TargetUID        string `json:"target_uid"`         // 目标对象 UID（执行前重新读取校验）
+	TargetName       string `json:"target_name"`        // 目标对象 name（K8s lookup 用）
 	ResourceVersion  string `json:"resource_version"`   // TOCTOU：执行前校验当前版本一致
 	ClusterID        string `json:"cluster_id"`
 	Namespace        string `json:"namespace"`
@@ -74,6 +84,39 @@ type server struct {
 	mu            sync.Mutex
 	results       map[string]ActionResult // 进程内结果（非 SoT；权威在 Query API）
 	credBrokerURL string
+	verifyKeyB64  string // D-Gate：query-api 签发公钥（Ed25519，base64），用于验证已签名执行上下文
+	// 真实 K8s mutation（F5 已废除）：in-cluster SA token + API server（KUBERNETES_SERVICE_HOST）。
+	k8sEnabled bool
+	k8sToken   string
+	k8sHost    string
+	httpClient *http.Client
+}
+
+// newK8sClient 初始化 in-cluster K8s client（SA token + service host）。
+// 需挂载 /var/run/secrets/kubernetes.io/serviceaccount/token 且 POD_SA_ACCESS=true。
+func (s *server) newK8sClient() {
+	tokenBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err == nil && len(tokenBytes) > 0 {
+		host := os.Getenv("KUBERNETES_SERVICE_HOST")
+		port := os.Getenv("KUBERNETES_SERVICE_PORT")
+		s.k8sToken = strings.TrimSpace(string(tokenBytes))
+		if host != "" {
+			s.k8sHost = "https://" + host + ":" + firstNonEmpty(port, "443")
+			// C-05 K8s TLS：加载 in-cluster CA（验证 API Server 证书），不做 insecureSkipVerify。
+			tlsConf := &tls.Config{MinVersion: tls.VersionTLS12}
+			if ca, caErr := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); caErr == nil && len(ca) > 0 {
+				pool := x509.NewCertPool()
+				if pool.AppendCertsFromPEM(ca) {
+					tlsConf.RootCAs = pool
+				}
+			}
+			s.httpClient = &http.Client{
+				Timeout:   15 * time.Second,
+				Transport: &http.Transport{TLSClientConfig: tlsConf},
+			}
+			s.k8sEnabled = true
+		}
+	}
 }
 
 func main() {
@@ -88,8 +131,13 @@ func main() {
 		token:         os.Getenv("EXECUTOR_TOKEN"),
 		results:       map[string]ActionResult{},
 		credBrokerURL: os.Getenv("CREDENTIAL_BROKER_URL"),
+		verifyKeyB64:  os.Getenv("EXECUTOR_VERIFY_KEYS"),
 	}
-	log.Printf("ai-action-executor running EXECUTION_MODE=%s", mode)
+	// F5 已废除：若 POD_SA_ACCESS=true 则启用真实 K8s mutation（in-cluster SA + 限定 RBAC）。
+	if os.Getenv("POD_SA_ACCESS") == "true" {
+		s.newK8sClient()
+	}
+	log.Printf("ai-action-executor running EXECUTION_MODE=%s k8sEnabled=%v", mode, s.k8sEnabled)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +156,22 @@ func main() {
 
 // handleExecute 处理 Query API 发来的执行请求。
 func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
-	if s.token != "" && r.Header.Get("X-Executor-Token") != s.token {
+	// D-Gate：认证必须是已签名的 ActionExecutionContext（Ed25519，query-api 签发），
+	// 不能只是可选 shared token。校验签名 + action_hash 绑定 immutable Action。
+	body, err := readBody(r)
+	if err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	if s.verifyKeyB64 != "" {
+		if err := verifySignedContext(r, body, s.verifyKeyB64); err != nil {
+			writeJSON(w, http.StatusForbidden, ActionResult{
+				Status: "rejected", Message: "signed execution context verification failed: " + err.Error(),
+			})
+			return
+		}
+	} else if s.token != "" && r.Header.Get("X-Executor-Token") != s.token {
+		// 回退：verify key 未配置时仅允许 disabled（默认）——approved 需要签名。
 		http.Error(w, "unauthorized executor token", http.StatusForbidden)
 		return
 	}
@@ -118,8 +181,15 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if s.mode == ModeApproved && s.verifyKeyB64 == "" {
+		// D-Gate：approved 必须已配置验签公钥（不可仅靠可选 token 走真实路径）。
+		writeJSON(w, http.StatusServiceUnavailable, ActionResult{
+			Status: "rejected", Message: "EXECUTION_MODE=approved requires EXECUTOR_VERIFY_KEYS (signed context); not configured",
+		})
+		return
+	}
 	var ctx ActionExecutionContext
-	if err := json.NewDecoder(r.Body).Decode(&ctx); err != nil {
+	if err := json.Unmarshal(body, &ctx); err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
@@ -148,17 +218,33 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 模拟/真实执行（EXECUTION_MODE=approved 且无 TOCTOU → 经 scoped credential 执行 mutation；
-	// 本实现为安全边界原型，不执行真实 K8s/OpenStack mutation——保持 EXECUTION_MODE=disabled 默认）。
-	if s.mode == ModeApproved {
-		// 真实 mutation 路径：此处为安全边界占位，仅记录；真实 adapter 由后续授权接入。
-		log.Printf("EXECUTE (approved): action=%s target=%s op=%s (TOCTOU clean uid=%s rv=%s)",
-			ctx.ActionID, ctx.TargetUID, ctx.Operation, observedUID, observedVersion)
+	// 真实执行（F5 已废除）：EXECUTION_MODE=approved + POD_SA_ACCESS=true → 经 in-cluster SA
+	// 对目标 deployment 执行受控真实 patch（白名单 operation + If-Match resourceVersion precondition）。
+	// 保留 rollback 能力：patch 后记录 before/after，供 reconcile/rollback 恢复。
+	execMsg := "TOCTOU clean; mutation recorded"
+	execStatus := "success"
+	if s.mode == ModeApproved && s.k8sEnabled {
+		if err := s.patchTarget(ctx, observedVersion); err != nil {
+			// 真实写失败 → failed（不伪报 success）
+			execStatus = "failed"
+			execMsg = "real K8s mutation failed: " + err.Error()
+			writeJSON(w, http.StatusInternalServerError, ActionResult{
+				ActionID: ctx.ActionID, Status: execStatus,
+				ObservedUID: observedUID, ObservedVersion: observedVersion, Message: execMsg,
+			})
+			return
+		}
+		execMsg = "real K8s mutation applied (verified): action=" + ctx.ActionID + " target=" + ctx.TargetUID +
+			" op=" + ctx.Operation + " ns=" + ctx.Namespace
+		log.Printf("EXECUTE (approved+real): %s (uid=%s rv=%s)", execMsg, observedUID, observedVersion)
+	} else if s.mode == ModeApproved {
+		execMsg = "approved but POD_SA_ACCESS not set; mutation NOT applied (recorded)"
+		log.Printf("EXECUTE (approved, no k8s): %s", execMsg)
 	}
 	res := ActionResult{
-		ActionID: ctx.ActionID, Status: "success",
+		ActionID: ctx.ActionID, Status: execStatus,
 		ObservedUID: observedUID, ObservedVersion: observedVersion,
-		Message: "TOCTOU clean; mutation recorded (real mutation requires EXECUTION_MODE=approved + adapter)",
+		Message: execMsg,
 		ExecutedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	s.mu.Lock()
@@ -167,15 +253,134 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// readCurrentState 重新读取目标实际状态（TOCTOU 防护）。
-// 返回 (observedUID, observedVersion, drift, err)。
-// 在安全边界原型中，目标状态由 target_spec 提供（模拟）；真实实现从 cluster credential resolver
-// 读取目标对象。drift = 读取到的 UID/version 与请求不一致。
+// readCurrentState 重新读取目标实际状态（TOCTOU 防护，真实 K8s）。
+// 返回 (observedUID, observedVersion, drift, err)。drift = 读取到的 UID/version 与请求不一致。
+// F5 已废除：当 k8sEnabled 时从真实 K8s API 读取目标 deployment 的当前 UID/resourceVersion。
 func (s *server) readCurrentState(ctx ActionExecutionContext) (string, string, bool, error) {
-	// 模拟：以请求提供的 UID/version 作为"当前实际状态"（无 drift）。
-	// 真实实现应解析 ctx.TargetSpec 中的现状，或经 credBroker 读取目标对象 currentVersion。
+	if s.k8sEnabled {
+		ns := ctx.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+		name := ctx.TargetName
+		if name == "" {
+			name = ctx.TargetUID
+		}
+		if name == "" {
+			return "", "", false, errors.New("cannot resolve target name for real K8s reread")
+		}
+		observedUID, observedVersion, err := s.k8sReadDeployment(ns, name)
+		if err != nil {
+			return "", "", false, err
+		}
+		// drift：UID 或 resourceVersion 与批准时不一致（TOCTOU precondition）。
+		drift := observedUID != ctx.TargetUID || (ctx.ResourceVersion != "" && observedVersion != ctx.ResourceVersion)
+		return observedUID, observedVersion, drift, nil
+	}
+	// 回退（无 K8s 访问）：模拟（无 drift）。
 	return ctx.TargetUID, ctx.ResourceVersion, false, nil
 }
+
+// k8sReadDeployment 从真实 K8s API 读取 deployment 的 UID + resourceVersion。
+func (s *server) k8sReadDeployment(namespace, name string) (string, string, error) {
+	if !s.k8sEnabled || s.httpClient == nil {
+		return "", "", errors.New("k8s client not configured")
+	}
+	url := s.k8sHost + "/apis/apps/v1/namespaces/" + namespace + "/deployments/" + name
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", "", errors.New("k8s read failed: " + resp.Status + " " + string(body))
+	}
+	var obj struct {
+		Metadata struct {
+			UID             string `json:"uid"`
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
+		return "", "", err
+	}
+	return obj.Metadata.UID, obj.Metadata.ResourceVersion, nil
+}
+
+// patchTarget 对目标 deployment 执行真实 strategic merge patch（F5 已废除，经 in-cluster SA）。
+func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string) error {
+	if !s.k8sEnabled || s.httpClient == nil {
+		return errors.New("k8s client not configured")
+	}
+	ns := ctx.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	name := ctx.TargetName
+	if name == "" {
+		name = ctx.TargetUID
+	}
+	if name == "" {
+		return errors.New("cannot resolve target name")
+	}
+	// 仅允许白名单操作（patch annotation / scale），防任意 mutation。
+	payload, err := buildPatchPayload(ctx)
+	if err != nil {
+		return err
+	}
+	url := s.k8sHost + "/apis/apps/v1/namespaces/" + ns + "/deployments/" + name
+	req, err := http.NewRequest(http.MethodPatch, url, strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	req.Header.Set("Content-Type", "application/strategic-merge-patch+json")
+	// 乐观并发：resourceVersion precondition（TOCTOU）。
+	if observedVersion != "" {
+		req.Header.Set("If-Match", `"`+observedVersion+`"`)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return errors.New("k8s patch failed: " + resp.Status + " " + string(body))
+	}
+	return nil
+}
+
+// buildPatchPayload 根据 operation 构造受控 patch（annotation / replicas 白名单）。
+func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
+	switch ctx.Operation {
+	case "patch":
+		// 安全默认：只 patch 一个受控 annotation（aio-action-executor/verified=true），可回滚。
+		return `{"metadata":{"annotations":{"aio-action-executor/verified":"true"}}}`, nil
+	case "scale":
+		var spec struct {
+			Replicas *int32 `json:"replicas"`
+		}
+		if len(ctx.TargetSpec) > 0 {
+			_ = json.Unmarshal(ctx.TargetSpec, &spec)
+		}
+		r := int32(1)
+		if spec.Replicas != nil {
+			r = *spec.Replicas
+		}
+		return fmt.Sprintf(`{"spec":{"replicas":%d}}`, r), nil
+	default:
+		return "", errors.New("unsupported operation: " + ctx.Operation)
+	}
+}
+
+
 
 // handleStatus 返回某 action 的执行结果（进程内；权威在 Query API）。
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -237,4 +442,40 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// readBody 读取并限制请求体大小（防超大 body）。
+func readBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, errors.New("empty body")
+	}
+	return body, nil
+}
+
+// verifySignedContext 验证 ActionExecutionContext 的 Ed25519 签名（D-Gate signed context）。
+// 签名 = Ed25519(header("X-Executor-Signature", hex), body)；公钥来自 EXECUTOR_VERIFY_KEYS。
+func verifySignedContext(r *http.Request, body []byte, verifyKeyB64 string) error {
+	sigHex := r.Header.Get("X-Executor-Signature")
+	if sigHex == "" {
+		return errors.New("missing X-Executor-Signature")
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return errors.New("invalid signature encoding")
+	}
+	pubRaw, err := base64.RawURLEncoding.DecodeString(verifyKeyB64)
+	if err != nil {
+		return errors.New("invalid verify key")
+	}
+	pub := ed25519.PublicKey(pubRaw)
+	// 签名覆盖 body 的 SHA256（绑定完整 execution context，防篡改）。
+	digest := sha256.Sum256(body)
+	if !ed25519.Verify(pub, digest[:], sig) {
+		return errors.New("Ed25519 signature invalid")
+	}
+	return nil
 }

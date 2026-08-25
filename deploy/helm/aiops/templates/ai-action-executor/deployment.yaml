@@ -18,6 +18,8 @@ spec:
       labels:
         app: ai-action-executor
     spec:
+      # F5 已废除：realMutation=true 时挂专属 SA（限定 action-test RBAC）启用真实 K8s mutation。
+      serviceAccountName: {{ if .Values.aiActionExecutor.realMutation }}ai-action-executor{{ else }}default{{ end }}
       containers:
         - name: executor
           image: "{{ .Values.aiActionExecutor.image.repository }}:{{ .Values.aiActionExecutor.image.tag }}"
@@ -37,6 +39,18 @@ spec:
                   key: EXECUTOR_TOKEN
             - name: CREDENTIAL_BROKER_URL
               value: {{ .Values.aiActionExecutor.credentialBrokerUrl | default "" | quote }}
+            # F5 已废除：realMutation=true 才启用真实 K8s mutation（in-cluster SA + 限定 RBAC）。
+            - name: POD_SA_ACCESS
+              value: {{ .Values.aiActionExecutor.realMutation | default false | quote }}
+            # D-Gate（readiness）：approved 模式必须验签已签名执行上下文。
+            # realMutation=true 时注入 query-api 签发公钥。
+{{- if .Values.aiActionExecutor.realMutation }}
+            - name: EXECUTOR_VERIFY_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: QUERY_TO_ORCHESTRATOR_VERIFY_KEYS
+{{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -56,3 +70,36 @@ spec:
     - port: 8080
       targetPort: 8080
       name: http
+{{- if .Values.aiActionExecutor.realMutation }}
+---
+# F5 已废除：executor 专属 SA + 限定 action-test namespace 的 deployment patch 权限（真实 mutation）。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-action-executor
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ai-action-executor
+  namespace: action-test
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-action-executor
+  namespace: action-test
+subjects:
+  - kind: ServiceAccount
+    name: ai-action-executor
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: ai-action-executor
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

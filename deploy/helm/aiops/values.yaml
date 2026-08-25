@@ -49,9 +49,11 @@ aiActionExecutor:
   replicas: 1
   image:
     repository: ai-action-executor
-    tag: v0.1.0-d01
+    tag: v0.2.0-d
   executionMode: disabled
   credentialBrokerUrl: ""
+  # F5 已废除：realMutation=true 才启用真实 K8s mutation（挂专属 SA + 限定 action-test RBAC）。
+  realMutation: false
 
 # C-04（报告 §19）：ai-llm-egress-proxy——LLM 出站唯一代理。
 #   默认 disabled；启用时 orchestrator 的 LLM 出站走本 proxy（Provider key 只存于 proxy Secret）。

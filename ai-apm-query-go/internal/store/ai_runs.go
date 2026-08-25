@@ -276,6 +276,35 @@ func (d *AIRunDAO) TransitionTx(tx *sql.Tx, runID, target string, expectedVersio
 	return n == 1, nil
 }
 
+// TransitionTxValidated 在给定事务内做合法状态迁移（P0#2/#10）：锁 Run → 读当前 status →
+// ValidateRunTransition（终态不可复活）→ CAS state_version 推进。返回 (ok, err)。
+// 供 Runtime Commit / Public Cancel / Internal transition 共用同一合法性权威。
+func (d *AIRunDAO) TransitionTxValidated(tx *sql.Tx, runID, target string, expectedVersion int64, now time.Time) (bool, error) {
+	var current string
+	if err := tx.QueryRow(`SELECT status FROM ai_runs WHERE run_id = ? FOR UPDATE`, runID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrRunNotFound
+		}
+		return false, err
+	}
+	if !ValidateRunTransition(current, target) {
+		return false, &IllegalTransitionError{Current: current, Target: target}
+	}
+	var finishedAt interface{} = nil
+	if isTerminalStatus(target) {
+		finishedAt = now
+	}
+	res, err := tx.Exec(
+		`UPDATE ai_runs SET status = ?, state_version = state_version + 1, updated_at = ?, finished_at = ?
+		 WHERE run_id = ? AND state_version = ?`,
+		target, now, finishedAt, runID, expectedVersion)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
 // CancelTx 在给定事务内显式 cancel（供 ApplyRunControlCommandTx mutateFn 使用）。
 func (d *AIRunDAO) CancelTx(tx *sql.Tx, runID string, expectedVersion int64, now time.Time) (bool, error) {
 	res, err := tx.Exec(
@@ -351,6 +380,48 @@ func (d *AIRunDAO) GetWithRuntime(runID string) (*AIRun, error) {
 	}
 	return &r, nil
 }
+
+// runTransitions 服务端唯一合法状态迁移表（与 orchestrator RunStateMachine.RUN_TRANSITIONS
+// 对齐）。P0#2/#10：由 Internal transition、Runtime Commit、Public Cancel、Admin control 共同使用，
+// 终态不可复活。
+var runTransitions = map[string][]string{
+	"created":               {"planning", "cancelled"},
+	"planning":              {"investigating", "awaiting_confirmation", "failed", "cancelled"},
+	"investigating":         {"awaiting_confirmation", "awaiting_approval", "failed", "cancelled"},
+	"awaiting_confirmation": {"investigating", "awaiting_approval", "cancelled"},
+	"awaiting_approval":     {"executing", "cancelled", "failed"},
+	"executing":             {"verifying", "success", "partial", "failed", "regressed", "cancelled"},
+	"verifying":             {"success", "partial", "failed", "regressed", "cancelled"},
+}
+
+// runTerminal 终态集合。
+var runTerminal = map[string]bool{
+	"success": true, "partial": true, "failed": true, "regressed": true, "cancelled": true,
+}
+
+// ValidateRunTransition 校验 (current → target) 是否合法（P0#2/#10）。
+// 终态不可迁（不可复活）；目标须在允许集。
+func ValidateRunTransition(current, target string) bool {
+	if runTerminal[current] {
+		return false
+	}
+	for _, allowed := range runTransitions[current] {
+		if allowed == target {
+			return true
+		}
+	}
+	return false
+}
+
+// IllegalTransitionError 表示非法状态迁移（P0#2/#10：Commit/Cancel/Transition 共用）。
+type IllegalTransitionError struct{ Current, Target string }
+
+func (e *IllegalTransitionError) Error() string {
+	return "illegal run transition: " + e.Current + " -> " + e.Target
+}
+
+// IsTerminalStatus 判断是否终态（导出，供 RunControlService 等使用）。
+func IsTerminalStatus(status string) bool { return isTerminalStatus(status) }
 
 // isTerminalStatus 判断是否终态。
 func isTerminalStatus(status string) bool {

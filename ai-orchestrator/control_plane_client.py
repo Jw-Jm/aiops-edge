@@ -195,11 +195,18 @@ class ControlPlaneClient:
 
     # ── lease / commit（B2-01 / A1）────────────────────────────────────────
     def claim_lease(self, *, run_id: str, tenant_id: str, owner_id: str,
-                    lease_seconds: int = 60) -> dict:
-        """Claim 一次 Run execution lease（fencing：epoch + token）。"""
+                    lease_seconds: int = 60, claim_id: str = "",
+                    lease_token: str = "", claim_source: str = "LIVE_INVOCATION") -> dict:
+        """Claim 一次 Run execution lease（fencing：epoch + token）。
+
+        P0-LEASE-03：支持 caller 提供 claim_id + lease_token（>=256-bit random），
+        使"Claim 响应丢失后以相同 claim_id 精确重试"恢复同一 Lease（epoch 不变）。
+        缺省时服务端生成。
+        """
         claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE, tenant_id=tenant_id)
         return self._post(f"/internal/v1/control-plane/runs/{run_id}/claim", claims, {
             "owner_id": owner_id, "lease_seconds": lease_seconds,
+            "claim_id": claim_id, "lease_token": lease_token, "claim_source": claim_source,
         })
 
     def renew_lease(self, *, run_id: str, tenant_id: str, owner_id: str,
