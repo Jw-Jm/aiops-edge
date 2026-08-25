@@ -23,7 +23,7 @@ func TestControlPlaneActionAppend(t *testing.T) {
 
 	req := c.cpReq(t, http.MethodPost, "/internal/v1/control-plane/runs/run-1/actions",
 		"control_plane.runs.mutate",
-		`{"action_id":"act-1","action_type":"restart","action_hash":"abc123","idempotency_key":"k1","proposed_risk":"R2","authoritative_risk":"R3","status":"proposed","dry_run":true,"target_name":"orders","target_uid":"uid-1","resource_version":"rv-7","namespace":"prod","operation":"patch","params":{"x":1}}`,
+		`{"action_id":"act-1","action_type":"kubernetes","action_hash":"","idempotency_key":"k1","proposed_risk":"R2","authoritative_risk":"R3","status":"proposed","dry_run":true,"target_name":"orders","target_uid":"ignored","resource_version":"ignored","namespace":"prod","operation":"scale","params":{"replicas":2},"resource_type":"deployment"}`,
 		nil)
 	rec := httptest.NewRecorder()
 	c.h.InternalControlPlaneRunRouter(rec, req)

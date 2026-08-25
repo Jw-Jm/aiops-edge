@@ -377,6 +377,27 @@ def _get_brain():
     return _brain
 
 
+def build_action_candidate(proposal: dict) -> dict:
+    """Convert an LLM suggestion into the bounded Action V2 semantic input.
+
+    Scripts are presentation-only and are never treated as executable input.
+    The target identity is resolved later by query-api preflight.
+    """
+    namespace = str(proposal.get("namespace") or "").strip()
+    target_name = str(proposal.get("target_name") or "").strip()
+    operation = str(proposal.get("operation") or "").strip().lower()
+    params = proposal.get("params")
+    if not namespace or not target_name or operation not in {"patch", "scale"} or not isinstance(params, dict):
+        raise ValueError("ACTION_PREFLIGHT_REQUIRED")
+    return {
+        "resource_type": "deployment",
+        "namespace": namespace,
+        "target_name": target_name,
+        "operation": operation,
+        "params": params,
+    }
+
+
 class _InvestigationBrainAdapter:
     """Adapter from the existing graph stream to the persistent worker API."""
 
@@ -389,6 +410,7 @@ class _InvestigationBrainAdapter:
         plan_events = []
         hypothesis_events = []
         plan_persist_error = ""
+        proposal_error = ""
         saw_done = False
         if item.request_context is None:
             raise RuntimeError("RUN_CONTEXT_REQUIRED")
@@ -460,25 +482,32 @@ class _InvestigationBrainAdapter:
             except Exception as exc:  # noqa: BLE001 - hypothesis is an audit projection
                 plan_persist_error = plan_persist_error or str(exc)[:200]
         if proposal and item.action_mode == "plan_only":
-            script = str(proposal.get("script") or "")
-            if script:
+            try:
+                candidate = build_action_candidate(proposal)
+            except ValueError as exc:
+                status = "partial"
+                error_code = str(exc)
+                proposal_error = str(exc)
+                candidate = None
+            if candidate:
                 from control_plane_client import ControlPlaneClient
                 action_id = str(uuid.uuid5(uuid.UUID(item.run_id), f"action:{item.invocation_id}"))
-                action_hash = hashlib.sha256(script.encode("utf-8")).hexdigest()
                 risk_value = float(proposal.get("risk_score") or 0)
                 risk_label = f"R{min(5, max(0, round(risk_value * 5)))}"
                 ControlPlaneClient().append_action(
                     run_id=item.run_id, tenant_id=item.tenant_id, cluster_id=item.cluster_id,
-                    action_id=action_id, action_type="script", action_hash=action_hash,
+                    action_id=action_id, action_type="kubernetes", action_hash="",
                     idempotency_key=f"{item.run_id}:action:{item.invocation_id}",
                     proposed_risk=risk_label, authoritative_risk=risk_label,
-                    status="proposed", dry_run=True,
-                    params={"script": script, "plan": str(proposal.get("plan") or "")},
-                    target_name=item.resource_id, operation="patch",
+                    status="proposed", dry_run=False, params=candidate["params"],
+                    target_name=candidate["target_name"], namespace=candidate["namespace"],
+                    operation=candidate["operation"], resource_type=candidate["resource_type"],
                 )
         result = {"report": final_text} if final_text else {}
         if plan_persist_error:
             result["plan_persist_error"] = plan_persist_error
+        if proposal_error:
+            result["proposal_error"] = proposal_error
         return {
             "status": status,
             "events": events,

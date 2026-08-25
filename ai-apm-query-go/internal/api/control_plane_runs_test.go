@@ -65,6 +65,9 @@ func newCPHandler(t *testing.T) *cpHandlerCtx {
 	h := &Handler{
 		runDAO:   &store.AIRunDAO{},
 		eventDAO: &store.AIRunEventDAO{},
+		actionPreflight: NewActionPreflightService(fakeActionTargetResolver{identity: KubeObjectIdentity{
+			UID: "uid-1", ResourceVersion: "rv-7", Namespace: "prod", Name: "orders",
+		}}),
 	}
 	return &cpHandlerCtx{h: h, priv: priv}
 }

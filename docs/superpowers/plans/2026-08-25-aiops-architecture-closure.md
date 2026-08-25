@@ -191,7 +191,7 @@ git commit -m "feat: expand durable action workflow schema"
 - Consumes: proposal `{action_type, resource_type, namespace, target_name, operation, params}` from Orchestrator and the existing Kubernetes Access Boundary.
 - Produces: `CanonicalActionPayloadV2`, `CanonicalActionHash`, `ActionPreflightService.Resolve`, and an immutable executable Action with `hash_schema_version=2`, `preflight_status=passed`, UID/resourceVersion and `dry_run=false`.
 
-- [ ] **Step 1: Write failing canonicalization tests**
+- [x] **Step 1: Write failing canonicalization tests**
 
 ```go
 func TestCanonicalActionHashIncludesTargetAndParams(t *testing.T) {
@@ -206,13 +206,13 @@ func TestCanonicalActionHashIncludesTargetAndParams(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the contract test and confirm the undefined type failure**
+- [x] **Step 2: Run the contract test and confirm the undefined type failure**
 
 Run: `cd ai-apm-query-go && go test ./internal/contract -run CanonicalAction -count=1`
 
 Expected: FAIL because `CanonicalActionPayloadV2` does not exist.
 
-- [ ] **Step 3: Implement canonical JSON and Action V2**
+- [x] **Step 3: Implement canonical JSON and Action V2**
 
 ```go
 type CanonicalActionPayloadV2 struct {
@@ -238,7 +238,7 @@ func CanonicalActionHash(v CanonicalActionPayloadV2) (string, error) {
 
 `NormalizeJSON` must use `json.Decoder.UseNumber()`, decode into `any`, reject trailing data, then `json.Marshal`; this gives stable map-key ordering without adding a new dependency.
 
-- [ ] **Step 4: Add a failing preflight test using a fake boundary**
+- [x] **Step 4: Add a failing preflight test using a fake boundary**
 
 ```go
 func TestActionPreflightResolvesImmutableDeploymentIdentity(t *testing.T) {
@@ -251,7 +251,7 @@ func TestActionPreflightResolvesImmutableDeploymentIdentity(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Extend the existing Kubernetes boundary with one narrow read method**
+- [x] **Step 5: Extend the existing Kubernetes boundary with one narrow read method**
 
 ```go
 type KubeObjectIdentity struct {
@@ -270,11 +270,11 @@ type KubeClient interface {
 
 Implement the adapter through the existing `k8sboundary.Client`; do not invoke a default kube-context or add a second credential path.
 
-- [ ] **Step 6: Make the internal Action append endpoint call preflight**
+- [x] **Step 6: Make the internal Action append endpoint call preflight**
 
 Reject unsupported resource types, missing namespace/name, `restart`, arbitrary scripts and unknown operations with HTTP 422. Persist the Action only after target resolution and hash calculation. Set `proposed_by` from the Run principal, not from the request body.
 
-- [ ] **Step 7: Change the Brain adapter to send structured candidates**
+- [x] **Step 7: Change the Brain adapter to send structured candidates**
 
 ```python
 candidate = {
@@ -289,7 +289,7 @@ candidate = {
 
 If required target fields are absent, return `partial` with `ACTION_PREFLIGHT_REQUIRED`; do not transition the Run to `awaiting_approval`.
 
-- [ ] **Step 8: Run focused tests**
+- [x] **Step 8: Run focused tests**
 
 Run: `cd ai-apm-query-go && go test ./internal/contract ./internal/query ./internal/api -run 'CanonicalAction|ActionPreflight' -count=1`
 
@@ -297,7 +297,7 @@ Run: `cd ai-orchestrator && ./.venv312/bin/python -m pytest tests/test_investiga
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit canonical Action preflight**
+- [x] **Step 9: Commit canonical Action preflight**
 
 ```bash
 git add ai-apm-query-go ai-orchestrator

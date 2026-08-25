@@ -131,6 +131,7 @@ type Handler struct {
 	approvalDAO     *store.AIApprovalDecisionDAO
 	attemptDAO      *store.AIActionAttemptDAO
 	verificationDAO *store.AIVerificationDAO
+	actionPreflight *ActionPreflightService
 	// A1：Runtime execution Lease + Runtime Commit（并发权威）。
 	leaseDAO    *store.RuntimeLeaseDAO
 	commitDAO   *store.RuntimeCommitDAO
@@ -179,6 +180,7 @@ func NewHandler(chHost string, chPort int) *Handler {
 		&store.ClusterDAO{},
 	)
 	h.kubeRepo = query.NewKubernetesRepository(boundaryAccessor{manager: manager})
+	h.actionPreflight = NewActionPreflightService(queryActionTargetResolver{repo: h.kubeRepo})
 	h.changeRepo = query.NewChangeRepository(&h.repo)
 	// knowledge 后端（Chroma vector index + MinIO Knowledge Object）由 environment 注入；
 	// 未配置时 repository 返回 unavailable（fail-closed），绝不回退 ProxyAI。

@@ -51,6 +51,17 @@ func (c boundaryClient) ListPods(namespace string) ([]query.KubePod, error) {
 	return result, nil
 }
 
+func (c boundaryClient) GetDeploymentIdentity(namespace, name string) (query.KubeObjectIdentity, error) {
+	raw, err := c.client.KubeDeploymentIdentity(namespace, name)
+	if err != nil {
+		return query.KubeObjectIdentity{}, err
+	}
+	return query.KubeObjectIdentity{
+		UID: boundaryToString(raw["uid"]), ResourceVersion: boundaryToString(raw["resource_version"]),
+		Namespace: boundaryToString(raw["namespace"]), Name: boundaryToString(raw["name"]),
+	}, nil
+}
+
 // ListNodeDetails 返回节点 Ready 状态与 capacity（边界只读能力）。
 func (c boundaryClient) ListNodeDetails() ([]map[string]interface{}, error) {
 	return c.client.KubeNodeDetails()

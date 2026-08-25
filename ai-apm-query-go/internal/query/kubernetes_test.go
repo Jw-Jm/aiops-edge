@@ -29,6 +29,9 @@ func (c *fakeKubeClient) ClusterID() string            { return "" }
 func (c *fakeKubeClient) ListNodeNames() ([]string, error) { return c.nodes, nil }
 func (c *fakeKubeClient) ListNodeDetails() ([]map[string]interface{}, error) { return nil, nil }
 func (c *fakeKubeClient) ListPods(ns string) ([]KubePod, error) { return c.pods, nil }
+func (c *fakeKubeClient) GetDeploymentIdentity(namespace, name string) (KubeObjectIdentity, error) {
+	return KubeObjectIdentity{UID: "uid-1", ResourceVersion: "42", Namespace: namespace, Name: name}, nil
+}
 
 func TestKubeRepoListNodeNames(t *testing.T) {
 	acc := &fakeKubeAccessor{nodes: []string{"node-a", "node-b"}}

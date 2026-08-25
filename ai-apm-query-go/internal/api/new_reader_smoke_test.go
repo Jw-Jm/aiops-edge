@@ -111,6 +111,9 @@ func (c *smokeKubeClient) ClusterID() string             { return "" }
 func (c *smokeKubeClient) ListNodeNames() ([]string, error) { return c.nodes, nil }
 func (c *smokeKubeClient) ListNodeDetails() ([]map[string]interface{}, error) { return nil, nil }
 func (c *smokeKubeClient) ListPods(ns string) ([]query.KubePod, error) { return nil, nil }
+func (c *smokeKubeClient) GetDeploymentIdentity(namespace, name string) (query.KubeObjectIdentity, error) {
+	return query.KubeObjectIdentity{UID: "uid-1", ResourceVersion: "42", Namespace: namespace, Name: name}, nil
+}
 
 
 // internalClusterRequest 构造指向指定内部 route 的签名请求（默认 metrics.read capability）。
@@ -162,5 +165,4 @@ func TestNewReaderSmokeAllDomains(t *testing.T) {
 		}
 	}
 }
-
 

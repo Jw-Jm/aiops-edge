@@ -189,6 +189,31 @@ func (c *Client) KubePods(namespace string) ([]map[string]interface{}, error) {
 	return kubePods(c.kubeconfig, namespace)
 }
 
+// KubeDeploymentIdentity reads only the immutable identity fields used by the
+// Action preflight/TOCTOU boundary. The full Deployment object never leaves
+// this package.
+func (c *Client) KubeDeploymentIdentity(namespace, name string) (map[string]interface{}, error) {
+	data, err := kubectlJSON(c.kubeconfig, "get", "deployment", name, "-n", namespace, "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Metadata struct {
+			UID             string `json:"uid"`
+			ResourceVersion string `json:"resourceVersion"`
+			Namespace       string `json:"namespace"`
+			Name            string `json:"name"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"uid": raw.Metadata.UID, "resource_version": raw.Metadata.ResourceVersion,
+		"namespace": raw.Metadata.Namespace, "name": raw.Metadata.Name,
+	}, nil
+}
+
 // clientEntry is a validated cache entry. It records the credential_ref it was
 // resolved from so a credential change forces re-validation.
 type clientEntry struct {

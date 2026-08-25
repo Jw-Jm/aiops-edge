@@ -20,6 +20,17 @@ type KubePod struct {
 	Restarts  int64  `json:"restarts"`
 }
 
+// KubeObjectIdentity is the minimum immutable target identity needed for an
+// Action preflight and later TOCTOU check. The raw object is intentionally not
+// exposed through the public query response.
+type KubeObjectIdentity struct {
+	UID             string
+	ResourceVersion string
+	Namespace       string
+	Name            string
+	Observed        []byte
+}
+
 // KubeClient 是绑定身份校验的 K8s 只读访问器（窄接口，包装 k8sboundary.Client）。
 // 底层为冻结的 K8s Access Boundary；此处不新建第二套 client。
 type KubeClient interface {
@@ -27,6 +38,7 @@ type KubeClient interface {
 	ListNodeNames() ([]string, error)
 	ListNodeDetails() ([]map[string]interface{}, error)
 	ListPods(namespace string) ([]KubePod, error)
+	GetDeploymentIdentity(namespace, name string) (KubeObjectIdentity, error)
 }
 
 // KubernetesAccessor 解析 canonical cluster_id → 校验身份的 K8s 客户端。
@@ -101,6 +113,27 @@ func (r *KubernetesRepository) ListNodeNames(ctx context.Context, scope Kubernet
 		return nil, NoData()
 	}
 	return nodes, nil
+}
+
+// GetDeploymentIdentity resolves only the target identity through the existing
+// cluster-bound Access Boundary. It is used by Action preflight and never
+// returns credentials or an unbounded object list.
+func (r *KubernetesRepository) GetDeploymentIdentity(ctx context.Context, scope KubernetesScope, clusterID, namespace, name string) (KubeObjectIdentity, error) {
+	if strings.TrimSpace(namespace) == "" || strings.TrimSpace(name) == "" {
+		return KubeObjectIdentity{}, PermissionDenied("kubernetes: namespace and deployment name are required")
+	}
+	client, err := r.clientFor(ctx, clusterID)
+	if err != nil {
+		return KubeObjectIdentity{}, err
+	}
+	identity, err := client.GetDeploymentIdentity(namespace, name)
+	if err != nil {
+		return KubeObjectIdentity{}, mapKubeBoundaryError(err)
+	}
+	if identity.UID == "" || identity.ResourceVersion == "" {
+		return KubeObjectIdentity{}, Unavailable("kubernetes: target identity incomplete")
+	}
+	return identity, nil
 }
 
 // ListNodeDetails 返回节点 Ready 状态与 capacity（供健康评估）。

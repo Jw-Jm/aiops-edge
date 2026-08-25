@@ -195,7 +195,7 @@ class ControlPlaneClient:
                       dry_run: bool = True, params: Optional[Mapping[str, Any]] = None,
                       target_name: str = "", target_uid: str = "",
                       resource_version: str = "", namespace: str = "",
-                      operation: str = "") -> dict:
+                      operation: str = "", resource_type: str = "deployment") -> dict:
         """Persist an action proposal; never executes the data-plane mutation."""
         claims = self._claims(run_id=run_id, capability=CP_RUNS_MUTATE,
                               tenant_id=tenant_id, cluster_id=cluster_id,
@@ -207,7 +207,7 @@ class ControlPlaneClient:
             "status": status, "dry_run": dry_run, "params": dict(params or {}),
             "target_name": target_name, "target_uid": target_uid,
             "resource_version": resource_version, "namespace": namespace,
-            "operation": operation,
+            "operation": operation, "resource_type": resource_type,
         })
 
     def append_hypothesis(self, *, run_id: str, tenant_id: str, cluster_id: str,

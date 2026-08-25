@@ -35,6 +35,7 @@ type controlPlaneBodyAction struct {
 	ResourceVersion string `json:"resource_version"`
 	Namespace       string `json:"namespace"`
 	Operation       string `json:"operation"`
+	ResourceType    string `json:"resource_type"`
 }
 
 // controlPlaneBodyApproval 是 approval 持久化请求体。
@@ -78,17 +79,35 @@ func (h *Handler) internalControlPlaneActionAppend(w http.ResponseWriter, r *htt
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
-	if body.ActionID == "" || body.ActionHash == "" || body.IdempotencyKey == "" {
+	// action_hash and target UID/RV are derived by query-api preflight; accepting
+	// caller-supplied values here would create an approval/TOCTOU split-brain.
+	if body.ActionID == "" || body.IdempotencyKey == "" {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
+		return
+	}
+	if h.actionPreflight == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "action_preflight_unavailable"})
+		return
+	}
+	preflight, err := h.actionPreflight.Resolve(r.Context(), PreflightInput{
+		ClusterID: run.PrimaryClusterID, ResourceType: firstNonEmpty(body.ResourceType, "deployment"),
+		Namespace: body.Namespace, TargetName: body.TargetName, Operation: body.Operation,
+		Params: body.Params,
+	})
+	if err != nil {
+		respondJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{"error": "ACTION_PREFLIGHT_FAILED", "message": err.Error()})
 		return
 	}
 	created, err := h.actionDAO.Create(store.AIAction{
 		ActionID: body.ActionID, RunID: runID, TenantID: run.TenantID, ClusterID: run.PrimaryClusterID,
-		ActionType: body.ActionType, ActionHash: body.ActionHash, IdempotencyKey: body.IdempotencyKey,
-		ProposedRisk: body.ProposedRisk, AuthoritativeRisk: body.AuthoritativeRisk,
-		Status: firstNonEmpty(body.Status, "proposed"), DryRun: body.DryRun,
-		Params: body.Params, TargetName: body.TargetName, TargetUID: body.TargetUID,
-		ResourceVersion: body.ResourceVersion, Namespace: body.Namespace, Operation: body.Operation,
+		ActionType: firstNonEmpty(body.ActionType, "kubernetes"), ActionHash: preflight.ActionHash,
+		HashSchemaVersion: preflight.HashSchemaVersion, ActionVersion: preflight.ActionVersion,
+		ProposedBy: run.Principal, PolicyVersion: preflight.PolicyVersion,
+		PreflightStatus: preflight.PreflightStatus, TargetResourceType: preflight.ResourceType,
+		IdempotencyKey: body.IdempotencyKey, ProposedRisk: body.ProposedRisk,
+		AuthoritativeRisk: body.AuthoritativeRisk, Status: "proposed", DryRun: preflight.DryRun,
+		Params: preflight.Params, TargetName: preflight.TargetName, TargetUID: preflight.TargetUID,
+		ResourceVersion: preflight.ResourceVersion, Namespace: preflight.Namespace, Operation: preflight.Operation,
 	})
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "action_persist_failed"})
