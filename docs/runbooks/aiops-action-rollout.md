@@ -31,9 +31,18 @@ helm lint deploy/helm/aiops
 
 - `make test-workflow-all`：Go、4 个 workflow contract、Action Executor、Python `1167 passed/1 skipped`、前端 `4 tests passed` 和生产构建。
 - `./deploy/scripts/verify-aiops-workflow-gates.sh`：Helm lint/render、RBAC 和生产安全开关检查通过。
-- 本机验证保持 `EXECUTION_MODE=disabled`、`realMutation=false`；未连接真实 Kubernetes 集群，未执行任何真实 mutation。
+- 本机代码门禁阶段保持 `EXECUTION_MODE=disabled`、`realMutation=false`，没有修改生产 Helm 配置。
 
-上述证据只证明本地代码和 dry-run/禁写安全边界成立，不替代真实集群单目标 canary、人工变更审批和 canary 观察窗口。
+随后在 OrbStack 本地集群中完成了一次隔离真实 mutation 验证：
+
+- 新建 `action-test` namespace 和一次性 `aiops-local-canary` Deployment，使用当前 arm64 编译的 Executor 镜像及一次性 Ed25519 签名公钥。
+- Executor 临时以 `EXECUTION_MODE=approved`、`POD_SA_ACCESS=true` 启动；专用 ServiceAccount 仅有 `deployments get/patch` 权限，`delete` 权限为 `no`。
+- 签名 annotation patch 返回 HTTP 200 `success`，目标 UID 保持一致，annotation `aio-action-executor/local-validation=passed` 已真实写入。
+- 使用旧 resourceVersion 重放同一请求返回 HTTP 409 `TOCTOU drift`，没有发生第二次 mutation。
+- 签名 reconcile 返回 HTTP 200 `applied`，并明确返回“不重试”。
+- 验证证据采集后删除了整个一次性 `action-test` namespace，确认本地没有残留 approved Executor 或测试工作负载。
+
+这证明本机真实 Kubernetes patch、TOCTOU 防护、RBAC 限制和 reconcile 链路成立；仍不替代生产环境人工变更审批、生产目标 canary 和观察窗口。
 
 ## 阶段化发布
 
