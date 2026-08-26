@@ -681,6 +681,12 @@ func isCanonicalProtectedRoute(path string) bool {
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
 		return true
 	}
+	// Cluster detail reads share the registered /clusters/{id}/... router. The
+	// router and its handler retain the admin gate for mutations; this boundary
+	// only lets canonical authenticated reads reach the handler.
+	if strings.HasPrefix(path, "/api/v1/clusters/") {
+		return true
+	}
 	// LLM provider 子路径（/settings/llm/providers/{id} PUT/DELETE、/{id}/enable）：
 	// canonical-protected（JWT+canonical tenant+成员），admin 角色由 handler RequireRole 校验。
 	if strings.HasPrefix(path, "/api/v1/settings/llm/providers/") {
@@ -729,6 +735,8 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/users",
 		"/api/v1/catalog/services",
 		"/api/v1/devices",
+		"/api/v1/slo",
+		"/api/v1/dashboard/panels",
 		"/api/v1/infrastructure/pods",
 		"/api/v1/infrastructure/vms",
 		"/api/v1/grafana/dashboards",

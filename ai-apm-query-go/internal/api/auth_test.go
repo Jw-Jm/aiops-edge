@@ -78,6 +78,23 @@ func TestRequireRoleForWrite(t *testing.T) {
 	}
 }
 
+func TestCanonicalProtectedReadChildRoutes(t *testing.T) {
+	paths := []string{
+		"/api/v1/clusters/91771a6e-9c2d-11f1-8271-bea176fe9f9f/nodes",
+		"/api/v1/clusters/91771a6e-9c2d-11f1-8271-bea176fe9f9f/namespaces",
+		"/api/v1/clusters/91771a6e-9c2d-11f1-8271-bea176fe9f9f/events",
+		"/api/v1/slo",
+		"/api/v1/slo/slo-1",
+		"/api/v1/dashboard/panels",
+		"/api/v1/dashboard/panels/panel-1",
+	}
+	for _, path := range paths {
+		if !isCanonicalProtectedRoute(path) {
+			t.Errorf("%s must be canonical-protected so authenticated frontend reads reach its handler", path)
+		}
+	}
+}
+
 func TestRequireAnyRoleForWriteAcceptsApprover(t *testing.T) {
 	h := &Handler{}
 	called := false
@@ -191,6 +208,8 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		"/api/v1/ipmi/sensors",
 		"/api/v1/ipmi/events",
 		"/api/v1/node/health",
+		"/api/v1/slo",
+		"/api/v1/dashboard/panels",
 	}
 	for _, p := range allowed {
 		if !isCanonicalProtectedRoute(p) {
@@ -201,7 +220,6 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 	denied := []string{
 		"/api/v1/topology/sync-catalog",
 		"/api/v1/alerts/rules/create",
-		"/api/v1/dashboard/panels",
 		"/api/v1/capacity/instances/create",
 		"/api/v1/unknown",
 		// A0-04：多段子路径（非详情/events/cancel）不放行，避免 ProxyAI legacy 面被整体放开
