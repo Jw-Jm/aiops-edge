@@ -189,6 +189,34 @@ func (r *TopologyRepository) EdgeCount(ctx context.Context, scope TopologyScope)
 	return toInt64Val(rows[0], "cnt"), nil
 }
 
+// EdgeCountWithTraceFallback 与 GlobalTopology 使用同一套真实链路兜底：
+// service_topology 尚未同步时，从 parent_span_id 或 trace 内服务时序重建边，
+// 避免总览显示 0 而拓扑页已有真实调用边。
+func (r *TopologyRepository) EdgeCountWithTraceFallback(ctx context.Context, scope TopologyScope, minutes int) (int64, error) {
+	n, err := r.EdgeCount(ctx, scope)
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		return n, nil
+	}
+	for _, loader := range []func(context.Context, TopologyScope, int) ([]TopologyEdge, error){r.ParentSpanEdges, r.SequenceEdges} {
+		edges, ferr := loader(ctx, scope, minutes)
+		if ferr != nil || len(edges) == 0 {
+			continue
+		}
+		seen := make(map[string]struct{}, len(edges))
+		for _, edge := range edges {
+			if edge.Source == "" || edge.Target == "" || edge.Source == edge.Target {
+				continue
+			}
+			seen[edge.Source+"\x00"+edge.Target] = struct{}{}
+		}
+		return int64(len(seen)), nil
+	}
+	return 0, nil
+}
+
 // P95Latency 查询近 24h 全局 P95 延迟（ms）（DashboardStats latency_p95）。
 func (r *TopologyRepository) P95Latency(ctx context.Context, scope TopologyScope) (float64, error) {
 	sql := fmt.Sprintf(

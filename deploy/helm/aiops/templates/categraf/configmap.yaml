@@ -30,7 +30,7 @@ data:
     # 全局标签：注入集群维度，便于跨集群区分（对应 ingest.clusterId）
     [global.labels]
     cluster_id = "{{ .Values.categraf.clusterId }}"
-    tenant_id = "default"
+    tenant_id = "{{ .Values.categraf.tenantId }}"
 
     # 数据发送缓冲
     [writer_opt]

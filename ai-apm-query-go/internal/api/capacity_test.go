@@ -111,10 +111,10 @@ func TestCapacityPromQL(t *testing.T) {
 		metric, instance string
 		wantSubstr       string
 	}{
-		{"cpu", "", "node_cpu_seconds_total"},
-		{"memory", "node-1", "node-1"},
-		{"disk", "", "node_filesystem"},
-		{"network", "", "node_network"},
+		{"cpu", "", "cpu_usage_active"},
+		{"memory", "node-1", "mem_used_percent"},
+		{"disk", "", "disk_used_percent"},
+		{"network", "", "net_bytes"},
 	}
 	for _, c := range cases {
 		got := capacityPromQL(c.metric, c.instance)
@@ -132,21 +132,19 @@ func TestCapacityPromQL(t *testing.T) {
 	}
 }
 
-// CPU PromQL 必须带 mode="idle" filter（否则 rate 对所有 mode 求值，使用率错误）。
-func TestCapacityPromQLCPUIdleFilter(t *testing.T) {
+// Categraf 指标使用 gauge 口径，CPU 必须只取 cpu-total，节点过滤使用 agent_hostname。
+func TestCapacityPromQLUsesCategrafLabels(t *testing.T) {
 	got := capacityPromQL("cpu", "")
-	if !contains(got, `mode="idle"`) {
-		t.Fatalf("cpu PromQL must contain mode=\"idle\", got: %s", got)
+	if !contains(got, `cpu="cpu-total"`) {
+		t.Fatalf("cpu PromQL must contain cpu-total selector, got: %s", got)
 	}
-	// 带 instance 时 mode filter 与 instance 必须在同一对大括号内（逗号分隔），不能嵌套大括号
 	gotInst := capacityPromQL("cpu", "node-1")
-	if !contains(gotInst, `mode="idle"`) || !contains(gotInst, `node-1`) {
-		t.Fatalf("cpu PromQL with instance must keep mode=\"idle\" and instance, got: %s", gotInst)
+	if !contains(gotInst, `cpu="cpu-total"`) || !contains(gotInst, `agent_hostname="node-1"`) {
+		t.Fatalf("cpu PromQL with instance must use Categraf agent_hostname, got: %s", gotInst)
 	}
-	// 校验括号不嵌套：mode="idle" 与 instance="node-1" 用逗号分隔在同一对 {} 内
-	wantInst := `node_cpu_seconds_total{mode="idle", instance="node-1"}`
-	if gotInst != `100 - avg(rate(`+wantInst+`[5m])) * 100` {
-		t.Fatalf("cpu PromQL with instance must be %q (single brace pair), got: %s", wantInst, gotInst)
+	if !contains(capacityPromQL("memory", "node-1"), `agent_hostname="node-1"`) ||
+		!contains(capacityPromQL("disk", "node-1"), `agent_hostname="node-1"`) {
+		t.Fatalf("memory/disk PromQL must use Categraf agent_hostname")
 	}
 }
 

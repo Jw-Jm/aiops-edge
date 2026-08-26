@@ -69,7 +69,7 @@ type capacityETTResult struct {
 // capacityPromQLForCluster / LinearRegression / EstimateTimeToThreshold）。
 // 无数据点、查询失败或 horizon 内未触达阈值时返回 nil（无数据不误报）。
 func (h *Handler) evaluateInstanceETT(metric string, threshold float64, instance string) *capacityETTResult {
-	promQL := capacityPromQLForCluster(metric, instance, "")
+	promQL := capacityPromQLForScope(metric, instance, "", metricsTenantID())
 	if promQL == "" {
 		return nil
 	}
@@ -100,7 +100,7 @@ func (h *Handler) checkCapacityETTAlerts() {
 	alertHours := ettAlertHours()
 	limit := int64(alertHours) * 3600
 
-	instances, err := h.vmInstanceLabels(`up{job="node-exporter"}`)
+	instances, err := h.vmInstanceLabels(`cpu_usage_active{cpu="cpu-total"}`)
 	if err != nil || len(instances) == 0 {
 		// VM 不可用或无 node-exporter：无数据不误报（也不误恢复）
 		return

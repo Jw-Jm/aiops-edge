@@ -60,7 +60,7 @@ func (h *Handler) DashboardResources(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		promQL := capacityPromQLForCluster(m.metric, "", cid)
+		promQL := capacityPromQLForScope(m.metric, "", cid, extractTenantID(r))
 		if promQL == "" {
 			continue
 		}

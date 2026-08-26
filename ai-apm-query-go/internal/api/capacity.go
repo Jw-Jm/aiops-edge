@@ -75,29 +75,49 @@ func EstimateTimeToThreshold(slope, intercept float64, n, horizon int, threshold
 // capacityPromQLForCluster 生成容量 PromQL，支持按 cluster 标签过滤（空 cluster 不过滤，A-4）。
 // instance 来自用户输入，须转义 PromQL 标签值（\ 与 "），防 PromQL 注入；cluster 同理。
 func capacityPromQLForCluster(metric, instance, cluster string) string {
-	instPart := ""
-	instSel := ""
+	return capacityPromQLForScope(metric, instance, cluster, "")
+}
+
+// capacityPromQLForScope 使用 Categraf 实际上报的 gauge 指标，并把可信租户/集群
+// 作用域注入查询。Categraf v0.5.17 不提供 node-exporter 的 node_* 命名，真实
+// 指标为 cpu_usage_active、mem_used_percent、disk_used_percent、net_bytes_*。
+func capacityPromQLForScope(metric, instance, cluster, tenant string) string {
+	labels := []string{}
+	if metric == "cpu" {
+		labels = append(labels, `cpu="cpu-total"`)
+	}
 	if instance != "" {
 		esc := strings.ReplaceAll(strings.ReplaceAll(instance, `\`, `\\`), `"`, `\"`)
-		instPart = fmt.Sprintf(`, instance="%s"`, esc)
-		instSel = fmt.Sprintf(`{instance="%s"}`, esc)
+		labels = append(labels, fmt.Sprintf(`agent_hostname="%s"`, esc))
 	}
-	clPart := ""
 	// 主集群（default）数据不带 cluster 标签（node-exporter/RED 指标无 cluster 标签），
 	// 若追加 cluster="default" 过滤反而查不到；仅对纳管集群（有 cluster 标签）追加过滤。
 	if cluster != "" && cluster != "all" && cluster != "default" {
 		esc := strings.ReplaceAll(strings.ReplaceAll(cluster, `\`, `\\`), `"`, `\"`)
-		clPart = fmt.Sprintf(`, cluster="%s"`, esc)
+		labels = append(labels, fmt.Sprintf(`cluster_id="%s"`, esc))
+	}
+	if tenant != "" {
+		esc := strings.ReplaceAll(strings.ReplaceAll(tenant, `\`, `\\`), `"`, `\"`)
+		labels = append(labels, fmt.Sprintf(`tenant_id="%s"`, esc))
+	}
+	selector := "{}"
+	if len(labels) > 0 {
+		selector = "{" + strings.Join(labels, ", ") + "}"
 	}
 	switch metric {
 	case "cpu":
-		return fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{mode="idle"%s%s}[5m])) * 100`, instPart, clPart)
+		return "avg(cpu_usage_active" + selector + ")"
 	case "memory":
-		return fmt.Sprintf(`avg(100 * (1 - node_memory_MemAvailable_bytes%s%s / node_memory_MemTotal_bytes%s%s))`, instSel, clPart, instSel, clPart)
+		return "avg(mem_used_percent" + selector + ")"
 	case "disk":
-		return fmt.Sprintf(`avg(1 - node_filesystem_avail_bytes%s%s / node_filesystem_size_bytes%s%s) * 100`, instSel, clPart, instSel, clPart)
+		if selector == "{}" {
+			selector = `{path="/"}`
+		} else {
+			selector = "{" + strings.TrimSuffix(strings.TrimPrefix(selector, "{"), "}") + `, path="/"}`
+		}
+		return "max(disk_used_percent" + selector + ")"
 	case "network":
-		return fmt.Sprintf(`sum(rate(node_network_receive_bytes_total%s%s[5m]) + rate(node_network_transmit_bytes_total%s%s[5m]))`, instSel, clPart, instSel, clPart)
+		return "sum(rate(net_bytes_recv" + selector + "[5m]) + rate(net_bytes_sent" + selector + "[5m]))"
 	}
 	return ""
 }
@@ -153,7 +173,7 @@ func (h *Handler) CapacityForecast(w http.ResponseWriter, r *http.Request) {
 
 	end := time.Now().Unix()
 	start := end - int64(hours*3600)
-	series, err := h.vmRangeQuery(capacityPromQLForCluster(metric, instance, cluster), start, end, step)
+	series, err := h.vmRangeQuery(capacityPromQLForScope(metric, instance, cluster, extractTenantID(r)), start, end, step)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
@@ -289,7 +309,11 @@ func (h *Handler) vmInstanceLabels(promQL string) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	for _, item := range r.Data.Result {
-		if inst := item.Metric["instance"]; inst != "" && !seen[inst] {
+		inst := item.Metric["instance"]
+		if inst == "" {
+			inst = item.Metric["agent_hostname"]
+		}
+		if inst != "" && !seen[inst] {
 			seen[inst] = true
 		}
 	}
@@ -306,7 +330,7 @@ func (h *Handler) vmInstanceLabels(promQL string) ([]string, error) {
 // P2-1 修复：若 VM 无 node-exporter 实例（metrics 未接入），回退到从 kubectl 读取真实节点列表，
 // 确保容量页节点选择器始终有可选项。
 func (h *Handler) CapacityInstances(w http.ResponseWriter, r *http.Request) {
-	labels, err := h.vmInstanceLabels(`up{job="node-exporter"}`)
+	labels, err := h.vmInstanceLabels(`cpu_usage_active{cpu="cpu-total"}`)
 	// VM 查询失败或无实例时回退到 K8s 节点（真实可观测目标）
 	if err != nil || len(labels) == 0 {
 		fallback := []string{}

@@ -204,6 +204,8 @@ ipmiExporter:
 categraf:
   enabled: true
   image: "flashcatcloud/categraf:v0.5.17"
+  # 指标租户必须与 query-api 的 canonical tenant 保持一致，禁止回落到 default。
+  tenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
   # 所属集群 ID：与 ingest.clusterId 对齐（多集群纳管时每集群一个配置/标签维度）
   clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
   # 全局采集间隔（秒）

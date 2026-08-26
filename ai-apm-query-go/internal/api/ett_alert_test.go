@@ -51,7 +51,7 @@ func ettSeries(base, slope float64, n int) [][2]interface{} {
 }
 
 // newETTVMServer 构造 mock VM：
-//   - /api/v1/query → node-exporter 实例 ["node-1"]
+//   - /api/v1/query → Categraf agent_hostname ["node-1"]
 //   - /api/v1/query_range → 按 PromQL 内容区分：
 //     cpu（由 *cpuSeries 动态控制，便于测试触发→恢复）;
 //     memory（缓慢上升 10+0.06i，ETT≈73.3h >72h → 不触发）；
@@ -66,7 +66,7 @@ func newETTVMServer(t *testing.T, cpuSeries *[][2]interface{}) *httptest.Server 
 				"data": map[string]interface{}{
 					"resultType": "vector",
 					"result": []map[string]interface{}{
-						{"metric": map[string]interface{}{"instance": "node-1"}, "value": []interface{}{1710000000, "1"}},
+						{"metric": map[string]interface{}{"agent_hostname": "node-1"}, "value": []interface{}{1710000000, "1"}},
 					},
 				},
 			})
@@ -74,9 +74,9 @@ func newETTVMServer(t *testing.T, cpuSeries *[][2]interface{}) *httptest.Server 
 			q := r.URL.Query().Get("query")
 			var vals [][2]interface{}
 			switch {
-			case strings.Contains(q, "node_cpu_seconds_total"):
+			case strings.Contains(q, "cpu_usage_active"):
 				vals = *cpuSeries
-			case strings.Contains(q, "node_memory_MemAvailable_bytes"):
+			case strings.Contains(q, "mem_used_percent"):
 				vals = ettSeries(10, 0.06, 288) // ETT≈73.3h > 72h
 			default:
 				vals = ettSeries(30, 0, 288) // 平缓无增长 → 不触发

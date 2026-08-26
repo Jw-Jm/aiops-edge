@@ -40,7 +40,7 @@ const topoDistinctSvcs = "" +
 func TestTopologyRepoServiceREDStats(t *testing.T) {
 	r := mockTopologyCH(t, map[string]string{"GROUP BY service_name": topoSvcStats})
 	stats, err := r.ServiceREDStats(context.Background(), TopologyScope{
-		TenantID: "3f3c3b3a-0000-4000-8000-000000000001",
+		TenantID:  "3f3c3b3a-0000-4000-8000-000000000001",
 		ClusterID: "3f3c3b3a-0000-4000-8000-000000000002",
 	})
 	if err != nil {
@@ -82,6 +82,34 @@ func TestTopologyRepoEdgeCount(t *testing.T) {
 	}
 	if n != 7 {
 		t.Fatalf("EdgeCount = %d, want 7", n)
+	}
+}
+
+func TestTopologyRepoEdgeCountWithTraceFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("query")
+		switch {
+		case strings.Contains(q, "FROM observability.service_topology") && strings.Contains(q, "SELECT count()"):
+			_, _ = w.Write([]byte(`{"cnt":0}` + "\n"))
+		case strings.Contains(q, "JOIN observability.trace_spans"):
+			// 没有 parent_span_id 可用时，继续走 trace 内时序兜底。
+			_, _ = w.Write([]byte(""))
+		case strings.Contains(q, "lagInFrame"):
+			_, _ = w.Write([]byte(`{"source_service":"frontend","target_service":"backend","calls":4,"errs":0,"avg_ns":1000000}` + "\n" +
+				`{"source_service":"backend","target_service":"db","calls":2,"errs":1,"avg_ns":2000000}` + "\n"))
+		default:
+			_, _ = w.Write([]byte(""))
+		}
+	}))
+	defer srv.Close()
+	r := NewTopologyRepository(NewClickHouseRepo(srv.URL, nil))
+	n, err := r.EdgeCountWithTraceFallback(context.Background(), TopologyScope{TenantID: "t1"}, 60)
+	if err != nil {
+		t.Fatalf("EdgeCountWithTraceFallback: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("EdgeCountWithTraceFallback = %d, want 2", n)
 	}
 }
 

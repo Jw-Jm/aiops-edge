@@ -233,6 +233,14 @@ func extractTenantID(r *http.Request) string {
 	return "default"
 }
 
+// metricsTenantID 是无 HTTP 请求上下文的后台容量告警循环使用的系统租户。
+func metricsTenantID() string {
+	if tid := strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_TENANT_ID")); tid != "" {
+		return tid
+	}
+	return "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
+}
+
 // extractClusterClause 返回按 cluster_id 过滤的 SQL 片段。
 // 语义：cluster_id 为空或 "all" → 返回空串（查询所有集群，不追加过滤）；
 // 其他值 → 返回 " AND cluster_id='xxx'"（仅查询该集群）。
@@ -1042,7 +1050,7 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 
 	// 拓扑边数（与 GlobalTopology 同口径：service_topology 近 1440 分钟、
 	// source!=target 去重后的边数，自环不计入）。
-	edgeCount, eerr := h.topoRepo.EdgeCount(ctx, scope)
+	edgeCount, eerr := h.topoRepo.EdgeCountWithTraceFallback(ctx, scope, 1440)
 	if eerr != nil {
 		edgeCount = 0
 	}
