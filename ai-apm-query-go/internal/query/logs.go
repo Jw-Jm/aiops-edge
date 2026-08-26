@@ -169,7 +169,7 @@ func (r *LogRepository) searchLegacy(ctx context.Context, q LogQuery) ([]LogReco
 		conds = append(conds, "service_name IN ("+strings.Join(quoted, ",")+")")
 	}
 	if q.ExcludeHealth {
-		conds = append(conds, "(body NOT LIKE '%/health%' AND body NOT LIKE '%/ready%' AND body NOT LIKE '%/v1/query%' AND body NOT LIKE '%metrics%')")
+		conds = append(conds, "(body NOT LIKE '%/health%' AND body NOT LIKE '%/ready%' AND body NOT LIKE '%/livez%' AND body NOT LIKE '%/v1/query%' AND body NOT LIKE '%metrics%')")
 	}
 	if q.Minutes <= 0 {
 		q.Minutes = 1440
@@ -250,7 +250,7 @@ func vlogsQuery(q LogQuery) string {
 		}
 	}
 	if q.ExcludeHealth {
-		for _, term := range []string{"health", "ready", "v1/query", "metrics"} {
+		for _, term := range []string{"health", "ready", "livez", "v1/query", "metrics"} {
 			parts = append(parts, fmt.Sprintf(`NOT *%s*`, term))
 		}
 	}

@@ -121,6 +121,7 @@ func TestVLogsQueryHonorsLevelAndHealthFilter(t *testing.T) {
 		`severity:equals_common_case("error")`,
 		`NOT *health*`,
 		`NOT *ready*`,
+		`NOT *livez*`,
 		`NOT *v1/query*`,
 		`NOT *metrics*`,
 	} {
