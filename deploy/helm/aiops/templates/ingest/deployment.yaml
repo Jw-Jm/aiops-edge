@@ -106,7 +106,8 @@ spec:
   selector:
     app: ingest
   ports:
-    - port: 8080
+    - name: http
+      port: 8080
       targetPort: 8080
     {{- if .Values.ingest.otlpGrpcEnabled }}
     - name: otlp-grpc
