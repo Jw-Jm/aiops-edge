@@ -421,9 +421,10 @@ func (result ToolResult) Validate() error {
 // ActionExecutionContext 是 query-api → ai-action-executor 的执行上下文（Stage D，报告 §29）。
 //
 // 安全边界：Action Execution Result 权威持久化在 query-api/MySQL（ai_actions），
-// ai-action-executor 不是第二套 Action SoT。query-api 用自身 Ed25519 私钥
-// （QUERY_TO_ORCHESTRATOR_SIGNING_KEY）按 executor 的签名机制（Ed25519 over body
-// SHA256，X-Executor-Signature header）签发，executor 持对应公钥（EXECUTOR_VERIFY_KEYS）验签。
+// ai-action-executor 不是第二套 Action SoT。query-api 用动作执行专用 Ed25519 私钥
+// （AI_ACTION_EXECUTOR_SIGNING_KEY）按 executor 的签名机制（Ed25519 over body
+// SHA256，X-Executor-Signature header）签发，executor 持对应公钥
+// （AI_ACTION_EXECUTOR_VERIFY_KEYS）验签。
 //
 // 字段与 ai-action-executor 的 ActionExecutionContext JSON 严格对应（action_id /
 // action_hash / approval_id / target_uid / target_name / resource_version / cluster_id /

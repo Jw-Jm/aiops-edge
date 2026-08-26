@@ -43,9 +43,10 @@ spec:
             # F5 已废除：realMutation=true 才启用真实 K8s mutation（in-cluster SA + 限定 RBAC）。
             - name: POD_SA_ACCESS
               value: {{ .Values.aiActionExecutor.realMutation | default false | quote }}
-            # D-Gate（readiness）：approved 模式必须验签已签名执行上下文。
-            # realMutation=true 时注入 query-api 为 executor 独立签发的公钥。
-{{- if .Values.aiActionExecutor.realMutation }}
+            # D-Gate：所有已启用的执行器都验签 query-api 签发的执行上下文。
+            # 即使 EXECUTION_MODE=disabled，也必须先通过签名校验再返回拒绝，
+            # 这样受控测试和生产禁写路径都不会退化为仅依赖可选 token。
+{{- if .Values.aiActionExecutor.enabled }}
             - name: EXECUTOR_VERIFY_KEYS
               valueFrom:
                 secretKeyRef:

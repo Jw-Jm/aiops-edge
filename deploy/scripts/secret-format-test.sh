@@ -236,11 +236,19 @@ for key in MYSQL_APP_PASSWORD MYSQL_MIGRATOR_PASSWORD; do
   fi
 done
 
+render_ok "${tmp_dir}/executor-enabled.yaml" \
+  --set aiActionExecutor.enabled=true \
+  --set aiActionExecutor.realMutation=false
+if ! rg -n --fixed-strings 'name: EXECUTOR_VERIFY_KEYS' "${tmp_dir}/executor-enabled.yaml" >/dev/null; then
+  echo "secret format contract failed: enabled executor must receive EXECUTOR_VERIFY_KEYS even when realMutation=false" >&2
+  exit 1
+fi
+
 expect_render_fail missing_mysql_app --set secrets.mysqlAppPassword=
 expect_render_fail placeholder_mysql_migrator --set secrets.mysqlMigratorPassword=CHANGE_ME
 expect_render_fail missing_query_signing --set aiOrchestrator.enabled=true --set secrets.queryToOrchestratorVerifyKeys=
 expect_render_fail missing_orchestrator_verify --set queryApi.enabled=true --set secrets.orchestratorToQueryVerifyKeys=
 expect_render_fail missing_llm_provider_keys --set llmEgressProxy.enabled=true --set secrets.llmProviderKeys=
-expect_render_fail missing_executor_verify_keys --set aiActionExecutor.enabled=true --set aiActionExecutor.realMutation=true --set secrets.aiActionExecutorVerifyKeys=
+expect_render_fail missing_executor_verify_keys --set aiActionExecutor.enabled=true --set secrets.aiActionExecutorVerifyKeys=
 
 echo "secret format contract tests passed"

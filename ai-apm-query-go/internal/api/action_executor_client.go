@@ -25,9 +25,9 @@ import (
 //
 // 安全模型：
 //   - executor 拒绝未签名的执行上下文（X-Executor-Signature = Ed25519 over body
-//     SHA256，公钥 base64）。query-api 用自身 Ed25519 私钥
-//     （QUERY_TO_ORCHESTRATOR_SIGNING_KEY）签发，executor 持对应公钥
-//     （EXECUTOR_VERIFY_KEYS）验签。复用既有密钥对，不引入新密钥。
+//     SHA256，公钥 base64）。query-api 用动作执行专用 Ed25519 私钥
+//     （AI_ACTION_EXECUTOR_SIGNING_KEY）签发，executor 持对应公钥
+//     （AI_ACTION_EXECUTOR_VERIFY_KEYS）验签。
 //   - query-api 只在 action 已 approved（ai_approval_decisions 存在 approved 记录）
 //     时签发并转发。
 //   - 生产 EXECUTION_MODE=disabled 时 executor 返回 403 → query-api 把
@@ -50,7 +50,7 @@ type ActionExecutionClient struct {
 }
 
 // ConfigureActionExecutionClient 注入 executor 客户端（env: AI_ACTION_EXECUTOR_URL +
-// QUERY_TO_ORCHESTRATOR_SIGNING_KEY）。未配置时执行端点返回 EXECUTOR_UNAVAILABLE
+// AI_ACTION_EXECUTOR_SIGNING_KEY）。未配置时执行端点返回 EXECUTOR_UNAVAILABLE
 // fail-closed（不产生未签名/不可达的静默执行）。
 func ConfigureActionExecutionClient(baseURL, encodedPrivateKey, token string) error {
 	if strings.TrimSpace(baseURL) == "" {
