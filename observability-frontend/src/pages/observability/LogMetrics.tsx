@@ -13,7 +13,10 @@ const LEVEL_TONE: Record<string, string> = { error: 'var(--danger)', warning: 'v
 const LogMetrics: React.FC = () => {
   const currentClusterId = useUIStore((s) => s.currentClusterId)
   const [mode, setMode] = useState<'logs' | 'aggregate'>('logs')
-  const [source, setSource] = useState<'clickhouse' | 'victorialogs'>('clickhouse')
+  // Raw Logs SoT is VictoriaLogs in the production reader mode. ClickHouse
+  // remains the derived-analytics store and is intentionally not exposed as
+  // an empty raw-log option when its log_records table is not configured.
+  const source = 'victorialogs' as const
   const [level, setLevel] = useState<string>('all')
   const [hours, setHours] = useState<number>(24)
   // 修复(P2-3)：默认过滤健康检查噪音日志（/health、/ready、/v1/query 等探针请求），
@@ -94,11 +97,7 @@ const LogMetrics: React.FC = () => {
         <Space wrap style={{ width: '100%' }}>
           <Segmented value={mode} onChange={(v) => { const m = v as any; setMode(m); setRows([]); setAggs([]); search(m) }}
             options={[{ label: '原始日志', value: 'logs' }, { label: '异常模式', value: 'aggregate' }]} />
-          <Tooltip title="ClickHouse 为平台默认日志存储；VictoriaLogs 可选">
-            {/* A7: 切换数据源自动重新查询 */}
-            <Select value={source} onChange={(v) => { const ns = v as any; setSource(ns); search(undefined, { source: ns }) }} style={{ width: 140 }}
-              options={[{ value: 'clickhouse', label: '数据源 · ClickHouse' }, { value: 'victorialogs', label: '数据源 · VictoriaLogs' }]} />
-          </Tooltip>
+          <Tag color="purple" title="原始日志真实来源">数据源 · VictoriaLogs</Tag>
           {/* A7: 级别/时间范围/探针过滤变更自动重新查询 */}
           <Select value={level} onChange={(v) => { const nl = v as string; setLevel(nl); search(undefined, { level: nl }) }} style={{ width: 100 }}
             options={[{ value: 'all', label: '全部级别' }, { value: 'error', label: '错误' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }, { value: 'debug', label: '调试' }]} />
