@@ -51,6 +51,29 @@ func TestClickHouseSpanSinkAddWritesHTTP(t *testing.T) {
 	}
 }
 
+func TestClickHouseSpanSinkProbeMarksHealthyBeforeFirstSpan(t *testing.T) {
+	gotQuery := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sink := NewClickHouseSpanSink(srv.URL, 5*time.Second)
+	if sink.Healthy() {
+		t.Fatal("sink should not be healthy before the startup probe")
+	}
+	if err := sink.Probe(); err != nil {
+		t.Fatalf("Probe() error = %v", err)
+	}
+	if !sink.Healthy() {
+		t.Fatal("sink should be healthy after a successful startup probe")
+	}
+	if gotQuery != "SELECT 1" {
+		t.Fatalf("probe query = %q, want SELECT 1", gotQuery)
+	}
+}
+
 func TestClickHouseSpanSinkFailClosed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(503)

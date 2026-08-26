@@ -70,7 +70,11 @@ func main() {
 	var spanSink pipeline.SpanSink
 	if chURL := os.Getenv("CLICKHOUSE_HTTP_URL"); chURL != "" {
 		// C-01（报告 §16 / 27.18）：trace_spans 为平台 Trace SoT；使用带鉴权的 sink（生产 CH 需要）。
-		spanSink = tracesink.NewClickHouseSpanSinkAuth(chURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), 10*time.Second)
+		chs := tracesink.NewClickHouseSpanSinkAuth(chURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), 10*time.Second)
+		if err := chs.Probe(); err != nil {
+			log.Fatalf("ClickHouseSpanSink probe failed: %v", err)
+		}
+		spanSink = chs
 		log.Printf("ClickHouseSpanSink enabled (trace SoT): %s", chURL)
 	} else {
 		// 27.18：candidate/production profile 不允许 SpanSink=nil（fail-closed 拒绝启动）。

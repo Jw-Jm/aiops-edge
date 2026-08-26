@@ -30,13 +30,13 @@ const insertTemplate = `INSERT INTO observability.trace_spans FORMAT JSONEachRow
 
 // ClickHouseSpanSink implements pipeline.SpanSink via ClickHouse HTTP.
 type ClickHouseSpanSink struct {
-	httpURL string // e.g. http://clickhouse.observability.svc:8123
-	user    string // CH HTTP basic auth user（默认空=无鉴权）
+	httpURL  string // e.g. http://clickhouse.observability.svc:8123
+	user     string // CH HTTP basic auth user（默认空=无鉴权）
 	password string // CH HTTP basic auth password
-	client  *http.Client
+	client   *http.Client
 
-	mu     sync.Mutex
-	health bool
+	mu      sync.Mutex
+	health  bool
 	lastErr error
 }
 
@@ -54,6 +54,48 @@ func NewClickHouseSpanSinkAuth(httpURL, user, password string, timeout time.Dura
 		httpURL: httpURL, user: user, password: password,
 		client: &http.Client{Timeout: timeout},
 	}
+}
+
+// Probe verifies that the configured ClickHouse HTTP endpoint is reachable
+// before ingest starts accepting traffic. Healthy must not remain false until
+// the first Trace arrives: the Kubernetes liveness probe would otherwise
+// restart an otherwise healthy process before it can receive that first span.
+// A failed probe remains fail-closed and is surfaced through /health.
+func (s *ClickHouseSpanSink) Probe() error {
+	req, err := http.NewRequest(http.MethodGet, s.httpURL+"/?query="+urlQueryEncode("SELECT 1"), nil)
+	if err != nil {
+		s.mu.Lock()
+		s.lastErr = err
+		s.health = false
+		s.mu.Unlock()
+		return err
+	}
+	if s.user != "" {
+		req.SetBasicAuth(s.user, s.password)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		probeErr := fmt.Errorf("tracesink: ch probe: %w", err)
+		s.mu.Lock()
+		s.lastErr = probeErr
+		s.health = false
+		s.mu.Unlock()
+		return probeErr
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		err = fmt.Errorf("tracesink: ch probe status %d", resp.StatusCode)
+		s.mu.Lock()
+		s.lastErr = err
+		s.health = false
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Lock()
+	s.lastErr = nil
+	s.health = true
+	s.mu.Unlock()
+	return nil
 }
 
 // Add implements pipeline.SpanSink.Add（接口签名无返回；失败经内部记录 + readiness fail-closed）。
