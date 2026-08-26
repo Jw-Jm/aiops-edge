@@ -16,13 +16,19 @@ grep -q 'imageTag: "v1.1.1"' "$VALUES"
 
 version_file="$(mktemp)"
 trap 'rm -f "$version_file"' EXIT
-ROOT="$ROOT" AIOPS_VERSION_FILE="$version_file" IMAGE_TAG="" bash -c '
+ROOT="$ROOT" AIOPS_VERSION_FILE="$version_file" IMAGE_TAG="" RELEASE_TAG="" bash -c '
+  set -euo pipefail
   source "$1/deploy/scripts/version.sh"
+  expected="git-$(git -C "$1" rev-parse --short=12 HEAD)"
   first="$(resolve_image_tag)"
-  case "$first" in v1.1.1-dirty.*) ;; *) exit 1 ;; esac
+  [[ "$first" == "$expected" ]]
   record_deployed_version "$first"
-  second="$(resolve_image_tag)"
-  case "$second" in v1.1.2-dirty.*) ;; *) exit 1 ;; esac
+  [[ ! -e "$AIOPS_VERSION_FILE" ]]
+  IMAGE_TAG="git-explicit"
+  RELEASE_TAG="v9.9.9"
+  [[ "$(resolve_image_tag)" == "git-explicit" ]]
+  IMAGE_TAG=""
+  [[ "$(resolve_image_tag)" == "v9.9.9" ]]
 ' _ "$ROOT"
 
 echo "default deployment flow checks passed"
