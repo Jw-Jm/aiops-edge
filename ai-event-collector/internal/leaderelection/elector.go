@@ -98,6 +98,7 @@ func (e *Elector) tryAcquire(ctx context.Context) bool {
 		}
 	} else {
 		if !e.tryUpdate(ctx) {
+			log.Printf("leader election: reclaim expired lease failed (name=%s holder=%s)", e.opts.Name, info.Holder)
 			return false
 		}
 	}
@@ -112,6 +113,7 @@ func (e *Elector) tryAcquire(ctx context.Context) bool {
 // tryUpdate 更新 lease 的 holder 为自己（Create 已存在时用 Update）。
 func (e *Elector) tryUpdate(ctx context.Context) bool {
 	if err := e.client.Update(ctx, e.opts.Namespace, e.opts.Name, e.opts.Identity); err != nil {
+		log.Printf("leader election: update lease failed (name=%s identity=%s): %v", e.opts.Name, e.opts.Identity, err)
 		return false
 	}
 	return true
