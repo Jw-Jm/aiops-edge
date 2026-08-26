@@ -127,6 +127,7 @@ func TestExportPreservesTraceSpanAndParentIDs(t *testing.T) {
 func TestExportReturnsUnavailableWhenSpanSinkFails(t *testing.T) {
 	sink := &captureDurableSink{err: errors.New("platform sink unavailable")}
 	p := pipeline.New(sink, nil)
+	p.SetClusterID("cluster-1")
 	defer p.Close()
 	receiver := NewReceiver(p, "tenant-1")
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-tenant-id", "tenant-1"))
@@ -168,7 +169,7 @@ func testRequest() *coltrace.ExportTraceServiceRequest {
 				SpanId:            []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08},
 				ParentSpanId:      []byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18},
 				Name:              "GET /health",
-				Kind:              tracev1.SpanKind_SPAN_KIND_SERVER,
+				Kind:              tracev1.Span_SPAN_KIND_SERVER,
 				StartTimeUnixNano: 1_725_000_000_000_000_000,
 				EndTimeUnixNano:   1_725_000_000_250_000_000,
 				Attributes: []*commonv1.KeyValue{

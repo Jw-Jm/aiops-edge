@@ -19,6 +19,14 @@ type SpanSink interface {
 	Add(*model.Span)
 }
 
+// DurableSpanSink optionally exposes an atomic/error-returning batch path.
+// OTLP/gRPC receivers use this interface when present so they do not ACK a
+// batch before the platform Span source of truth has accepted it. The legacy
+// single-span interface remains for compatibility with lightweight sinks.
+type DurableSpanSink interface {
+	AddBatch([]*model.Span) error
+}
+
 // EdgeSink 落盘一条拓扑边。
 type EdgeSink interface {
 	AddEdge(*model.TopologyEdge)

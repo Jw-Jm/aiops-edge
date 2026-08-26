@@ -14,19 +14,23 @@ const maxServiceREDEntries = 100000
 // Metrics 记录 ingest 自身的运行时指标，暴露为 Prometheus 文本格式。
 // 生产上可被 vmalert/prometheus 抓取用于采集健康度告警。
 type Metrics struct {
-	spansReceived  atomic.Int64 // 累计接收 span
-	spansWritten   atomic.Int64 // 累计成功写入 ClickHouse 的 span
-	spansFailed    atomic.Int64 // 累计写入失败（已进重试队列）
-	spansDropped   atomic.Int64 // 累计因背压丢弃的 span（缓冲满，H3）
-	logsReceived   atomic.Int64
-	logsDropped    atomic.Int64 // 累计因背压丢弃的日志（缓冲满，H3）
-	metricsWritten atomic.Int64
-	metricsDropped atomic.Int64 // 累计因背压丢弃的指标/拓扑边批次（缓冲满，H3）
-	edgesWritten   atomic.Int64
-	reqTotal       atomic.Int64 // 接收请求总数
-	reqRejected    atomic.Int64 // 因鉴权/限流拒绝的请求
-	lastWriteOk    atomic.Int64 // 最近一次成功写入时间戳(秒)
-	lastWriteFail  atomic.Int64
+	spansReceived    atomic.Int64 // 累计接收 span
+	spansWritten     atomic.Int64 // 累计成功写入 ClickHouse 的 span
+	spansFailed      atomic.Int64 // 累计写入失败（已进重试队列）
+	spansDropped     atomic.Int64 // 累计因背压丢弃的 span（缓冲满，H3）
+	otlpGRPCReceived atomic.Int64
+	otlpGRPCAccepted atomic.Int64
+	otlpGRPCRejected atomic.Int64
+	otlpGRPCFailed   atomic.Int64
+	logsReceived     atomic.Int64
+	logsDropped      atomic.Int64 // 累计因背压丢弃的日志（缓冲满，H3）
+	metricsWritten   atomic.Int64
+	metricsDropped   atomic.Int64 // 累计因背压丢弃的指标/拓扑边批次（缓冲满，H3）
+	edgesWritten     atomic.Int64
+	reqTotal         atomic.Int64 // 接收请求总数
+	reqRejected      atomic.Int64 // 因鉴权/限流拒绝的请求
+	lastWriteOk      atomic.Int64 // 最近一次成功写入时间戳(秒)
+	lastWriteFail    atomic.Int64
 
 	// 服务 RED 标签化计数器（service → 累计值），供 vmagent 抓取进 VictoriaMetrics。
 	redMu      sync.Mutex
@@ -98,15 +102,19 @@ func (m *Metrics) AddSpansWritten(n int64) {
 	m.spansWritten.Add(n)
 	m.lastWriteOk.Store(time.Now().Unix())
 }
-func (m *Metrics) IncSpansFailed()           { m.spansFailed.Add(1); m.lastWriteFail.Store(time.Now().Unix()) }
-func (m *Metrics) AddSpansDropped(n int64)   { m.spansDropped.Add(n) }
-func (m *Metrics) IncLogsReceived()          { m.logsReceived.Add(1) }
-func (m *Metrics) AddLogsDropped(n int64)    { m.logsDropped.Add(n) }
-func (m *Metrics) AddMetricsWritten(n int64) { m.metricsWritten.Add(n) }
-func (m *Metrics) AddMetricsDropped(n int64) { m.metricsDropped.Add(n) }
-func (m *Metrics) AddEdgesWritten(n int64)   { m.edgesWritten.Add(n) }
-func (m *Metrics) IncReqTotal()              { m.reqTotal.Add(1) }
-func (m *Metrics) IncReqRejected()           { m.reqRejected.Add(1) }
+func (m *Metrics) IncSpansFailed()             { m.spansFailed.Add(1); m.lastWriteFail.Store(time.Now().Unix()) }
+func (m *Metrics) AddSpansDropped(n int64)     { m.spansDropped.Add(n) }
+func (m *Metrics) IncOTLPGRPCReceived()        { m.otlpGRPCReceived.Add(1) }
+func (m *Metrics) AddOTLPGRPCAccepted(n int64) { m.otlpGRPCAccepted.Add(n) }
+func (m *Metrics) IncOTLPGRPCRejected()        { m.otlpGRPCRejected.Add(1) }
+func (m *Metrics) IncOTLPGRPCFailed()          { m.otlpGRPCFailed.Add(1) }
+func (m *Metrics) IncLogsReceived()            { m.logsReceived.Add(1) }
+func (m *Metrics) AddLogsDropped(n int64)      { m.logsDropped.Add(n) }
+func (m *Metrics) AddMetricsWritten(n int64)   { m.metricsWritten.Add(n) }
+func (m *Metrics) AddMetricsDropped(n int64)   { m.metricsDropped.Add(n) }
+func (m *Metrics) AddEdgesWritten(n int64)     { m.edgesWritten.Add(n) }
+func (m *Metrics) IncReqTotal()                { m.reqTotal.Add(1) }
+func (m *Metrics) IncReqRejected()             { m.reqRejected.Add(1) }
 
 // Snapshot 生成 Prometheus 文本输出。
 func (m *Metrics) Snapshot() string {
@@ -122,6 +130,18 @@ ai_ingest_spans_failed_total %d
 # HELP ai_ingest_spans_dropped_total Total spans dropped due to backpressure (buffer full).
 # TYPE ai_ingest_spans_dropped_total counter
 ai_ingest_spans_dropped_total %d
+# HELP ai_ingest_otlp_grpc_batches_received_total OTLP gRPC trace batches received.
+# TYPE ai_ingest_otlp_grpc_batches_received_total counter
+ai_ingest_otlp_grpc_batches_received_total %d
+# HELP ai_ingest_otlp_grpc_spans_accepted_total OTLP gRPC spans durably accepted.
+# TYPE ai_ingest_otlp_grpc_spans_accepted_total counter
+ai_ingest_otlp_grpc_spans_accepted_total %d
+# HELP ai_ingest_otlp_grpc_batches_rejected_total OTLP gRPC batches rejected by validation or tenant auth.
+# TYPE ai_ingest_otlp_grpc_batches_rejected_total counter
+ai_ingest_otlp_grpc_batches_rejected_total %d
+# HELP ai_ingest_otlp_grpc_batches_failed_total OTLP gRPC batches rejected because the platform sink failed.
+# TYPE ai_ingest_otlp_grpc_batches_failed_total counter
+ai_ingest_otlp_grpc_batches_failed_total %d
 # HELP ai_ingest_logs_received_total Total logs received.
 # TYPE ai_ingest_logs_received_total counter
 ai_ingest_logs_received_total %d
@@ -151,6 +171,7 @@ ai_ingest_last_write_ok_time %d
 ai_ingest_last_write_fail_time %d
 `,
 		m.spansReceived.Load(), m.spansWritten.Load(), m.spansFailed.Load(), m.spansDropped.Load(),
+		m.otlpGRPCReceived.Load(), m.otlpGRPCAccepted.Load(), m.otlpGRPCRejected.Load(), m.otlpGRPCFailed.Load(),
 		m.logsReceived.Load(), m.logsDropped.Load(),
 		m.metricsWritten.Load(), m.metricsDropped.Load(), m.edgesWritten.Load(),
 		m.reqTotal.Load(), m.reqRejected.Load(),

@@ -97,6 +97,13 @@ func (p *Pipeline) SetClusterID(id string) {
 	p.clusterID = id
 }
 
+// ClusterID returns the canonical cluster identity assigned to this ingest
+// instance. It is used by protocol adapters that convert external telemetry
+// into the shared internal model.
+func (p *Pipeline) ClusterID() string {
+	return p.clusterID
+}
+
 // flushLoop periodically flushes aggregated metrics and edges to the MetricsWriter
 func (p *Pipeline) flushLoop() {
 	ticker := time.NewTicker(10 * time.Second)
@@ -197,14 +204,7 @@ func (p *Pipeline) ProcessOTLPTraces(tenantID string, body []byte) (int, error) 
 		return 0, fmt.Errorf("json unmarshal: %w", err)
 	}
 
-	// First pass: collect all span infos for this request (needed for parent lookup)
-	// We need trace-level context: spanID -> serviceName mapping
-	traceCtx := &traceContext{
-		spanIDToService: make(map[string]string),
-		spanIDToCaller:  make(map[string]string),
-	}
-
-	count := 0
+	spans := make([]*model.Span, 0)
 	for _, rs := range req.ResourceSpans {
 		resourceAttrs := extractAttributes(rs.Resource.Attributes)
 		serviceName := resourceAttrs["service.name"]
@@ -215,34 +215,70 @@ func (p *Pipeline) ProcessOTLPTraces(tenantID string, body []byte) (int, error) 
 		for _, ss := range rs.ScopeSpans {
 			for _, s := range ss.Spans {
 				span := p.convertSpan(tenantID, &s, serviceName, resourceAttrs)
-				// B1：LEGACY_WRITER_ENABLED=false 时 writer 为 nil，跳过 CH span 写入
-				// （RED 聚合与 new 链双写不受影响）。
-				if p.writer != nil {
-					p.writer.Add(span)
-				}
-				count++
-
-				// Track span for metrics
-				info := &spanInfo{
-					traceID:      span.TraceID,
-					spanID:       span.SpanID,
-					parentSpanID: span.ParentSpanID,
-					serviceName:  span.ServiceName,
-					startTime:    span.StartTime,
-					durationNs:   span.DurationNs,
-					isError:      span.IsError,
-				}
-				traceCtx.spanInfos = append(traceCtx.spanInfos, info)
-				traceCtx.spanIDToService[span.SpanID] = span.ServiceName
+				spans = append(spans, span)
 			}
 		}
 	}
 
-	// Second pass: extract RED metrics and topology edges
-	p.extractMetrics(tenantID, traceCtx)
+	return p.ProcessSpans(tenantID, spans)
+}
 
-	log.Printf("Pipeline: processed %d spans for tenant %s", count, tenantID)
-	return count, nil
+// ProcessSpans persists already-converted spans and extracts the same RED and
+// topology signals used by the JSON OTLP path. A DurableSpanSink is preferred
+// when configured so protocol adapters can return a retryable error instead of
+// acknowledging data that failed to reach the platform Trace SoT.
+func (p *Pipeline) ProcessSpans(tenantID string, spans []*model.Span) (int, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return 0, fmt.Errorf("tenant id is required")
+	}
+
+	traceCtx := &traceContext{
+		spanIDToService: make(map[string]string),
+		spanIDToCaller:  make(map[string]string),
+	}
+	for _, span := range spans {
+		if span == nil {
+			return 0, fmt.Errorf("nil span")
+		}
+		if span.TenantID == "" {
+			span.TenantID = tenantID
+		}
+		if span.TenantID != tenantID {
+			return 0, fmt.Errorf("span tenant %q does not match request tenant %q", span.TenantID, tenantID)
+		}
+		if span.ClusterID == "" {
+			span.ClusterID = p.clusterID
+		}
+		if span.ClusterID != p.clusterID {
+			return 0, fmt.Errorf("span cluster %q does not match ingest cluster %q", span.ClusterID, p.clusterID)
+		}
+		traceCtx.spanInfos = append(traceCtx.spanInfos, &spanInfo{
+			traceID:      span.TraceID,
+			spanID:       span.SpanID,
+			parentSpanID: span.ParentSpanID,
+			serviceName:  span.ServiceName,
+			startTime:    span.StartTime,
+			durationNs:   span.DurationNs,
+			isError:      span.IsError,
+		})
+		traceCtx.spanIDToService[span.SpanID] = span.ServiceName
+	}
+
+	if p.writer != nil && len(spans) > 0 {
+		if durable, ok := p.writer.(DurableSpanSink); ok {
+			if err := durable.AddBatch(spans); err != nil {
+				return 0, fmt.Errorf("span sink batch: %w", err)
+			}
+		} else {
+			for _, span := range spans {
+				p.writer.Add(span)
+			}
+		}
+	}
+
+	p.extractMetrics(tenantID, traceCtx)
+	log.Printf("Pipeline: processed %d spans for tenant %s", len(spans), tenantID)
+	return len(spans), nil
 }
 
 // extractMetrics extracts RED metrics and topology edges from collected span infos
@@ -363,14 +399,14 @@ func (p *Pipeline) convertSpan(tenantID string, raw *struct {
 		DurationNs:    durationNs,
 		Attributes:    merged,
 
-		HTTPMethod:     merged["http.method"],
-		HTTPURL:        merged["http.url"],
-		DBSystem:       merged["db.system"],
-		DBStatement:    merged["db.statement"],
-		RPCSystem:      merged["rpc.system"],
+		HTTPMethod:        merged["http.method"],
+		HTTPURL:           merged["http.url"],
+		DBSystem:          merged["db.system"],
+		DBStatement:       merged["db.statement"],
+		RPCSystem:         merged["rpc.system"],
 		ServiceInstanceID: merged["service.instance.id"],
-		K8sNamespace:   merged["k8s.namespace.name"],
-		K8sPodName:     merged["k8s.pod.name"],
+		K8sNamespace:      merged["k8s.namespace.name"],
+		K8sPodName:        merged["k8s.pod.name"],
 
 		IsSlow:  0,
 		IsError: 0,
