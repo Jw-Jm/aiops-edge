@@ -59,7 +59,8 @@ const LogMetrics: React.FC = () => {
         setRows(raw.map((x: any) => ({
           ...x,
           ts: x.ts || x.timestamp || x._time || '',
-          level: x.level || x.severity || 'info',
+          // 不把缺失的真实级别伪装成 info；VictoriaLogs 的非结构化日志可能没有级别字段。
+          level: x.level || x.severity || 'unknown',
           service_name: x.service_name || x.service || x.kubernetes?.container_name || '-',
           message: x.message || x.body || x._msg || '',
           pod: x.pod || x.kubernetes?.pod_name || x.namespace || '',
@@ -82,7 +83,7 @@ const LogMetrics: React.FC = () => {
 
   const logCols = [
     { title: '时间', dataIndex: 'ts', key: 'ts', render: (v: string) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>{v}</span>, width: 165 },
-    { title: '级别', dataIndex: 'level', key: 'level', width: 70, render: (v: string) => <Tag color="default" style={{ color: LEVEL_TONE[v] || 'var(--text-muted)', fontWeight: 500 }}>{v || '-'}</Tag> },
+    { title: '级别', dataIndex: 'level', key: 'level', width: 70, render: (v: string) => <Tag color="default" style={{ color: LEVEL_TONE[v] || 'var(--text-muted)', fontWeight: 500 }}>{v === 'unknown' || !v ? '未知' : v}</Tag> },
     { title: '服务', dataIndex: 'service_name', key: 'service_name', width: 170 },
     { title: '来源', dataIndex: '_source', key: '_source', width: 90, render: (v: string) => v === 'victorialogs' ? <Tag color="purple" style={{ margin: 0 }}>VictoriaLogs</Tag> : <Tag color="blue" style={{ margin: 0 }}>ClickHouse</Tag> },
     { title: '消息', dataIndex: 'message', key: 'message', ellipsis: true },

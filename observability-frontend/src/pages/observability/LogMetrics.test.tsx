@@ -21,4 +21,19 @@ describe('LogMetrics supported source projection', () => {
     expect(screen.getByText('数据源 · VictoriaLogs')).toBeInTheDocument()
     expect(screen.queryByText('数据源 · ClickHouse')).not.toBeInTheDocument()
   })
+
+  it('does not label a raw log with a missing severity as info', async () => {
+    vi.mocked(queryLogs).mockResolvedValueOnce({
+      data: {
+        source: 'victorialogs',
+        data: [{ timestamp: '2026-08-26 08:22:59', service_name: 'metrics-server', body: 'Post-timeout activity', severity: '' }],
+      },
+    } as never)
+
+    render(<LogMetrics />)
+
+    await waitFor(() => expect(screen.getByText('Post-timeout activity')).toBeInTheDocument())
+    expect(screen.getByText('未知')).toBeInTheDocument()
+    expect(screen.queryByText('info')).not.toBeInTheDocument()
+  })
 })
