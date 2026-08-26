@@ -243,6 +243,36 @@ func TestLogsNewModeLegacyPoisonedStillServes(t *testing.T) {
 	}
 }
 
+func TestLogRepositorySearchRawLogsFromSourceUsesExplicitReader(t *testing.T) {
+	var gotQuery string
+	vlogsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","level":"info","_msg":"from-vlogs"}` + "\n"))
+	}))
+	defer vlogsSrv.Close()
+
+	repo := &LogRepository{
+		ch:     NewClickHouseRepo("http://127.0.0.1:1", nil),
+		vlogs:  NewVLogsReader(vlogsSrv.URL, &http.Client{Timeout: 5 * time.Second}),
+		router: NewSourceRouter(ModeLegacy),
+	}
+	rows, err := repo.SearchRawLogsFromSource(context.Background(), LogQuery{
+		TenantID: "tenant-a", ClusterID: "cluster-a", Service: "checkout", Minutes: 60,
+	}, "victorialogs")
+	if err != nil {
+		t.Fatalf("SearchRawLogsFromSource: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Body != "from-vlogs" {
+		t.Fatalf("rows = %+v, want explicit VictoriaLogs result", rows)
+	}
+	for _, want := range []string{`tenant_id:"tenant-a"`, `cluster_id:"cluster-a"`, `service_name:"checkout"`} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("explicit source query missing scope %q; got: %s", want, gotQuery)
+		}
+	}
+}
+
 func asQueryError(err error, target **QueryError) bool {
 	if e, ok := err.(*QueryError); ok {
 		*target = e

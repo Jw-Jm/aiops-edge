@@ -6,19 +6,21 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // LogQuery 是 logs 资源域的规范化查询请求（SQL ownership 在 repository，handler 不组 SQL）。
 type LogQuery struct {
-	TenantID   string
-	ClusterID  string
-	ResourceID string
-	Service    string
-	Query      string // 文本过滤
-	Services   []string
-	Minutes    int
+	TenantID      string
+	ClusterID     string
+	ResourceID    string
+	Service       string
+	Query         string // 文本过滤
+	Level         string // severity/level filter
+	Services      []string
+	Minutes       int
 	ExcludeHealth bool
 }
 
@@ -65,6 +67,31 @@ func (r *LogRepository) SearchRawLogs(ctx context.Context, q LogQuery) ([]LogRec
 		return r.vlogs.Search(ctx, q)
 	}
 	return r.searchLegacy(ctx, q)
+}
+
+// SearchRawLogsFromSource selects an explicitly requested raw-log source while
+// preserving the same tenant/cluster scope and filter semantics. The public
+// source selector must not bypass the repository and call an unscoped reader.
+func (r *LogRepository) SearchRawLogsFromSource(ctx context.Context, q LogQuery, source string) ([]LogRecord, error) {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "victorialogs":
+		if r.vlogs == nil {
+			return nil, Unavailable("raw logs source VictoriaLogs reader not configured")
+		}
+		return r.vlogs.Search(ctx, q)
+	case "clickhouse":
+		return r.searchLegacy(ctx, q)
+	default:
+		return r.SearchRawLogs(ctx, q)
+	}
+}
+
+// RawLogSource returns the source used by the configured default reader.
+func (r *LogRepository) RawLogSource() string {
+	if r.router != nil && r.router.Mode() == ModeNew {
+		return "victorialogs"
+	}
+	return "clickhouse"
 }
 
 // LogRuleValue 计算日志类规则标量（SLO 规则评估用），语义与原 handler logMetricQuery 完全一致：
@@ -127,6 +154,12 @@ func (r *LogRepository) searchLegacy(ctx context.Context, q LogQuery) ([]LogReco
 	}
 	if q.Query != "" {
 		conds = append(conds, "body LIKE '%"+q.Query+"%'")
+	}
+	if level := strings.ToLower(strings.TrimSpace(q.Level)); level != "" {
+		switch level {
+		case "error", "warning", "info", "debug":
+			conds = append(conds, "lower(severity)="+sqlStr(level))
+		}
 	}
 	if len(q.Services) > 0 {
 		quoted := make([]string, 0, len(q.Services))
@@ -199,15 +232,27 @@ func NewVLogsReader(endpoint string, client *http.Client) *VLogsReader {
 // 注意：VictoriaLogs LogsQL 用 `field:"value"`（冒号）做字段过滤，不能用 PromQL 的 `=`。
 func vlogsQuery(q LogQuery) string {
 	var parts []string
-	parts = append(parts, fmt.Sprintf(`tenant_id:"%s"`, q.TenantID))
+	parts = append(parts, fmt.Sprintf(`tenant_id:%s`, strconv.Quote(q.TenantID)))
 	if q.ClusterID != "" {
-		parts = append(parts, fmt.Sprintf(`cluster_id:"%s"`, q.ClusterID))
+		parts = append(parts, fmt.Sprintf(`cluster_id:%s`, strconv.Quote(q.ClusterID)))
 	}
 	if q.Service != "" {
-		parts = append(parts, fmt.Sprintf(`service_name:"%s"`, q.Service))
+		parts = append(parts, fmt.Sprintf(`service_name:%s`, strconv.Quote(q.Service)))
 	}
 	if q.Query != "" {
-		parts = append(parts, fmt.Sprintf(`_msg:"%s"`, q.Query))
+		parts = append(parts, fmt.Sprintf(`_msg:%s`, strconv.Quote(q.Query)))
+	}
+	if level := strings.ToLower(strings.TrimSpace(q.Level)); level != "" {
+		switch level {
+		case "error", "warning", "info", "debug":
+			value := strconv.Quote(level)
+			parts = append(parts, fmt.Sprintf(`(level:equals_common_case(%s) OR severity:equals_common_case(%s))`, value, value))
+		}
+	}
+	if q.ExcludeHealth {
+		for _, term := range []string{"health", "ready", "v1/query", "metrics"} {
+			parts = append(parts, fmt.Sprintf(`NOT *%s*`, term))
+		}
 	}
 	if q.Minutes <= 0 {
 		q.Minutes = 1440
@@ -222,6 +267,7 @@ type vlogsRecord struct {
 	Timestamp   string `json:"_time"`
 	ServiceName string `json:"service_name"`
 	Level       string `json:"level"`
+	Severity    string `json:"severity"`
 	Msg         string `json:"_msg"`
 	TraceID     string `json:"trace_id"`
 }
@@ -262,10 +308,14 @@ func (r *VLogsReader) Search(ctx context.Context, q LogQuery) ([]LogRecord, erro
 		if rec.Msg == "" && rec.ServiceName == "" {
 			continue
 		}
+		level := rec.Level
+		if level == "" {
+			level = rec.Severity
+		}
 		out = append(out, LogRecord{
 			Timestamp:   parseVLogsTime(rec.Timestamp),
 			ServiceName: rec.ServiceName,
-			Severity:    rec.Level,
+			Severity:    level,
 			Body:        rec.Msg,
 			TraceID:     rec.TraceID,
 		})

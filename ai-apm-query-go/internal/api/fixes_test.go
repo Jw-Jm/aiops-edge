@@ -293,6 +293,72 @@ func TestQueryLogsKeywordAlias(t *testing.T) {
 	}
 }
 
+func TestQueryLogsExplicitVictoriaLogsUsesScopedRepository(t *testing.T) {
+	var gotQuery string
+	vlogsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","level":"error","_msg":"boom"}` + "\n"))
+	}))
+	defer vlogsSrv.Close()
+
+	h := &Handler{client: &http.Client{}}
+	h.logRepo = query.NewLogRepository(
+		query.NewClickHouseRepo("http://127.0.0.1:1", nil),
+		query.NewVLogsReader(vlogsSrv.URL, &http.Client{Timeout: 5 * time.Second}),
+		query.NewSourceRouter(query.ModeNew),
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/query?source=victorialogs&service=checkout&level=error&exclude_health=true", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req.URL.RawQuery += "&cluster_id=cluster-a"
+	h.QueryLogs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["source"] != "victorialogs" {
+		t.Fatalf("source = %v, want victorialogs", body["source"])
+	}
+	for _, want := range []string{`tenant_id:"tenant-a"`, `cluster_id:"cluster-a"`, `level:equals_common_case("error")`, `NOT *health*`} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("repository query missing %q; got: %s", want, gotQuery)
+		}
+	}
+}
+
+func TestQueryLogsDefaultNewReaderReportsActualSource(t *testing.T) {
+	vlogsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","level":"info","_msg":"hello"}` + "\n"))
+	}))
+	defer vlogsSrv.Close()
+
+	h := &Handler{client: &http.Client{}}
+	h.logRepo = query.NewLogRepository(
+		query.NewClickHouseRepo("http://127.0.0.1:1", nil),
+		query.NewVLogsReader(vlogsSrv.URL, &http.Client{Timeout: 5 * time.Second}),
+		query.NewSourceRouter(query.ModeNew),
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/query", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	h.QueryLogs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["source"] != "victorialogs" {
+		t.Fatalf("source = %v, want actual default reader source", body["source"])
+	}
+}
+
 // ===== P2-6: /metrics/query PromQL 透传（VM instant query）=====
 
 func TestQueryMetricsPromQLPassthrough(t *testing.T) {

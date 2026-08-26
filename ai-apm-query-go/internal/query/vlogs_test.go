@@ -95,3 +95,37 @@ func TestVLogsScopeLabelsInjected(t *testing.T) {
 		}
 	}
 }
+
+func TestVLogsQueryHonorsLevelAndHealthFilter(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","level":"error","_msg":"boom"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	r := NewVLogsReader(srv.URL, &http.Client{Timeout: 5 * time.Second})
+	rows, err := r.Search(context.Background(), LogQuery{
+		TenantID: "tenant-a", ClusterID: "cluster-a", Service: "checkout", Minutes: 60,
+		Level: "error", ExcludeHealth: true,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Severity != "error" {
+		t.Fatalf("rows = %+v, want one error log", rows)
+	}
+	for _, want := range []string{
+		`level:equals_common_case("error")`,
+		`severity:equals_common_case("error")`,
+		`NOT *health*`,
+		`NOT *ready*`,
+		`NOT *v1/query*`,
+		`NOT *metrics*`,
+	} {
+		if !strings.Contains(gotQuery, want) {
+			t.Errorf("LogsQL missing %q; got: %s", want, gotQuery)
+		}
+	}
+}

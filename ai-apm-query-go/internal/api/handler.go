@@ -1640,6 +1640,7 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 		queryText = r.URL.Query().Get("keyword")
 	}
 	source := r.URL.Query().Get("source")
+	level := r.URL.Query().Get("level")
 	minutes := 1440 // 默认近 24 小时
 
 	if m := r.URL.Query().Get("minutes"); m != "" {
@@ -1653,20 +1654,9 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// P0-1 修复：source=victorialogs 时路由到 VictoriaLogs（K8s pod 日志），归一化后返回
-	if strings.EqualFold(source, "victorialogs") {
-		rows, err := h.queryVictoriaLogs(service, queryText, minutes)
-		if err != nil {
-			log.Printf("QueryLogs(victorialogs) error: %v", err)
-			respondError(w, http.StatusBadGateway, "VictoriaLogs unavailable: "+err.Error())
-			return
-		}
-		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"data":    rows,
-			"count":   len(rows),
-			"minutes": minutes,
-			"source":  "victorialogs",
-		})
+	selectedSource := strings.ToLower(strings.TrimSpace(source))
+	if selectedSource != "" && selectedSource != "clickhouse" && selectedSource != "victorialogs" {
+		respondError(w, http.StatusBadRequest, "invalid log source")
 		return
 	}
 
@@ -1678,15 +1668,25 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	records, err := h.logRepo.SearchRawLogs(ctx, query.LogQuery{
+	logQuery := query.LogQuery{
 		TenantID:      tid,
 		ClusterID:     cid,
 		Service:       service,
 		Query:         queryText,
+		Level:         level,
 		Services:      parseCSV(r.URL.Query().Get("services")),
 		Minutes:       minutes,
 		ExcludeHealth: r.URL.Query().Get("exclude_health") == "true" || r.URL.Query().Get("exclude_health") == "1",
-	})
+	}
+	actualSource := h.logRepo.RawLogSource()
+	var records []query.LogRecord
+	var err error
+	if selectedSource == "" {
+		records, err = h.logRepo.SearchRawLogs(ctx, logQuery)
+	} else {
+		actualSource = selectedSource
+		records, err = h.logRepo.SearchRawLogsFromSource(ctx, logQuery, selectedSource)
+	}
 	if err != nil {
 		// no_data → 200 空列表（与旧行为一致）；unavailable → 503；timeout → 504。
 		if qe, ok := err.(*query.QueryError); ok && qe.Code == query.NoDataCode {
@@ -1694,6 +1694,7 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 				"data":    []map[string]interface{}{},
 				"count":   0,
 				"minutes": minutes,
+				"source":  actualSource,
 			})
 			return
 		}
@@ -1716,6 +1717,7 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 		"data":    rows,
 		"count":   len(rows),
 		"minutes": minutes,
+		"source":  actualSource,
 	})
 }
 
