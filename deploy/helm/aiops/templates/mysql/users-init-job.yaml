@@ -9,7 +9,10 @@ metadata:
   name: mysql-users-init
   namespace: {{ .Values.namespace.observability }}
   annotations:
-    "helm.sh/hook": post-install,post-upgrade
+    # MySQL already exists during upgrades, so run before the new runtime
+    # Pods are made ready. Fresh installs still use post-install because the
+    # MySQL StatefulSet must exist before this Job can connect to it.
+    "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": "10"
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:

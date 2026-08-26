@@ -9,7 +9,10 @@ metadata:
   name: mysql-init
   namespace: {{ .Values.namespace.observability }}
   annotations:
-    "helm.sh/hook": post-install,post-upgrade
+    # On upgrade this must run before query-api readiness is evaluated: the
+    # new binary's read-only schema check requires the migration below.
+    # Fresh installs keep post-install ordering after MySQL is created.
+    "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": "20"
     "helm.sh/hook-delete-policy": before-hook-creation
   labels:
