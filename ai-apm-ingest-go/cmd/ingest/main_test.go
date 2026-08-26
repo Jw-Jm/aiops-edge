@@ -23,3 +23,9 @@ func TestOTLPLogsReturnsRetryableFailureWhenSinkWriteFails(t *testing.T) {
 		t.Fatalf("sink failure status = %d, want 503: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestDeepFlowLegacyClusterIDUsesIngestCluster(t *testing.T) {
+	if got := deepFlowLegacyClusterID("cluster-canonical"); got != "cluster-canonical" {
+		t.Fatalf("legacy DeepFlow cluster = %q, want cluster-canonical", got)
+	}
+}

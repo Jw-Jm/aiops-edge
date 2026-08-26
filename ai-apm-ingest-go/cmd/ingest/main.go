@@ -88,7 +88,8 @@ func main() {
 	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志，
 	// 并累加为 VM 服务 RED 指标。
 	// 多 k8s 环境支持：DEEPFLOW_CH_ENDPOINTS="name@host:port,name2@host2:port2"（name=cluster 名，RED 指标按 cluster 区分）
-	// 兼容旧配置：仅 DEEPFLOW_CH_HOST/DEEPFLOW_CH_PORT 时按单环境 cluster="default" 接入。
+	// 兼容旧配置：仅 DEEPFLOW_CH_HOST/DEEPFLOW_CH_PORT 时使用本实例 CLUSTER_ID，
+	// 防止真实流量写入 default 集群后无法被当前集群的前端查询到。
 	startDeepFlowSyncers := func() int {
 		n := 0
 		// C-01：DeepFlow 作为 Span 输入/补充来源，进入同一 ClickHouseSpanSink（trace SoT）。
@@ -126,10 +127,11 @@ func main() {
 			if dfPort == 0 {
 				dfPort = 8123
 			}
-			syncer := pipeline.NewDeepFlowSyncer(dfHost, dfPort, "default", dfEdge, dfSpan, dfLog, met)
+			legacyClusterID := deepFlowLegacyClusterID(clusterID)
+			syncer := pipeline.NewDeepFlowSyncer(dfHost, dfPort, legacyClusterID, dfEdge, dfSpan, dfLog, met)
 			syncer.Start()
 			n++
-			log.Printf("DeepFlowSyncer enabled (cluster=default deepflow-ch=%s:%d)", dfHost, dfPort)
+			log.Printf("DeepFlowSyncer enabled (cluster=%s deepflow-ch=%s:%d)", legacyClusterID, dfHost, dfPort)
 		}
 		if n == 0 {
 			log.Printf("DeepFlowSyncer disabled (DEEPFLOW_CH_HOST / DEEPFLOW_CH_ENDPOINTS not set)")
@@ -272,6 +274,14 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
 	}
+}
+
+func deepFlowLegacyClusterID(clusterID string) string {
+	clusterID = strings.TrimSpace(clusterID)
+	if clusterID == "" {
+		return "default"
+	}
+	return clusterID
 }
 
 type logWriteFunc func(tenantID, clusterID, service, level, body string, ts time.Time) telemetry.WriteResult
