@@ -1028,25 +1028,14 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	stats := biz.AggregateStats(items)
 
 	// 修复(P1-4)：统计口径统一。
-	// services 数 = 仅 trace_spans 中出现的服务（与 ListServices 同口径，真实服务数）；
-	// topology_services = 含 service_topology 目录中无 trace 服务的总数（前端展示用）。
-	// P1-5：topology_services 亦剔除 "(deleted)" 残留服务（与 GlobalTopology 剔除 deleted 节点一致）。
-	topologyServices := 0
-	if dist, derr := h.topoRepo.DistinctTopologyServices(ctx, scope); derr == nil && len(dist) > 0 {
-		svcSet := map[string]bool{}
-		for _, it := range items {
-			svcSet[it.Service] = true
-		}
-		for _, s := range dist {
-			if s != "" && !isDeletedService(s) {
-				svcSet[s] = true
-			}
-		}
-		topologyServices = len(svcSet)
+	// services 数 = 仅 trace_spans 中出现的服务（与 ListServices 同口径，真实服务数）。
+	// topology_services 以 trace 服务为基线；旧 service_topology 目录只允许追加历史服务，
+	// 不能在最终架构中因该派生表为空而把真实服务数覆盖成 0。
+	topologyServices := topologyServiceCount(items, nil)
+	if dist, derr := h.topoRepo.DistinctTopologyServices(ctx, scope); derr == nil {
+		topologyServices = topologyServiceCount(items, dist)
 	}
-	if topologyServices > 0 {
-		stats.TopologyServices = topologyServices
-	}
+	stats.TopologyServices = topologyServices
 
 	// 拓扑边数（与 GlobalTopology 同口径：service_topology 近 1440 分钟、
 	// source!=target 去重后的边数，自环不计入）。
@@ -1113,6 +1102,24 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", "MISS")
 	w.Write(data)
+}
+
+// topologyServiceCount merges the authoritative trace-derived service set with
+// optional legacy topology-directory names. The trace set is always retained;
+// deleted/empty directory entries are never surfaced as active services.
+func topologyServiceCount(items []biz.StatsItem, topologyNames []string) int {
+	set := make(map[string]struct{}, len(items)+len(topologyNames))
+	for _, item := range items {
+		if item.Service != "" && !isDeletedService(item.Service) {
+			set[item.Service] = struct{}{}
+		}
+	}
+	for _, name := range topologyNames {
+		if name != "" && !isDeletedService(name) {
+			set[name] = struct{}{}
+		}
+	}
+	return len(set)
 }
 
 // nodeTypeInfo 根据服务名推断节点类型、分层 rank 与图标（参考 DeepFlow 分层拓扑）。
