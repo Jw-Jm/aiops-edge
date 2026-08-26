@@ -306,6 +306,9 @@ ingest:
   clickhousePort: "8123"
   # 多集群纳管：本 ingest 实例所属集群 ID（V9.2 canonical identity，禁止 default）
   clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
+  # DeepFlow 同步写入的租户身份；必须与 queryApi.systemTenantId 对齐，避免
+  # 真实流量落入 default 租户后在当前前端租户中不可见。
+  deepflowTenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
   # V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已删除，legacyWriterEnabled 开关已移除。
   # telemetry new backend：TELEMETRY_WRITER_MODE=new 启用 VM/VLogs 写链。
   # VICTORIA_*_URL 必须为 base URL（不带 /insert/jsonline，writer 内部追加）。

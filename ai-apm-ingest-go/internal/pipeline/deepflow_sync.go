@@ -117,6 +117,10 @@ type DeepFlowSyncer struct {
 func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter EdgeSink, spanWriter SpanSink, logWriter LogSink, redMetric interface {
 	AddServiceREDForCluster(cluster, service string, isError bool, durationNs uint64)
 }) *DeepFlowSyncer {
+	tenantID := strings.TrimSpace(os.Getenv("DEEPFLOW_TENANT_ID"))
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	s := &DeepFlowSyncer{
 		dfEndpoint: fmt.Sprintf("http://%s:%d", dfCHHost, dfCHPort),
 		dfClient:   &http.Client{Timeout: 30 * time.Second},
@@ -125,7 +129,7 @@ func NewDeepFlowSyncer(dfCHHost string, dfCHPort int, cluster string, edgeWriter
 		logWriter:  logWriter,
 		redMetric:  redMetric,
 		cluster:    cluster,
-		tenantID:   "default",
+		tenantID:   tenantID,
 		interval:   parseSyncInterval(os.Getenv("DEEPFLOW_SYNC_INTERVAL")),
 		sampleRate: parseSampleRate(os.Getenv("DEEPFLOW_SPAN_SAMPLE_RATE")),
 	}

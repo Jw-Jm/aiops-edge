@@ -43,6 +43,8 @@ spec:
               value: {{ .Values.ingest.deepflowChHost | quote }}
             - name: DEEPFLOW_CH_PORT
               value: {{ .Values.ingest.deepflowChPort | quote }}
+            - name: DEEPFLOW_TENANT_ID
+              value: {{ .Values.ingest.deepflowTenantId | default "default" | quote }}
             - name: DEEPFLOW_SYNC_INTERVAL
               value: {{ .Values.ingest.syncInterval | quote }}
             - name: DEEPFLOW_SPAN_SAMPLE_RATE

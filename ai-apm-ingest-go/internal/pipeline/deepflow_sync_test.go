@@ -149,6 +149,18 @@ func TestNewDeepFlowSyncer_BindsREDMetric(t *testing.T) {
 	}
 }
 
+// TestNewDeepFlowSyncer_UsesConfiguredTenantID prevents DeepFlow-derived data
+// from silently being written to the shared "default" tenant when the ingest
+// deployment has a canonical tenant identity.
+func TestNewDeepFlowSyncer_UsesConfiguredTenantID(t *testing.T) {
+	t.Setenv("DEEPFLOW_TENANT_ID", "tenant-canonical")
+
+	s := NewDeepFlowSyncer("10.0.0.1", 8123, "cluster-x", nil, nil, nil, nil)
+	if s.tenantID != "tenant-canonical" {
+		t.Fatalf("tenantID = %q, want tenant-canonical", s.tenantID)
+	}
+}
+
 // TestREDAccumulation 用注入 rows 驱动 RED 累加核心逻辑（错误判定 + cluster 传递）。
 func TestREDAccumulation(t *testing.T) {
 	red := &fakeREDMetric{}
