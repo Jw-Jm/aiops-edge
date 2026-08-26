@@ -166,6 +166,11 @@ CREATE TABLE IF NOT EXISTS users (
 	if !hasColumn(conn, "users", "is_approver") {
 		_, _ = conn.Exec("ALTER TABLE users ADD COLUMN is_approver TINYINT DEFAULT 0")
 	}
+	// First-login password policy is additive for legacy runtime paths. The
+	// versioned migrator remains authoritative for fresh/current deployments.
+	if !hasColumn(conn, "users", "must_change_password") {
+		_, _ = conn.Exec("ALTER TABLE users ADD COLUMN must_change_password TINYINT NOT NULL DEFAULT 0")
+	}
 	// Canonical user identity is additive: retain the legacy integer key while every
 	// effective user receives a stable UUID for session and authorization records.
 	if !hasColumn(conn, "users", "user_uuid") {

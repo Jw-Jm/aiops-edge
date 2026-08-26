@@ -8,17 +8,18 @@ import (
 
 // User 用户实体。
 type User struct {
-	ID           int64     `json:"id"`
-	UserUUID     string    `json:"user_uuid,omitempty"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"`
-	DisplayName  string    `json:"display_name"`
-	Role         string    `json:"role"`
-	Email        string    `json:"email"`
-	Status       int       `json:"status"`
-	Scope        string    `json:"scope"`
-	IsApprover   bool      `json:"is_approver"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                 int64     `json:"id"`
+	UserUUID           string    `json:"user_uuid,omitempty"`
+	Username           string    `json:"username"`
+	PasswordHash       string    `json:"-"`
+	DisplayName        string    `json:"display_name"`
+	Role               string    `json:"role"`
+	Email              string    `json:"email"`
+	Status             int       `json:"status"`
+	Scope              string    `json:"scope"`
+	IsApprover         bool      `json:"is_approver"`
+	MustChangePassword bool      `json:"must_change_password,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 // GetByUUID reads a user by canonical identity for new authorization paths.
@@ -101,6 +102,47 @@ func (d *UserDAO) GetByUsername(username string) (*User, error) {
 	}
 	u.IsApprover = ap == 1
 	return &u, nil
+}
+
+// GetByUsernameForLogin returns the authentication projection, including the
+// authoritative first-login password state. Keeping it separate from the
+// legacy user projection avoids widening unrelated read paths unnecessarily.
+func (d *UserDAO) GetByUsernameForLogin(username string) (*User, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	row := conn.QueryRow(
+		"SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, must_change_password, created_at FROM users WHERE username = ?",
+		username)
+	var u User
+	var ap, mustChange int
+	if err := row.Scan(&u.ID, &u.UserUUID, &u.Username, &u.PasswordHash, &u.DisplayName,
+		&u.Role, &u.Email, &u.Status, &u.Scope, &ap, &mustChange, &u.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	u.IsApprover = ap == 1
+	u.MustChangePassword = mustChange == 1
+	return &u, nil
+}
+
+// GetPasswordStateByUUID returns the current password hash and force-change
+// state from MySQL authority for an already authenticated user.
+func (d *UserDAO) GetPasswordStateByUUID(userUUID string) (passwordHash string, mustChange bool, err error) {
+	conn := GetDB()
+	if conn == nil {
+		return "", false, errors.New("mysql unavailable")
+	}
+	var required int
+	err = conn.QueryRow("SELECT password_hash, must_change_password FROM users WHERE user_uuid = ? AND status = 1", userUUID).
+		Scan(&passwordHash, &required)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return passwordHash, required == 1, err
 }
 
 // CreateSession records the canonical identity/session pair that must exist
@@ -212,7 +254,35 @@ func (d *UserDAO) SeedAdmin(hash string) error {
 		return errors.New("mysql unavailable")
 	}
 	_, err := conn.Exec(
-		"INSERT IGNORE INTO users (user_uuid, username, password_hash, display_name, role) VALUES (LOWER(UUID()), 'admin', ?, '管理员', 'admin')",
+		"INSERT IGNORE INTO users (user_uuid, username, password_hash, display_name, role, must_change_password) VALUES (LOWER(UUID()), 'admin', ?, '管理员', 'admin', 1)",
 		hash)
 	return err
+}
+
+// ChangePassword atomically changes the user's bcrypt hash, clears the
+// first-login gate, revokes active sessions, and leaves session issuance to the
+// authenticated API handler. No partial password/session state is reported.
+func (d *UserDAO) ChangePassword(userUUID, passwordHash string) error {
+	conn := GetDB()
+	if conn == nil {
+		return errors.New("mysql unavailable")
+	}
+	tx, err := conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec("UPDATE users SET password_hash=?, must_change_password=0 WHERE user_uuid=? AND status=1", passwordHash, userUUID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.Exec("UPDATE auth_sessions SET status='revoked', revoked_at=UTC_TIMESTAMP(), token_version=token_version+1 WHERE user_uuid=? AND status='active'", userUUID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
