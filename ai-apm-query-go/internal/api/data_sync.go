@@ -9,9 +9,93 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
+
+var defaultLogShipperNamespaces = []string{"observability", "default", "deepflow"}
+
+// configuredLogShipperNamespaces parses the optional explicit namespace
+// allowlist. An empty value means the shipper should discover namespaces from
+// the Kubernetes API instead of silently limiting collection to platform
+// namespaces.
+func configuredLogShipperNamespaces(raw string) []string {
+	seen := make(map[string]struct{})
+	for _, item := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(item)
+		if name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+	namespaces := make([]string, 0, len(seen))
+	for name := range seen {
+		namespaces = append(namespaces, name)
+	}
+	sort.Strings(namespaces)
+	return namespaces
+}
+
+func parseLogShipperNamespaces(body []byte) ([]string, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(list.Items))
+	for _, item := range list.Items {
+		if name := strings.TrimSpace(item.Metadata.Name); name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+	namespaces := make([]string, 0, len(seen))
+	for name := range seen {
+		namespaces = append(namespaces, name)
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
+}
+
+func discoverLogShipperNamespaces(client *http.Client, k8sAPI string, token []byte) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(k8sAPI, "/")+"/api/v1/namespaces", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+string(token))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("namespace discovery returned status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return parseLogShipperNamespaces(body)
+}
+
+func buildLogShipperPayload(timestamp, message, namespace, pod, phase, tenantID, clusterID string) map[string]string {
+	serviceName := namespace + "/" + pod
+	return map[string]string{
+		"_time":        timestamp,
+		"_msg":         message,
+		"service":      serviceName,
+		"service_name": serviceName,
+		"namespace":    namespace,
+		"pod":          pod,
+		"phase":        phase,
+		"tenant_id":    tenantID,
+		"cluster_id":   clusterID,
+	}
+}
 
 func (h *Handler) StartLogShipper() {
 	go func() {
@@ -21,6 +105,12 @@ func (h *Handler) StartLogShipper() {
 		token, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
 		if err != nil {
 			log.Printf("[log-shipper] FATAL: cannot read K8s token: %v", err)
+			return
+		}
+		tenantID := strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_TENANT_ID"))
+		clusterID := strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_ID"))
+		if tenantID == "" || clusterID == "" {
+			log.Printf("[log-shipper] FATAL: canonical tenant/cluster scope is not configured")
 			return
 		}
 		k8sAPI := os.Getenv("K8S_API_URL")
@@ -54,16 +144,28 @@ func (h *Handler) StartLogShipper() {
 		httpClient := &http.Client{
 			Timeout: 15 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig:         tlsConf,
-				MaxIdleConns:            20,
-				IdleConnTimeout:         30 * time.Second,
+				TLSClientConfig: tlsConf,
+				MaxIdleConns:    20,
+				IdleConnTimeout: 30 * time.Second,
 			},
 		}
-		namespaces := []string{"observability", "default", "deepflow"}
+		configuredNamespaces := configuredLogShipperNamespaces(os.Getenv("LOG_SHIPPER_NAMESPACES"))
 
 		for {
 			roundShipped := 0
 			roundSince := time.Now().Add(-61 * time.Second).Format(time.RFC3339)
+			namespaces := configuredNamespaces
+			if len(namespaces) == 0 {
+				discovered, discoverErr := discoverLogShipperNamespaces(httpClient, k8sAPI, token)
+				if discoverErr != nil || len(discovered) == 0 {
+					if discoverErr != nil {
+						log.Printf("[log-shipper] namespace discovery unavailable, using fallback: %v", discoverErr)
+					}
+					namespaces = defaultLogShipperNamespaces
+				} else {
+					namespaces = discovered
+				}
+			}
 
 			for _, ns := range namespaces {
 				// List pods
@@ -141,14 +243,7 @@ func (h *Handler) StartLogShipper() {
 						if len(msg) > 2000 {
 							msg = msg[:2000]
 						}
-						payload := map[string]string{
-							"_time":     ts,
-							"_msg":      msg,
-							"service":   ns + "/" + pname,
-							"namespace": ns,
-							"pod":       pname,
-							"phase":     pod.Status.Phase,
-						}
+						payload := buildLogShipperPayload(ts, msg, ns, pname, pod.Status.Phase, tenantID, clusterID)
 						data, _ := json.Marshal(payload)
 						batch = append(batch, string(data))
 					}
