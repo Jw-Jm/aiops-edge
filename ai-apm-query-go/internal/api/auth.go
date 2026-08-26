@@ -681,6 +681,13 @@ func isCanonicalProtectedRoute(path string) bool {
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
 		return true
 	}
+	// Trace list/detail/context are all browser-facing read routes. Keep the
+	// child-route allowlist narrow so an arbitrary multi-segment path under
+	// /traces cannot bypass the canonical boundary.
+	if strings.HasPrefix(path, "/api/v1/traces/") {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/traces/"), "/"), "/")
+		return len(parts) == 1 || (len(parts) == 2 && parts[1] == "context")
+	}
 	// Cluster detail reads share the registered /clusters/{id}/... router. The
 	// router and its handler retain the admin gate for mutations; this boundary
 	// only lets canonical authenticated reads reach the handler.

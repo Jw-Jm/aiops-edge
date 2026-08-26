@@ -83,6 +83,8 @@ func TestCanonicalProtectedReadChildRoutes(t *testing.T) {
 		"/api/v1/clusters/91771a6e-9c2d-11f1-8271-bea176fe9f9f/nodes",
 		"/api/v1/clusters/91771a6e-9c2d-11f1-8271-bea176fe9f9f/namespaces",
 		"/api/v1/clusters/91771a6e-9c2d-11f1-8271-bea176fe9f9f/events",
+		"/api/v1/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"/api/v1/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/context",
 		"/api/v1/slo",
 		"/api/v1/slo/slo-1",
 		"/api/v1/dashboard/panels",
@@ -215,6 +217,14 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 	for _, p := range allowed {
 		if !isCanonicalProtectedRoute(p) {
 			t.Fatalf("query endpoint %s should be canonical-protected", p)
+		}
+	}
+	for _, p := range []string{
+		"/api/v1/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/unknown",
+		"/api/v1/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/context/extra",
+	} {
+		if isCanonicalProtectedRoute(p) {
+			t.Fatalf("unknown trace child endpoint %s should NOT be canonical-protected", p)
 		}
 	}
 	// 写端点/未迁移端点保持 fail-closed（不纳入 canonical-protected）
