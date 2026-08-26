@@ -61,6 +61,7 @@ func (f *fakeKube) serve(t *testing.T) *httptest.Server {
 				"spec": map[string]any{
 					"holderIdentity":       f.lease[name],
 					"leaseDurationSeconds": 15,
+					"acquireTime":          "2026-08-20T09:00:00Z",
 					"renewTime":            "2026-08-20T10:00:00Z",
 				},
 			})
@@ -68,10 +69,11 @@ func (f *fakeKube) serve(t *testing.T) *httptest.Server {
 			f.calls = append(f.calls, "PUT "+name)
 			var l kubeLease
 			_ = json.NewDecoder(r.Body).Decode(&l)
-			if l.Metadata.ResourceVersion == "" {
+			if l.Metadata.ResourceVersion == "" || l.Spec.AcquireTime == "" || l.Spec.RenewTime == "" {
 				// Real Kubernetes Update requests must carry the current
-				// metadata.resourceVersion; otherwise an expired Lease can never
-				// be reclaimed by a restarted collector.
+				// metadata.resourceVersion and preserve both Lease timestamps;
+				// otherwise an expired Lease can never be reclaimed by a restarted
+				// collector.
 				w.WriteHeader(http.StatusConflict)
 				return
 			}

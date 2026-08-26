@@ -43,6 +43,7 @@ type kubeLease struct {
 // LeaseInfo 一次 Get 的结果：当前 holderIdentity 与最近续租时间。
 type LeaseInfo struct {
 	Holder          string
+	AcquireTime     string
 	RenewTime       time.Time // 零值表示未知/Lease 不存在
 	ResourceVersion string
 }
@@ -128,7 +129,11 @@ func (c *leaseClient) Get(ctx context.Context, namespace, name string) (LeaseInf
 	if err := json.NewDecoder(resp.Body).Decode(&l); err != nil {
 		return LeaseInfo{}, err
 	}
-	info := LeaseInfo{Holder: l.Spec.HolderIdentity, ResourceVersion: l.Metadata.ResourceVersion}
+	info := LeaseInfo{
+		Holder:          l.Spec.HolderIdentity,
+		AcquireTime:     l.Spec.AcquireTime,
+		ResourceVersion: l.Metadata.ResourceVersion,
+	}
 	if l.Spec.RenewTime != "" {
 		if rt, err := time.Parse(time.RFC3339, l.Spec.RenewTime); err == nil {
 			info.RenewTime = rt
@@ -172,7 +177,7 @@ func (c *leaseClient) Update(ctx context.Context, namespace, name, holderIdentit
 	if info.ResourceVersion == "" {
 		return fmt.Errorf("update lease %s/%s: resourceVersion missing", namespace, name)
 	}
-	return c.put(ctx, namespace, name, holderIdentity, info.ResourceVersion, time.Now())
+	return c.put(ctx, namespace, name, holderIdentity, info.ResourceVersion, info.AcquireTime, time.Now())
 }
 
 // Release 清空 holder 并把 renewTime 置为过去，使 follower 可立即接管。
@@ -184,15 +189,16 @@ func (c *leaseClient) Release(ctx context.Context, namespace, name string) error
 	if info.ResourceVersion == "" {
 		return nil
 	}
-	return c.put(ctx, namespace, name, "", info.ResourceVersion, time.Now().Add(-time.Hour))
+	return c.put(ctx, namespace, name, "", info.ResourceVersion, info.AcquireTime, time.Now().Add(-time.Hour))
 }
 
-func (c *leaseClient) put(ctx context.Context, namespace, name, holderIdentity, resourceVersion string, renewTime time.Time) error {
+func (c *leaseClient) put(ctx context.Context, namespace, name, holderIdentity, resourceVersion, acquireTime string, renewTime time.Time) error {
 	l := kubeLease{}
 	l.Metadata.Name = name
 	l.Metadata.ResourceVersion = resourceVersion
 	l.Spec.HolderIdentity = holderIdentity
 	l.Spec.LeaseDurationSeconds = 15
+	l.Spec.AcquireTime = acquireTime
 	// K8s Lease 的 renewTime/acquireTime 要求微秒精度（2006-01-02T15:04:05.000000Z），
 	// 用 RFC3339（无微秒）会导致 API 400 "cannot parse Z as .000000"。
 	l.Spec.RenewTime = renewTime.UTC().Format(leaseTimeLayout)
