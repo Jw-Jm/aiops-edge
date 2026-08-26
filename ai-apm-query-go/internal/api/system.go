@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+type systemComponent struct {
+	name       string
+	typ        string
+	kind       string
+	addr       string
+	configured bool
+}
+
 func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 	// G3 修复（S6）：系统状态含集群拓扑/缓存/HPA 信息，仅 admin 可访问。
 	if !hasRole(r, "admin") {
@@ -61,58 +69,71 @@ func (h *Handler) InvalidateCache(w http.ResponseWriter, r *http.Request) {
 
 // SystemComponents 处理 GET /api/v1/system/components — 各组件探活结果列表。
 // 组件列表：query-api/ingest/ai-orchestrator/clickhouse/mysql/
-// victoria-metrics/victoria-logs/minio/frontend。3s 超时并发探测，
-// 探活失败 status=down，超时接近 3s 的降级 degraded。
+// victoria-metrics/victoria-logs/frontend。3s 超时并发探测；可选但未配置的
+// 组件返回 not_configured，避免把环境能力缺失误报成运行故障。
 func (h *Handler) SystemComponents(w http.ResponseWriter, r *http.Request) {
 	// G3 修复（S6）：组件探活执行 kubectl 探测内部服务，泄露集群拓扑，仅 admin 可访问。
 	if !hasRole(r, "admin") {
 		respondJSON(w, 403, map[string]interface{}{"error": "forbidden: admin role required"})
 		return
 	}
-	type compItem struct{ name, typ, kind, addr string }
-	components := []compItem{
-		{"query-api", "service", "http", "http://query-api.observability.svc.cluster.local:8080/health"},
-		{"ingest", "service", "http", "http://ingest.observability.svc.cluster.local:8080/health"},
-		{"ai-orchestrator", "service", "http", "http://ai-orchestrator.observability.svc.cluster.local:8080/health"},
-		{"clickhouse", "middleware", "tcp", "clickhouse.observability.svc.cluster.local:8123"},
-		{"mysql", "middleware", "tcp", "mysql.observability.svc.cluster.local:3306"},
-		{"victoria-metrics", "middleware", "http", "http://victoria-metrics.observability.svc.cluster.local:8428/health"},
-		{"victoria-logs", "middleware", "http", "http://victoria-logs.observability.svc.cluster.local:9428/health"},
-		{"minio", "middleware", "http", "http://minio.observability.svc.cluster.local:9000/minio/health/live"},
-		{"frontend", "service", "http", "http://frontend.observability.svc.cluster.local/health"},
+	components := []systemComponent{
+		{"query-api", "service", "http", "http://query-api.observability.svc.cluster.local:8080/health", true},
+		{"ingest", "service", "http", "http://ingest.observability.svc.cluster.local:8080/health", true},
+		{"ai-orchestrator", "service", "http", "http://ai-orchestrator.observability.svc.cluster.local:8080/health", true},
+		{"clickhouse", "middleware", "tcp", "clickhouse.observability.svc.cluster.local:8123", true},
+		{"mysql", "middleware", "tcp", "mysql.observability.svc.cluster.local:3306", true},
+		{"victoria-metrics", "middleware", "http", "http://victoria-metrics.observability.svc.cluster.local:8428/health", true},
+		{"victoria-logs", "middleware", "http", "http://victoria-logs.observability.svc.cluster.local:9428/health", true},
+		{"minio", "middleware", "http", "http://minio.observability.svc.cluster.local:9000/minio/health/live", false},
+		{"frontend", "service", "http", "http://frontend.observability.svc.cluster.local/health", true},
 	}
 
 	results := make([]map[string]interface{}, len(components))
 	var wg sync.WaitGroup
 	for i, c := range components {
 		wg.Add(1)
-		go func(i int, c compItem) {
+		go func(i int, c systemComponent) {
 			defer wg.Done()
-			start := time.Now()
-			ok := probeComponent(c.kind, c.addr)
-			latency := time.Since(start).Milliseconds()
-			status := "ok"
-			if !ok {
-				status = "down"
-			} else if latency >= 2000 {
-				status = "degraded"
-			}
-			detail := ""
-			if !ok {
-				detail = c.addr
-			}
-			results[i] = map[string]interface{}{
-				"name":       c.name,
-				"type":       c.typ,
-				"status":     status,
-				"latency_ms": latency,
-				"detail":     detail,
-			}
+			results[i] = systemComponentResult(c, probeComponent)
 		}(i, c)
 	}
 	wg.Wait()
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"components": results})
+}
+
+func systemComponentResult(c systemComponent, probe func(string, string) bool) map[string]interface{} {
+	if !c.configured {
+		return map[string]interface{}{
+			"name":       c.name,
+			"type":       c.typ,
+			"status":     "not_configured",
+			"latency_ms": 0,
+			"detail":     "optional component is not configured",
+		}
+	}
+
+	start := time.Now()
+	ok := probe(c.kind, c.addr)
+	latency := time.Since(start).Milliseconds()
+	status := "ok"
+	if !ok {
+		status = "down"
+	} else if latency >= 2000 {
+		status = "degraded"
+	}
+	detail := ""
+	if !ok {
+		detail = c.addr
+	}
+	return map[string]interface{}{
+		"name":       c.name,
+		"type":       c.typ,
+		"status":     status,
+		"latency_ms": latency,
+		"detail":     detail,
+	}
 }
 
 // probeComponent 按 kind 探测组件：http 用 GET（3s 超时），tcp 用 DialTimeout。
@@ -148,9 +169,9 @@ func getHPAStatus() map[string]interface{} {
 				CurrentReplicas int `json:"currentReplicas"`
 				DesiredReplicas int `json:"desiredReplicas"`
 				CurrentMetrics  []struct {
-					Type   string
+					Type     string
 					Resource struct {
-						Name string
+						Name    string
 						Current struct {
 							AverageUtilization int    `json:"averageUtilization"`
 							AverageValue       string `json:"averageValue"`
