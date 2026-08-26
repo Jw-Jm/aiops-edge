@@ -29,6 +29,49 @@ ROLE_CAPABILITIES: dict[str, set] = {
               "knowledge.read", "knowledge.write", "system.admin"},
 }
 
+# query-api 的 durable outbox 派发的是已经由用户授权创建的 Run；该主体只需要
+# 触发既有调查的只读入口，不应获得 operator/admin 的变更能力。
+SYSTEM_DISPATCH_PRINCIPAL_ID = "f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c"
+
+
+def build_runtime_authorization_matrix(
+    service_account_roles: dict[str, str] | None = None,
+) -> tuple[dict[str, str], "AuthorizationMatrix"]:
+    """Build the production service-identity matrix with its safe default.
+
+    The query-api outbox dispatcher uses a fixed system principal to deliver an
+    already-persisted investigation Run.  If deployment configuration omits the
+    optional service-account map, that principal must still be registered with
+    the least-privileged role capable of starting the read-only investigation
+    worker.  An explicit configured role remains authoritative, so operators can
+    disable the path with ``viewer`` when required.
+    """
+    roles = dict(service_account_roles or {})
+    roles.setdefault(SYSTEM_DISPATCH_PRINCIPAL_ID, "engineer")
+    matrix = AuthorizationMatrix(service_account_roles=roles)
+    for principal in roles:
+        matrix.add_rule(AuthzRule(
+            principal=principal,
+            tenant_id="*",
+            cluster_id="*",
+            capability="ai.investigate",
+            action="create",
+            risk_max="R0",
+            require_confirmation=False,
+            require_approval=False,
+        ))
+        matrix.add_rule(AuthzRule(
+            principal=principal,
+            tenant_id="*",
+            cluster_id="*",
+            capability="ai.chat",
+            action="create",
+            risk_max="R0",
+            require_confirmation=False,
+            require_approval=False,
+        ))
+    return roles, matrix
+
 
 @dataclass
 class AuthzRule:

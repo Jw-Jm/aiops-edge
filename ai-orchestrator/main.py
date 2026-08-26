@@ -69,7 +69,10 @@ except (_PersistenceConfigError, ConnectionError, OSError) as _e:
 
 # P13 真实接线：AuthorizationMatrix 单例（P0-6，服务端授权）。服务账号角色从
 # SERVICE_ACCOUNT_ROLES（JSON {principal: role}）加载；生产应从 query-api 权威角色 SoT。
-from authorization_matrix import AuthorizationMatrix as _AuthorizationMatrix, AuthzError as _AuthzError, AuthzRule as _AuthzRule
+from authorization_matrix import (
+    AuthzError as _AuthzError,
+    build_runtime_authorization_matrix as _build_runtime_authorization_matrix,
+)
 import json as _json
 _SERVICE_ACCOUNT_ROLES = {}
 try:
@@ -78,21 +81,7 @@ try:
         _SERVICE_ACCOUNT_ROLES = _json.loads(_raw)
 except Exception:  # noqa: BLE001 — 配置损坏则空映射（fail-closed 到前缀/默认角色）
     _SERVICE_ACCOUNT_ROLES = {}
-_authz_matrix = _AuthorizationMatrix(service_account_roles=_SERVICE_ACCOUNT_ROLES)
-# 为已配置的服务账号注册「发起调查」规则（ai.investigate，R0 无确认/审批）。
-# 未配置 principal → viewer（无 ai.investigate）→ CAPABILITY_DENIED（fail-closed）。
-for _sa_principal in _SERVICE_ACCOUNT_ROLES:
-    _authz_matrix.add_rule(_AuthzRule(
-        principal=_sa_principal, tenant_id="*", cluster_id="*",
-        capability="ai.investigate", action="create", risk_max="R0",
-        require_confirmation=False, require_approval=False,
-    ))
-    # P19.6：对话型 capability（ai.chat）。对话不建 Run、无确认/审批；只读。
-    _authz_matrix.add_rule(_AuthzRule(
-        principal=_sa_principal, tenant_id="*", cluster_id="*",
-        capability="ai.chat", action="create", risk_max="R0",
-        require_confirmation=False, require_approval=False,
-    ))
+_SERVICE_ACCOUNT_ROLES, _authz_matrix = _build_runtime_authorization_matrix(_SERVICE_ACCOUNT_ROLES)
 
 
 def _workflow_cron_enabled() -> bool:

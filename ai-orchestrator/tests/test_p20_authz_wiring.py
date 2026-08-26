@@ -13,7 +13,16 @@ from __future__ import annotations
 
 import pytest
 
-from authorization_matrix import AuthorizationMatrix, AuthzRule, AuthzError
+from authorization_matrix import (
+    AuthorizationMatrix,
+    AuthzRule,
+    AuthzError,
+    SYSTEM_DISPATCH_PRINCIPAL_ID,
+    build_runtime_authorization_matrix,
+)
+
+
+SYSTEM_DISPATCH_PRINCIPAL = SYSTEM_DISPATCH_PRINCIPAL_ID
 
 
 def _matrix(**kw) -> AuthorizationMatrix:
@@ -116,4 +125,32 @@ def test_authorized_engineer_allowed():
         cluster_id="91771a6e-9c2d-11f1-8271-bea176fe9f9f",
         capability="ai.investigate",
         action="create",
+    )
+
+
+def test_system_dispatch_principal_is_authorized_for_existing_run_dispatch():
+    """已持久化 Run 的内部派发主体必须拥有最小只读调查权限。"""
+    m = _matrix(service_account_roles={SYSTEM_DISPATCH_PRINCIPAL: "engineer"},
+                rules={SYSTEM_DISPATCH_PRINCIPAL: "ai.investigate"})
+    m.authorize(
+        principal=SYSTEM_DISPATCH_PRINCIPAL,
+        tenant_id="7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        cluster_id="91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        capability="ai.investigate",
+        action="create",
+        risk="R0",
+    )
+
+
+def test_runtime_wiring_registers_system_dispatch_principal_by_default():
+    """生产默认矩阵不能漏掉 query-api → orchestrator 的系统派发主体。"""
+    roles, m = build_runtime_authorization_matrix({})
+    assert roles.get(SYSTEM_DISPATCH_PRINCIPAL) == "engineer"
+    m.authorize(
+        principal=SYSTEM_DISPATCH_PRINCIPAL,
+        tenant_id="7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        cluster_id="91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+        capability="ai.investigate",
+        action="create",
+        risk="R0",
     )
