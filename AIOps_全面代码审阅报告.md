@@ -97,7 +97,7 @@
 1. **默认对话范围自相矛盾。** 前端默认使用 all，服务端明确拒绝空值和 all。用户没有显式选择集群时，聊天会以权限拒绝结束，而不是引导其选择有权访问的单一集群。
 2. **“工具调用”可观测性不精确。** 流式代码会根据图节点和关键词生成工具开始/完成事件，并注明为节点级推断。界面若把它展示为实际工具调用，会损害审计可信度。
 3. **主流程不统一。** 完整图、双 Agent 图和 function calling 能力仍与默认 chat 图并行。多套路径的权限、证据、状态和 UI 语义难以持续保持一致。
-4. **Trace 写入闭环未完成。** 查询层和 RCA 会读取 ClickHouse 的 trace_spans，ingest 也保留 OTLP/DeepFlow Span 解析逻辑；但当前生产入口已删除旧 ClickHouse writer，并将 Pipeline 和 DeepFlowSyncer 的 SpanSink 设为 nil，因此解析后的 Span 不会由现行 ingest 主链持久化到 trace_spans。需要补齐新的 Trace SoT 写入链，再用真实数据验证时间、租户与集群隔离。
+4. **Trace 写入闭环已按最终架构收敛。** 查询层和 RCA 读取平台 ClickHouse 的 `trace_spans`；Ingest 通过平台 `ClickHouseSpanSink` 持久化 SDK/OTLP Span，DeepFlow 通过官方 OTLP/gRPC exporter 进入同一写入链。DeepFlow ClickHouse 不再被 Ingest 读取或修改，真实验收需持续核验时间、租户与集群隔离。
 5. **源码直启与 Helm 的模型模式默认值不同。** 编排器 Python 进程在未传环境变量时会把 LLM_MOCK 默认设为 true；当前 Helm values 已将 aiOrchestrator.llmMock 设为 false，并由 Deployment 显式注入。生产检查重点应是核验实际渲染值、运行时环境变量、模型密钥、失败降级与响应标记，而不是把 Helm 默认配置判定为 Mock。
 
 ## 5. 已复核的高优先级问题

@@ -42,17 +42,9 @@ spec:
             - name: CLICKHOUSE_PASSWORD
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
-            # DeepFlow 同步：host 为空则禁用同步器
-            - name: DEEPFLOW_CH_HOST
-              value: {{ .Values.ingest.deepflowChHost | quote }}
-            - name: DEEPFLOW_CH_PORT
-              value: {{ .Values.ingest.deepflowChPort | quote }}
+            # DeepFlow 官方 OTLP/gRPC exporter 的租户身份；接收端只写平台 Trace SoT。
             - name: DEEPFLOW_TENANT_ID
               value: {{ .Values.ingest.deepflowTenantId | default "default" | quote }}
-            - name: DEEPFLOW_SYNC_INTERVAL
-              value: {{ .Values.ingest.syncInterval | quote }}
-            - name: DEEPFLOW_SPAN_SAMPLE_RATE
-              value: {{ .Values.ingest.spanSampleRate | default 1.0 | quote }}
             - name: INGEST_WAL_DIR
               value: "/wal"
             # 多集群纳管：本 ingest 实例所属集群 ID（代码默认 "default"，主集群显式注入保持一致）

@@ -24,12 +24,6 @@ func TestOTLPLogsReturnsRetryableFailureWhenSinkWriteFails(t *testing.T) {
 	}
 }
 
-func TestDeepFlowLegacyClusterIDUsesIngestCluster(t *testing.T) {
-	if got := deepFlowLegacyClusterID("cluster-canonical"); got != "cluster-canonical" {
-		t.Fatalf("legacy DeepFlow cluster = %q, want cluster-canonical", got)
-	}
-}
-
 func TestParseEnvBoolDefault(t *testing.T) {
 	t.Setenv("OTLP_GRPC_ENABLED", "off")
 	if got := parseEnvBoolDefault("OTLP_GRPC_ENABLED", true); got {

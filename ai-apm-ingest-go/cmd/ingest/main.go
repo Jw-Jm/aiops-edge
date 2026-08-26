@@ -90,63 +90,8 @@ func main() {
 		log.Printf("WARN: CLICKHOUSE_HTTP_URL not set; trace_spans SoT sink is nil (production/candidate must configure or set TRACE_SOT_MODE=required)")
 	}
 
-	// DeepFlow 同步器：把 deepflow-clickhouse 的应用层调用写入 observability 拓扑/trace/日志，
-	// 并累加为 VM 服务 RED 指标。
-	// 多 k8s 环境支持：DEEPFLOW_CH_ENDPOINTS="name@host:port,name2@host2:port2"（name=cluster 名，RED 指标按 cluster 区分）
-	// 兼容旧配置：仅 DEEPFLOW_CH_HOST/DEEPFLOW_CH_PORT 时使用本实例 CLUSTER_ID，
-	// 防止真实流量写入 default 集群后无法被当前集群的前端查询到。
-	startDeepFlowSyncers := func() int {
-		n := 0
-		// C-01：DeepFlow 作为 Span 输入/补充来源，进入同一 ClickHouseSpanSink（trace SoT）。
-		// edge/log sink 仍 nil（service_topology 与日志独立管理）。
-		var (
-			dfEdge pipeline.EdgeSink
-			dfSpan pipeline.SpanSink = spanSink
-			dfLog  pipeline.LogSink
-		)
-		if eps := os.Getenv("DEEPFLOW_CH_ENDPOINTS"); eps != "" {
-			for _, ep := range strings.Split(eps, ",") {
-				ep = strings.TrimSpace(ep)
-				if ep == "" {
-					continue
-				}
-				cluster, hostPort := ep, ep
-				if at := strings.LastIndex(ep, "@"); at > 0 {
-					cluster, hostPort = ep[:at], ep[at+1:]
-				}
-				host, portStr, ok := strings.Cut(hostPort, ":")
-				if !ok {
-					portStr = "8123"
-				}
-				port, _ := strconv.Atoi(portStr)
-				if port == 0 {
-					port = 8123
-				}
-				syncer := pipeline.NewDeepFlowSyncer(host, port, cluster, dfEdge, dfSpan, dfLog, met)
-				syncer.Start()
-				n++
-				log.Printf("DeepFlowSyncer enabled (cluster=%s deepflow-ch=%s:%d)", cluster, host, port)
-			}
-		} else if dfHost := os.Getenv("DEEPFLOW_CH_HOST"); dfHost != "" {
-			dfPort := parseEnvInt("DEEPFLOW_CH_PORT")
-			if dfPort == 0 {
-				dfPort = 8123
-			}
-			legacyClusterID := deepFlowLegacyClusterID(clusterID)
-			syncer := pipeline.NewDeepFlowSyncer(dfHost, dfPort, legacyClusterID, dfEdge, dfSpan, dfLog, met)
-			syncer.Start()
-			n++
-			log.Printf("DeepFlowSyncer enabled (cluster=%s deepflow-ch=%s:%d)", legacyClusterID, dfHost, dfPort)
-		}
-		if n == 0 {
-			log.Printf("DeepFlowSyncer disabled (DEEPFLOW_CH_HOST / DEEPFLOW_CH_ENDPOINTS not set)")
-		}
-		return n
-	}
-	startDeepFlowSyncers()
-
-	// C-01：Pipeline 以 ClickHouseSpanSink 作为 span sink（Trace Persistent SoT）；
-	// edge sink 仍 nil（service_topology 由 DeepFlow 独立管理）。
+	// C-01：Pipeline 以平台 ClickHouseSpanSink 作为 span sink（Trace Persistent SoT）。
+	// DeepFlow 只通过官方 OTLP/gRPC exporter 输入，不读取或修改 DeepFlow 自有 ClickHouse。
 	pl := pipeline.New(spanSink, nil)
 	pl.SetClusterID(clusterID)               // 多集群纳管：数据打 cluster_id 标
 	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics
@@ -161,9 +106,6 @@ func main() {
 		})
 	}
 	defer pl.Close()
-
-	// DeepFlow data receiver
-	dfReceiver := pipeline.NewDeepFlowReceiver(pl)
 
 	apiKey := os.Getenv("INGEST_API_KEY")           // 为空则不启用鉴权（便于本地调试），生产必须配置
 	rl := newRateLimiter(parseEnvInt("INGEST_RPS")) // 每接收端点 QPS 上限；<=0 表示不限
@@ -202,9 +144,6 @@ func main() {
 		return telRT.WriteLog(tenantID, clusterID, service, level, body, ts)
 	}
 	mux.Handle("/v1/logs", newOTLPLogsHandler(clusterID, maxBody, writeLog))
-
-	// DeepFlow native protocol endpoint
-	mux.HandleFunc("/v1/deepflow", dfReceiver.ServeHTTP)
 
 	var grpcServer *grpc.Server
 	var grpcListener net.Listener
@@ -312,14 +251,6 @@ func main() {
 			_ = grpcListener.Close()
 		}
 	}
-}
-
-func deepFlowLegacyClusterID(clusterID string) string {
-	clusterID = strings.TrimSpace(clusterID)
-	if clusterID == "" {
-		return "default"
-	}
-	return clusterID
 }
 
 type logWriteFunc func(tenantID, clusterID, service, level, body string, ts time.Time) telemetry.WriteResult

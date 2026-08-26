@@ -36,11 +36,6 @@ networkPolicy:
   #   建议灰度顺序：["event-collector"] → ["event-collector","categraf","ingest"] → 其余组件 → 全局 true。
   #   回滚：清空列表（[]）即解除对应组件的 egress 限制。
   egressCanaryServices: []
-  # ingest 外部 DeepFlow ClickHouse 放行：DeepFlow CH 通常在集群外，
-  #   需显式放行其 CIDR（仅在 ingest 被 egress 限制——灰度或全局——且 cidrs 非空时渲染 ipBlock 白名单）。
-  ingestExternalEgress:
-    cidrs: []
-    ports: [8123, 443]
 
 # Stage D（报告 §21 / F-22）：ai-action-executor——独立生产 mutation 安全执行边界。
 # EXECUTION_MODE=disabled 默认关闭真实执行（A-C + D 全闭环后才可开 approved）。
@@ -308,8 +303,8 @@ ingest:
   clickhousePort: "8123"
   # 多集群纳管：本 ingest 实例所属集群 ID（V9.2 canonical identity，禁止 default）
   clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
-  # DeepFlow 同步写入的租户身份；必须与 queryApi.systemTenantId 对齐，避免
-  # 真实流量落入 default 租户后在当前前端租户中不可见。
+  # DeepFlow OTLP/gRPC exporter 写入平台 Trace SoT 使用的租户身份；必须与
+  # queryApi.systemTenantId 对齐，避免真实流量落入 default 租户后前端不可见。
   deepflowTenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
   # V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已删除，legacyWriterEnabled 开关已移除。
   # telemetry new backend：TELEMETRY_WRITER_MODE=new 启用 VM/VLogs 写链。
@@ -323,12 +318,6 @@ ingest:
   # x-tenant-id metadata and writes only to the platform Trace SoT.
   otlpGrpcEnabled: true
   otlpGrpcPort: 4317
-  # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
-  deepflowChHost: "deepflow-clickhouse.deepflow.svc.cluster.local"
-  deepflowChPort: "8123"
-  syncInterval: "10s"
-  # span 抽样率（0~1）：每 flow 现在产出 client+server 两个 span，0.5 抵消写入量翻倍
-  spanSampleRate: 0.5
   walStorageClass: ""
   walStorage: 5Gi
   resources:

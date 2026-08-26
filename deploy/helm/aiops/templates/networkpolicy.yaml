@@ -20,9 +20,7 @@
 #     frontend            无额外出站需求（仅 DNS）
 #     query-api           mysql:3306、clickhouse:8123、victoria-metrics:8428、
 #                         victoria-logs:9428、ai-orchestrator:8080、kube-system:443（K8s API）、DNS
-#     ingest              clickhouse:8123、victoria-metrics:8428、victoria-logs:9428、DNS；
-#                         DeepFlow ClickHouse 通常在集群外，需经
-#                         networkPolicy.ingestExternalEgress.cidrs 显式放行其 CIDR
+#     ingest              platform clickhouse:8123、victoria-metrics:8428、victoria-logs:9428、DNS
 #     event-collector     clickhouse:8123、kube-system:443（Event watch / Lease 选主）、DNS
 #     categraf            victoria-metrics:8428（remote write）、mysql:3306（input.mysql）、DNS
 #                         （主机指标经 hostPath 本地读，无网络流量；未用 hostNetwork，策略生效）
@@ -50,8 +48,6 @@ spec:
   policyTypes: ["Ingress"]
 {{- $denyAll := .Values.networkPolicy.egressDefaultDeny }}
 {{- $canary := .Values.networkPolicy.egressCanaryServices | default (list) }}
-{{- $extCidrs := .Values.networkPolicy.ingestExternalEgress.cidrs | default (list) }}
-{{- $extPorts := .Values.networkPolicy.ingestExternalEgress.ports | default (list 8123 443) }}
 {{- $dnsTo := list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) "podSelector" (dict "matchLabels" (dict "k8s-app" "kube-dns"))) }}
 {{- $dnsPorts := list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53) }}
 {{- if $denyAll }}
@@ -219,9 +215,7 @@ spec:
 {{- end }}
 {{- if or $denyAll (has "ingest" $canary) }}
 ---
-# 1e) ingest 出站白名单：clickhouse/victoria-metrics/victoria-logs + DNS。
-#     DeepFlow ClickHouse 通常在集群外：需通过 networkPolicy.ingestExternalEgress.cidrs
-#     显式放行其 CIDR，否则 DEEPFLOW_CH_HOST 同步将被 egress 策略拒绝。
+# 1e) ingest 出站白名单：平台 ClickHouse/VictoriaMetrics/VictoriaLogs + DNS。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -254,19 +248,6 @@ spec:
       ports:
         - protocol: TCP
           port: 9428
-{{- if $extCidrs }}
-    # 外部 DeepFlow ClickHouse（集群外）显式放行（ipBlock）
-    - to:
-{{- range $cidr := $extCidrs }}
-        - ipBlock:
-            cidr: {{ $cidr }}
-{{- end }}
-      ports:
-{{- range $p := $extPorts }}
-        - protocol: TCP
-          port: {{ $p }}
-{{- end }}
-{{- end }}
     - to:
 {{ toYaml $dnsTo | indent 8 }}
       ports:

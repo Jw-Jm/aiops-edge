@@ -210,14 +210,6 @@ else
       -n "${DEEPFLOW_NAMESPACE}" --create-namespace \
       -f "${CHART_DIR}/values-deepflow.yaml" --wait --timeout 15m; then
     echo "BLOCKED_BY_ENV: DeepFlow did not become Ready"
-  else
-    step 8 "wire ingest to the installed DeepFlow ClickHouse"
-    run helm upgrade aiops "${CHART_DIR}" -n "${NAMESPACE}" --reuse-values \
-      --set deepflow.enabled=false \
-      --set-string ingest.deepflowChHost="deepflow-clickhouse.deepflow.svc.cluster.local" \
-      --set-string ingest.deepflowTenantId="7ed01afc-cc79-4ecd-8767-a2befa6168ad" \
-      --wait --timeout 15m
-    run kubectl -n "${NAMESPACE}" rollout status deployment/ingest --timeout=240s
   fi
 fi
 
