@@ -15,9 +15,10 @@ const Login: React.FC = () => {
       const res = await login(values.username, values.password)
       const token = res.data?.token || res.data?.data?.token
       if (token) {
-        useAuthStore.getState().login(token, res.data?.username || values.username, res.data?.role || 'user', res.data?.display_name || '')
+        const mustChangePassword = Boolean(res.data?.must_change_password ?? res.data?.data?.must_change_password)
+        useAuthStore.getState().login(token, res.data?.username || values.username, res.data?.role || 'user', res.data?.display_name || '', mustChangePassword)
         message.success('登录成功')
-        navigate('/overview')
+        navigate(mustChangePassword ? '/change-password' : '/overview')
       } else {
         message.error('登录失败：未收到 token')
       }

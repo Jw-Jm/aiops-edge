@@ -332,6 +332,8 @@ export const enableLLMProvider = (id: number) => api.post(`/settings/llm/provide
 
 // Auth
 export const login = (username: string, password: string) => api.post('/auth/login', { username, password })
+export const changePassword = (data: { current_password: string; new_password: string; confirm_password: string }) =>
+  api.post('/auth/change-password', data)
 
 // ===== 需求2/3: aichat 内嵌审批——确认执行处置命令（AI 建议或用户自定义）=====
 export const executeSuggestion = (data: {

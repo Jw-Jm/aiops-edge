@@ -42,10 +42,10 @@ func TestRequestAuthorizationContextDoesNotUseJWTClaimsAsAuthority(t *testing.T)
 	previous := store.GetDB()
 	store.SetDB(db)
 	t.Cleanup(func() { store.SetDB(previous) })
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(authzUserID, authzSessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).
-			AddRow(authzUserID, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, 0, "active", time.Now().Add(time.Hour), nil, int64(0)))
 	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
 		WithArgs(authzUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
@@ -78,7 +78,7 @@ func TestResolveResourceReturnsCanonicalReferenceOnlyAfterAuthorization(t *testi
 	t.Cleanup(func() { store.SetDB(previous) })
 	expectRequestIdentityAndTenant(mock)
 	expectAuthorizationCluster(mock, "production")
-	expectRequestIdentityAndTenant(mock)
+	expectAuthorizationIdentity(mock)
 	expectAuthorizationCluster(mock, "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
 	mock.ExpectQuery("SELECT 1 FROM user_roles").
 		WithArgs(authzUserID, authzTenantID, "kubernetes.read").
@@ -265,6 +265,16 @@ func testTrustedRequestContext(audience string) contract.TrustedRequestContext {
 }
 
 func expectRequestIdentityAndTenant(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
+		WithArgs(authzUserID, authzSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, 0, "active", time.Now().Add(time.Hour), nil, int64(0)))
+	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
+		WithArgs(authzUserID, authzTenantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
+}
+
+func expectAuthorizationIdentity(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(authzUserID, authzSessionID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).

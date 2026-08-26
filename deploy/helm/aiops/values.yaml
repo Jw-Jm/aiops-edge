@@ -85,8 +85,9 @@ secrets:
   mysqlRootPassword: ""
   mysqlAppPassword: ""
   mysqlMigratorPassword: ""
-  # admin 初始密码（query-api 启动种子；未设置时生成随机密码并打印一次性提示，admin 将无法用默认密码登录）
-  adminInitialPassword: ""
+  # admin 首次种子密码；本机默认 admin123，首次登录后由 query-api 强制改密。
+  # 显式注入值和已存在 Secret 优先，升级不会覆盖已有 admin 密码。
+  adminInitialPassword: "admin123"
   # LLM proxy credentials: provider keys remain exclusively in the proxy container.
   llmProxyToken: ""
   llmProviderKeys: ""

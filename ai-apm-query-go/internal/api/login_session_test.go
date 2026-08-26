@@ -29,10 +29,10 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	const canonicalUserID = "11111111-1111-4111-8111-111111111111"
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, created_at FROM users WHERE username = ?")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, user_uuid, username, password_hash, display_name, role, email, status, scope, is_approver, must_change_password, created_at FROM users WHERE username = ?")).
 		WithArgs("alice").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "username", "password_hash", "display_name", "role", "email", "status", "scope", "is_approver", "created_at"}).
-			AddRow(int64(7), canonicalUserID, "alice", string(passwordHash), "Alice", "admin", "alice@example.com", 1, `{"clusters":["all"]}`, 0, time.Now()))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "username", "password_hash", "display_name", "role", "email", "status", "scope", "is_approver", "must_change_password", "created_at"}).
+			AddRow(int64(7), canonicalUserID, "alice", string(passwordHash), "Alice", "admin", "alice@example.com", 1, `{"clusters":["all"]}`, 0, 1, time.Now()))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO auth_sessions (session_id, user_uuid, status, expires_at, revoked_at) VALUES (?, ?, 'active', ?, NULL)")).
 		WithArgs(sqlmock.AnyArg(), canonicalUserID, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -48,7 +48,8 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 		t.Fatalf("Login() status = %d, body = %s, sql = %v", recorder.Code, recorder.Body.String(), mock.ExpectationsWereMet())
 	}
 	var response struct {
-		Token string `json:"token"`
+		Token              string `json:"token"`
+		MustChangePassword bool   `json:"must_change_password"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
@@ -57,11 +58,14 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 	if !ok || userID != canonicalUserID || sessionID == "" {
 		t.Fatalf("Login() token identity = %q/%q valid=%v, want canonical user UUID and persisted session ID", userID, sessionID, ok)
 	}
+	if !response.MustChangePassword {
+		t.Fatal("Login() must_change_password=false, want true")
+	}
 
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(canonicalUserID, sessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).
-			AddRow(canonicalUserID, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(canonicalUserID, 1, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
 	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
 		WithArgs(canonicalUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))

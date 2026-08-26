@@ -242,20 +242,29 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	username, _, _, ok := validateJWT(token)
-	if !ok {
-		respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
-		return
+	// AuthMiddleware attaches the canonical UUID and current first-login state.
+	// Do not derive the user from the JWT as a username: the JWT subject is the
+	// canonical user UUID, and the password flag is MySQL authority.
+	authCtx, hasAuthCtx := requestAuthorizationContext(r)
+	userUUID := authCtx.UserID
+	if !hasAuthCtx || userUUID == "" {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		var ok bool
+		userUUID, _, ok = validateJWTIdentity(token)
+		if !ok {
+			respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
+			return
+		}
 	}
 	// G1 修复（S2）：用户不存在/被禁用时返回 401，绝不回退返回 token claims
 	// （否则删除/禁用用户后其 token 仍能通过 /me 获取有效身份信息）。
-	u, err := (&store.UserDAO{}).GetByUsername(username)
+	u, err := (&store.UserDAO{}).GetByUUID(userUUID)
 	if err != nil || u == nil || u.Status != 1 {
 		respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 		return
 	}
 	respondJSON(w, 200, map[string]interface{}{
 		"username": u.Username, "role": u.Role, "display_name": u.DisplayName, "email": u.Email, "scope": u.Scope,
+		"must_change_password": authCtx.MustChangePassword,
 	})
 }

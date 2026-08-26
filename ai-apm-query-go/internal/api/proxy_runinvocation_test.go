@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	proxyClusterID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	proxyClusterID   = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	proxyClusterSlug = "prod-sg-01"
 )
 
@@ -250,10 +250,10 @@ func TestProxyAIMissingClusterFailsClosed(t *testing.T) {
 	t.Cleanup(func() { store.SetDB(prev) })
 
 	// auth passes, but body has no cluster → fail closed before any cluster query.
-	mock.ExpectQuery("SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(authzUserID, authzSessionID).
-		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "session_status", "expires_at", "revoked_at", "token_version"}).
-			AddRow(authzUserID, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, 0, "active", time.Now().Add(time.Hour), nil, int64(0)))
 	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
 		WithArgs(authzUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))

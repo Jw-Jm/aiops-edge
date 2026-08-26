@@ -59,7 +59,13 @@ resolve_required_secret() {
   return 1
 }
 
-ADMIN_PASSWORD_VAL="$(resolve_required_secret ADMIN_PASSWORD ADMIN_INITIAL_PASSWORD)"
+# Local first bootstrap has a deterministic credential and the application
+# forces a password change after login. An explicit ADMIN_PASSWORD or an
+# existing Secret still wins and is never overwritten by an upgrade.
+ADMIN_PASSWORD_VAL="${ADMIN_PASSWORD:-$(secret_value ADMIN_INITIAL_PASSWORD)}"
+if [ -z "$ADMIN_PASSWORD_VAL" ]; then
+  ADMIN_PASSWORD_VAL="admin123"
+fi
 CLICKHOUSE_PASSWORD_VAL="$(resolve_required_secret CLICKHOUSE_PASSWORD CLICKHOUSE_PASSWORD)"
 MYSQL_ROOT_PASSWORD_VAL="$(resolve_required_secret MYSQL_ROOT_PASSWORD MYSQL_ROOT_PASSWORD)"
 INTERNAL_TOKEN_VAL="$(resolve_required_secret INTERNAL_TOKEN INTERNAL_TOKEN)"

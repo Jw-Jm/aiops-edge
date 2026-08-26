@@ -5,7 +5,8 @@ interface AuthState {
   username: string
   role: string
   displayName: string
-  login: (token: string, username?: string, role?: string, displayName?: string) => void
+  mustChangePassword: boolean
+  login: (token: string, username?: string, role?: string, displayName?: string, mustChangePassword?: boolean) => void
   logout: () => void
 }
 
@@ -15,18 +16,21 @@ export const useAuthStore = create<AuthState>()((set) => ({
   username: localStorage.getItem('username') || '',
   role: localStorage.getItem('role') || '',
   displayName: localStorage.getItem('display_name') || '',
-  login: (token, username = '', role = '', displayName = '') => {
+  mustChangePassword: localStorage.getItem('must_change_password') === 'true',
+  login: (token, username = '', role = '', displayName = '', mustChangePassword = false) => {
     localStorage.setItem('token', token)
     if (username) localStorage.setItem('username', username)
     if (role) localStorage.setItem('role', role)
     if (displayName) localStorage.setItem('display_name', displayName)
-    set({ token, username, role, displayName })
+    localStorage.setItem('must_change_password', String(mustChangePassword))
+    set({ token, username, role, displayName, mustChangePassword })
   },
   logout: () => {
     localStorage.removeItem('token')
     localStorage.removeItem('username')
     localStorage.removeItem('role')
     localStorage.removeItem('display_name')
-    set({ token: '', username: '', role: '', displayName: '' })
+    localStorage.removeItem('must_change_password')
+    set({ token: '', username: '', role: '', displayName: '', mustChangePassword: false })
   },
 }))

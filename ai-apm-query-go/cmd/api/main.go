@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -25,13 +23,13 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/store/migrations"
 )
 
-// randomPassword 用 crypto/rand 生成 n 字节的十六进制随机密码（n*2 个字符）。
-func randomPassword(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "admin-" + hex.EncodeToString([]byte(fmt.Sprintf("%d", n)))
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
 	}
-	return hex.EncodeToString(b)
+	return ""
 }
 
 // trustedContextVerifyConfigFromEnv loads the independently managed service
@@ -211,12 +209,9 @@ func main() {
 		handler.StartAlertEvaluation()
 	}
 	if db != nil {
-		// admin 初始密码从环境变量注入（生产必设）；未设置时生成随机强密码并打印一次性提示。
-		adminPW := os.Getenv("ADMIN_INITIAL_PASSWORD")
-		if adminPW == "" {
-			adminPW = randomPassword(16)
-			log.Printf("ADMIN_INITIAL_PASSWORD not set: generated random admin password (first login / reset only): %s", adminPW)
-		}
+		// admin 初始密码只在 admin 用户不存在时由 SeedAdmin 使用；显式环境变量
+		// 优先，未注入时使用本地验收约定 admin123。SeedAdmin 幂等，不覆盖已有账号。
+		adminPW := firstNonEmpty(os.Getenv("ADMIN_INITIAL_PASSWORD"), os.Getenv("ADMIN_PASSWORD"), "admin123")
 		if adminHash, err := bcrypt.GenerateFromPassword([]byte(adminPW), bcrypt.DefaultCost); err == nil {
 			if err := (&store.UserDAO{}).SeedAdmin(string(adminHash)); err != nil {
 				log.Fatalf("admin bootstrap: %v", err)
@@ -239,6 +234,7 @@ func main() {
 
 	// Auth routes (no auth required)
 	mux.HandleFunc("/api/v1/auth/login", handler.Login)
+	mux.HandleFunc("/api/v1/auth/change-password", handler.ChangePassword)
 	mux.HandleFunc("/api/v1/login", handler.Login)
 
 	// User management (admin)

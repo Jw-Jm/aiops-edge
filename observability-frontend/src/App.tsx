@@ -11,6 +11,7 @@ import { getAlertEvents } from './api/client'
 
 // ===== 懒加载页面（全新 IA）=====
 const Login = lazy(() => import('./pages/Login'))
+const ChangePassword = lazy(() => import('./pages/ChangePassword'))
 const Overview = lazy(() => import('./pages/Overview'))
 const ServiceObservability = lazy(() => import('./pages/observability/ServiceObservability'))
 const Trace = lazy(() => import('./pages/observability/Trace'))
@@ -334,6 +335,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Suspense fallback={<Spin />}><Login /></Suspense>} />
+      <Route path="/change-password" element={<RequireAuth><Suspense fallback={<Spin />}><ChangePassword /></Suspense></RequireAuth>} />
       <Route path="*" element={<RequireAuth><AppLayout /></RequireAuth>} />
     </Routes>
   )

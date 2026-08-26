@@ -28,9 +28,10 @@ var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3
 // AuthorizationContext is the request identity and tenant membership verified
 // from the current MySQL state. It intentionally contains no JWT role or scope.
 type AuthorizationContext struct {
-	UserID    string
-	SessionID string
-	TenantID  string
+	UserID             string
+	SessionID          string
+	TenantID           string
+	MustChangePassword bool
 }
 
 type authorizationError struct{ code string }
@@ -338,11 +339,11 @@ func resolveMySQLAuthorizationContext(userID, sessionID, tenantID string, tokenV
 		return zero, authorizationFailure("cluster_unavailable")
 	}
 	var currentUserID, sessionStatus string
-	var userStatus int
+	var userStatus, mustChange int
 	var storedVersion int64
 	var expiresAt, revokedAt sql.NullTime
-	err := conn.QueryRow(`SELECT u.user_uuid, u.status, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s ON s.user_uuid = u.user_uuid
-WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, userID, sessionID).Scan(&currentUserID, &userStatus, &sessionStatus, &expiresAt, &revokedAt, &storedVersion)
+	err := conn.QueryRow(`SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s ON s.user_uuid = u.user_uuid
+WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, userID, sessionID).Scan(&currentUserID, &userStatus, &mustChange, &sessionStatus, &expiresAt, &revokedAt, &storedVersion)
 	if err != nil || currentUserID != userID || userStatus != 1 || sessionStatus != "active" || !expiresAt.Valid || !expiresAt.Time.After(time.Now()) || (revokedAt.Valid && !revokedAt.Time.IsZero()) {
 		return zero, authorizationFailure("permission_denied")
 	}
@@ -357,7 +358,7 @@ WHERE ut.user_uuid = ? AND t.id = ? AND t.enabled = 1 AND ut.status = 'active' L
 	if err != nil || memberTenantID != tenantID {
 		return zero, authorizationFailure("permission_denied")
 	}
-	return AuthorizationContext{UserID: userID, SessionID: sessionID, TenantID: tenantID}, nil
+	return AuthorizationContext{UserID: userID, SessionID: sessionID, TenantID: tenantID, MustChangePassword: mustChange == 1}, nil
 }
 
 func requestAuthorizationContext(r *http.Request) (AuthorizationContext, bool) {
@@ -447,26 +448,21 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// and session ID. Role and scope remain response compatibility data, not JWT
 	// authority.
 	if db := store.GetDB(); db != nil {
-		u, err := (&store.UserDAO{}).GetByUsername(creds.Username)
+		u, err := (&store.UserDAO{}).GetByUsernameForLogin(creds.Username)
 		if err == nil && u != nil && u.Status == 1 {
 			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(creds.Password)) == nil {
 				if !canonicalUUID.MatchString(u.UserUUID) {
 					respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
 					return
 				}
-				sessionID := randomSessionID()
-				expiresAt := time.Now().UTC().Add(24 * time.Hour)
-				if sessionID == "" || (&store.UserDAO{}).CreateSession(u.UserUUID, sessionID, expiresAt) != nil {
-					respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
-					return
-				}
-				token := generateJWTWithSessionExpiry(u.UserUUID, sessionID, expiresAt)
-				if token == "" {
+				token, err := issueSessionToken(u.UserUUID)
+				if err != nil {
 					respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
 					return
 				}
 				respondJSON(w, 200, map[string]interface{}{
 					"token": token, "username": u.Username, "role": u.Role, "display_name": u.DisplayName, "scope": u.Scope,
+					"must_change_password": u.MustChangePassword,
 				})
 				return
 			}
@@ -480,6 +476,21 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, 401, map[string]interface{}{"error": "invalid credentials"})
+}
+
+// issueSessionToken creates a persisted session and signs a JWT that proves
+// only the canonical user UUID and session identity.
+func issueSessionToken(userUUID string) (string, error) {
+	sessionID := randomSessionID()
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	if sessionID == "" || (&store.UserDAO{}).CreateSession(userUUID, sessionID, expiresAt) != nil {
+		return "", fmt.Errorf("session creation failed")
+	}
+	token := generateJWTWithSessionExpiry(userUUID, sessionID, expiresAt)
+	if token == "" {
+		return "", fmt.Errorf("token creation failed")
+	}
+	return token, nil
 }
 
 // hasRole 从 MySQL 权威角色 SoT 判定用户是否具备指定角色（admin 等）。
@@ -843,6 +854,17 @@ func AuthMiddleware(next http.Handler) http.Handler {
 				status = http.StatusServiceUnavailable
 			}
 			respondJSON(w, status, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		// Password bootstrap is a browser-only interactive state. Internal
+		// signed service calls keep their existing service boundary semantics.
+		internalRequest := r.Header.Get("X-Internal-Token") != "" || r.Header.Get("X-Trusted-Request-Context") != ""
+		if !internalRequest && authorization.MustChangePassword && path != "/api/v1/auth/change-password" && path != "/api/v1/me" {
+			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "password_change_required"})
+			return
+		}
+		if path == "/api/v1/auth/change-password" {
+			next.ServeHTTP(w, withAuthorizationContext(r, authorization))
 			return
 		}
 		if !isCanonicalProtectedRoute(path) {

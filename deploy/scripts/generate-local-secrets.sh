@@ -105,7 +105,9 @@ func main() {
 		"MYSQL_ROOT_PASSWORD":         mustRandomURLBase64(24),
 		"MYSQL_APP_PASSWORD":          mustRandomURLBase64(24),
 		"MYSQL_MIGRATOR_PASSWORD":     mustRandomURLBase64(24),
-		"ADMIN_INITIAL_PASSWORD":      mustRandomURLBase64(18),
+		// Local bootstrap uses the documented first-login credential. The query-api
+		// forces an immediate password change after this one-time seed.
+		"ADMIN_INITIAL_PASSWORD":      "admin123",
 		"LLM_PROXY_TOKEN":             mustRandomURLBase64(24),
 		"EXECUTOR_TOKEN":              mustRandomURLBase64(24),
 		"ORCHESTRATOR_TO_QUERY_TOKEN": mustRandomURLBase64(24),
