@@ -103,6 +103,9 @@ export interface RunSummary {
   request_id: string
   status: string
   tenant_id?: string
+  created_by?: string | null
+  principal_id?: string | null
+  principal_type?: string | null
   primary_cluster_id?: string | null
   intent?: string
   action_mode?: string

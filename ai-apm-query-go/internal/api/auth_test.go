@@ -141,6 +141,56 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		// A0-04（11.11.4）：/api/v1/metrics/query——typed RED metrics（canonical tenant + concrete cluster）
 		"/api/v1/metrics/query",
+		// Browser-facing canonical read/admin routes used by the acceptance plan.
+		// Handler-level RBAC remains authoritative for admin/approver-only reads
+		// and all writes; this list only gets the request to that handler.
+		"/api/v1/users",
+		"/api/v1/users/1",
+		"/api/v1/catalog/services",
+		"/api/v1/catalog/services/1",
+		"/api/v1/devices",
+		"/api/v1/devices/1",
+		"/api/v1/infrastructure/nodes",
+		"/api/v1/infrastructure/pods",
+		"/api/v1/infrastructure/pods/p1",
+		"/api/v1/infrastructure/deployments",
+		"/api/v1/infrastructure/namespaces",
+		"/api/v1/nodes/metrics",
+		"/api/v1/infrastructure/hpa",
+		"/api/v1/infrastructure/vms",
+		"/api/v1/infrastructure/vms/ns/name",
+		"/api/v1/settings/k8s",
+		"/api/v1/deepflow/status",
+		"/api/v1/grafana/health",
+		"/api/v1/grafana/search",
+		"/api/v1/grafana/dashboards/main",
+		"/api/v1/system/status",
+		"/api/v1/system/components",
+		"/api/v1/system/cache",
+		"/api/v1/system/cache/invalidate",
+		"/api/v1/ai/skills",
+		"/api/v1/ai/skills/node-health",
+		"/api/v1/ai/agents",
+		"/api/v1/ai/agents/default",
+		"/api/v1/ai/flows",
+		"/api/v1/ai/flows/default",
+		"/api/v1/ai/knowledge",
+		"/api/v1/ai/knowledge/rag/stats",
+		"/api/v1/ai/rules",
+		"/api/v1/mcp/tools",
+		"/api/v1/ops/tasks",
+		"/api/v1/ops/recovery/policy",
+		"/api/v1/ops/cases",
+		"/api/v1/ops/anomalies",
+		"/api/v1/ops/artifacts",
+		"/api/v1/ops/reports",
+		"/api/v1/ops/reports/history",
+		"/api/v1/ops/reports/trend",
+		"/api/v1/ops/audit-logs",
+		"/api/v1/ops/changes",
+		"/api/v1/ipmi/sensors",
+		"/api/v1/ipmi/events",
+		"/api/v1/node/health",
 	}
 	for _, p := range allowed {
 		if !isCanonicalProtectedRoute(p) {
@@ -157,6 +207,10 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		// A0-04：多段子路径（非详情/events/cancel）不放行，避免 ProxyAI legacy 面被整体放开
 		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/actions",
 		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/something",
+		// Unknown legacy proxy paths must remain fail-closed even though the
+		// surrounding registered prefixes are canonical-protected.
+		"/api/v1/ops/not-registered",
+		"/api/v1/ai/unknown",
 	}
 	for _, p := range denied {
 		if isCanonicalProtectedRoute(p) {

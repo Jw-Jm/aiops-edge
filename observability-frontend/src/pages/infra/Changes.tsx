@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Table, Button, Modal, Form, Input, Select, Tag, Space, Empty as AntdEmpty, message } from 'antd'
 import { getChanges, postChange } from '../../api/client'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
@@ -35,6 +35,9 @@ const Changes: React.FC = () => {
   const clusters = useUIStore((s) => s.clusters)
 
   const [rows, setRows] = useState<any[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const pageSize = 20
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -46,25 +49,17 @@ const Changes: React.FC = () => {
 
   const load = () => {
     setLoading(true)
-    getChanges({ limit: 200 })
+    getChanges({ page, page_size: pageSize, service, change_type: changeType })
       .then((r) => {
         const d = r.data
         const list = Array.isArray(d) ? d : d?.changes ?? d?.items ?? d?.data ?? []
         setRows(Array.isArray(list) ? list : [])
+        setTotal(Array.isArray(d) ? list.length : Number(d?.total ?? list.length))
       })
-      .catch(() => setRows([]))
+      .catch(() => { setRows([]); setTotal(0) })
       .finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [currentClusterId])
-
-  // 客户端筛选（后端接口尚未就绪，先全量拉取本地过滤）
-  // B12: 服务/类型筛选语义统一——均用精确匹配（归一化小写全等），避免"服务子串、类型精确"不一致
-  const filtered = useMemo(() => rows.filter((r) => {
-    const svc = String(r?.service ?? '').toLowerCase()
-    if (service && svc !== service.trim().toLowerCase()) return false
-    if (changeType && String(r?.change_type ?? '').toLowerCase() !== String(changeType).toLowerCase()) return false
-    return true
-  }), [rows, service, changeType])
+  useEffect(() => { load() }, [currentClusterId, page, service, changeType])
 
   const submit = async () => {
     let v: Record<string, string>
@@ -130,25 +125,26 @@ const Changes: React.FC = () => {
           <Input
             placeholder="按服务筛选"
             value={service}
-            onChange={(e) => setService(e.target.value)}
+            onChange={(e) => { setService(e.target.value); setPage(1) }}
             allowClear
             style={{ width: 220 }}
           />
           <Select
             placeholder="变更类型"
             value={changeType || undefined}
-            onChange={(v) => setChangeType(v || '')}
+            onChange={(v) => { setChangeType(v || ''); setPage(1) }}
             allowClear
             style={{ width: 160 }}
             options={CHANGE_TYPES.filter((c, i, arr) => arr.findIndex((x) => x.value === c.value) === i)
               .map((c) => ({ value: c.value, label: c.label }))}
           />
           <Button onClick={load} loading={loading}>刷新</Button>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)', alignSelf: 'center' }}>共 {filtered.length} 条</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', alignSelf: 'center' }}>共 {total} 条</span>
         </div>
         <Table rowKey={(r: any) => `${r?.id ?? ''}-${r?.created_at ?? ''}-${r?.service ?? ''}-${r?.content ?? ''}`}
-          loading={loading} columns={cols} dataSource={filtered}
-          size="middle" pagination={{ pageSize: 20, showSizeChanger: false }} scroll={{ x: 980 }}
+          loading={loading} columns={cols} dataSource={rows}
+          size="middle" pagination={{ current: page, pageSize, total, showSizeChanger: false,
+            onChange: (nextPage) => setPage(nextPage) }} scroll={{ x: 980 }}
           locale={{ emptyText: <AntdEmpty description="暂无变更记录，点击右上角「登记变更」录入" /> }} />
       </div>
 

@@ -3990,9 +3990,14 @@ async def create_change_webhook(body: dict = None, request: Request = None):
 
 
 @app.get("/api/v1/ops/changes")
-async def list_change_events(service: str = "", cluster_id: str = "", limit: int = 50):
-    """变更时间线列表（按 created_at 倒序）。"""
-    limit = max(1, min(limit, 500))
+async def list_change_events(
+    service: str = "", cluster_id: str = "", change_type: str = "",
+    page: int = 1, page_size: int = 50,
+):
+    """变更时间线分页列表（筛选在数据库执行，避免固定前 200 条漏查）。"""
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    offset = (page - 1) * page_size
     from db import db_available, get_conn
     if not db_available():
         return {"changes": [], "total": 0}
@@ -4003,14 +4008,18 @@ async def list_change_events(service: str = "", cluster_id: str = "", limit: int
             where.append("service=%s"); vals.append(service)
         if cluster_id:
             where.append("cluster_id=%s"); vals.append(cluster_id)
+        if change_type:
+            where.append("change_type=%s"); vals.append(change_type)
         w = (" WHERE " + " AND ".join(where)) if where else ""
-        sql = "SELECT * FROM change_events" + w + " ORDER BY created_at DESC, id DESC LIMIT %s"
         with conn.cursor() as cur:
-            cur.execute(sql, vals + [limit])
+            cur.execute("SELECT COUNT(*) AS total FROM change_events" + w, vals)
+            total = int((cur.fetchone() or {}).get("total") or 0)
+            sql = "SELECT * FROM change_events" + w + " ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s"
+            cur.execute(sql, vals + [page_size, offset])
             rows = cur.fetchall()
-        return {"changes": rows, "total": len(rows)}
+        return {"changes": rows, "total": total, "page": page, "page_size": page_size}
     except Exception as e:
-        return {"changes": [], "total": 0, "error": str(e)}
+        return {"changes": [], "total": 0, "page": page, "page_size": page_size, "error": str(e)}
     finally:
         conn.close()
 

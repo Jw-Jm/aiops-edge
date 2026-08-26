@@ -48,7 +48,10 @@ const InvestigationCenter: React.FC = () => {
             status: (r.status ?? 'created') as InvestigationRun['status'],
             rootCause: r.root_cause ?? null,
             confidence: r.confidence ?? null,
-            createdBy: 'system',
+            // The server projects the persisted initiating principal. Keep a
+            // visible unknown state if old rows lack it; never label every run
+            // as a synthetic system action.
+            createdBy: r.created_by ?? r.principal_id ?? 'unknown',
             createdAt: r.created_at ?? '',
           })))
         }

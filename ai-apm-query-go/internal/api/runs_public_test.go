@@ -91,6 +91,49 @@ func TestCreateRunPublic(t *testing.T) {
 	}
 }
 
+func TestListRunsPublicExposesPersistedPrincipalIdentity(t *testing.T) {
+	h, mock, cleanup := newTestRunsHandler()
+	defer cleanup()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,")).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "request_id", "tenant_id", "principal",
+			"principal_type", "session_id", "scope_kind", "primary_cluster_id", "intent",
+			"action_mode", "target_type", "target_resource_id", "time_range_start",
+			"time_range_end", "status", "state_version", "parent_run_id", "created_at",
+			"updated_at", "finished_at", "last_event_sequence"}).
+			AddRow("run-1", "request-1", "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+				"user-123", "user", nil, "single_cluster", "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+				"investigate", "read_only", "service", "checkout", nil, nil, "created", 0, nil,
+				time.Now(), time.Now(), nil, 0))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/runs", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{
+		UserID: "user-123", SessionID: "session-1", TenantID: "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+	})
+	w := httptest.NewRecorder()
+	h.ListRunsPublic(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Runs []map[string]interface{} `json:"runs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Runs) != 1 {
+		t.Fatalf("expected one run, got %v", resp.Runs)
+	}
+	if got := resp.Runs[0]["created_by"]; got != "user-123" {
+		t.Fatalf("created_by=%v, want persisted principal", got)
+	}
+	if got := resp.Runs[0]["principal_id"]; got != "user-123" {
+		t.Fatalf("principal_id=%v, want persisted principal", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateRunPublicRejectsTenantMismatch(t *testing.T) {
 	h, mock, cleanup := newTestRunsHandler()
 	defer cleanup()

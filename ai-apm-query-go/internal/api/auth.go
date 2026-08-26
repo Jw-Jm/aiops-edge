@@ -488,18 +488,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 // 客户端传入的 role —— 保持"JWT role claims are never authority"的反伪造性质。
 // DB 不可达 / 用户不存在 / 非 active 一律 fail-closed 返回 false。
 func hasRole(r *http.Request, role string) bool {
-	authCtx, ok := requestAuthorizationContext(r)
-	if !ok || authCtx.UserID == "" {
-		return false
-	}
-	if db := store.GetDB(); db == nil {
-		return false
-	}
-	u, err := (&store.UserDAO{}).GetByUUID(authCtx.UserID)
-	if err != nil || u == nil || u.Status != 1 {
-		return false
-	}
-	return u.Role == role
+	u, ok := authoritativeUser(r)
+	return ok && u.Role == role
 }
 
 // RequireRole 返回按角色拦截的处理器包装（admin 仅限 admin 角色）。
@@ -563,12 +553,8 @@ func (h *Handler) RequireAnyRole(roles []string, next http.HandlerFunc) http.Han
 }
 
 func hasAnyRole(r *http.Request, roles []string) bool {
-	authCtx, ok := requestAuthorizationContext(r)
-	if !ok || authCtx.UserID == "" || store.GetDB() == nil {
-		return false
-	}
-	u, err := (&store.UserDAO{}).GetByUUID(authCtx.UserID)
-	if err != nil || u == nil || u.Status != 1 {
+	u, ok := authoritativeUser(r)
+	if !ok {
 		return false
 	}
 	for _, role := range roles {
@@ -619,10 +605,32 @@ func isTokenRevoked(token, username string) bool {
 	return revokedUsers[username]
 }
 
-// hasPrivilegedRole deliberately fails closed until privileged legacy paths
-// are mapped to canonical MySQL actions and resource scopes.
+// authoritativeUser loads the current user after AuthMiddleware has attached
+// the verified identity context. Role and approver status come from MySQL, not
+// from JWT claims or browser-supplied headers.
+func authoritativeUser(r *http.Request) (*store.User, bool) {
+	authCtx, ok := requestAuthorizationContext(r)
+	if !ok || authCtx.UserID == "" || store.GetDB() == nil {
+		return nil, false
+	}
+	u, err := (&store.UserDAO{}).GetByUUID(authCtx.UserID)
+	if err != nil || u == nil || u.Status != 1 {
+		return nil, false
+	}
+	return u, true
+}
+
+// hasPrivilegedRole is the authoritative role gate for sensitive infrastructure
+// reads. The role is loaded from MySQL; JWT claims and browser headers never
+// grant this privilege. is_approver is also honored because the approval model
+// permits an explicitly configured approver account without changing its role.
 func hasPrivilegedRole(r *http.Request) bool {
-	return false
+	u, ok := authoritativeUser(r)
+	return ok && (u.Role == "admin" || u.Role == "approver" || u.IsApprover)
+}
+
+func isPathOrChild(path, base string) bool {
+	return path == base || strings.HasPrefix(path, base+"/")
 }
 
 func isCanonicalProtectedRoute(path string) bool {
@@ -701,6 +709,88 @@ func isCanonicalProtectedRoute(path string) bool {
 	// 任意 PromQL 直通已关闭（无 service → 400），不构成任意 PromQL 透传面。
 	if path == "/api/v1/metrics/query" {
 		return true
+	}
+
+	// Direct query-api handlers. These routes still enforce their own
+	// authoritative role checks where the resource is sensitive or mutable;
+	// this function only establishes the canonical JWT + tenant boundary.
+	for _, base := range []string{
+		"/api/v1/users",
+		"/api/v1/catalog/services",
+		"/api/v1/devices",
+		"/api/v1/infrastructure/pods",
+		"/api/v1/infrastructure/vms",
+		"/api/v1/grafana/dashboards",
+	} {
+		if isPathOrChild(path, base) {
+			return true
+		}
+	}
+	for _, exact := range []string{
+		"/api/v1/infrastructure/nodes",
+		"/api/v1/infrastructure/deployments",
+		"/api/v1/infrastructure/namespaces",
+		"/api/v1/nodes/metrics",
+		"/api/v1/infrastructure/hpa",
+		"/api/v1/settings/k8s",
+		"/api/v1/deepflow/status",
+		"/api/v1/grafana/health",
+		"/api/v1/grafana/search",
+		"/api/v1/system/status",
+		"/api/v1/system/components",
+		"/api/v1/system/cache",
+		"/api/v1/system/cache/invalidate",
+	} {
+		if path == exact {
+			return true
+		}
+	}
+
+	// Explicitly registered legacy browser proxy surfaces. ProxyAI applies a
+	// second method/path allowlist and injects authoritative role headers; the
+	// surrounding prefixes are not a wildcard permission to arbitrary upstream
+	// endpoints.
+	for _, base := range []string{
+		"/api/v1/ai/skills",
+		"/api/v1/ai/agents",
+		"/api/v1/ai/flows",
+		"/api/v1/ai/knowledge",
+		"/api/v1/ai/rules",
+		"/api/v1/ai/sessions",
+		"/api/v1/ai/session",
+		"/api/v1/ai/suggestion",
+		"/api/v1/ai/nl2sql",
+		"/api/v1/ai/workflows",
+		"/api/v1/ai/kg",
+		"/api/v1/ops/tasks",
+		"/api/v1/ops/recovery/policy",
+		"/api/v1/ops/recovery/plan",
+		"/api/v1/ops/cases",
+		"/api/v1/ops/rca",
+		"/api/v1/ops/anomalies",
+		"/api/v1/ops/artifacts",
+		"/api/v1/ops/reports",
+		"/api/v1/ops/audit-logs",
+		"/api/v1/ops/changes",
+		"/api/v1/ops/k8s",
+		"/api/v1/ops/export/chat",
+		"/api/v1/ipmi/sensors",
+		"/api/v1/ipmi/events",
+		"/api/v1/node/health",
+	} {
+		if isPathOrChild(path, base) {
+			return true
+		}
+	}
+	for _, exact := range []string{
+		"/api/v1/ai/final_report",
+		"/api/v1/ai/shell/check",
+		"/api/v1/mcp/tools",
+		"/api/v1/mcp/call",
+	} {
+		if path == exact {
+			return true
+		}
 	}
 	return false
 }

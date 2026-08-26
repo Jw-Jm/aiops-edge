@@ -644,6 +644,125 @@ const (
 	maxProxyResponse = 50 << 20 // 响应体上限 50MB
 )
 
+func legacyProxyAllowed(path, method string) bool {
+	read := method == http.MethodGet || method == http.MethodHead
+	if read {
+		for _, base := range []string{
+			"/api/v1/ai/skills",
+			"/api/v1/ai/agents",
+			"/api/v1/ai/flows",
+			"/api/v1/ai/knowledge",
+			"/api/v1/ai/rules",
+			"/api/v1/ai/sessions",
+			"/api/v1/ai/session",
+			"/api/v1/ai/nl2sql",
+			"/api/v1/ai/workflows",
+			"/api/v1/ai/kg",
+			"/api/v1/ops/tasks",
+			"/api/v1/ops/recovery/policy",
+			"/api/v1/ops/cases",
+			"/api/v1/ops/anomalies",
+			"/api/v1/ops/artifacts",
+			"/api/v1/ops/reports",
+			"/api/v1/ops/audit-logs",
+			"/api/v1/ops/changes",
+			"/api/v1/ops/export/chat",
+			"/api/v1/ipmi/sensors",
+			"/api/v1/ipmi/events",
+			"/api/v1/node/health",
+			"/api/v1/snmp/devices",
+			"/api/v1/snmp/interfaces",
+		} {
+			if isPathOrChild(path, base) {
+				return true
+			}
+		}
+		return path == "/api/v1/mcp/tools" || path == "/api/v1/ai/final_report"
+	}
+
+	if method == http.MethodPost {
+		for _, exact := range []string{
+			"/api/v1/ai/agents",
+			"/api/v1/ai/flows",
+			"/api/v1/ai/knowledge",
+			"/api/v1/ai/knowledge/case",
+			"/api/v1/ai/knowledge/rag/reload",
+			"/api/v1/ai/knowledge/rag/import",
+			"/api/v1/ai/rules",
+			"/api/v1/ai/final_report",
+			"/api/v1/ai/suggestion/execute",
+			"/api/v1/ai/nl2sql/translate",
+			"/api/v1/ops/tasks",
+			"/api/v1/ops/recovery/plan",
+			"/api/v1/ops/changes",
+			"/api/v1/ops/changes/webhook",
+			"/api/v1/ops/rca",
+			"/api/v1/ops/rca/alert",
+			"/api/v1/ops/rca/deep",
+			"/api/v1/ops/anomalies/scan",
+			"/api/v1/ops/k8s/preflight",
+			"/api/v1/ops/k8s/execute",
+			"/api/v1/node/health/aggregate",
+			"/api/v1/mcp/call",
+			"/api/v1/snmp/collect",
+		} {
+			if path == exact {
+				return true
+			}
+		}
+		for _, base := range []string{
+			"/api/v1/ai/skills/",
+			"/api/v1/ai/flows/",
+			"/api/v1/ai/rules/",
+			"/api/v1/ai/workflows",
+			"/api/v1/ai/nl2sql/",
+			"/api/v1/ops/tasks/",
+			"/api/v1/ops/cases/",
+			"/api/v1/ops/recovery/",
+		} {
+			if isPathOrChild(path, base) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if method == http.MethodPut || method == http.MethodDelete {
+		for _, base := range []string{
+			"/api/v1/ai/agents/",
+			"/api/v1/ai/workflows/",
+			"/api/v1/ai/rules/",
+		} {
+			if isPathOrChild(path, base) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func legacyProxyNeedsPrivilegedRole(path, method string) bool {
+	if isRestrictedProxyPath(path) || path == "/api/v1/mcp/call" {
+		return true
+	}
+	if method == http.MethodGet || method == http.MethodHead {
+		return false
+	}
+	for _, base := range []string{
+		"/api/v1/ai/skills",
+		"/api/v1/ai/agents",
+		"/api/v1/ai/flows",
+		"/api/v1/ai/knowledge",
+		"/api/v1/ai/rules",
+		"/api/v1/ai/workflows",
+	} {
+		if isPathOrChild(path, base) {
+			return true
+		}
+	}
+	return false
+}
+
 // ProxyAI is the browser-facing AI proxy boundary (V9.2 §P3.9-B3).
 //
 // P19.6: /api/v1/ai/chat 已拆分为独立的 ProxyChat（对话型，ai.chat capability，
@@ -663,8 +782,82 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		h.proxyRunList(w, r)
 		return
 	}
-	// Not the investigation entry; keep fail-closed (no unsigned privileged call).
-	respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+	if !legacyProxyAllowed(r.URL.Path, r.Method) {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	authCtx, err := RequestAuthorizationContext(r)
+	if err != nil {
+		respondAuthorizationError(w, err)
+		return
+	}
+	r = withAuthorizationContext(r, authCtx)
+	operator, ok := authoritativeUser(r)
+	if !ok {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	if legacyProxyNeedsPrivilegedRole(r.URL.Path, r.Method) &&
+		!(operator.Role == "admin" || operator.Role == "approver" || operator.IsApprover) {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	h.proxyLegacy(w, r, authCtx, operator)
+}
+
+func (h *Handler) proxyLegacy(w http.ResponseWriter, r *http.Request, authCtx AuthorizationContext, operator *store.User) {
+	var body io.Reader
+	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		payload, err := io.ReadAll(io.LimitReader(r.Body, maxProxyBody+1))
+		if err != nil || len(payload) > maxProxyBody {
+			respondJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{"error": "request body too large"})
+			return
+		}
+		body = bytes.NewReader(payload)
+	}
+	target := orchestratorBase() + r.URL.Path
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, body)
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
+		return
+	}
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.Header.Set("X-Internal-Token", internalServiceToken())
+	req.Header.Set("X-Tenant-ID", authCtx.TenantID)
+	req.Header.Set("X-Internal-User", operator.UserUUID)
+	req.Header.Set("X-Internal-Role", operator.Role)
+	if operator.Role == "admin" || operator.Role == "approver" || operator.IsApprover {
+		req.Header.Set("X-Internal-Approver", "1")
+	} else {
+		req.Header.Set("X-Internal-Approver", "0")
+	}
+	client := h.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
+		return
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxProxyResponse+1))
+	if readErr != nil || len(respBody) > maxProxyResponse {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "upstream response too large"})
+		return
+	}
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(respBody)
 }
 
 // ProxyChat handles the browser-facing dialogue entry /api/v1/ai/chat (P19.6).

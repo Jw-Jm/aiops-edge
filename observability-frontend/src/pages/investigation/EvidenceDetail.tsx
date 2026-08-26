@@ -87,7 +87,7 @@ const EvidenceDetailView: React.FC = () => {
       )}
       {!loading && error === 'not_found' && (
         <Alert type="error" showIcon message="证据不存在"
-          description="Run 或证据未注册（内存态登记，进程重启后即失）。" />
+          description="Run 或证据未注册，或当前请求的证据标识不属于该 Run。" />
       )}
       {!loading && !error && evidence && (
         <Row>
