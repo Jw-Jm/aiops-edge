@@ -20,7 +20,7 @@ function startToMs(v: unknown): number {
 }
 
 // 2.6 树形瀑布图：按 parent_span_id 构建 span 树，输出 (树根列表, 最大耗时)
-function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number } {
+export function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number } {
   const map = new Map<string, any>()
   const childrenOf = new Map<string, any[]>()
   for (const s of spans || []) {
@@ -29,12 +29,17 @@ function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number } {
     childrenOf.get(s.parent_span_id)!.push(s)
   }
   const roots: SpanNode[] = []
+  const visited = new Set<string>()
   const maxMs = Math.max(1, ...(spans || []).map((s) => Number(s.ms) || 0))
   const walk = (parentId: string, depth: number) => {
     const kids = childrenOf.get(parentId) || []
     // 按开始时间排序，保证时间轴顺序
     kids.sort((a, b) => (a.start_time || 0) - (b.start_time || 0))
     for (const k of kids) {
+      // DeepFlow/OTLP 输入可能包含重复 span_id 或冲突的 parent_span_id。
+      // visited 同时防止自环/环路递归溢出，并确保详情不会重复渲染同一 span。
+      if (!k.span_id || visited.has(k.span_id)) continue
+      visited.add(k.span_id)
       roots.push({ span: k, depth })
       walk(k.span_id, depth + 1)
     }
@@ -46,10 +51,22 @@ function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number } {
   // 修复(P1 链路追踪详情)：先 push root span 本身（带 depth 0），再递归走 children。
   // 之前直接 walk(rid, 0) 不会把 root 加入 roots，导致客户端/根 span 丢失，
   // 详情页只显示服务端 span，看起来像"少了一个 span"。
-  for (const rid of rootIds) {
+  const emitRoot = (rid: string) => {
+    if (visited.has(rid)) return
     const root = map.get(rid)
-    if (root) roots.push({ span: root, depth: 0 })
-    walk(rid, 0)
+    if (!root || !root.span_id) return
+    visited.add(rid)
+    roots.push({ span: root, depth: 0 })
+    walk(rid, 1)
+  }
+  for (const rid of rootIds) {
+    emitRoot(rid)
+  }
+  // 没有可判定根的孤立环也要显示，但必须在 visited 保护下展开。
+  for (const span of spans || []) {
+    if (span?.span_id && !visited.has(span.span_id)) {
+      emitRoot(span.span_id)
+    }
   }
   return { roots, maxMs }
 }
