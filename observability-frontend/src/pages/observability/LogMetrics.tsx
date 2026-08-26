@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Input, Button, Select, Space, Segmented, Tag, Table, Tooltip } from 'antd'
 import { queryLogs, aggregateLogs } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
@@ -27,10 +27,12 @@ const LogMetrics: React.FC = () => {
   const [aggs, setAggs] = useState<AggRow[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
+  const requestSeq = useRef(0)
 
   // A7: 筛选条件变更时自动触发查询（与模式切换一致）。overrides 让 onChange 立即生效，
   // 避免 setState 异步导致 search() 读到旧值。
   const search = (targetMode?: 'logs' | 'aggregate', overrides: Partial<{ source: string; level: string; hours: number; hideHealth: boolean }> = {}) => {
+    const requestId = ++requestSeq.current
     const m = targetMode || mode
     setLoading(true)
     setErr('')
@@ -49,6 +51,7 @@ const LogMetrics: React.FC = () => {
     }
     const req = m === 'logs' ? queryLogs(p) : aggregateLogs({ ...p, group_by: 'service_name' })
     req.then((r) => {
+      if (requestId !== requestSeq.current) return
       const d = r.data
       if (m === 'logs') {
         // Issue3/5: 统一 clickhouse 与 victorialogs 字段（query-api 已归一为 body/service_name/severity/timestamp）
@@ -73,9 +76,12 @@ const LogMetrics: React.FC = () => {
         setAggs(svc.map((x: any) => ({ ...x, service_name: x.service_name || x.service, count: Number(x.count ?? x.cnt ?? 0) })))
       }
     }).catch((e: any) => {
+      if (requestId !== requestSeq.current) return
       setErr(e?.response?.data?.error || '查询失败')
       setRows([]); setAggs([])
-    }).finally(() => setLoading(false))
+    }).finally(() => {
+      if (requestId === requestSeq.current) setLoading(false)
+    })
   }
 
   // P3-2 首次加载自动查询

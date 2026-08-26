@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import LogMetrics from './LogMetrics'
 import { aggregateLogs, queryLogs } from '../../api/client'
@@ -35,5 +36,28 @@ describe('LogMetrics supported source projection', () => {
     await waitFor(() => expect(screen.getByText('Post-timeout activity')).toBeInTheDocument())
     expect(screen.getByText('未知')).toBeInTheDocument()
     expect(screen.queryByText('info')).not.toBeInTheDocument()
+  })
+
+  it('does not let a slower initial query overwrite a newer level filter', async () => {
+    let resolveInitial!: (value: unknown) => void
+    let resolveFiltered!: (value: unknown) => void
+    const initial = new Promise((resolve) => { resolveInitial = resolve })
+    const filtered = new Promise((resolve) => { resolveFiltered = resolve })
+    vi.mocked(queryLogs).mockReset()
+    vi.mocked(queryLogs).mockImplementation((params: Record<string, unknown>) =>
+      (params.level === 'error' ? filtered : initial) as never)
+
+    const user = userEvent.setup()
+    render(<LogMetrics />)
+    await waitFor(() => expect(queryLogs).toHaveBeenCalledWith(expect.objectContaining({ source: 'victorialogs' })))
+
+    await user.click(screen.getByText('全部级别'))
+    await user.click(screen.getByText('错误'))
+    await waitFor(() => expect(queryLogs).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' })))
+
+    resolveFiltered({ data: { source: 'victorialogs', data: [{ timestamp: '2026-08-26 09:00:00', service_name: 'checkout', severity: 'ERROR', body: 'boom' }] } })
+    await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument())
+    resolveInitial({ data: { source: 'victorialogs', data: [{ timestamp: '2026-08-26 08:00:00', service_name: 'checkout', severity: '', body: 'stale unfiltered row' }] } })
+    await waitFor(() => expect(screen.queryByText('stale unfiltered row')).not.toBeInTheDocument())
   })
 })
