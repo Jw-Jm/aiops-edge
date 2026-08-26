@@ -220,6 +220,22 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		}
 	}
 	for _, p := range []string{
+		"/api/v1/services/orders",
+		"/api/v1/services/0.250.250.2",
+	} {
+		if !isCanonicalProtectedRoute(p) {
+			t.Fatalf("service detail endpoint %s should be canonical-protected", p)
+		}
+	}
+	for _, p := range []string{
+		"/api/v1/services/orders/extra",
+		"/api/v1/services/",
+	} {
+		if isCanonicalProtectedRoute(p) {
+			t.Fatalf("invalid service child endpoint %s should NOT be canonical-protected", p)
+		}
+	}
+	for _, p := range []string{
 		"/api/v1/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/unknown",
 		"/api/v1/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/context/extra",
 	} {

@@ -681,6 +681,14 @@ func isCanonicalProtectedRoute(path string) bool {
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
 		return true
 	}
+	// Service list details still use the historical /services/{name} alias,
+	// whose handler redirects to the canonical topology detail endpoint. Allow
+	// exactly one service-name segment so the alias receives the same canonical
+	// JWT+tenant boundary without opening arbitrary nested paths.
+	if strings.HasPrefix(path, "/api/v1/services/") {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/services/"), "/"), "/")
+		return len(parts) == 1 && parts[0] != ""
+	}
 	// Trace list/detail/context are all browser-facing read routes. Keep the
 	// child-route allowlist narrow so an arbitrary multi-segment path under
 	// /traces cannot bypass the canonical boundary.
