@@ -59,7 +59,7 @@ const LogMetrics: React.FC = () => {
         // 不再直接取当前选中的 source，避免显示标签与实际数据源不符。
         const raw: any[] = Array.isArray(d) ? d : d?.data || d?.rows || []
         const respSource = (d as any)?.source || src
-        setRows(raw.map((x: any) => ({
+        const normalizedRows = raw.map((x: any) => ({
           ...x,
           ts: x.ts || x.timestamp || x._time || '',
           // 不把缺失的真实级别伪装成 info；VictoriaLogs 的非结构化日志可能没有级别字段。
@@ -68,7 +68,13 @@ const LogMetrics: React.FC = () => {
           message: x.message || x.body || x._msg || '',
           pod: x.pod || x.kubernetes?.pod_name || x.namespace || '',
           _source: x._source || x.source || respSource,
-        })))
+        }))
+        // VictoriaLogs can return unstructured rows even when the LogsQL field
+        // predicate is present. Keep the UI projection strict as a second
+        // guard so a selected level never displays an unknown/non-matching row.
+        setRows(lv === 'all'
+          ? normalizedRows
+          : normalizedRows.filter((row) => typeof row.level === 'string' && row.level.toLowerCase() === lv.toLowerCase()))
       } else {
         // Issue5: 后端聚合返回 { services: [{service,count}], trend, levels } 对象而非数组；
         // 取 services 并映射 service→service_name 供表格展示

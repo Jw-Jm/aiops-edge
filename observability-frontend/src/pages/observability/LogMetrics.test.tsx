@@ -55,8 +55,12 @@ describe('LogMetrics supported source projection', () => {
     await user.click(screen.getByText('错误'))
     await waitFor(() => expect(queryLogs).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' })))
 
-    resolveFiltered({ data: { source: 'victorialogs', data: [{ timestamp: '2026-08-26 09:00:00', service_name: 'checkout', severity: 'ERROR', body: 'boom' }] } })
+    resolveFiltered({ data: { source: 'victorialogs', data: [
+      { timestamp: '2026-08-26 09:00:00', service_name: 'checkout', severity: 'ERROR', body: 'boom' },
+      { timestamp: '2026-08-26 09:01:00', service_name: 'checkout', severity: '', body: 'unknown filtered row' },
+    ] } })
     await waitFor(() => expect(screen.getByText('boom')).toBeInTheDocument())
+    expect(screen.queryByText('unknown filtered row')).not.toBeInTheDocument()
     resolveInitial({ data: { source: 'victorialogs', data: [{ timestamp: '2026-08-26 08:00:00', service_name: 'checkout', severity: '', body: 'stale unfiltered row' }] } })
     await waitFor(() => expect(screen.queryByText('stale unfiltered row')).not.toBeInTheDocument())
   })
