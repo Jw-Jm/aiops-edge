@@ -463,12 +463,13 @@ func (h *Handler) TestLLMConnection(w http.ResponseWriter, r *http.Request) {
 	baseURL := testSettings["base_url"]
 	model := testSettings["model"]
 	providerID := testSettings["provider_id"]
+	requestedProvider := testSettings["provider"]
 
 	// 优先从指定 provider 读取加密 key（修复：测试 deepseek 等非启用 provider 时，
 	// 不能误用全局默认 provider 的 key）
-	testProviderName := ""
+	providerName := ""
 	if providerID != "" {
-		testProviderName = getProviderName(providerID)
+		providerName = getProviderName(providerID)
 	}
 	if apiKey == "" && providerID != "" {
 		apiKey = getProviderEncryptedKey(providerID)
@@ -484,9 +485,7 @@ func (h *Handler) TestLLMConnection(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = settings.LLM.Model
 	}
-	if testProviderName == "" {
-		testProviderName = settings.LLM.Provider
-	}
+	testProviderName := resolveLLMTestProvider(requestedProvider, providerName, settings.LLM.Provider)
 	settingsMu.RUnlock()
 
 	// 安全(P0-4)：base_url 非空时必须 https 且主机名非私网/metadata 地址，
@@ -545,6 +544,15 @@ func (h *Handler) TestLLMConnection(w http.ResponseWriter, r *http.Request) {
 			"detail":      bodyStr,
 		})
 	}
+}
+
+func resolveLLMTestProvider(requested, providerName, fallback string) string {
+	for _, candidate := range []string{requested, providerName, fallback} {
+		if value := strings.TrimSpace(candidate); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // GetK8sSettings handles GET /api/v1/settings/k8s

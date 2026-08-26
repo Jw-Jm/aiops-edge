@@ -79,3 +79,12 @@ func TestModelsLLMLongErrorBodyTruncatedTo500(t *testing.T) {
 		t.Fatalf("raw should be truncated, got response length %d", len(rec.Body.String()))
 	}
 }
+
+func TestResolveLLMTestProviderPrefersRequestedProvider(t *testing.T) {
+	if got, want := resolveLLMTestProvider("deepseek", "", "openai"), "deepseek"; got != want {
+		t.Fatalf("provider = %q, want %q", got, want)
+	}
+	if got, want := resolveLLMTestProvider("", "", "openai"), "openai"; got != want {
+		t.Fatalf("fallback provider = %q, want %q", got, want)
+	}
+}
