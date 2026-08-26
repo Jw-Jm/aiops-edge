@@ -133,6 +133,7 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		"/api/v1/clusters", // P19 前端集群选择器数据源（只读，JWT+canonical tenant）
 		"/api/v1/traces",
 		"/api/v1/topology/global",
+		"/api/v1/topology/node/query-api", // Service Observability 详情页读取的真实节点子路由
 		"/api/v1/topology/nodes",
 		"/api/v1/alerts/rules",
 		"/api/v1/alerts/events",

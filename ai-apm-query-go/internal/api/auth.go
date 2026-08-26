@@ -727,6 +727,12 @@ func isCanonicalProtectedRoute(path string) bool {
 	if path == "/api/v1/metrics/query" {
 		return true
 	}
+	// Service Observability 详情页使用 /topology/node/{service} 读取真实节点指标。
+	// 这是 global 拓扑的只读子路由，必须和 global 一样经过 canonical tenant
+	// 鉴权；否则 AuthMiddleware 会在 handler 之前返回 permission_denied。
+	if strings.HasPrefix(path, "/api/v1/topology/node/") {
+		return true
+	}
 
 	// Direct query-api handlers. These routes still enforce their own
 	// authoritative role checks where the resource is sensitive or mutable;
