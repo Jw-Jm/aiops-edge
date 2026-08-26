@@ -12,6 +12,18 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
+func validateUserRole(role string) string {
+	if role == "" {
+		return ""
+	}
+	switch role {
+	case "admin", "approver", "user":
+		return ""
+	default:
+		return "role must be admin, approver, or user"
+	}
+}
+
 // UserList GET /api/v1/users — 用户列表（admin）。
 func (h *Handler) UserList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
@@ -54,8 +66,8 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 		req.Role = "user"
 	}
 	// 安全(P3-2)：角色白名单校验，非法角色直接 400（拒绝任意字符串注入）。
-	if req.Role != "admin" && req.Role != "user" {
-		respondJSON(w, 400, map[string]interface{}{"error": "role must be admin or user"})
+	if msg := validateUserRole(req.Role); msg != "" {
+		respondJSON(w, 400, map[string]interface{}{"error": msg})
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -103,6 +115,10 @@ func (h *Handler) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	// P3-3 修复：JSON 解析失败返回 400，而非静默零值覆盖原数据。
 	if err := json.Unmarshal(body, &req); err != nil {
 		respondJSON(w, 400, map[string]interface{}{"error": "invalid JSON"})
+		return
+	}
+	if msg := validateUserRole(req.Role); msg != "" {
+		respondJSON(w, 400, map[string]interface{}{"error": msg})
 		return
 	}
 	// G1 修复（S8）：允许 status=0 禁用用户（此前 if status==0 {status=1} 导致永远无法停用）。

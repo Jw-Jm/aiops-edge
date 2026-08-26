@@ -99,8 +99,19 @@ func TestUserCreateRejectsInvalidRole(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if msg, _ := resp["error"].(string); msg != "role must be admin or user" {
+	if msg, _ := resp["error"].(string); msg != "role must be admin, approver, or user" {
 		t.Fatalf("expected role whitelist error, got %q", msg)
+	}
+}
+
+func TestUserRoleWhitelistIncludesApprover(t *testing.T) {
+	for _, role := range []string{"admin", "approver", "user"} {
+		if msg := validateUserRole(role); msg != "" {
+			t.Fatalf("role %q should be accepted, got %q", role, msg)
+		}
+	}
+	if msg := validateUserRole("superadmin"); msg == "" {
+		t.Fatal("invalid role should be rejected")
 	}
 }
 
