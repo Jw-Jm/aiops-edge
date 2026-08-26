@@ -53,6 +53,7 @@ import api, {
   type ClusterNodeItem,
 } from '../../api/client'
 import { fmtCpu } from '../../lib/format'
+import { clusterDetailError } from './clusterDetail'
 
 
 // ---- 预设 LLM 厂商：选择后自动填充 base_url ----
@@ -80,6 +81,7 @@ function ClusterManager() {
   const [nodeMetrics, setNodeMetrics] = useState<Record<string, any>>({})
   const [namespaces, setNamespaces] = useState<string[]>([])
   const [events, setEvents] = useState<unknown[]>([])
+  const [detailErrors, setDetailErrors] = useState<{ nodes?: string; namespaces?: string; events?: string }>({})
 
   const load = async () => {
     setLoading(true)
@@ -125,31 +127,47 @@ function ClusterManager() {
   const viewDetail = async (c: ClusterItem) => {
     setDetail(c)
     setDetailTab('nodes')
+    setDetailErrors({})
     await loadNodes(c)
   }
 
   const loadNodes = async (c: ClusterItem) => {
+    setDetailErrors((prev) => ({ ...prev, nodes: '' }))
     try {
       const r = await listClusterNodes(c.id)
       const d = r.data
+      setDetailErrors((prev) => ({ ...prev, nodes: clusterDetailError(d) }))
       setNodes(Array.isArray(d) ? d : (d?.nodes ?? []))
-    } catch { setNodes([]) }
+    } catch {
+      setDetailErrors((prev) => ({ ...prev, nodes: '集群节点数据加载失败' }))
+      setNodes([])
+    }
   }
 
   const loadNamespaces = async (c: ClusterItem) => {
+    setDetailErrors((prev) => ({ ...prev, namespaces: '' }))
     try {
       const r = await getClusterNamespaces(c.id)
       const d = r.data
+      setDetailErrors((prev) => ({ ...prev, namespaces: clusterDetailError(d) }))
       setNamespaces(Array.isArray(d) ? d : (d?.namespaces ?? []))
-    } catch { setNamespaces([]) }
+    } catch {
+      setDetailErrors((prev) => ({ ...prev, namespaces: '集群命名空间数据加载失败' }))
+      setNamespaces([])
+    }
   }
 
   const loadEvents = async (c: ClusterItem) => {
+    setDetailErrors((prev) => ({ ...prev, events: '' }))
     try {
       const r = await getClusterEvents(c.id)
       const d = r.data
+      setDetailErrors((prev) => ({ ...prev, events: clusterDetailError(d) }))
       setEvents(Array.isArray(d) ? d : (d?.events ?? []))
-    } catch { setEvents([]) }
+    } catch {
+      setDetailErrors((prev) => ({ ...prev, events: '集群事件数据加载失败' }))
+      setEvents([])
+    }
   }
 
   const onDetailTab = (k: string) => {
@@ -222,29 +240,38 @@ function ClusterManager() {
             </Descriptions>
             <Tabs activeKey={detailTab} onChange={onDetailTab} items={[
               { key: 'nodes', label: `节点 (${nodes.length})`, children: (
-                <Table rowKey="name" size="small" dataSource={nodes} pagination={false} columns={[
-                  { title: '节点', dataIndex: 'name' },
-                  { title: '角色', dataIndex: 'role', width: 90 },
-                  { title: '状态', dataIndex: 'status', width: 100, render: (s) => <StatusBadge text={s} tone={clusterTone(s)} /> },
-                  { title: 'IP', dataIndex: 'ip', width: 130 },
-                  { title: 'OS', dataIndex: 'os', ellipsis: true },
-                  { title: 'CPU 用量', width: 130, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.cpu_usage_pct}% (${fmtCpu(cpuQuantityToCores(m.cpu_usage))}/${fmtCpu(cpuQuantityToCores(m.cpu_capacity))})` : (r.cpu || '-') } },
-                  { title: '内存用量', width: 150, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.mem_usage_pct}% (${fmtNodeMem(m.mem_usage)}/${fmtNodeMem(m.mem_capacity)})` : (r.memory || '-') } },
-                ]} />
+                <>
+                  {detailErrors.nodes ? <Alert type="warning" showIcon message="数据不可用" description={detailErrors.nodes} style={{ marginBottom: 12 }} /> : null}
+                  {!detailErrors.nodes ? <Table rowKey="name" size="small" dataSource={nodes} pagination={false} columns={[
+                    { title: '节点', dataIndex: 'name' },
+                    { title: '角色', dataIndex: 'role', width: 90 },
+                    { title: '状态', dataIndex: 'status', width: 100, render: (s) => <StatusBadge text={s} tone={clusterTone(s)} /> },
+                    { title: 'IP', dataIndex: 'ip', width: 130 },
+                    { title: 'OS', dataIndex: 'os', ellipsis: true },
+                    { title: 'CPU 用量', width: 130, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.cpu_usage_pct}% (${fmtCpu(cpuQuantityToCores(m.cpu_usage))}/${fmtCpu(cpuQuantityToCores(m.cpu_capacity))})` : (r.cpu || '-') } },
+                    { title: '内存用量', width: 150, render: (_, r) => { const m = nodeMetrics[r.name]; return m ? `${m.mem_usage_pct}% (${fmtNodeMem(m.mem_usage)}/${fmtNodeMem(m.mem_capacity)})` : (r.memory || '-') } },
+                  ]} /> : null}
+                </>
               )},
               { key: 'namespaces', label: `命名空间 (${namespaces.length})`, children: (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {namespaces.map((n) => <Tag key={n}>{n}</Tag>)}
-                </div>
+                <>
+                  {detailErrors.namespaces ? <Alert type="warning" showIcon message="数据不可用" description={detailErrors.namespaces} style={{ marginBottom: 12 }} /> : null}
+                  {!detailErrors.namespaces ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {namespaces.map((n) => <Tag key={n}>{n}</Tag>)}
+                  </div> : null}
+                </>
               )},
               { key: 'events', label: `事件 (${events.length})`, children: (
-                <Table rowKey={(_, i) => String(i)} size="small" dataSource={events as any[]} pagination={{ pageSize: 10 }} columns={[
-                  { title: '时间', dataIndex: 'lastTimestamp', width: 180 },
-                  { title: '类型', dataIndex: 'type', width: 90 },
-                  { title: '原因', dataIndex: 'reason', width: 140 },
-                  { title: '对象', dataIndex: 'involvedObject', render: (o) => o ? `${o.kind}/${o.name}` : '' },
-                  { title: '信息', dataIndex: 'message', ellipsis: true },
-                ]} />
+                <>
+                  {detailErrors.events ? <Alert type="warning" showIcon message="数据不可用" description={detailErrors.events} style={{ marginBottom: 12 }} /> : null}
+                  {!detailErrors.events ? <Table rowKey={(_, i) => String(i)} size="small" dataSource={events as any[]} pagination={{ pageSize: 10 }} columns={[
+                    { title: '时间', dataIndex: 'lastTimestamp', width: 180 },
+                    { title: '类型', dataIndex: 'type', width: 90 },
+                    { title: '原因', dataIndex: 'reason', width: 140 },
+                    { title: '对象', dataIndex: 'involvedObject', render: (o) => o ? `${o.kind}/${o.name}` : '' },
+                    { title: '信息', dataIndex: 'message', ellipsis: true },
+                  ]} /> : null}
+                </>
               )},
             ]} />
           </div>
