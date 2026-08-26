@@ -279,12 +279,17 @@ func (k *k8sWatcher) listFromPath(ctx context.Context, path string) (string, []k
 		req.Header.Set("Authorization", "Bearer "+k.token)
 		req.Header.Set("Accept", "application/json")
 		resp, err := k.client.Do(req)
-		cancel()
 		if err != nil {
+			cancel()
 			return "", nil, err
 		}
 		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		// Keep reqCtx alive until the response body has been consumed.  The
+		// Kubernetes API may flush headers before the EventList body arrives;
+		// canceling immediately after Do would turn every real LIST into
+		// context canceled and prevent the watcher from ever starting.
+		cancel()
 		if readErr != nil {
 			return "", nil, readErr
 		}
