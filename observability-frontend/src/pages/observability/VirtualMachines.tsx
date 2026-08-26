@@ -3,6 +3,7 @@ import { Drawer, Spin, Table, Tag, Descriptions, Typography } from 'antd'
 import { listVms, getVm, type VmItem } from '../../api/client'
 import { useUIStore } from '../../store/uiStore'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
+import ErrorState from '../../components/ErrorState'
 
 const { Text } = Typography
 
@@ -20,14 +21,17 @@ const VirtualMachines: React.FC = () => {
   const [loading, setLoading] = useState(true)
   // KubeVirt 未安装标记：接口返回 kubevirt_not_installed=true 时显示空态引导
   const [kubevirtMissing, setKubevirtMissing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<any>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerLoading, setDrawerLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
 
-  const load = () => {
+  const load = async () => {
     setLoading(true)
-    listVms({ cluster_id: currentClusterId === 'all' ? undefined : currentClusterId })
-      .then((r) => {
+    setError(null)
+    try {
+      const r = await listVms({ cluster_id: currentClusterId === 'all' ? undefined : currentClusterId })
         const d = r.data
         if (d && (d.kubevirt_not_installed === true || d.kubevirt_installed === false)) {
           setKubevirtMissing(true)
@@ -37,23 +41,29 @@ const VirtualMachines: React.FC = () => {
           const list = Array.isArray(d) ? d : (d?.vms ?? d?.items ?? d?.data ?? [])
           setRows(Array.isArray(list) ? list : [])
         }
-      })
-      .catch(() => { setRows([]); setKubevirtMissing(false) })
-      .finally(() => setLoading(false))
+    } catch (e: any) {
+      setRows([])
+      setKubevirtMissing(false)
+      setError(e?.response?.data?.error || e?.message || '虚拟机数据加载失败')
+    } finally {
+      setLoading(false)
+    }
   }
 
-  useEffect(() => { load() }, [currentClusterId])
+  useEffect(() => { void load() }, [currentClusterId])
 
   const openDetail = async (vm: VmItem) => {
     setDrawerOpen(true)
     setDrawerLoading(true)
+    setDetailError(null)
     setDetail(null)
     try {
       const r = await getVm(vm.namespace, vm.name)
       const d = r.data
       setDetail(d?.vm ?? d?.data ?? d ?? {})
-    } catch {
+    } catch (e: any) {
       setDetail({})
+      setDetailError(e?.response?.data?.error || e?.message || '虚拟机详情加载失败')
     } finally {
       setDrawerLoading(false)
     }
@@ -76,18 +86,18 @@ const VirtualMachines: React.FC = () => {
       <PageHeader title="虚拟机" desc="KubeVirt 虚拟机列表与运行状态 · 点击行查看详情" />
 
       <div className="card" style={{ padding: 0 }}>
-        <Table rowKey={(r) => `${r.namespace}-${r.name}`} loading={loading} columns={cols} dataSource={rows}
+        {error ? <ErrorState message={error} onRetry={load} /> : <Table rowKey={(r) => `${r.namespace}-${r.name}`} loading={loading} columns={cols} dataSource={rows}
           size="middle" pagination={{ pageSize: 20 }} scroll={{ x: 800 }}
           onRow={(r) => ({ onClick: () => openDetail(r), style: { cursor: 'pointer' } })}
           locale={{ emptyText: kubevirtMissing
             ? <Empty text="KubeVirt 未安装" hint="请先在集群部署 KubeVirt 后使用虚拟机管理" />
-            : <Empty text="暂无虚拟机" hint="集群中未发现 KubeVirt 虚拟机" /> }} />
+            : <Empty text="暂无虚拟机" hint="集群中未发现 KubeVirt 虚拟机" /> }} />}
       </div>
 
       <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose
         title={`虚拟机 ${detail?.name || ''}`}
         styles={{ body: { padding: 16, background: 'var(--surface-1)' } }}>
-        {drawerLoading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : (
+        {drawerLoading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : detailError ? <ErrorState message={detailError} /> : (
           <div>
             <Descriptions size="small" column={1} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="状态"><Tag color={vmTone(detail?.status)}>{detail?.status || '-'}</Tag></Descriptions.Item>

@@ -7,6 +7,7 @@ import {
   getAlertEvents, getDashboardResources, getDashboardStats, getNodeMetrics,
 } from '../../api/client'
 import { Breadcrumb, Empty, PageHeader, PaneCard, StatCard, StatusBadge } from '../../components/ui/PageKit'
+import ErrorState from '../../components/ErrorState'
 import { useUIStore } from '../../store/uiStore'
 
 const severityRank: Record<string, number> = { critical: 3, 严重: 3, warning: 2, 警告: 2, info: 1, 信息: 1 }
@@ -36,6 +37,7 @@ const Overview: React.FC = () => {
   const [resources, setResources] = useState<DashboardResources | null>(null)
   const [nodes, setNodes] = useState<NodeMetric[]>([])
   const [alerts, setAlerts] = useState<DashboardAlertEvent[]>([])
+  const [errors, setErrors] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [nodeSort, setNodeSort] = useState<'cpu' | 'memory'>('cpu')
   const [showAllNodes, setShowAllNodes] = useState(false)
@@ -45,16 +47,20 @@ const Overview: React.FC = () => {
 
   const load = () => {
     setLoading(true)
+    setErrors({})
+    const recordError = (key: string, error: any, fallback: string) => {
+      setErrors((current) => ({ ...current, [key]: error?.response?.data?.error || error?.message || fallback }))
+    }
     Promise.all([
-      getDashboardStats().then((r) => setStats(r.data)).catch(() => setStats(null)),
-      getDashboardResources({ cluster_id: currentClusterId || 'all' }).then((r) => setResources(r.data)).catch(() => setResources(null)),
-      getNodeMetrics().then((r) => setNodes(Array.isArray(r.data?.nodes) ? r.data.nodes : [])).catch(() => setNodes([])),
+      getDashboardStats().then((r) => setStats(r.data)).catch((e) => { setStats(null); recordError('stats', e, '总览统计加载失败') }),
+      getDashboardResources({ cluster_id: currentClusterId || 'all' }).then((r) => setResources(r.data)).catch((e) => { setResources(null); recordError('resources', e, '资源数据加载失败') }),
+      getNodeMetrics().then((r) => setNodes(Array.isArray(r.data?.nodes) ? r.data.nodes : [])).catch((e) => { setNodes([]); recordError('nodes', e, '节点数据加载失败') }),
       // B12: 活跃告警 limit 由 200 提至 1000，覆盖大集群多规则场景，避免活跃告警被静默截断。
       // 后续应改为服务端分页统计（见 C2）。
       getAlertEvents({ limit: 1000 }).then((r) => {
         const data = r.data
         setAlerts(Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []))
-      }).catch(() => setAlerts([])),
+      }).catch((e) => { setAlerts([]); recordError('alerts', e, '告警数据加载失败') }),
     ]).finally(() => setLoading(false))
   }
 
@@ -117,6 +123,7 @@ const Overview: React.FC = () => {
   return <div>
     <Breadcrumb items={[{ t: '总览' }, { t: '工作台首页' }]} />
     <PageHeader title="工作台首页" desc="当前集群资源态势一览 · 风险与健康一屏掌握" />
+    {errors.stats ? <ErrorState message={errors.stats} onRetry={load} /> : null}
     {stats?.data_gaps?.length ? <Alert showIcon type="warning" message={`检测到数据采集中断：${stats.data_gaps.length} 个时段无数据`} style={{ marginBottom: 16 }} /> : null}
 
     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -129,21 +136,21 @@ const Overview: React.FC = () => {
     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
       <Col xs={24} lg={14}>
         <PaneCard title="资源态势" action={<Tag color="blue" style={{ borderRadius: 999 }}>{clusterName} · {resources?.node_count ?? 0} 节点</Tag>}>
-          {resources?.resources?.length ? <Row gutter={[24, 20]}>{resources.resources.map((r) => {
+          {errors.resources ? <ErrorState message={errors.resources} onRetry={load} /> : resources?.resources?.length ? <Row gutter={[24, 20]}>{resources.resources.map((r) => {
             const current = pct(r.current ?? undefined), color = usageColor(current ?? undefined)
             const label = r.metric === 'cpu' ? 'CPU 使用率' : r.metric === 'memory' ? '内存使用率' : '磁盘使用率'
             return <Col xs={24} md={8} key={r.metric}><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}><span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{label}</span><b style={{ color }}>{current == null ? '—' : `${current.toFixed(1)}%`}</b></div><Progress percent={current ?? 0} showInfo={false} strokeColor={color} trailColor="var(--bg-soft)" size="small" /><div style={{ marginTop: 5, color: 'var(--text-muted)', fontSize: 11 }}>阈值 {r.threshold ?? '—'}% · {r.ett_seconds > 0 ? `预计 ${Math.round(r.ett_seconds / 3600)}h 后触达` : '预测窗口内不触达'}</div></Col>
           })}</Row> : <Empty text={loading ? '资源数据加载中…' : '暂无资源数据'} />}
         </PaneCard>
         <PaneCard title="节点资源 TOP5" action={<Space><Segmented size="small" value={nodeSort} onChange={(v) => setNodeSort(v as 'cpu' | 'memory')} options={[{ label: 'CPU', value: 'cpu' }, { label: '内存', value: 'memory' }]} />{nodes.length > 5 && <Button type="link" size="small" onClick={() => setShowAllNodes((v) => !v)}>{showAllNodes ? '收起' : `查看全部 (${nodes.length})`}</Button>}</Space>} style={{ marginTop: 16 }}>
-          {displayedNodes.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 600 }}><div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.25fr 1.25fr .7fr .9fr', gap: 12, padding: '0 4px 8px', color: 'var(--text-muted)', fontSize: 11, borderBottom: '1px solid var(--border-soft)' }}><span>节点</span><span>CPU 使用率</span><span>内存使用率</span><span>CPU 核数</span><span>内存容量</span></div>{displayedNodes.map((n, i) => <div key={`${n.node || 'node'}-${i}`} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.25fr 1.25fr .7fr .9fr', gap: 12, alignItems: 'center', padding: '11px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{n.node || '未命名节点'}</span><Progress percent={pct(n.cpu_usage_pct) ?? 0} strokeColor={usageColor(n.cpu_usage_pct)} format={(v) => `${v ?? 0}%`} size="small" /><Progress percent={pct(n.mem_usage_pct) ?? 0} strokeColor={usageColor(n.mem_usage_pct)} format={(v) => `${v ?? 0}%`} size="small" /><span>{formatCapacity(n.cpu_capacity)}</span><span>{formatCapacity(n.mem_capacity)}</span></div>)}</div></div> : <Empty text={loading ? '节点数据加载中…' : '暂无节点资源数据'} />}
+          {errors.nodes ? <ErrorState message={errors.nodes} onRetry={load} /> : displayedNodes.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 600 }}><div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.25fr 1.25fr .7fr .9fr', gap: 12, padding: '0 4px 8px', color: 'var(--text-muted)', fontSize: 11, borderBottom: '1px solid var(--border-soft)' }}><span>节点</span><span>CPU 使用率</span><span>内存使用率</span><span>CPU 核数</span><span>内存容量</span></div>{displayedNodes.map((n, i) => <div key={`${n.node || 'node'}-${i}`} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.25fr 1.25fr .7fr .9fr', gap: 12, alignItems: 'center', padding: '11px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{n.node || '未命名节点'}</span><Progress percent={pct(n.cpu_usage_pct) ?? 0} strokeColor={usageColor(n.cpu_usage_pct)} format={(v) => `${v ?? 0}%`} size="small" /><Progress percent={pct(n.mem_usage_pct) ?? 0} strokeColor={usageColor(n.mem_usage_pct)} format={(v) => `${v ?? 0}%`} size="small" /><span>{formatCapacity(n.cpu_capacity)}</span><span>{formatCapacity(n.mem_capacity)}</span></div>)}</div></div> : <Empty text={loading ? '节点数据加载中…' : '暂无节点资源数据'} />}
         </PaneCard>
       </Col>
       <Col xs={24} lg={10}><PaneCard title="调用与错误趋势" action={<Tag color="blue" style={{ borderRadius: 999 }}>过去 24 小时</Tag>}>{trend.length ? <div ref={trendRef} style={{ height: 380, width: '100%' }} /> : <Empty text={loading ? '趋势数据加载中…' : '暂无趋势数据'} />}</PaneCard></Col>
     </Row>
 
     <PaneCard title={<span>活跃告警 <Badge count={activeAlerts.length} showZero style={{ backgroundColor: activeAlerts.length ? 'var(--danger)' : 'var(--success)', marginLeft: 8 }} /></span>} action={<Button type="link" onClick={() => navigate('/alerts/events')}>查看全部 →</Button>}>
-      {activeAlerts.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 900 }}>{activeAlerts.map((item, index) => { const question = `告警: ${item.rule_name || '未命名规则'} (${severityLabel(item.severity)}), 服务: ${item.service || '未知服务'}, 触发 ${item.count ?? 1} 次, 最近 ${item.last_timestamp || '未知时间'}, 消息: ${item.message || '无消息'}, 请分析根因并给出处置建议`; return <div key={`${item.rule_name}-${item.last_timestamp}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1.15fr .8fr .65fr .45fr 1fr minmax(180px, 2fr) auto', gap: 14, alignItems: 'center', padding: '12px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600 }}>{item.rule_name || '未命名规则'}</span><span>{item.service || '—'}</span><StatusBadge text={severityLabel(item.severity)} tone={severityTone(item.severity)} /><span>{item.count ?? 1} 次</span><span style={{ color: 'var(--text-muted)' }}>{item.last_timestamp || '—'}</span><Tooltip title={item.message || '—'}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.message || '—'}</span></Tooltip><Button type="link" size="small" onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(question)}`)}>根因定位</Button></div> })}</div></div> : <div style={{ textAlign: 'center', padding: '28px 8px', color: 'var(--success)', fontSize: 13 }}>✓ 当前无活跃告警，系统健康</div>}
+      {errors.alerts ? <ErrorState message={errors.alerts} onRetry={load} /> : activeAlerts.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 900 }}>{activeAlerts.map((item, index) => { const question = `告警: ${item.rule_name || '未命名规则'} (${severityLabel(item.severity)}), 服务: ${item.service || '未知服务'}, 触发 ${item.count ?? 1} 次, 最近 ${item.last_timestamp || '未知时间'}, 消息: ${item.message || '无消息'}, 请分析根因并给出处置建议`; return <div key={`${item.rule_name}-${item.last_timestamp}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1.15fr .8fr .65fr .45fr 1fr minmax(180px, 2fr) auto', gap: 14, alignItems: 'center', padding: '12px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600 }}>{item.rule_name || '未命名规则'}</span><span>{item.service || '—'}</span><StatusBadge text={severityLabel(item.severity)} tone={severityTone(item.severity)} /><span>{item.count ?? 1} 次</span><span style={{ color: 'var(--text-muted)' }}>{item.last_timestamp || '—'}</span><Tooltip title={item.message || '—'}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.message || '—'}</span></Tooltip><Button type="link" size="small" onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(question)}`)}>根因定位</Button></div> })}</div></div> : <div style={{ textAlign: 'center', padding: '28px 8px', color: 'var(--success)', fontSize: 13 }}>✓ 当前无活跃告警，系统健康</div>}
     </PaneCard>
   </div>
 }

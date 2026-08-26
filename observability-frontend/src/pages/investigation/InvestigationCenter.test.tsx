@@ -23,4 +23,10 @@ describe('InvestigationCenter identity projection', () => {
     expect(await screen.findByText('user-123')).toBeInTheDocument()
     expect(screen.queryByText('system')).not.toBeInTheDocument()
   })
+
+  it('shows an error state when the persisted run source is unavailable', async () => {
+    vi.mocked(listRuns).mockRejectedValueOnce(new Error('run store unavailable'))
+    render(<MemoryRouter><InvestigationCenter /></MemoryRouter>)
+    expect(await screen.findByText('run store unavailable')).toBeInTheDocument()
+  })
 })

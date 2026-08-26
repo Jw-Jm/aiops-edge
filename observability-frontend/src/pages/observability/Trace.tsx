@@ -3,6 +3,7 @@ import { Drawer, Spin, Table, Tag, Select, Space, Button, Input } from 'antd'
 import { getTraces, getTraceDetail, getTraceContext, getServices } from '../../api/client'
 import { useUIStore } from '../../store/uiStore'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
+import ErrorState from '../../components/ErrorState'
 
 interface TraceRow { trace_id: string; services?: any; max_ms?: number; spans?: number; start?: string; end?: string }
 
@@ -61,18 +62,22 @@ const Trace: React.FC = () => {
   const [ctx, setCtx] = useState<any>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerLoading, setDrawerLoading] = useState(false)
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
   const [svc, setSvc] = useState<string>('')
   const [search, setSearch] = useState<string>('')
   const [services, setServices] = useState<string[]>([])
   const [rangeHours, setRangeHours] = useState<number>(24)
   const [offset, setOffset] = useState(0)
   const [hasMore, setHasMore] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
   const PAGE_SIZE = 50
 
   // B5 修复：服务端分页（后端支持 limit/offset），翻页不再失效；
   // 参数名对齐后端（service 而非 service_name），并携带时间范围 hours。
   const load = (s = svc, q = search, h = rangeHours, append = false) => {
     setLoading(true)
+    if (!append) setError(null)
     const off = append ? offset : 0
     getTraces({ limit: PAGE_SIZE, offset: off, service: s || undefined, search: q || undefined, hours: h })
       .then((r) => {
@@ -81,7 +86,10 @@ const Trace: React.FC = () => {
         setHasMore(rows.length >= PAGE_SIZE)
         setOffset(off + rows.length)
       })
-      .catch(() => { if (!append) setData([]) })
+      .catch((e: any) => {
+        if (!append) setData([])
+        setError(e?.response?.data?.error || e?.message || '调用链数据加载失败')
+      })
       .finally(() => setLoading(false))
   }
 
@@ -96,12 +104,17 @@ const Trace: React.FC = () => {
   }, [currentClusterId])
 
   const openDetail = (id: string) => {
+    setSelectedTraceId(id)
     setDrawerOpen(true)
     setDrawerLoading(true)
+    setDetailError(null)
     setDetail(null); setCtx(null)
     Promise.all([getTraceDetail(id), getTraceContext(id)])
       .then(([d, c]) => { setDetail(d.data); setCtx(c.data) })
-      .catch(() => setDetail({}))
+      .catch((e: any) => {
+        setDetail({})
+        setDetailError(e?.response?.data?.error || e?.message || 'Trace 详情加载失败')
+      })
       .finally(() => setDrawerLoading(false))
   }
 
@@ -136,19 +149,21 @@ const Trace: React.FC = () => {
           <Button onClick={() => load()}>刷新</Button></Space>} />
 
       <div className="card" style={{ padding: 0 }}>
-        <Table rowKey="trace_id" loading={loading} columns={cols} dataSource={data} size="middle"
-          pagination={{ pageSize: 20 }} scroll={{ x: 800 }}
-          locale={{ emptyText: <Empty text="暂无调用链数据" hint="请确认服务已上报 trace，或尝试调整时间范围" /> }} />
-        {hasMore && (
-          <div style={{ textAlign: 'center', padding: 12 }}>
-            <Button loading={loading} onClick={() => load(svc, search, rangeHours, true)}>加载更多</Button>
-          </div>
-        )}
+        {error ? <ErrorState message={error} onRetry={() => load()} /> : <>
+          <Table rowKey="trace_id" loading={loading} columns={cols} dataSource={data} size="middle"
+            pagination={{ pageSize: 20 }} scroll={{ x: 800 }}
+            locale={{ emptyText: <Empty text="暂无调用链数据" hint="请确认服务已上报 trace，或尝试调整时间范围" /> }} />
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: 12 }}>
+              <Button loading={loading} onClick={() => load(svc, search, rangeHours, true)}>加载更多</Button>
+            </div>
+          )}
+        </>}
       </div>
 
       <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose title={`Trace ${detail?.trace_id || ''}`}
         styles={{ body: { padding: 16, background: 'var(--surface-1)' } }}>
-        {drawerLoading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : (
+        {drawerLoading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : detailError ? <ErrorState message={detailError} onRetry={() => selectedTraceId && openDetail(selectedTraceId)} /> : (
           <div>
             <div style={{ marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               <Tag color="blue">Spans {(detail?.spans || []).length}</Tag>
