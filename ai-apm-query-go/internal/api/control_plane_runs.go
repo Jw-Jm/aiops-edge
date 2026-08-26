@@ -41,6 +41,12 @@ func (h *Handler) InternalControlPlaneRunRouter(w http.ResponseWriter, r *http.R
 		h.internalControlPlaneRunUnfinished(w, r)
 		return
 	}
+	// 单 Run 读取由 orchestrator recovery/runtime 使用：GET /runs/{id}。
+	// 该路径没有 operation 子段，必须在双段 operation 路由之前显式分派。
+	if len(parts) == 1 && parts[0] != "" {
+		h.internalControlPlaneRunGet(w, r, parts[0])
+		return
+	}
 	if len(parts) == 2 {
 		id := parts[0]
 		switch parts[1] {

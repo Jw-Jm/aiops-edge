@@ -133,6 +133,28 @@ func TestControlPlaneRunTransitionCAS(t *testing.T) {
 	}
 }
 
+func TestControlPlaneRunGetRoutesSingleID(t *testing.T) {
+	c := newCPHandler(t)
+	mock, cleanup := setupAPIStore(t)
+	defer cleanup()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
+		WillReturnRows(airunMockRows("run-1", "created", 0))
+
+	req := c.cpReq(t, http.MethodGet, "/internal/v1/control-plane/runs/run-1",
+		"control_plane.runs.recover", "", nil)
+	rec := httptest.NewRecorder()
+	c.h.InternalControlPlaneRunRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for single-id control-plane GET, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"run_id":"run-1"`) {
+		t.Fatalf("response omitted run id: %s", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations not met: %v", err)
+	}
+}
+
 func TestControlPlaneRunTransitionMissingVersion(t *testing.T) {
 	c := newCPHandler(t)
 	_, cleanup := setupAPIStore(t)
