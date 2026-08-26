@@ -8,6 +8,9 @@ queryApi:
   k8sInsecureSkipVerify: "true"
 ingest:
   enabled: true
+  # 本机验收环境不部署 DeepFlow；显式清空外部 ClickHouse 地址，避免 ingest
+  # 继承默认地址后启动同步器并持续产生 DNS 失败日志。
+  deepflowChHost: ""
 aiOrchestrator:
   enabled: false
   llmMock: "false"
