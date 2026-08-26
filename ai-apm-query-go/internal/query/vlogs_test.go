@@ -101,7 +101,8 @@ func TestVLogsQueryHonorsLevelAndHealthFilter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query().Get("query")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","level":"error","_msg":"boom"}` + "\n"))
+		_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","level":"error","_msg":"boom"}` + "\n" +
+			`{"_time":"2026-08-20T10:00:01Z","service_name":"checkout","_msg":"unstructured log"}` + "\n"))
 	}))
 	defer srv.Close()
 

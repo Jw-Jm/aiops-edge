@@ -312,6 +312,13 @@ func (r *VLogsReader) Search(ctx context.Context, q LogQuery) ([]LogRecord, erro
 		if level == "" {
 			level = rec.Severity
 		}
+		// VictoriaLogs may accept a field filter while still returning
+		// unstructured records without that field. Enforce the requested level
+		// against the normalized response so missing severity never masquerades
+		// as a matching result in the UI.
+		if requested := strings.TrimSpace(q.Level); requested != "" && !strings.EqualFold(level, requested) {
+			continue
+		}
 		out = append(out, LogRecord{
 			Timestamp:   parseVLogsTime(rec.Timestamp),
 			ServiceName: rec.ServiceName,
