@@ -59,15 +59,22 @@ func (f *fakeKube) serve(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"metadata": map[string]any{"name": name, "resourceVersion": "100"},
 				"spec": map[string]any{
-					"holderIdentity":    f.lease[name],
+					"holderIdentity":       f.lease[name],
 					"leaseDurationSeconds": 15,
-					"renewTime":          "2026-08-20T10:00:00Z",
+					"renewTime":            "2026-08-20T10:00:00Z",
 				},
 			})
 		case http.MethodPut:
 			f.calls = append(f.calls, "PUT "+name)
 			var l kubeLease
 			_ = json.NewDecoder(r.Body).Decode(&l)
+			if l.Metadata.ResourceVersion == "" {
+				// Real Kubernetes Update requests must carry the current
+				// metadata.resourceVersion; otherwise an expired Lease can never
+				// be reclaimed by a restarted collector.
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
 			f.lease[name] = l.Spec.HolderIdentity
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
