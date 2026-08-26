@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -819,7 +820,19 @@ func (h *Handler) proxyLegacy(w http.ResponseWriter, r *http.Request, authCtx Au
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, body)
+	proxyTimeout := 10 * time.Second
+	// Reports/RCA/final-report may legitimately wait for an LLM response. Their
+	// browser callers already use an extended timeout, so do not turn a slow but
+	// reachable provider into a false backend outage. Short read/proxy routes
+	// must fail fast when the orchestrator Service has no ready endpoints.
+	if strings.HasPrefix(r.URL.Path, "/api/v1/ops/rca") ||
+		strings.HasPrefix(r.URL.Path, "/api/v1/ai/nl2sql") ||
+		r.URL.Path == "/api/v1/ai/final_report" {
+		proxyTimeout = 120 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), proxyTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, r.Method, target, body)
 	if err != nil {
 		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
 		return
