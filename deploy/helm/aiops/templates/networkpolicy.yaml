@@ -272,6 +272,32 @@ spec:
       ports:
 {{ toYaml $dnsPorts | indent 8 }}
 {{- end }}
+{{- if and .Values.ingest.enabled .Values.ingest.otlpGrpcEnabled }}
+---
+# DeepFlow Server → Ingest official OTLP/gRPC exporter. Restrict this port to
+# the DeepFlow server pods in the dedicated deepflow namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-deepflow-to-ingest-otlp
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ingest
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.namespace.deepflow }}
+          podSelector:
+            matchLabels:
+              component: deepflow-server
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ingest.otlpGrpcPort | default 4317 }}
+{{- end }}
 {{- if or $denyAll (has "event-collector" $canary) }}
 ---
 # 1f) event-collector 出站白名单：clickhouse:8123（事件落库）+

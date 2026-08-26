@@ -29,3 +29,18 @@ func TestDeepFlowLegacyClusterIDUsesIngestCluster(t *testing.T) {
 		t.Fatalf("legacy DeepFlow cluster = %q, want cluster-canonical", got)
 	}
 }
+
+func TestParseEnvBoolDefault(t *testing.T) {
+	t.Setenv("OTLP_GRPC_ENABLED", "off")
+	if got := parseEnvBoolDefault("OTLP_GRPC_ENABLED", true); got {
+		t.Fatal("off should disable OTLP/gRPC")
+	}
+	t.Setenv("OTLP_GRPC_ENABLED", "true")
+	if got := parseEnvBoolDefault("OTLP_GRPC_ENABLED", false); !got {
+		t.Fatal("true should enable OTLP/gRPC")
+	}
+	t.Setenv("OTLP_GRPC_ENABLED", "")
+	if got := parseEnvBoolDefault("OTLP_GRPC_ENABLED", true); !got {
+		t.Fatal("empty value should use the supplied default")
+	}
+}

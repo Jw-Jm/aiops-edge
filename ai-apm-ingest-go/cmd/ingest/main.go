@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,8 +17,12 @@ import (
 	"syscall"
 	"time"
 
+	coltrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/grpc"
+
 	"github.com/observability-platform/ai-apm-ingest-go/internal/metrics"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
+	"github.com/observability-platform/ai-apm-ingest-go/internal/otlpgrpc"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/pipeline"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/telemetry"
 	"github.com/observability-platform/ai-apm-ingest-go/internal/tracesink"
@@ -201,6 +206,33 @@ func main() {
 	// DeepFlow native protocol endpoint
 	mux.HandleFunc("/v1/deepflow", dfReceiver.ServeHTTP)
 
+	var grpcServer *grpc.Server
+	var grpcListener net.Listener
+	if parseEnvBoolDefault("OTLP_GRPC_ENABLED", true) {
+		otlpTenantID := strings.TrimSpace(os.Getenv("DEEPFLOW_TENANT_ID"))
+		if otlpTenantID == "" {
+			log.Fatalf("DEEPFLOW_TENANT_ID not set: OTLP/gRPC receiver requires a tenant identity")
+		}
+		grpcServer = grpc.NewServer()
+		receiver := otlpgrpc.NewReceiver(pl, otlpTenantID).SetMetrics(met)
+		coltrace.RegisterTraceServiceServer(grpcServer, receiver)
+		grpcPort := parseEnvInt("OTLP_GRPC_PORT")
+		if grpcPort <= 0 || grpcPort > 65535 {
+			grpcPort = 4317
+		}
+		grpcAddr := fmt.Sprintf(":%d", grpcPort)
+		grpcListener, err = net.Listen("tcp", grpcAddr)
+		if err != nil {
+			log.Fatalf("OTLP/gRPC listen %s: %v", grpcAddr, err)
+		}
+		go func() {
+			log.Printf("OTLP/gRPC TraceService listening on %s", grpcAddr)
+			if err := grpcServer.Serve(grpcListener); err != nil {
+				log.Printf("OTLP/gRPC server stopped: %v", err)
+			}
+		}()
+	}
+
 	// /health 健康端点。V9.3 Phase 14：legacy ClickHouse 探测已删除；
 	// ingest 自身写路径健康由 VM/VLogs 后端侧探针负责，本端点报告进程存活 + new 后端启用。
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +305,12 @@ func main() {
 	defer cancelShutdown()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
+	}
+	if grpcServer != nil {
+		grpcServer.GracefulStop()
+		if grpcListener != nil {
+			_ = grpcListener.Close()
+		}
 	}
 }
 
@@ -429,6 +467,21 @@ func parseEnvInt(key string) int {
 		return 0
 	}
 	return n
+}
+
+func parseEnvBoolDefault(key string, defaultValue bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return defaultValue
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }
 
 // rateLimiter 是基于固定窗口的简单令牌限流器（生产可替换为更精确的滑动窗口）。

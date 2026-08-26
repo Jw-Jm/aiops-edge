@@ -62,3 +62,26 @@ clickhouse:
   image:
     pullPolicy: IfNotPresent
 
+# Official DeepFlow → AIOps trace export. DeepFlow keeps ownership of its
+# ClickHouse; only converted OTLP spans cross the namespace boundary.
+# The tenant ID must match ingest.deepflowTenantId in the AIOps release.
+configmap:
+  server.yaml:
+    ingester:
+      exporters:
+        - protocol: opentelemetry
+          enabled: true
+          endpoints:
+            - ingest.observability.svc.cluster.local:4317
+          data-sources:
+            - flow_log.l7_flow_log
+          queue-count: 4
+          queue-size: 100000
+          batch-size: 32
+          flush-timeout: 10
+          export-fields:
+            - $tag
+            - $metrics
+            - $k8s.label
+          extra-headers:
+            x-tenant-id: 7ed01afc-cc79-4ecd-8767-a2befa6168ad

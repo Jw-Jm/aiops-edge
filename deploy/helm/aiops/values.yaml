@@ -319,6 +319,10 @@ ingest:
   traceSotMode: "required"
   victoriaMetricsUrl: "http://victoria-metrics.observability.svc.cluster.local:8428"
   victoriaLogsUrl: "http://victoria-logs.observability.svc.cluster.local:9428"
+  # DeepFlow official OpenTelemetry exporter receiver. The receiver requires
+  # x-tenant-id metadata and writes only to the platform Trace SoT.
+  otlpGrpcEnabled: true
+  otlpGrpcPort: 4317
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）
   deepflowChHost: "deepflow-clickhouse.deepflow.svc.cluster.local"
   deepflowChPort: "8123"

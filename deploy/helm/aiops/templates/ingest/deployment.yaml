@@ -24,6 +24,10 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+            {{- if .Values.ingest.otlpGrpcEnabled }}
+            - containerPort: {{ .Values.ingest.otlpGrpcPort | default 4317 }}
+              name: otlp-grpc
+            {{- end }}
           env:
             - name: CLICKHOUSE_HOST
               value: {{ .Values.ingest.clickhouseHost | quote }}
@@ -71,6 +75,10 @@ spec:
             - name: INGEST_API_KEY
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INGEST_API_KEY }
+            - name: OTLP_GRPC_ENABLED
+              value: {{ .Values.ingest.otlpGrpcEnabled | default true | quote }}
+            - name: OTLP_GRPC_PORT
+              value: {{ .Values.ingest.otlpGrpcPort | default 4317 | quote }}
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 10
@@ -100,6 +108,11 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+    {{- if .Values.ingest.otlpGrpcEnabled }}
+    - name: otlp-grpc
+      port: {{ .Values.ingest.otlpGrpcPort | default 4317 }}
+      targetPort: otlp-grpc
+    {{- end }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
