@@ -98,6 +98,8 @@ require_contains 'MYSQL_DATABASE' "${tmp_dir}/validation.yaml" 'MySQL database n
 require_contains 'CREATE DATABASE IF NOT EXISTS aiops' "${tmp_dir}/validation.yaml" 'users-init does not create the application database'
 require_contains 'DEEPFLOW_ENABLED' "${tmp_dir}/validation.yaml" 'frontend does not receive the optional DeepFlow switch'
 require_contains 'CREATE TABLE IF NOT EXISTS observability.k8s_events' "${tmp_dir}/validation.yaml" 'ClickHouse bootstrap omits the event-collector table'
+require_contains 'name: CLICKHOUSE_HTTP_URL' "${tmp_dir}/validation.yaml" 'ingest does not configure the ClickHouse Trace SoT HTTP endpoint'
+require_contains 'name: TRACE_SOT_MODE' "${tmp_dir}/validation.yaml" 'ingest does not enforce fail-closed Trace SoT mode'
 
 echo "[contract] disabled executor is absent"
 render "${tmp_dir}/disabled.yaml" \

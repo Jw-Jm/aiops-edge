@@ -310,6 +310,8 @@ ingest:
   # telemetry new backend：TELEMETRY_WRITER_MODE=new 启用 VM/VLogs 写链。
   # VICTORIA_*_URL 必须为 base URL（不带 /insert/jsonline，writer 内部追加）。
   telemetryWriterMode: "new"
+  # Trace Persistent SoT 必须可用；缺少 ClickHouse sink 时 ingest fail-closed。
+  traceSotMode: "required"
   victoriaMetricsUrl: "http://victoria-metrics.observability.svc.cluster.local:8428"
   victoriaLogsUrl: "http://victoria-logs.observability.svc.cluster.local:9428"
   # DeepFlow 同步（跨 namespace；DEEPFLOW_CH_HOST 为空则禁用同步器）

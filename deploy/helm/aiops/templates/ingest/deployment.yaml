@@ -29,6 +29,10 @@ spec:
               value: {{ .Values.ingest.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
               value: {{ .Values.ingest.clickhousePort | quote }}
+            # C-01：Trace Persistent SoT 使用 ClickHouse HTTP 接口；仅注入
+            # CLICKHOUSE_HOST/PORT 不会被 ingest 的 span sink 读取，必须显式组装 URL。
+            - name: CLICKHOUSE_HTTP_URL
+              value: {{ printf "http://%s:%s" .Values.ingest.clickhouseHost .Values.ingest.clickhousePort | quote }}
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.user | default "default" | quote }}
             - name: CLICKHOUSE_PASSWORD
@@ -58,6 +62,10 @@ spec:
               value: {{ .Values.ingest.victoriaMetricsUrl | default "" | quote }}
             - name: VICTORIA_LOGS_URL
               value: {{ .Values.ingest.victoriaLogsUrl | default "" | quote }}
+            # Candidate/production 必须在 Trace SoT 未配置时 fail-closed，不能
+            # 以健康状态接收并丢弃 Trace；本地验证同样使用 required 以保持语义一致。
+            - name: TRACE_SOT_MODE
+              value: {{ .Values.ingest.traceSotMode | default "required" | quote }}
             - name: INGEST_API_KEY
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INGEST_API_KEY }
