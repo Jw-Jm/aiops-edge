@@ -27,6 +27,24 @@ func TestActionWorkflowClosureMigrationContainsRequiredObjects(t *testing.T) {
 	}
 }
 
+func TestGraphProjectionMigrationContainsRequiredObjects(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0011_graph_projection.sql")
+	if err != nil {
+		t.Fatalf("read 0011 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{
+		"graph_projection_outbox", "graph_sync_state", "graph_worker_leases", "graph_entity_alias",
+		"hardware_assets", "hardware_components", "business_systems", "applications", "application_services",
+		"graph_schema_state", "graph_reconcile_runs", "graph_shadow_diff_runs", "ai_run_graph_contexts",
+		"uq_graph_outbox_event", "chk_graph_outbox_kind", "chk_graph_outbox_status",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0011 migration missing %q", required)
+		}
+	}
+}
+
 // TestAIRuntimeSchemaManifest 在可用 MySQL 上跑 schema-migrator 后，逐表核对
 // V9.2 冻结 AI Runtime 表的列 / nullability / PK / unique（P1-1：字段来源
 // docs/AIOPS_DATA_MODEL_REDESIGN.md）。无 MySQL 时跳过。

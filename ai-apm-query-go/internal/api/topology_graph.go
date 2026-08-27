@@ -17,9 +17,9 @@ import (
 
 // validDirections 允许的关系方向集合。
 var validDirections = map[string]bool{
-	"src_to_dst":     true,
-	"dst_to_src":     true,
-	"bidirectional":  true,
+	"src_to_dst":    true,
+	"dst_to_src":    true,
+	"bidirectional": true,
 }
 
 // validSemanticsTags 允许的关系语义标签集合（推理层）。

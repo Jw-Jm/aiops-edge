@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
+	graphpkg "github.com/observability-platform/ai-apm-query-go/internal/graph"
 	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
@@ -54,6 +57,22 @@ type internalQueryRequest struct {
 	RunID            string `json:"run_id"`
 	QueryWindowStart string `json:"query_window_start"` // RFC3339 绝对时间（Investigation 创建时冻结）
 	QueryWindowEnd   string `json:"query_window_end"`
+	// Graph query contract (server-side operation allowlist; raw graph
+	// languages are intentionally not represented by this DTO).
+	GraphOperation  string   `json:"graph_operation"`
+	EntityUID       string   `json:"entity_uid"`
+	TargetEntityUID string   `json:"target_entity_uid"`
+	EntityType      string   `json:"entity_type"`
+	Name            string   `json:"name"`
+	Direction       string   `json:"direction"`
+	RelationTypes   []string `json:"relation_types"`
+	RelationPolicy  string   `json:"relation_policy"`
+	MaxDepth        int      `json:"max_depth"`
+	MaxVertices     int      `json:"max_vertices"`
+	MaxEdges        int      `json:"max_edges"`
+	IncludeStale    bool     `json:"include_stale"`
+	Cursor          string   `json:"cursor"`
+	ContextVersion  int64    `json:"context_version"`
 }
 
 // decodeInternalRequest 解析请求体并校验可信作用域与 body 一致性。
@@ -229,6 +248,11 @@ func (h *Handler) execToolQuery(w http.ResponseWriter, rctx *internalQueryCtx, r
 	if err != nil {
 		if trc != nil {
 			h.finishToolRun(trc, "failed", "failed", nil, 0, err.Error())
+		}
+		var graphErr *graphpkg.Error
+		if errors.As(err, &graphErr) {
+			respondGraphErrorFromGo(w, err)
+			return
 		}
 		respondQueryError(w, err)
 		return
@@ -458,6 +482,24 @@ func (h *Handler) InternalQueryKubernetes(w http.ResponseWriter, r *http.Request
 		resp["partial"] = true
 		resp["errors"] = errs
 		quality = "partial"
+	}
+	// The graph backend profile upgrades this compatibility response to the
+	// canonical full Kubernetes source view required by section 13.  Legacy
+	// profiles retain the small health response used by existing callers.
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("GRAPH_BACKEND")))
+	if backend == "hugegraph" || backend == "shadow" {
+		if graphObjects, graphErr := h.kubeRepo.ListGraphObjects(r.Context(), scope, rctx.ClusterID); graphErr != nil {
+			resp["partial"] = true
+			resp["errors"] = append(errs, "graph_objects: "+graphErr.Error())
+			quality = "partial"
+		} else if graphObjects != nil {
+			for key, value := range graphObjects {
+				resp[key] = value
+			}
+			if partial, _ := graphObjects["partial"].(bool); partial {
+				quality = "partial"
+			}
+		}
 	}
 	data, _ := json.Marshal(resp)
 	env := h.endToolRun(trc, quality, data, "")

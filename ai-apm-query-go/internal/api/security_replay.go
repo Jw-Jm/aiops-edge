@@ -27,10 +27,10 @@ func (h *Handler) SecurityReplayConsume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		Issuer      string `json:"issuer"`
-		Audience    string `json:"audience"`
-		Nonce       string `json:"nonce"`
-		TTLSeconds  int    `json:"ttl_seconds"`
+		Issuer     string `json:"issuer"`
+		Audience   string `json:"audience"`
+		Nonce      string `json:"nonce"`
+		TTLSeconds int    `json:"ttl_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "INVALID_BODY"})

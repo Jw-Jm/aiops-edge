@@ -24,11 +24,11 @@ import (
 
 // AlertEvalLeader 表示一次 Leader 租约持有状态。
 type AlertEvalLeader struct {
-	HolderID    string
-	Epoch       int64
-	TokenHash   string
-	AcquiredAt  *time.Time
-	ExpiresAt   *time.Time
+	HolderID   string
+	Epoch      int64
+	TokenHash  string
+	AcquiredAt *time.Time
+	ExpiresAt  *time.Time
 }
 
 var (
@@ -184,9 +184,9 @@ func hashTokenForStore(token string) string {
 
 // AlertRuleRuntimeState 是单条规则的 cooldown/dampening 运行时状态。
 type AlertRuleRuntimeState struct {
-	RuleID         string
-	LastTriggerAt  *time.Time
-	BreachStreak   int
+	RuleID        string
+	LastTriggerAt *time.Time
+	BreachStreak  int
 }
 
 // AlertRuleRuntimeStateDAO 持久化 cooldown/dampening 状态（进程内 map 只能当缓存）。

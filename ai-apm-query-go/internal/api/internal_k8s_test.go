@@ -19,9 +19,11 @@ type k8sTestClient struct {
 	nodeDetails []map[string]interface{}
 }
 
-func (c *k8sTestClient) ClusterID() string                          { return "" }
-func (c *k8sTestClient) ListNodeNames() ([]string, error)           { return c.nodes, nil }
-func (c *k8sTestClient) ListNodeDetails() ([]map[string]interface{}, error) { return c.nodeDetails, nil }
+func (c *k8sTestClient) ClusterID() string                { return "" }
+func (c *k8sTestClient) ListNodeNames() ([]string, error) { return c.nodes, nil }
+func (c *k8sTestClient) ListNodeDetails() ([]map[string]interface{}, error) {
+	return c.nodeDetails, nil
+}
 func (c *k8sTestClient) ListPods(ns string) ([]query.KubePod, error) { return c.pods, nil }
 func (c *k8sTestClient) GetDeploymentIdentity(namespace, name string) (query.KubeObjectIdentity, error) {
 	return query.KubeObjectIdentity{UID: "uid-1", ResourceVersion: "42", Namespace: namespace, Name: name}, nil

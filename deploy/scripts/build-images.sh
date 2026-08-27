@@ -70,6 +70,7 @@ case "$TARGET" in
     build ai-action-executor ai-action-executor
     build ai-llm-egress-proxy ai-llm-egress-proxy
     build ai-apm-query-go schema-migrator Dockerfile.schema-migrator
+    build ai-apm-query-go graph-schema-migrator Dockerfile.graph-schema-migrator
     build ipmi-exporter ipmi-exporter
     ;;
   frontend)  build observability-frontend observability-frontend ;;
@@ -80,9 +81,10 @@ case "$TARGET" in
   executor)  build ai-action-executor ai-action-executor ;;
   llm-proxy) build ai-llm-egress-proxy ai-llm-egress-proxy ;;
   schema-migrator) build ai-apm-query-go schema-migrator Dockerfile.schema-migrator ;;
+  graph-schema-migrator) build ai-apm-query-go graph-schema-migrator Dockerfile.graph-schema-migrator ;;
   ipmi)      build ipmi-exporter ipmi-exporter ;;
   *)
-    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/event-collector/executor/llm-proxy/schema-migrator/ipmi)"
+    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/event-collector/executor/llm-proxy/schema-migrator/graph-schema-migrator/ipmi)"
     exit 1
     ;;
 esac

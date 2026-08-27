@@ -37,11 +37,11 @@ func TestPodNSResolverResolve(t *testing.T) {
 	r.ttl = 100 * time.Millisecond
 	r.fetchFn = func() (map[string]string, error) {
 		return map[string]string{
-			"query-api":        "observability",
-			"victoria-logs":    "observability",
-			"deepflow-server":  "deepflow",
-			"deepflow-agent":   "deepflow",
-			"clickhouse":       "observability",
+			"query-api":       "observability",
+			"victoria-logs":   "observability",
+			"deepflow-server": "deepflow",
+			"deepflow-agent":  "deepflow",
+			"clickhouse":      "observability",
 		}, nil
 	}
 

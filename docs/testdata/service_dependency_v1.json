@@ -1,0 +1,8 @@
+{
+  "service_uid":"service:v1:tenant-1:service-1",
+  "service_name":"order-service",
+  "application_uid":"application:v1:tenant-1:application-1",
+  "business_uid":"business:v1:tenant-1:business-1",
+  "dependencies":[{"target_uid":"service-provisional:v1:tenant-1:cluster-1:c1136991ddae1c23b956e7046e1fc2f4bde2d88edad1bfd02c0c18509daf8a1d","relation_type":"DEPENDS_ON","confidence":0.9}],
+  "meta":{"contract_version":"graph-dto-v1","schema_version":2,"partial":false,"stale":false,"generated_at":"2026-08-27T00:00:00Z","warning_codes":[]}
+}

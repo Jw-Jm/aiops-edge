@@ -1,0 +1,70 @@
+{{- if .Values.hugeGraph.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hugegraph
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: hugegraph
+spec:
+  serviceName: hugegraph
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hugegraph
+  template:
+    metadata:
+      labels:
+        app: hugegraph
+    spec:
+      containers:
+        - name: hugegraph
+          image: {{ .Values.hugeGraph.image | quote }}
+          imagePullPolicy: {{ .Values.hugeGraph.imagePullPolicy | default "IfNotPresent" }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - >-
+              set -euo pipefail;
+              mkdir -p /var/lib/hugegraph/data /var/lib/hugegraph/wal;
+              sed -ri 's|^[#[:space:]]*rocksdb\.data_path=.*|rocksdb.data_path=/var/lib/hugegraph/data|; s|^[#[:space:]]*rocksdb\.wal_path=.*|rocksdb.wal_path=/var/lib/hugegraph/wal|' /hugegraph-server/conf/graphs/hugegraph.properties;
+              grep -q '^rocksdb.data_path=' /hugegraph-server/conf/graphs/hugegraph.properties || echo 'rocksdb.data_path=/var/lib/hugegraph/data' >> /hugegraph-server/conf/graphs/hugegraph.properties;
+              grep -q '^rocksdb.wal_path=' /hugegraph-server/conf/graphs/hugegraph.properties || echo 'rocksdb.wal_path=/var/lib/hugegraph/wal' >> /hugegraph-server/conf/graphs/hugegraph.properties;
+              exec /usr/bin/dumb-init -- ./docker-entrypoint.sh
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: HUGEGRAPH_GRAPHSPACE
+              value: {{ .Values.hugeGraph.graphspace | quote }}
+            - name: HUGEGRAPH_GRAPH
+              value: {{ .Values.hugeGraph.graph | quote }}
+            - name: HUGEGRAPH_USERNAME
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_USERNAME }
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_PASSWORD }
+          readinessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "curl -fsS -u \"${HUGEGRAPH_USERNAME}:${PASSWORD}\" http://127.0.0.1:8080/graphs >/dev/null"]
+            initialDelaySeconds: 20
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "curl -fsS -u \"${HUGEGRAPH_USERNAME}:${PASSWORD}\" http://127.0.0.1:8080/graphs >/dev/null"]
+            initialDelaySeconds: 40
+            timeoutSeconds: 5
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.hugeGraph.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/hugegraph
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hugegraph-data
+{{- end }}

@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM docker.m.daocloud.io/library/node:20-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json* ./
 # 国内源 + npm 缓存持久化（buildkit cache mount：首次下载后后续构建零网络复用；
@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY . .
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM docker.m.daocloud.io/library/nginx:1.27-alpine
 # nginx 基镜像 apk 走国内源（阿里云），避免官方源不可达
 RUN sed -i 's@dl-cdn.alpinelinux.org@mirrors.aliyun.com@g' /etc/apk/repositories && \
     apk add --no-cache ca-certificates || true

@@ -13,6 +13,8 @@ CONFIRM_DESTROY=0
 SKIP_BUILD="${SKIP_IMAGE_BUILD:-0}"
 SKIP_DEEPFLOW="${SKIP_DEEPFLOW:-0}"
 SECRET_FILE="${AIOPS_SECRET_FILE:-}"
+REUSE_K8S_SECRET="${AIOPS_REUSE_K8S_SECRET:-}"
+SECRET_FILE_OWNED=0
 
 usage() {
   cat <<'EOF'
@@ -22,6 +24,7 @@ Usage: local-validation.sh [options]
   --destroy          Delete local observability/deepflow/canary namespaces first.
   --confirm-destroy  Required together with --destroy.
   --secret-file PATH Source generated shell secret file instead of generating one.
+  --reuse-k8s-secret NAME Import an existing Secret from the observability namespace.
   --skip-build       Skip Docker image builds.
   --skip-deepflow    Skip DeepFlow and report BLOCKED_BY_ENV.
 EOF
@@ -33,6 +36,7 @@ while [[ $# -gt 0 ]]; do
     --destroy) DESTROY=1; shift ;;
     --confirm-destroy) CONFIRM_DESTROY=1; shift ;;
     --secret-file) SECRET_FILE="${2:?--secret-file requires a path}"; shift 2 ;;
+    --reuse-k8s-secret) REUSE_K8S_SECRET="${2:?--reuse-k8s-secret requires a name}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --skip-deepflow) SKIP_DEEPFLOW=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -86,7 +90,12 @@ if [[ -n "${SECRET_FILE}" ]]; then
 else
   SECRET_FILE="${TMPDIR:-/tmp}/aiops-local-secrets-${RELEASE_TAG}.env"
   if [[ ! -f "${SECRET_FILE}" ]]; then
-    "${SCRIPT_DIR}/generate-local-secrets.sh" --output "${SECRET_FILE}"
+    if [[ -n "${REUSE_K8S_SECRET}" ]]; then
+      "${SCRIPT_DIR}/import-local-secrets-from-k8s.sh" --namespace "${NAMESPACE}" --secret "${REUSE_K8S_SECRET}" --output "${SECRET_FILE}"
+      SECRET_FILE_OWNED=1
+    else
+      "${SCRIPT_DIR}/generate-local-secrets.sh" --output "${SECRET_FILE}"
+    fi
   fi
 fi
 # shellcheck disable=SC1090
@@ -97,14 +106,17 @@ for required in JWT_SECRET LLM_ENCRYPTION_KEY INTERNAL_TOKEN INGEST_API_KEY \
   ORCHESTRATOR_TO_QUERY_SIGNING_KEY ORCHESTRATOR_TO_QUERY_VERIFY_KEYS \
   QUERY_TO_ORCHESTRATOR_TOKEN QUERY_TO_ORCHESTRATOR_SIGNING_KEY \
   QUERY_TO_ORCHESTRATOR_VERIFY_KEYS EXECUTOR_TOKEN \
-  AI_ACTION_EXECUTOR_SIGNING_KEY AI_ACTION_EXECUTOR_VERIFY_KEYS
+  AI_ACTION_EXECUTOR_SIGNING_KEY AI_ACTION_EXECUTOR_VERIFY_KEYS HUGEGRAPH_PASSWORD
 do
   [[ -n "${!required:-}" ]] || { echo "missing secret variable: ${required}" >&2; exit 1; }
 done
 
 SECRET_VALUES="${TMPDIR:-/tmp}/aiops-local-values-${RELEASE_TAG}.yaml"
 CANARY_MANIFEST="${TMPDIR:-/tmp}/aiops-canary-${RELEASE_TAG}.yaml"
-trap 'rm -f "${SECRET_VALUES}" "${CANARY_MANIFEST}"' EXIT
+LOCAL_GRAPH_MANIFEST="${TMPDIR:-/tmp}/aiops-local-graph-rbac-${RELEASE_TAG}.yaml"
+LOCAL_GRAPH_KUBECONFIG="${TMPDIR:-/tmp}/aiops-local-graph-kubeconfig-${RELEASE_TAG}.yaml"
+LOCAL_GRAPH_SECRET_MANIFEST="${TMPDIR:-/tmp}/aiops-local-graph-secret-${RELEASE_TAG}.yaml"
+trap 'rm -f "${SECRET_VALUES}" "${CANARY_MANIFEST}" "${LOCAL_GRAPH_MANIFEST}" "${LOCAL_GRAPH_KUBECONFIG}" "${LOCAL_GRAPH_SECRET_MANIFEST}"; if [[ "${SECRET_FILE_OWNED}" == "1" ]]; then rm -f "${SECRET_FILE}"; fi' EXIT
 yaml_quote() { printf "'%s'" "${1//\'/\'\'}"; }
 {
   echo "secrets:"
@@ -128,6 +140,7 @@ yaml_quote() { printf "'%s'" "${1//\'/\'\'}"; }
   printf '  executorToken: %s\n' "$(yaml_quote "${EXECUTOR_TOKEN}")"
   printf '  aiActionExecutorSigningKey: %s\n' "$(yaml_quote "${AI_ACTION_EXECUTOR_SIGNING_KEY}")"
   printf '  aiActionExecutorVerifyKeys: %s\n' "$(yaml_quote "${AI_ACTION_EXECUTOR_VERIFY_KEYS}")"
+  printf '  hugeGraphPassword: %s\n' "$(yaml_quote "${HUGEGRAPH_PASSWORD}")"
 } >"${SECRET_VALUES}"
 chmod 600 "${SECRET_VALUES}"
 
@@ -171,6 +184,113 @@ EOF
 run kubectl apply -f "${CANARY_MANIFEST}"
 run kubectl -n "${CANARY_NAMESPACE}" rollout status deployment/aiops-mutation-canary --timeout=180s
 
+step 1.5 "bind local cluster credential to the canonical Kubernetes identity"
+if ! kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+  run kubectl create namespace "${NAMESPACE}"
+fi
+cat >"${LOCAL_GRAPH_MANIFEST}" <<'EOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aiops-graph-reader
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aiops-graph-reader
+rules:
+- apiGroups: [""]
+  resources: ["namespaces", "nodes", "pods", "services", "persistentvolumeclaims", "persistentvolumes"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+  verbs: ["get", "list"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list"]
+- apiGroups: ["k8s.cni.cncf.io"]
+  resources: ["network-attachment-definitions"]
+  verbs: ["get", "list"]
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachines", "virtualmachineinstances", "virtualmachineinstancemigrations"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aiops-graph-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aiops-graph-reader
+subjects:
+- kind: ServiceAccount
+  name: aiops-graph-reader
+  namespace: observability
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aiops-graph-reader-token
+  namespace: observability
+  annotations:
+    kubernetes.io/service-account.name: aiops-graph-reader
+type: kubernetes.io/service-account-token
+EOF
+run kubectl apply -f "${LOCAL_GRAPH_MANIFEST}"
+
+GRAPH_TOKEN_B64=""
+GRAPH_CA_B64=""
+for _ in $(seq 1 60); do
+  GRAPH_TOKEN_B64="$(kubectl -n "${NAMESPACE}" get secret aiops-graph-reader-token -o jsonpath='{.data.token}' 2>/dev/null || true)"
+  GRAPH_CA_B64="$(kubectl -n "${NAMESPACE}" get secret aiops-graph-reader-token -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+  if [[ -n "${GRAPH_TOKEN_B64}" && -n "${GRAPH_CA_B64}" ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ -n "${GRAPH_TOKEN_B64}" && -n "${GRAPH_CA_B64}" ]] || {
+  echo "local graph reader ServiceAccount token was not populated" >&2
+  exit 1
+}
+KUBE_SYSTEM_UID="$(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}')"
+[[ -n "${KUBE_SYSTEM_UID}" ]] || { echo "kube-system identity UID is empty" >&2; exit 1; }
+GRAPH_TOKEN="$(printf '%s' "${GRAPH_TOKEN_B64}" | base64 -D)"
+GRAPH_CA="$(printf '%s' "${GRAPH_CA_B64}" | base64 -D)"
+umask 077
+cat >"${LOCAL_GRAPH_KUBECONFIG}" <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+- name: local-cluster
+  cluster:
+    server: https://kubernetes.default.svc
+    certificate-authority-data: ${GRAPH_CA_B64}
+users:
+- name: aiops-graph-reader
+  user:
+    token: ${GRAPH_TOKEN}
+contexts:
+- name: local-cluster
+  context:
+    cluster: local-cluster
+    user: aiops-graph-reader
+current-context: local-cluster
+EOF
+kubectl -n "${NAMESPACE}" create secret generic aiops-local-cluster-kubeconfig \
+  --from-file=kubeconfig="${LOCAL_GRAPH_KUBECONFIG}" --dry-run=client -o yaml >"${LOCAL_GRAPH_SECRET_MANIFEST}"
+run kubectl apply -f "${LOCAL_GRAPH_SECRET_MANIFEST}"
+{
+  echo "queryApi:"
+  printf '  systemClusterCredentialRef: %s\n' "$(yaml_quote "k8s-secret://${NAMESPACE}/aiops-local-cluster-kubeconfig")"
+  printf '  systemClusterIdentityUID: %s\n' "$(yaml_quote "${KUBE_SYSTEM_UID}")"
+} >>"${SECRET_VALUES}"
+unset GRAPH_TOKEN GRAPH_CA GRAPH_TOKEN_B64 GRAPH_CA_B64 KUBE_SYSTEM_UID
+
 step 2 "build all images and run preflight gates"
 if [[ "${SKIP_BUILD}" != "1" ]]; then
   run env IMAGE_TAG="${RELEASE_TAG}" "${SCRIPT_DIR}/build-images.sh" all
@@ -190,6 +310,7 @@ run helm upgrade --install aiops "${CHART_DIR}" -n "${NAMESPACE}" --create-names
 step 4 "wait users-init and schema-migrator"
 run kubectl -n "${NAMESPACE}" wait --for=condition=complete job/mysql-users-init --timeout=180s
 run kubectl -n "${NAMESPACE}" wait --for=condition=complete job/mysql-init --timeout=300s
+run kubectl -n "${NAMESPACE}" wait --for=condition=complete job/graph-schema-migrator --timeout=300s
 
 step 5 "runtime Helm upgrade"
 run helm upgrade aiops "${CHART_DIR}" -n "${NAMESPACE}" \

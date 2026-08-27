@@ -128,18 +128,35 @@ func validateToolRunRequest(req *internalQueryRequest) error {
 // 同 key 不同 args → 409 IDEMPOTENCY_KEY_REUSED。
 func toolArgsHash(req *internalQueryRequest) string {
 	args := struct {
-		Service   string   `json:"service"`
-		Services  []string `json:"services"`
-		Query     string   `json:"query"`
-		Since     string   `json:"since"`
-		Minutes   int      `json:"minutes"`
-		Hours     int      `json:"hours"`
-		Namespace string   `json:"namespace"`
-		Limit     int      `json:"limit"`
-		Offset    int      `json:"offset"`
-		TopK      int      `json:"top_k"`
+		Service         string   `json:"service"`
+		Services        []string `json:"services"`
+		Query           string   `json:"query"`
+		Since           string   `json:"since"`
+		Minutes         int      `json:"minutes"`
+		Hours           int      `json:"hours"`
+		Namespace       string   `json:"namespace"`
+		Limit           int      `json:"limit"`
+		Offset          int      `json:"offset"`
+		TopK            int      `json:"top_k"`
+		GraphOperation  string   `json:"graph_operation"`
+		EntityUID       string   `json:"entity_uid"`
+		TargetEntityUID string   `json:"target_entity_uid"`
+		EntityType      string   `json:"entity_type"`
+		Name            string   `json:"name"`
+		Direction       string   `json:"direction"`
+		RelationTypes   []string `json:"relation_types"`
+		RelationPolicy  string   `json:"relation_policy"`
+		MaxDepth        int      `json:"max_depth"`
+		MaxVertices     int      `json:"max_vertices"`
+		MaxEdges        int      `json:"max_edges"`
+		IncludeStale    bool     `json:"include_stale"`
+		Cursor          string   `json:"cursor"`
+		ContextVersion  int64    `json:"context_version"`
 	}{req.Service, req.Services, req.Query, req.Since, req.Minutes, req.Hours,
-		req.Namespace, req.Limit, req.Offset, req.TopK}
+		req.Namespace, req.Limit, req.Offset, req.TopK, req.GraphOperation,
+		req.EntityUID, req.TargetEntityUID, req.EntityType, req.Name, req.Direction,
+		req.RelationTypes, req.RelationPolicy, req.MaxDepth, req.MaxVertices,
+		req.MaxEdges, req.IncludeStale, req.Cursor, req.ContextVersion}
 	canonical, _ := json.Marshal(args)
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])

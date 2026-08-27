@@ -296,13 +296,13 @@ func (h *Handler) evaluateAlerts() {
 					}
 				}
 				event := AlertEvent{
-					ID:             generateID(),
-					RuleID:         rule.ID,
-					RuleName:       rule.Name,
-					Service:        rule.Service,
-					Severity:       rule.Severity, // P0-2 修复：事件继承规则严重级别
-					Cluster:        rule.Cluster,  // A-6 修复：事件继承规则集群标记
-					Object:         k8sAlertObjects(rule.ID), // 修复：新建事件时把告警对象名直接存到 Object 字段
+					ID:       generateID(),
+					RuleID:   rule.ID,
+					RuleName: rule.Name,
+					Service:  rule.Service,
+					Severity: rule.Severity,            // P0-2 修复：事件继承规则严重级别
+					Cluster:  rule.Cluster,             // A-6 修复：事件继承规则集群标记
+					Object:   k8sAlertObjects(rule.ID), // 修复：新建事件时把告警对象名直接存到 Object 字段
 
 					Message:        msg,
 					Value:          value,
@@ -313,8 +313,8 @@ func (h *Handler) evaluateAlerts() {
 					LastTimestamp:  nowStr,
 					Status:         "firing",
 					Signature:      sig,
-					}
-					alertEvents = append(alertEvents, event)
+				}
+				alertEvents = append(alertEvents, event)
 				if len(alertEvents) > maxAlertEvents {
 					alertEvents = alertEvents[len(alertEvents)-maxAlertEvents:]
 				}
@@ -389,4 +389,3 @@ func buildAlertMessage(rule AlertRule, value float64) string {
 		return fmt.Sprintf("%s: %s %.2f > threshold %.2f", rule.Name, rule.Metric, value, rule.Threshold)
 	}
 }
-

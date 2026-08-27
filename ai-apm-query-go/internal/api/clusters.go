@@ -404,11 +404,11 @@ func parseK8sEvents(raw string) []map[string]interface{} {
 			objKind, objName = it.Regarding.Kind, it.Regarding.Name
 		}
 		out = append(out, map[string]interface{}{
-			"last_timestamp": ts,
-			"type":           it.Type,
-			"reason":         it.Reason,
-			"message":        it.Message,
-			"count":          it.Count,
+			"last_timestamp":  ts,
+			"type":            it.Type,
+			"reason":          it.Reason,
+			"message":         it.Message,
+			"count":           it.Count,
 			"involved_object": objKind + "/" + objName,
 		})
 	}
@@ -457,12 +457,12 @@ func (h *Handler) clusterDelete(w http.ResponseWriter, r *http.Request, id int64
 }
 
 type clusterInfo struct {
-	Name       string `json:"name"`
-	Provider   string `json:"provider"`
-	Version    string `json:"version"`
-	NodeCount  int    `json:"node_count"`
-	Status     string `json:"status"`
-	APIServer  string `json:"api_server"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Version   string `json:"version"`
+	NodeCount int    `json:"node_count"`
+	Status    string `json:"status"`
+	APIServer string `json:"api_server"`
 }
 
 // k8sClusterInfo 用 kubectl 读取集群信息。

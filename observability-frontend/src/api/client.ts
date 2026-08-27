@@ -12,6 +12,8 @@ const api = axios.create({
   timeout: 15000,
 })
 
+export { api }
+
 // Read token from localStorage on init
 const token = localStorage.getItem('token')
 if (token) {

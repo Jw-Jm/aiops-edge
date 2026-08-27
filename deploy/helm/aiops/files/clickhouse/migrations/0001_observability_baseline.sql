@@ -61,6 +61,28 @@ TTL toDateTime(time_bucket) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
 -- =============================================================================
+-- change_records: 变更事实（changes.read / Graph ChangeBuilder 的 SoT）
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS observability.change_records
+(
+    tenant_id String,
+    cluster_id String DEFAULT 'default',
+    change_id String,
+    service_name String,
+    change_type String,
+    start_time DateTime64(3),
+    actor String,
+    summary String,
+    revision String,
+    date Date DEFAULT toDate(start_time)
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY date
+ORDER BY (tenant_id, cluster_id, service_name, start_time, change_id)
+TTL toDateTime(start_time) + INTERVAL 30 DAY
+SETTINGS index_granularity = 8192;
+
+-- =============================================================================
 -- trace_spans: 调用链 span（TTL 30 天）
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS observability.trace_spans

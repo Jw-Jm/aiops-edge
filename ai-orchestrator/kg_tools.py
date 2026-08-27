@@ -3,12 +3,47 @@
 数据全部来自 kg_graph 封装；图谱事实与变更详情由 query-api 持有。
 边界不可达时返回"知识图谱暂不可用"，绝不抛异常。
 """
-import kg_graph
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+
+def graph_query_tool(
+    *,
+    graph_operation: str,
+    execution_context: Any,
+    tenant_id: str | None = None,
+    cluster_id: str | None = None,
+    context_ref: str = "",
+    client: Any,
+    **params: Any,
+) -> dict:
+    """The only orchestrator graph-read tool.
+
+    ``client`` is injected by the runtime so this function cannot accidentally
+    open a HugeGraph/SQL connection.  The internal client performs tool,
+    capability, scope and lease checks before any datasource I/O.
+    """
+    tenant_id = tenant_id or str(getattr(execution_context, "tenant_id", ""))
+    cluster_id = cluster_id or str(getattr(execution_context, "cluster_id", ""))
+    if not tenant_id or not cluster_id:
+        raise ValueError("graph query requires tenant_id and cluster_id")
+    result = client.query_graph_v1(
+        tenant_id=tenant_id,
+        cluster_id=cluster_id,
+        params={"graph_operation": graph_operation, **params},
+        context_ref=context_ref or str(getattr(execution_context, "run_id", "graph-query")),
+        execution_context=execution_context,
+    )
+    return result.body
 
 
 def kg_evidence_tool(service: str, cluster_id: str = "default") -> str:
     """查询服务在运维知识图谱中的证据链：
     服务节点信息 + 上游/下游依赖 + 关联变更 + 所属 pod/node（RUNS_ON 边）。"""
+    # Legacy compatibility only.  New RCA and graph tools use graph_query_tool.
+    import kg_graph
+
     service = (service or "").strip()
     if not service:
         return "请指定服务名"

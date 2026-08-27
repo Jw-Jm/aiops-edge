@@ -38,11 +38,22 @@ OPERATION_ROUTES: Dict[str, tuple] = {
     "kubernetes": ("/internal/v1/query/kubernetes", "kubernetes.resources.read"),
     "changes": ("/internal/v1/query/changes", "changes.read"),
     "knowledge": ("/internal/v1/query/knowledge", "knowledge.search"),
+    "graph": ("/internal/v1/query/graph", "knowledge.graph.read"),
+    "kubevirt": ("/internal/v1/query/kubevirt", "kubevirt.resources.read"),
+    "hardware_inventory": ("/internal/v1/query/hardware/inventory", "hardware.inventory.read"),
+    "hardware_health": ("/internal/v1/query/hardware/health", "hardware.health.read"),
+    "catalog": ("/internal/v1/query/catalog", "catalog.read"),
+    "network_topology": ("/internal/v1/query/network-topology", "network.topology.read"),
 }
 
 # internalQueryRequest 结构化字段白名单（禁止 backend query language）。
 _ALLOWED_PARAM_KEYS = frozenset(
-    {"service", "services", "query", "since", "minutes", "hours", "namespace", "limit", "offset", "top_k"}
+    {
+        "service", "services", "query", "since", "minutes", "hours", "namespace", "limit", "offset", "top_k",
+        "graph_operation", "entity_uid", "target_entity_uid", "entity_type", "name", "direction",
+        "relation_types", "relation_policy", "max_depth", "max_vertices", "max_edges", "include_stale", "cursor",
+        "context_version",
+    }
 )
 
 _DEFAULT_TIMEOUT = 10
@@ -190,6 +201,22 @@ class InternalQueryClient:
             headers=headers,
         )
         return self._normalize(status, raw)
+
+    def query_graph_v1(
+        self,
+        *,
+        tenant_id: str,
+        cluster_id: str,
+        params: Mapping[str, Any],
+        context_ref: str,
+        execution_context: ToolExecutionContext | None = None,
+    ) -> QueryResult:
+        """Typed graph query entrypoint; callers cannot select another backend."""
+        return self.query(
+            tool_id="query_graph.v1", operation="graph", tenant_id=tenant_id,
+            cluster_id=cluster_id, params=params, context_ref=context_ref,
+            execution_context=execution_context,
+        )
 
     def _resolve_tool(self, tool_id: str):
         tool = self._registry.get(tool_id)

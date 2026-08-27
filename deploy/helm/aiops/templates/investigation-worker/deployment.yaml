@@ -38,6 +38,14 @@ spec:
               value: "0"
             - name: QUERY_API_URL
               value: {{ .Values.aiOrchestrator.queryApiUrl | quote }}
+            - name: GRAPH_BACKEND
+              value: {{ tpl (.Values.queryApi.graphBackend | default .Values.graph.backend) . | quote }}
+            - name: GRAPH_SOURCE_RECONCILE_ENABLED
+              value: "1"
+            - name: AIOPS_SYSTEM_TENANT_ID
+              value: {{ .Values.aiOrchestrator.systemTenantId | quote }}
+            - name: AIOPS_SYSTEM_CLUSTER_ID
+              value: {{ .Values.aiOrchestrator.systemClusterId | quote }}
             - name: INTERNAL_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }

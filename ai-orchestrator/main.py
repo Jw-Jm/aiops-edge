@@ -49,6 +49,7 @@ scheduler = AsyncIOScheduler()
 _flow_sched = None
 _kg_sched = None
 _investigation_recovery_task = None
+_graph_sync_runtime = None
 
 # P13 真实接线：ManualBoundary 单例（唯一 Run 创建入口人工触发边界，P0-5）
 from manual_boundary import ManualBoundary as _ManualBoundary, ManualTriggerDenied as _ManualTriggerDenied
@@ -140,15 +141,31 @@ async def lifespan(app: FastAPI):
     # === startup ===
     # Durable Run recovery is best-effort at startup; the queue/lease boundary
     # remains fail-closed if query-api is unavailable.
-    global _investigation_recovery_task, _investigation_dispatcher
+    global _investigation_recovery_task, _investigation_dispatcher, _graph_sync_runtime
     if os.environ.get("QUERY_API_URL") and _investigation_runtime_enabled():
         _investigation_recovery_task = asyncio.create_task(_investigation_recovery_loop())
+    # Canonical graph source reconcile is part of the production graph runtime,
+    # not the retired 60s kg_graph.build_all compatibility job.  Start it in
+    # both the gateway and the stateless investigation worker; query-api owns
+    # the per-source durable lease so multiple replicas remain safe.
+    _graph_backend = os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower()
+    if (_graph_backend in {"shadow", "hugegraph"}
+            and os.environ.get("GRAPH_SOURCE_RECONCILE_ENABLED", "1").lower() in {"1", "true", "yes", "on"}):
+        try:
+            from kg.runtime import build_graph_sync_runtime
+            _graph_sync_runtime = build_graph_sync_runtime()
+            _graph_sync_runtime.start()
+            print(f"[startup] canonical graph source reconcile enabled: backend={_graph_backend}", flush=True)
+        except Exception as e:  # noqa: BLE001 - source health is recorded by the runtime once configured
+            print(f"[startup] canonical graph source reconcile unavailable: {e}", flush=True)
     # The dedicated Investigation Worker has no Chat/legacy scheduler or local
-    # persistence ownership.  It only serves the signed Run invocation ingress
-    # and its durable recovery queue; all other startup jobs belong to the
-    # compatibility gateway process.
+    # persistence ownership. It serves the signed Run ingress, durable recovery
+    # queue, and the canonical graph source reconcile runtime above.
     if os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {"1", "true", "yes", "on"}:
         yield
+        if _graph_sync_runtime is not None:
+            await _graph_sync_runtime.stop()
+            _graph_sync_runtime = None
         if _investigation_recovery_task is not None:
             _investigation_recovery_task.cancel()
             await asyncio.gather(_investigation_recovery_task, return_exceptions=True)
@@ -227,13 +244,15 @@ async def lifespan(app: FastAPI):
             _flow_sched.start()
         except Exception as e:  # noqa: BLE001
             print(f"[startup] flow cron scheduler error: {e}", flush=True)
-    # A3: 知识图谱定时重建（默认 60s；KG_BUILD_INTERVAL_SECONDS 可配，0 关闭）
+    # A3: legacy 图谱兼容重建（仅 legacy_mysql；shadow/hugegraph 的唯一投影
+    # 入口是 query-api outbox + source reconcile，不能再启动 60s build_all）。
     try:
         global _kg_sched
+        _graph_backend = os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower()
         from apscheduler.schedulers.background import BackgroundScheduler as _KgSched
         from kg_graph import build_all as _kg_build_all
         _kg_interval = int(os.environ.get("KG_BUILD_INTERVAL_SECONDS", "60"))
-        if _kg_interval > 0:
+        if _graph_backend == "legacy_mysql" and _kg_interval > 0:
             _kg_sched = _KgSched(daemon=True)
 
             def _kg_build_job():
@@ -252,6 +271,8 @@ async def lifespan(app: FastAPI):
                               id='kg_build_refresh', replace_existing=True)
             _kg_sched.start()
             print(f"[startup] kg 图谱定时重建已启动: 每 {_kg_interval}s", flush=True)
+        elif _graph_backend in {"shadow", "hugegraph"}:
+            print(f"[startup] legacy kg build scheduler disabled for GRAPH_BACKEND={_graph_backend}", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"[startup] kg build scheduler error: {e}", flush=True)
     # E2: 内置运维 playbook 向量化加载（重试直到 ChromaDB 就绪，幂等，失败不阻塞）
@@ -291,6 +312,9 @@ async def lifespan(app: FastAPI):
             await _investigation_dispatcher.stop()
         finally:
             _investigation_dispatcher = None
+    if _graph_sync_runtime is not None:
+        await _graph_sync_runtime.stop()
+        _graph_sync_runtime = None
     try:
         scheduler.shutdown(wait=False)
     except Exception:  # noqa: BLE001
@@ -3467,6 +3491,8 @@ async def add_knowledge_case(body: dict = None):
         resp["message"] = "已存在相似案例"
     # ── 复盘回写：best-effort 将案例写入知识图谱（失败仅日志，不阻断入库）──
     try:
+        if os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower() != "legacy_mysql":
+            return resp
         from kg_graph import upsert_node, upsert_edge
         case_node_id = upsert_node("case", cid, {
             "service": service,

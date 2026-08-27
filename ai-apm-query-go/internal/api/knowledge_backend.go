@@ -44,18 +44,18 @@ type chromaKnowledgeBackend struct {
 
 // chromaQueryResponse 是 Chroma collection query 的响应结构。
 type chromaQueryResponse struct {
-	Documents [][]string `json:"documents"`
-	IDs       [][]string `json:"ids"`
-	Distances [][]float64 `json:"distances"`
+	Documents [][]string                 `json:"documents"`
+	IDs       [][]string                 `json:"ids"`
+	Distances [][]float64                `json:"distances"`
 	Metadatas [][]map[string]interface{} `json:"metadatas"`
 }
 
 // Search 检索 Chroma collection，将命中的 metadata 映射为 query.KnowledgeHit。
 func (b chromaKnowledgeBackend) Search(ctx context.Context, text string, topK int) ([]query.KnowledgeHit, error) {
 	payload := map[string]interface{}{
-		"query_texts":         []string{text},
-		"n_results":           topK,
-		"include":             []string{"documents", "metadatas", "distances"},
+		"query_texts": []string{text},
+		"n_results":   topK,
+		"include":     []string{"documents", "metadatas", "distances"},
 	}
 	body, _ := json.Marshal(payload)
 
@@ -108,10 +108,10 @@ func mapChromaHits(cr *chromaQueryResponse) []query.KnowledgeHit {
 			similarity = 1.0 / (1.0 + distances[i])
 		}
 		out = append(out, query.KnowledgeHit{
-			DocumentID:   id,
-			Source:       metaString(meta, "source"),
-			Version:      metaString(meta, "version"),
-			Similarity:   similarity,
+			DocumentID:    id,
+			Source:        metaString(meta, "source"),
+			Version:       metaString(meta, "version"),
+			Similarity:    similarity,
 			Applicability: metaString(meta, "applicability"),
 		})
 	}

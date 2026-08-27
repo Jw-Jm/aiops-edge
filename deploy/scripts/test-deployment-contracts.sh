@@ -20,6 +20,11 @@ require_cmd() {
 require_cmd helm
 require_cmd rg
 
+if [[ ! -x "${repo_root}/deploy/scripts/import-local-secrets-from-k8s.sh" ]]; then
+  echo "contract failed: Kubernetes Secret importer is missing or not executable" >&2
+  exit 1
+fi
+
 render() {
   local output="$1"
   shift
@@ -46,6 +51,7 @@ render() {
     --set secrets.executorToken="contract-executor-token" \
     --set secrets.aiActionExecutorSigningKey="contract-executor-private" \
     --set secrets.aiActionExecutorVerifyKeys="contract-executor-public" \
+    --set secrets.hugeGraphPassword="contract-hugegraph-password" \
     --set ipmiExporter.enabled=true \
     "$@" >"${output}"
 }
@@ -92,7 +98,7 @@ echo "[contract] unified image tag"
 render "${tmp_dir}/validation.yaml"
 for image in \
   observability-frontend query-api ingest-pipeline ai-orchestrator \
-  event-collector ai-action-executor ai-llm-egress-proxy schema-migrator ipmi-exporter
+  event-collector ai-action-executor ai-llm-egress-proxy schema-migrator graph-schema-migrator ipmi-exporter
 do
   if ! rg -n "image:.*${image}:${tag}" "${tmp_dir}/validation.yaml" >/dev/null; then
     echo "contract failed: ${image} is not rendered with ${tag}" >&2
@@ -103,6 +109,19 @@ fail_if_contains ':latest' "${tmp_dir}/validation.yaml" 'self-built images may n
 fail_if_contains 'v1.2.0-p20-24b157a0' "${tmp_dir}/validation.yaml" 'historical fixed image tags remain'
 require_contains 'MYSQL_APP_PASSWORD:' "${tmp_dir}/validation.yaml" 'app database password is not rendered'
 require_contains 'MYSQL_MIGRATOR_PASSWORD:' "${tmp_dir}/validation.yaml" 'migrator database password is not rendered'
+require_contains 'name: hugegraph' "${tmp_dir}/validation.yaml" 'HugeGraph StatefulSet is not rendered'
+require_contains 'hugegraph/hugegraph:1.7.0' "${tmp_dir}/validation.yaml" 'HugeGraph version is not pinned to 1.7.0'
+require_contains 'name: graph-schema-migrator' "${tmp_dir}/validation.yaml" 'graph schema migrator Job is not rendered'
+require_contains 'mountPath: /var/lib/hugegraph' "${tmp_dir}/validation.yaml" 'HugeGraph PVC must mount the documented data root'
+fail_if_contains 'mountPath: /var/lib/hugegraph/data' "${tmp_dir}/validation.yaml" 'HugeGraph PVC is mounted below the documented data root'
+require_contains 'rocksdb.data_path=/var/lib/hugegraph/data' "${tmp_dir}/validation.yaml" 'HugeGraph RocksDB data path is not redirected to the PVC'
+require_contains 'rocksdb.wal_path=/var/lib/hugegraph/wal' "${tmp_dir}/validation.yaml" 'HugeGraph RocksDB WAL path is not redirected to the PVC'
+require_contains 'name: PASSWORD' "${tmp_dir}/validation.yaml" 'HugeGraph auth password is not wired into the server'
+require_contains 'curl -fsS -u' "${tmp_dir}/validation.yaml" 'HugeGraph probes do not authenticate against the server'
+require_contains 'AUTH="$(printf' "${tmp_dir}/validation.yaml" 'graph schema migrator wait init container does not build a HugeGraph Basic Auth header'
+require_contains 'wget -q --header="Authorization: Basic ${AUTH}"' "${tmp_dir}/validation.yaml" 'graph schema migrator wait init container does not authenticate against HugeGraph'
+require_contains 'GRAPH_BACKEND' "${tmp_dir}/validation.yaml" 'query-api graph backend is not configured'
+require_contains 'HUGEGRAPH_URL' "${tmp_dir}/validation.yaml" 'query-api HugeGraph URL is not configured'
 require_contains 'MYSQL_DATABASE' "${tmp_dir}/validation.yaml" 'MySQL database name is not configured for a fresh data directory'
 require_contains 'CREATE DATABASE IF NOT EXISTS aiops' "${tmp_dir}/validation.yaml" 'users-init does not create the application database'
 require_contains 'DEEPFLOW_ENABLED' "${tmp_dir}/validation.yaml" 'frontend does not receive the optional DeepFlow switch'
@@ -183,6 +202,7 @@ helm template aiops "${chart_dir}" \
   --set secrets.mysqlRootPassword="contract-root-012345678901234567890123456789" \
   --set secrets.mysqlAppPassword="contract-app-012345678901234567890123456789" \
   --set secrets.mysqlMigratorPassword="contract-migrator-012345678901234567890123456789" \
+  --set secrets.hugeGraphPassword="contract-hugegraph-password" \
   >"${tmp_dir}/bootstrap.yaml"
 for runtime_resource in \
   '^  name: query-api$' \

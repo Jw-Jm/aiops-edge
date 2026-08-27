@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
 ENV GOTOOLCHAIN=local
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /app
@@ -8,7 +8,7 @@ COPY vendor ./vendor
 COPY . .
 RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /api ./cmd/api/
 
-FROM alpine:3.21
+FROM docker.m.daocloud.io/library/alpine:3.21
 # query-api 需要 kubectl 与集群交互（clusters/infrastructure/system 模块 exec kubectl）。
 # kubectl 从本地 docker/ 目录构建时 COPY 进镜像，避免外部下载依赖。
 # apk 走国内源（阿里云），加速且避免官方源不可达。

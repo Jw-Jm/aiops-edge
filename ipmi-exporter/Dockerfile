@@ -1,6 +1,6 @@
 # ipmi-exporter — 本地 IPMI 传感器采集（/dev/ipmi0，不走带外网）
 # 以 privileged + hostPath /dev/ipmi0 运行，用 ipmitool 读 BMC 传感器，管理网上报。
-FROM debian:bookworm-slim
+FROM docker.m.daocloud.io/library/debian:bookworm-slim
 
 # apt 切国内源加速
 ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn

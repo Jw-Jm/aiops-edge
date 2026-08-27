@@ -255,27 +255,29 @@ def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_conte
             return "服务数 " + str(len(services)) + "：\n" + "\n".join(services[:50])
         except Exception as exc:
             return f"查询失败: {str(exc)[:200]}"
-    # 图谱优先：统一口径（自动构建的服务节点，排除 deleted），图谱不可达降级原逻辑
-    try:
-        from kg_graph import _load_graph, _json_loads
-        node_rows, _ = _load_graph()
-        svcs = set()
-        for r in node_rows:
-            if r.get("type") != "service":
-                continue
-            name = str(r.get("name") or "").strip()
-            if not name or name.endswith("(deleted)"):
-                continue
-            if cluster_id:
-                props = _json_loads(r.get("props", r.get("props_json")))
-                if str(props.get("cluster_id", "")) != str(cluster_id):
+    # The legacy MySQL graph snapshot is compatibility-only.  Once shadow or
+    # HugeGraph is selected, all graph reads must remain behind query-api.
+    if os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower() == "legacy_mysql":
+        try:
+            from kg_graph import _load_graph, _json_loads
+            node_rows, _ = _load_graph()
+            svcs = set()
+            for r in node_rows:
+                if r.get("type") != "service":
                     continue
-            svcs.add(name)
-        if svcs:
-            svcs = sorted(svcs)
-            return "服务数 " + str(len(svcs)) + "：\n" + "\n".join(svcs[:50])
-    except Exception:
-        pass
+                name = str(r.get("name") or "").strip()
+                if not name or name.endswith("(deleted)"):
+                    continue
+                if cluster_id:
+                    props = _json_loads(r.get("props", r.get("props_json")))
+                    if str(props.get("cluster_id", "")) != str(cluster_id):
+                        continue
+                svcs.add(name)
+            if svcs:
+                svcs = sorted(svcs)
+                return "服务数 " + str(len(svcs)) + "：\n" + "\n".join(svcs[:50])
+        except Exception:
+            pass
     url = f"{QUERY_API}/services"
     cp = _cluster_param(cluster_id)
     if cp:

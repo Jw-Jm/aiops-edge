@@ -1,0 +1,9 @@
+{
+  "center_entity_uid": "physical-server:v1:asset-1",
+  "vertices": [
+    {"entity_uid":"physical-server:v1:asset-1","entity_type":"physical_server","tenant_id":"tenant-1","cluster_id":"cluster-1","name":"server-1","name_key":"server-1","source":"hardware","status":"active","confidence":1.0,"generation":4,"attrs_version":1},
+    {"entity_uid":"component:v1:asset-1:dimm:617496e30b1c0f7f6334c69cb125a5e97a934863174235d50ad129328ac181ab","entity_type":"dimm","tenant_id":"tenant-1","cluster_id":"cluster-1","name":"DIMM_A1","name_key":"dimm_a1","source":"hardware","status":"active","confidence":1.0,"generation":4,"attrs_version":1}
+  ],
+  "edges": [],
+  "meta": {"contract_version":"graph-dto-v1","schema_version":2,"partial":false,"stale":false,"generated_at":"2026-08-27T00:00:00Z","warning_codes":[]}
+}

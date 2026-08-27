@@ -40,8 +40,8 @@ func TestPublicCancelRun(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/ai/runs/run-1/cancel", nil)
 	req = withAuthorizationContext(req, AuthorizationContext{
-		UserID: "91480408-9c2d-11f1-8271-bea176fe9f9f",
-		TenantID: "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+		UserID:    "91480408-9c2d-11f1-8271-bea176fe9f9f",
+		TenantID:  "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
 		SessionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	})
 	rec := httptest.NewRecorder()

@@ -49,6 +49,13 @@ type KubeTargetIdentityClient interface {
 	GetObjectIdentity(resourceType, namespace, name string) (KubeObjectIdentity, error)
 }
 
+// KubeGraphObjectClient is an optional extension of the narrow read client.
+// It exposes only the fixed, sanitized graph resource view and never a raw
+// kubeconfig or arbitrary Kubernetes API path.
+type KubeGraphObjectClient interface {
+	ListGraphObjects() (map[string]interface{}, error)
+}
+
 // KubernetesAccessor 解析 canonical cluster_id → 校验身份的 K8s 客户端。
 // 生产实现包装 k8sboundary.ClusterClientManager；测试提供 fake。
 type KubernetesAccessor interface {
@@ -204,4 +211,45 @@ func (r *KubernetesRepository) ListPods(ctx context.Context, scope KubernetesSco
 		return nil, NoData()
 	}
 	return pods, nil
+}
+
+// ListGraphObjects returns the canonical full resource snapshot needed by the
+// graph builder.  The access boundary remains the sole Kubernetes client.
+func (r *KubernetesRepository) ListGraphObjects(ctx context.Context, scope KubernetesScope, clusterID string) (map[string]interface{}, error) {
+	client, err := r.clientFor(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	graphClient, ok := client.(KubeGraphObjectClient)
+	if !ok {
+		return nil, Unavailable("kubernetes: graph object capability not configured")
+	}
+	objects, err := graphClient.ListGraphObjects()
+	if err != nil {
+		return nil, mapKubeBoundaryError(err)
+	}
+	return objects, nil
+}
+
+// ListKubeVirtObjects returns the KubeVirt subset from the same cluster-bound
+// Kubernetes access boundary.  It intentionally does not use the legacy
+// process-global kubeconfig path.
+func (r *KubernetesRepository) ListKubeVirtObjects(ctx context.Context, scope KubernetesScope, clusterID string) (map[string]interface{}, error) {
+	objects, err := r.ListGraphObjects(ctx, scope, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]interface{}{}
+	for _, key := range []string{"virtual_machines", "virtual_machine_instances", "migrations", "virt_launcher_pods", "nodes", "pvcs", "nads", "networks"} {
+		if value, ok := objects[key]; ok {
+			result[key] = value
+		}
+	}
+	if partial, ok := objects["partial"]; ok {
+		result["partial"] = partial
+	}
+	if errors, ok := objects["errors"]; ok {
+		result["errors"] = errors
+	}
+	return result, nil
 }

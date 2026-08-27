@@ -15,8 +15,8 @@ type DashboardPanel struct {
 	GridY     int    `json:"grid_y"`
 	GridW     int    `json:"grid_w"`
 	GridH     int    `json:"grid_h"`
-	Span      int    `json:"span"`  // 12 栅格宽度
-	Sort      int    `json:"sort"`  // 排序
+	Span      int    `json:"span"` // 12 栅格宽度
+	Sort      int    `json:"sort"` // 排序
 	Enabled   bool   `json:"enabled"`
 }
 

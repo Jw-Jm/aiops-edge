@@ -54,4 +54,38 @@ roleRef:
   kind: ClusterRole
   name: query-api-node-reader
   apiGroup: rbac.authorization.k8s.io
+---
+# Local validation binds one fixed credential Secret to the query-api
+# management-plane ServiceAccount. Production installations should provide an
+# explicit ADMIN_KUBECONFIG with equivalent, narrowly scoped Secret access.
+{{- if .Values.queryApi.localCredentialSecretName }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: query-api-credential-reader
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-api
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: [{{ .Values.queryApi.localCredentialSecretName | quote }}]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: query-api-credential-reader
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-api
+subjects:
+- kind: ServiceAccount
+  name: query-api
+  namespace: {{ .Values.namespace.observability }}
+roleRef:
+  kind: Role
+  name: query-api-credential-reader
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}

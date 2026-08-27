@@ -1,6 +1,6 @@
 # V9.2 Phase6 Final Rebuild: schema-migrator 独立镜像（post-install init Job）。
 # 复用 ai-apm-query-go module（共享 vendor），只构建 ./cmd/schema-migrator。
-FROM golang:1.25-alpine AS builder
+FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
 ENV GOTOOLCHAIN=local
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /app
@@ -10,7 +10,7 @@ COPY vendor ./vendor
 COPY . .
 RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /schema-migrator ./cmd/schema-migrator/
 
-FROM alpine:3.21
+FROM docker.m.daocloud.io/library/alpine:3.21
 RUN sed -i 's@dl-cdn.alpinelinux.org@mirrors.aliyun.com@g' /etc/apk/repositories && \
     apk add --no-cache ca-certificates
 COPY --from=builder /schema-migrator /schema-migrator

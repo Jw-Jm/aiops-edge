@@ -26,14 +26,20 @@ import (
 
 // routeCapability 固定每个 canonical internal query route 的 capability（契约 §31）。
 var routeCapability = map[string]string{
-	"/internal/v1/query/metrics":    "observability.metrics.read",
-	"/internal/v1/query/logs":       "observability.logs.read",
-	"/internal/v1/query/traces":     "observability.traces.read",
-	"/internal/v1/query/alerts":     "observability.alerts.read",
-	"/internal/v1/query/topology":   "observability.topology.read",
-	"/internal/v1/query/kubernetes": "kubernetes.resources.read",
-	"/internal/v1/query/changes":    "changes.read",
-	"/internal/v1/query/knowledge":  "knowledge.search",
+	"/internal/v1/query/metrics":            "observability.metrics.read",
+	"/internal/v1/query/logs":               "observability.logs.read",
+	"/internal/v1/query/traces":             "observability.traces.read",
+	"/internal/v1/query/alerts":             "observability.alerts.read",
+	"/internal/v1/query/topology":           "observability.topology.read",
+	"/internal/v1/query/kubernetes":         "kubernetes.resources.read",
+	"/internal/v1/query/changes":            "changes.read",
+	"/internal/v1/query/knowledge":          "knowledge.search",
+	"/internal/v1/query/graph":              "knowledge.graph.read",
+	"/internal/v1/query/kubevirt":           "kubevirt.resources.read",
+	"/internal/v1/query/hardware/inventory": "hardware.inventory.read",
+	"/internal/v1/query/hardware/health":    "hardware.health.read",
+	"/internal/v1/query/catalog":            "catalog.read",
+	"/internal/v1/query/network-topology":   "network.topology.read",
 }
 
 // internalQueryCtx 是 internal query 的可信作用域（服务端注入，body 不得覆盖）。

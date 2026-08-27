@@ -10,10 +10,10 @@ import (
 )
 
 // TestToolReconcilerReal 真实 MySQL 验证 Tool Reconciler：
-//   1. 插入一个 deadline 已过的 running ToolRun。
-//   2. ScanExpiredRunning 应返回该候选。
-//   3. ConvergeToolRun 收敛为 timeout，eligible=false。
-//   4. 再次 Converge 不再重复收敛（已是终态）。
+//  1. 插入一个 deadline 已过的 running ToolRun。
+//  2. ScanExpiredRunning 应返回该候选。
+//  3. ConvergeToolRun 收敛为 timeout，eligible=false。
+//  4. 再次 Converge 不再重复收敛（已是终态）。
 func TestToolReconcilerReal(t *testing.T) {
 	dsn := os.Getenv("TEST_MYSQL_DSN")
 	if dsn == "" {

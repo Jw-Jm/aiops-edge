@@ -37,12 +37,17 @@ G5 安全加固：values-prod.yaml 的 CHANGE_ME 占位符必须被拒绝，不�
 {{- end -}}
 
 {{/*
-aiops.requireSecretWhen: enabled=true 时密钥必须非空且非 CHANGE_ME；未启用时返回空字符串。
+aiops.requireSecretWhen: enabled=true 时密钥必须非空且非 CHANGE_ME；未启用时保留
+调用方显式传入的值（便于 bootstrap -> runtime 升级不覆盖同一 Secret），无值时返回空字符串。
 */}}
 {{- define "aiops.requireSecretWhen" -}}
 {{- if .enabled -}}
 {{- include "aiops.requireSecret" (dict "name" .name "value" .value) -}}
 {{- else -}}
-{{- "" -}}
+{{- $v := .value | default "" | trim -}}
+{{- if eq $v "CHANGE_ME" -}}
+{{- fail (printf "%s 不能使用 CHANGE_ME 占位符" .name) -}}
+{{- end -}}
+{{- $v -}}
 {{- end -}}
 {{- end -}}

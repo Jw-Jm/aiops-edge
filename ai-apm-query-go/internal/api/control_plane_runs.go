@@ -448,14 +448,14 @@ func airunToMap(r *store.AIRun) map[string]interface{} {
 		return map[string]interface{}{}
 	}
 	return map[string]interface{}{
-		"run_id":             r.RunID,
-		"request_id":         r.RequestID,
-		"tenant_id":          r.TenantID,
-		"principal":          r.Principal,
+		"run_id":     r.RunID,
+		"request_id": r.RequestID,
+		"tenant_id":  r.TenantID,
+		"principal":  r.Principal,
 		// created_by/principal_id are the persisted initiating identity. The
 		// browser must never manufacture a shared "system" creator label.
-		"created_by":          r.Principal,
-		"principal_id":        r.Principal,
+		"created_by":         r.Principal,
+		"principal_id":       r.Principal,
 		"principal_type":     r.PrincipalType,
 		"scope_kind":         r.ScopeKind,
 		"primary_cluster_id": nullableStringValue(r.PrimaryClusterID),

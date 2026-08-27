@@ -360,6 +360,7 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/runs/", handler.ProxyAI)
 	// P10 (V9.3 Phase 10)：公共 SSE proxy（query-api 直接从持久化事件 replay + live-tail）。
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/events", handler.StreamRunEvents)
+	mux.HandleFunc("/api/v1/ai/runs/{runID}/graph-context", handler.RunGraphContext)
 	// P10 (V9.3 Phase 10)：公共 Control 入口（Browser → query-api cancel）。
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/cancel", handler.PublicCancelRun)
 	// P10 (V9.3 Phase 10)：公共 Run 详情（直接读 MySQL，消除与 orchestrator 内存 RunStore 的 split-brain）。
@@ -416,9 +417,11 @@ func main() {
 	mux.HandleFunc("/api/v1/ai/rules", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/flows/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/flows", handler.ProxyAI)
-	// 知识图谱查询/构建 API（orchestrator kg_api.py，/api/v1/ai/kg 前缀）
-	mux.HandleFunc("/api/v1/ai/kg/", handler.ProxyAI)
-	mux.HandleFunc("/api/v1/ai/kg", handler.ProxyAI)
+	// Native Graph API：query-api 是唯一图查询 owner；浏览器不直连
+	// HugeGraph，orchestrator 也只能经 strict internal query contract 访问。
+	mux.HandleFunc("/api/v1/ai/kg/ops/", handler.GraphOpsRouter)
+	mux.HandleFunc("/api/v1/ai/kg/", handler.GraphPublicRouter)
+	mux.HandleFunc("/api/v1/ai/kg", handler.GraphPublicRouter)
 	// WebShell WebSocket：AuthMiddleware 已放行该路径（WebSocket 无 header），
 	// handler 内部从 ?token= 验证 JWT 并代理到 orchestrator（注入 INTERNAL_TOKEN）。
 	mux.HandleFunc("/api/v1/shell/ws", handler.ProxyShellWS)
@@ -492,6 +495,12 @@ func main() {
 	mux.HandleFunc("/internal/v1/query/kubernetes", handler.InternalQueryKubernetes)
 	mux.HandleFunc("/internal/v1/query/changes", handler.InternalQueryChanges)
 	mux.HandleFunc("/internal/v1/query/knowledge", handler.InternalQueryKnowledge)
+	mux.HandleFunc("/internal/v1/query/graph", handler.InternalQueryGraph)
+	mux.HandleFunc("/internal/v1/query/kubevirt", handler.InternalQueryGraphDomain)
+	mux.HandleFunc("/internal/v1/query/hardware/inventory", handler.InternalQueryGraphDomain)
+	mux.HandleFunc("/internal/v1/query/hardware/health", handler.InternalQueryGraphDomain)
+	mux.HandleFunc("/internal/v1/query/catalog", handler.InternalQueryGraphDomain)
+	mux.HandleFunc("/internal/v1/query/network-topology", handler.InternalQueryGraphDomain)
 	// P10 (V9.3 Phase 10)：control-plane 持久化端点（orchestrator system principal）。
 	mux.HandleFunc("/internal/v1/control-plane/runs", handler.InternalControlPlaneRunRouter)
 	mux.HandleFunc("/internal/v1/control-plane/runs/", handler.InternalControlPlaneRunRouter)

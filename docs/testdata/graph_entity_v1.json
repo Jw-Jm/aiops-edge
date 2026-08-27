@@ -1,0 +1,20 @@
+{
+  "entity_uid": "service:v1:tenant-1:service-1",
+  "entity_type": "service",
+  "tenant_id": "tenant-1",
+  "cluster_id": "cluster-1",
+  "namespace": "production",
+  "name": "order-service",
+  "name_key": "order-service",
+  "source": "catalog",
+  "source_uid": "service-1",
+  "status": "active",
+  "health": "healthy",
+  "resolution": "canonical",
+  "confidence": 1.0,
+  "first_seen_ms": 1700000000000,
+  "last_seen_ms": 1700000010000,
+  "generation": 4,
+  "attrs_version": 2,
+  "attrs": {"owner": "payments"}
+}

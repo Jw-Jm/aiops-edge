@@ -1,0 +1,17 @@
+{{- if .Values.hugeGraph.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: hugegraph
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: hugegraph
+spec:
+  clusterIP: None
+  selector:
+    app: hugegraph
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

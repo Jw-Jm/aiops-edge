@@ -6,6 +6,7 @@ frontend:
 queryApi:
   enabled: true
   k8sInsecureSkipVerify: "true"
+  localCredentialSecretName: aiops-local-cluster-kubeconfig
 ingest:
   enabled: true
 aiOrchestrator:
@@ -33,6 +34,10 @@ eventCollector:
   enabled: true
 deepflow:
   enabled: false
+graph:
+  backend: hugegraph
+hugeGraph:
+  enabled: true
 # Local validation uses ephemeral storage; production backup schedules remain
 # enabled through values-prod.yaml and an explicit storage class.
 backup:

@@ -10,9 +10,9 @@ import (
 )
 
 // TestToolLateFencingReal 真实 MySQL 验证 27.12 Tool late/fencing：
-//   1. Run lease_epoch != tool.lease_epoch_at_start → late=true, eligible=0。
-//   2. Run 终态 → late=true（不进入 Evidence）。
-//   3. Run epoch 匹配 → late=false, eligible=1（仅 complete quality）。
+//  1. Run lease_epoch != tool.lease_epoch_at_start → late=true, eligible=0。
+//  2. Run 终态 → late=true（不进入 Evidence）。
+//  3. Run epoch 匹配 → late=false, eligible=1（仅 complete quality）。
 func TestToolLateFencingReal(t *testing.T) {
 	dsn := os.Getenv("TEST_MYSQL_DSN")
 	if dsn == "" {

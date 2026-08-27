@@ -1,0 +1,13 @@
+FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
+ENV GOTOOLCHAIN=local
+ENV GOPROXY=https://goproxy.cn,direct
+WORKDIR /app
+COPY go.mod go.sum* ./
+COPY vendor ./vendor
+COPY . .
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /graph-schema-migrator ./cmd/graph-schema-migrator/
+
+FROM docker.m.daocloud.io/library/alpine:3.21
+RUN sed -i 's@dl-cdn.alpinelinux.org@mirrors.aliyun.com@g' /etc/apk/repositories && apk add --no-cache ca-certificates
+COPY --from=builder /graph-schema-migrator /graph-schema-migrator
+ENTRYPOINT ["/graph-schema-migrator"]

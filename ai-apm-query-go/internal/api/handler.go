@@ -20,6 +20,7 @@ import (
 
 	"github.com/observability-platform/ai-apm-query-go/internal/biz"
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
+	graphpkg "github.com/observability-platform/ai-apm-query-go/internal/graph"
 	"github.com/observability-platform/ai-apm-query-go/internal/k8sboundary"
 	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
@@ -117,6 +118,13 @@ type Handler struct {
 	// 事实来源 = Chroma vector index + MinIO Knowledge Object；空 = no_data。
 	knowledgeRepo *query.KnowledgeRepository
 
+	// graphRepo 是统一 Graph Repository；HugeGraph 仅作为可重建投影，所有
+	// browser/orchestrator 图访问均经过 query-api 此字段。
+	graphRepo     graphpkg.GraphRepository
+	graphInitErr  error
+	graphAliasDAO *store.GraphEntityAliasDAO
+	runGraphDAO   *store.AIRunGraphContextDAO
+
 	// ── P10 (V9.3 Phase 10)：AI Runtime 持久化 owner（query-api Control Plane）──
 	// runDAO 读写 ai_runs；outboxDAO 记录 Run 创建后的可靠派发；
 	// eventDAO 读写 ai_run_events（sequence/幂等）；planDAO/toolDAO/actionDAO/cmdDAO
@@ -192,6 +200,9 @@ func NewHandler(chHost string, chPort int) *Handler {
 	// knowledge 后端（Chroma vector index + MinIO Knowledge Object）由 environment 注入；
 	// 未配置时 repository 返回 unavailable（fail-closed），绝不回退 ProxyAI。
 	h.knowledgeRepo = query.NewKnowledgeRepository(newKnowledgeBackendFromEnv())
+	h.graphRepo, h.graphInitErr = graphpkg.NewRepositoryFromEnv()
+	h.graphAliasDAO = &store.GraphEntityAliasDAO{}
+	h.runGraphDAO = &store.AIRunGraphContextDAO{}
 	// P10：AI Runtime 持久化 DAO（query-api Control Plane Persistence owner）。
 	h.runDAO = &store.AIRunDAO{}
 	h.outboxDAO = &store.AIRunOutboxDAO{}

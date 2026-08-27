@@ -57,7 +57,7 @@ func TestE2E_ActionExecution_PersistRejected_Disabled(t *testing.T) {
 	clusterID := "33333333-3333-4333-8333-333333333333"
 	action := &store.AIAction{
 		ActionID: actionID, RunID: runID, TenantID: tenantID, ClusterID: clusterID,
-		ActionType: "patch", ActionHash: sha256Hex("h-"+actionID), IdempotencyKey: "ik-" + actionID,
+		ActionType: "patch", ActionHash: sha256Hex("h-" + actionID), IdempotencyKey: "ik-" + actionID,
 		ProposedRisk: "R2", AuthoritativeRisk: "R2", Status: "approved", DryRun: false,
 		TargetName: "some-deployment", TargetUID: "uid-" + actionID,
 		ResourceVersion: "rv-1", Namespace: "default", Operation: "patch",

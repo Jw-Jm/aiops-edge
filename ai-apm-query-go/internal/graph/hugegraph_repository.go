@@ -1,0 +1,512 @@
+package graph
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// HugeGraphRepository is the production graph read/write adapter. It only
+// exposes typed graph operations; callers never receive a raw Gremlin client.
+type HugeGraphRepository struct {
+	client *HugeGraphClient
+}
+
+func NewHugeGraphRepository(client *HugeGraphClient) *HugeGraphRepository {
+	return &HugeGraphRepository{client: client}
+}
+
+func (r *HugeGraphRepository) GetEntity(ctx context.Context, scope GraphScope, uid string) (Entity, error) {
+	if r == nil || r.client == nil {
+		return Entity{}, graphError(ErrGraphUnavailable, "HugeGraph client is not configured")
+	}
+	raw, err := r.client.GetVertex(ctx, uid)
+	if err != nil {
+		if strings.Contains(err.Error(), "HTTP 404") {
+			return Entity{}, graphError(ErrGraphEntityNotFound, uid)
+		}
+		return Entity{}, graphError(ErrGraphUnavailable, err.Error())
+	}
+	entity, err := entityFromHugeGraph(raw, uid)
+	if err != nil {
+		return Entity{}, err
+	}
+	if !scope.Allows(entity) {
+		return Entity{}, graphError(ErrGraphScopeViolation, uid)
+	}
+	return entity, nil
+}
+
+func (r *HugeGraphRepository) SearchEntities(ctx context.Context, scope GraphScope, query EntitySearchQuery) ([]Entity, error) {
+	// Name lookup must go through graph_entity_alias in MySQL. HugeGraph has no
+	// permitted full name scan endpoint, so this backend deliberately refuses
+	// the unsafe operation instead of silently scanning the graph.
+	return nil, graphError(ErrGraphFeatureUnavailable, "HugeGraph entity search requires graph_entity_alias")
+}
+
+func (r *HugeGraphRepository) Neighbors(ctx context.Context, scope GraphScope, query NeighborQuery) (Subgraph, error) {
+	limits := InternalGraphQueryLimits()
+	if err := validateLimits(query.MaxDepth, query.MaxVertices, query.MaxEdges, limits); err != nil {
+		return Subgraph{}, err
+	}
+	if query.MaxDepth <= 0 {
+		query.MaxDepth = limits.MaxDepth
+	}
+	if query.MaxVertices <= 0 {
+		query.MaxVertices = limits.MaxVertices
+	}
+	if query.MaxEdges <= 0 {
+		query.MaxEdges = limits.MaxEdges
+	}
+	center, err := r.GetEntity(ctx, scope, query.CenterEntityUID)
+	if err != nil {
+		return Subgraph{}, err
+	}
+	raw, err := r.client.KNeighbor(ctx, KNeighborRequest{
+		Source: query.CenterEntityUID, Direction: normalizedDirection(query.Direction), MaxDepth: query.MaxDepth, Limit: query.MaxVertices,
+		Capacity: limits.Capacity, Nearest: false, WithVertex: true, WithPath: false,
+		WithEdge: true, EdgeLabels: normalizedRelationLabels(query.RelationTypes),
+	})
+	if err != nil {
+		return Subgraph{}, graphError(ErrGraphUnavailable, err.Error())
+	}
+	return r.subgraphFromTraverser(ctx, scope, center.EntityUID, raw, query.MaxVertices, query.MaxEdges)
+}
+
+func (r *HugeGraphRepository) ShortestPath(ctx context.Context, scope GraphScope, query PathQuery) (Subgraph, error) {
+	limits := InternalGraphQueryLimits()
+	if err := validateLimits(query.MaxDepth, query.MaxVertices, query.MaxEdges, limits); err != nil {
+		return Subgraph{}, err
+	}
+	if query.MaxDepth <= 0 {
+		query.MaxDepth = limits.MaxDepth
+	}
+	if query.MaxVertices <= 0 {
+		query.MaxVertices = limits.MaxVertices
+	}
+	if query.MaxEdges <= 0 {
+		query.MaxEdges = limits.MaxEdges
+	}
+	if _, err := r.GetEntity(ctx, scope, query.SourceUID); err != nil {
+		return Subgraph{}, err
+	}
+	if _, err := r.GetEntity(ctx, scope, query.TargetUID); err != nil {
+		return Subgraph{}, err
+	}
+	raw, err := r.client.ShortestPath(ctx, query.SourceUID, query.TargetUID, query.MaxDepth, normalizedRelationLabels(query.RelationTypes))
+	if err != nil {
+		if strings.Contains(err.Error(), "HTTP 404") {
+			return Subgraph{}, graphError(ErrGraphEmpty, "no path")
+		}
+		return Subgraph{}, graphError(ErrGraphUnavailable, err.Error())
+	}
+	result, err := r.subgraphFromTraverser(ctx, scope, query.SourceUID, raw, query.MaxVertices, query.MaxEdges)
+	if err != nil {
+		return Subgraph{}, err
+	}
+	if _, ok := findEntity(result.Vertices, query.TargetUID); !ok {
+		return Subgraph{}, graphError(ErrGraphEmpty, "no path")
+	}
+	return result, nil
+}
+
+func (r *HugeGraphRepository) Impact(ctx context.Context, scope GraphScope, query ImpactQuery) (Subgraph, error) {
+	return r.Neighbors(ctx, scope, NeighborQuery{
+		CenterEntityUID: query.RootUID, MaxDepth: query.MaxDepth, MaxVertices: query.MaxVertices,
+		MaxEdges: query.MaxEdges, RelationTypes: impactRelationTypes(),
+	})
+}
+
+func (r *HugeGraphRepository) CandidateSubgraph(ctx context.Context, scope GraphScope, query NeighborQuery) (Subgraph, error) {
+	if len(query.RelationTypes) == 0 {
+		query.RelationTypes = candidateRelationTypes()
+	}
+	return r.Neighbors(ctx, scope, query)
+}
+
+func (r *HugeGraphRepository) BatchMutate(ctx context.Context, batch MutationBatch) (MutationResult, error) {
+	result := MutationResult{Accepted: len(batch.Vertices) + len(batch.Edges)}
+	if result.Accepted > 500 {
+		return result, graphError(ErrGraphQueryLimitExceeded, "graph mutation batch exceeds 500 mutations")
+	}
+	if err := validateMutationBatch(batch); err != nil {
+		return result, err
+	}
+	if r == nil || r.client == nil {
+		return result, graphError(ErrGraphUnavailable, "HugeGraph client is not configured")
+	}
+	if len(batch.Vertices) > 0 {
+		if err := r.client.PutVerticesBatch(ctx, batch.Vertices); err != nil {
+			return result, graphError(ErrGraphUnavailable, err.Error())
+		}
+	}
+	if len(batch.Edges) > 0 {
+		if err := r.client.PutEdgesBatch(ctx, batch.Edges); err != nil {
+			return result, graphError(ErrGraphUnavailable, err.Error())
+		}
+	}
+	result.Applied = result.Accepted
+	return result, nil
+}
+
+func (r *HugeGraphRepository) Health(ctx context.Context) GraphHealth {
+	if r == nil || r.client == nil {
+		return GraphHealth{Ready: false, Backend: "hugegraph", SchemaVersion: GraphSchemaVersion, ErrorCode: ErrGraphUnavailable}
+	}
+	if _, err := r.client.GetVertex(ctx, "__health_probe__"); err != nil && !strings.Contains(err.Error(), "HTTP 404") {
+		return GraphHealth{Ready: false, Backend: "hugegraph", SchemaVersion: GraphSchemaVersion, ErrorCode: ErrGraphUnavailable}
+	}
+	return GraphHealth{Ready: true, Backend: "hugegraph", SchemaVersion: GraphSchemaVersion}
+}
+
+func (r *HugeGraphRepository) RawQuery(ctx context.Context, query string) (map[string]interface{}, error) {
+	if r == nil || r.client == nil {
+		return nil, graphError(ErrGraphUnavailable, "HugeGraph client is not configured")
+	}
+	return r.client.RawQuery(ctx, query)
+}
+
+func (r *HugeGraphRepository) DeleteEntity(ctx context.Context, scope GraphScope, uid string) error {
+	if _, err := r.GetEntity(ctx, scope, uid); err != nil {
+		return err
+	}
+	if err := r.client.DeleteVertex(ctx, uid); err != nil {
+		return graphError(ErrGraphUnavailable, err.Error())
+	}
+	return nil
+}
+
+func (r *HugeGraphRepository) DeleteEdge(ctx context.Context, scope GraphScope, uid string) error {
+	raw, err := r.client.GetEdge(ctx, uid)
+	if err != nil {
+		return graphError(ErrGraphUnavailable, err.Error())
+	}
+	edge, err := edgeFromHugeGraph(raw)
+	if err != nil {
+		return err
+	}
+	if edge.TenantID != scope.TenantID || !scope.Allows(Entity{TenantID: edge.TenantID, ClusterID: edge.ClusterID}) {
+		return graphError(ErrGraphScopeViolation, uid)
+	}
+	if err := r.client.DeleteEdge(ctx, uid); err != nil {
+		return graphError(ErrGraphUnavailable, err.Error())
+	}
+	return nil
+}
+
+func validateMutationBatch(batch MutationBatch) error {
+	for _, entity := range batch.Vertices {
+		if strings.TrimSpace(entity.EntityUID) == "" {
+			return graphError(ErrGraphVersionConflict, "vertex entity_uid is required")
+		}
+		if err := ValidateEntityType(entity.EntityType); err != nil {
+			return err
+		}
+		if batch.TenantID != "" && entity.TenantID != batch.TenantID {
+			return graphError(ErrGraphScopeViolation, entity.EntityUID)
+		}
+		if batch.Source != "" && entity.Source != batch.Source {
+			return graphError(ErrGraphVersionConflict, "vertex source mismatch")
+		}
+		if batch.Generation != 0 && entity.Generation != batch.Generation {
+			return graphError(ErrGraphVersionConflict, "vertex generation mismatch")
+		}
+	}
+	for _, edge := range batch.Edges {
+		if strings.TrimSpace(edge.EdgeUID) == "" || strings.TrimSpace(edge.SourceUID) == "" || strings.TrimSpace(edge.TargetUID) == "" {
+			return graphError(ErrGraphVersionConflict, "edge identity is required")
+		}
+		if err := ValidateRelation(edge.RelationType, inferMutationEntityType(batch.Vertices, edge.SourceUID), inferMutationEntityType(batch.Vertices, edge.TargetUID)); err != nil {
+			// An edge may refer to an already projected vertex, so relation-pair
+			// validation is repeated by the backend when both endpoint facts are
+			// available. Unknown endpoint types are rejected here.
+			if !strings.Contains(err.Error(), ErrUnknownEntityType) {
+				return err
+			}
+		}
+		if batch.TenantID != "" && edge.TenantID != batch.TenantID {
+			return graphError(ErrGraphScopeViolation, edge.EdgeUID)
+		}
+		if batch.Source != "" && edge.Source != batch.Source {
+			return graphError(ErrGraphVersionConflict, "edge source mismatch")
+		}
+		if batch.Generation != 0 && edge.Generation != batch.Generation {
+			return graphError(ErrGraphVersionConflict, "edge generation mismatch")
+		}
+	}
+	return nil
+}
+
+func inferMutationEntityType(vertices []Entity, uid string) string {
+	for _, entity := range vertices {
+		if entity.EntityUID == uid {
+			return entity.EntityType
+		}
+	}
+	return ""
+}
+
+func entityFromHugeGraph(raw map[string]interface{}, fallbackUID string) (Entity, error) {
+	properties := mapValue(raw, "properties")
+	if len(properties) == 0 {
+		properties = raw
+	}
+	uid := stringValue(properties, "entity_uid")
+	if uid == "" {
+		uid = stringValue(raw, "id")
+	}
+	if uid == "" {
+		uid = fallbackUID
+	}
+	entity := Entity{
+		EntityUID: uid, EntityType: stringValue(properties, "entity_type"), TenantID: stringValue(properties, "tenant_id"),
+		ClusterID: stringValue(properties, "cluster_id"), Namespace: stringValue(properties, "namespace"), Name: stringValue(properties, "name"),
+		NameKey: stringValue(properties, "name_key"), Source: stringValue(properties, "source"), SourceUID: stringValue(properties, "source_uid"),
+		Status: stringValue(properties, "status"), Health: stringValue(properties, "health"), Resolution: stringValue(properties, "resolution"),
+		Confidence: floatValue(properties, "confidence"), FirstSeenMS: intValue(properties, "first_seen_ms"), LastSeenMS: intValue(properties, "last_seen_ms"),
+		Generation: intValue(properties, "generation"), AttrsVersion: intValue(properties, "attrs_version"), Attrs: attrsValue(properties["attrs_json"]),
+	}
+	if err := ValidateEntityType(entity.EntityType); err != nil {
+		return Entity{}, err
+	}
+	if entity.NameKey == "" {
+		entity.NameKey = NameKeyV1(entity.Name)
+	}
+	return entity, nil
+}
+
+func edgeFromHugeGraph(raw map[string]interface{}) (Edge, error) {
+	properties := mapValue(raw, "properties")
+	if len(properties) == 0 {
+		properties = raw
+	}
+	edge := Edge{
+		EdgeUID: stringValue(properties, "edge_uid"), SourceUID: firstString(raw, "outV", "source", "source_uid"), TargetUID: firstString(raw, "inV", "target", "target_uid"),
+		RelationType: firstString(raw, "label", "relation_type"), TenantID: stringValue(properties, "tenant_id"), ClusterID: stringValue(properties, "cluster_id"),
+		Status: stringValue(properties, "status"), Source: stringValue(properties, "source"), Confidence: floatValue(properties, "confidence"),
+		Generation: intValue(properties, "generation"), FirstSeenMS: intValue(properties, "first_seen_ms"), LastSeenMS: intValue(properties, "last_seen_ms"),
+		ValidFromMS: intValue(properties, "valid_from_ms"), ValidToMS: intValue(properties, "valid_to_ms"), PropagatesFailure: boolValue(properties, "propagates_failure"),
+		CandidateDirection: stringValue(properties, "candidate_direction"), ImpactDirection: stringValue(properties, "impact_direction"), AttrsVersion: intValue(properties, "attrs_version"), Attrs: attrsValue(properties["attrs_json"]),
+	}
+	if edge.EdgeUID == "" {
+		edge.EdgeUID = stringValue(raw, "id")
+	}
+	if edge.EdgeUID == "" && edge.TenantID != "" && edge.RelationType != "" && edge.SourceUID != "" && edge.TargetUID != "" {
+		edge.EdgeUID = EdgeUID(edge.TenantID, edge.RelationType, edge.SourceUID, edge.TargetUID)
+	}
+	if err := ValidateEntityType("service"); err != nil { // keep validation package-linked in generated adapters
+		return Edge{}, err
+	}
+	return edge, nil
+}
+
+func (r *HugeGraphRepository) subgraphFromTraverser(ctx context.Context, scope GraphScope, center string, raw map[string]interface{}, maxVertices, maxEdges int) (Subgraph, error) {
+	vertices, edges := []Entity{}, []Edge{}
+	vertexIDs := map[string]struct{}{}
+	for _, item := range interfaceSlice(raw["vertices"]) {
+		if vertex, ok := item.(map[string]interface{}); ok {
+			entity, err := entityFromHugeGraph(vertex, "")
+			if err != nil {
+				return Subgraph{}, err
+			}
+			vertexIDs[entity.EntityUID] = struct{}{}
+			vertices = append(vertices, entity)
+			continue
+		}
+		if uid := fmt.Sprint(item); uid != "" {
+			vertexIDs[uid] = struct{}{}
+		}
+	}
+	if _, ok := vertexIDs[center]; !ok {
+		vertexIDs[center] = struct{}{}
+	}
+	if len(vertices) < len(vertexIDs) {
+		ids := make([]string, 0, len(vertexIDs))
+		for uid := range vertexIDs {
+			if _, ok := findEntity(vertices, uid); !ok {
+				ids = append(ids, uid)
+			}
+		}
+		sort.Strings(ids)
+		for _, uid := range ids {
+			entity, err := r.GetEntity(ctx, scope, uid)
+			if err != nil {
+				return Subgraph{}, err
+			}
+			vertices = append(vertices, entity)
+		}
+	}
+	filtered := vertices[:0]
+	for _, entity := range vertices {
+		if !scope.Allows(entity) {
+			return Subgraph{}, graphError(ErrGraphScopeViolation, entity.EntityUID)
+		}
+		filtered = append(filtered, entity)
+	}
+	vertices = filtered
+	for _, item := range interfaceSlice(raw["edges"]) {
+		if edgeMap, ok := item.(map[string]interface{}); ok {
+			edge, err := edgeFromHugeGraph(edgeMap)
+			if err != nil {
+				return Subgraph{}, err
+			}
+			if source, ok := findEntity(vertices, edge.SourceUID); !ok || !scope.Allows(source) {
+				continue
+			} else if target, ok := findEntity(vertices, edge.TargetUID); !ok || !scope.Allows(target) {
+				continue
+			} else if edge.TenantID != "" && edge.TenantID != scope.TenantID {
+				continue
+			}
+			edges = append(edges, edge)
+		}
+	}
+	if len(vertices) > maxVertices {
+		vertices = vertices[:maxVertices]
+	}
+	if len(edges) > maxEdges {
+		edges = edges[:maxEdges]
+	}
+	return Subgraph{CenterEntityUID: center, Vertices: vertices, Edges: edges, Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion, GeneratedAt: nowRFC3339(), WarningCodes: []string{}}}, nil
+}
+
+func nowRFC3339() string { return time.Now().UTC().Format("2006-01-02T15:04:05.999999999Z07:00") }
+
+func mapValue(raw map[string]interface{}, key string) map[string]interface{} {
+	value, ok := raw[key].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	return value
+}
+
+func stringValue(raw map[string]interface{}, key string) string {
+	value, ok := raw[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func firstString(raw map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value := stringValue(raw, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func intValue(raw map[string]interface{}, key string) int64 {
+	value, ok := raw[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch n := value.(type) {
+	case float64:
+		return int64(n)
+	case json.Number:
+		v, _ := n.Int64()
+		return v
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	default:
+		v, _ := strconv.ParseInt(fmt.Sprint(value), 10, 64)
+		return v
+	}
+}
+
+func floatValue(raw map[string]interface{}, key string) float64 {
+	value, ok := raw[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch n := value.(type) {
+	case float64:
+		return n
+	case json.Number:
+		v, _ := n.Float64()
+		return v
+	default:
+		v, _ := strconv.ParseFloat(fmt.Sprint(value), 64)
+		return v
+	}
+}
+
+func boolValue(raw map[string]interface{}, key string) bool {
+	value, ok := raw[key]
+	if !ok || value == nil {
+		return false
+	}
+	if b, ok := value.(bool); ok {
+		return b
+	}
+	b, _ := strconv.ParseBool(fmt.Sprint(value))
+	return b
+}
+
+func attrsValue(value interface{}) map[string]interface{} {
+	if value == nil {
+		return nil
+	}
+	if attrs, ok := value.(map[string]interface{}); ok {
+		return attrs
+	}
+	var attrs map[string]interface{}
+	if json.Unmarshal([]byte(fmt.Sprint(value)), &attrs) == nil {
+		return attrs
+	}
+	return nil
+}
+
+func interfaceSlice(value interface{}) []interface{} {
+	switch values := value.(type) {
+	case []interface{}:
+		return values
+	case nil:
+		return nil
+	default:
+		return []interface{}{value}
+	}
+}
+
+func findEntity(items []Entity, uid string) (Entity, bool) {
+	for _, entity := range items {
+		if entity.EntityUID == uid {
+			return entity, true
+		}
+	}
+	return Entity{}, false
+}
+
+func normalizedRelationLabels(relations []string) []string {
+	labels := append([]string(nil), relations...)
+	for i := range labels {
+		labels[i] = strings.ToUpper(strings.TrimSpace(labels[i]))
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+func normalizedDirection(direction string) string {
+	direction = strings.ToUpper(strings.TrimSpace(direction))
+	if direction == "OUT" || direction == "IN" {
+		return direction
+	}
+	return "BOTH"
+}
+
+func candidateRelationTypes() []string {
+	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "BOUND_TO", "ATTACHED_TO", "INSTANCE_OF"}
+}
+
+func impactRelationTypes() []string {
+	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO"}
+}
+
+var _ GraphRepository = (*HugeGraphRepository)(nil)

@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM docker.m.daocloud.io/library/python:3.12-slim
 WORKDIR /app
 
 # System deps + k8sgpt binary

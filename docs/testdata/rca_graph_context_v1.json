@@ -1,0 +1,16 @@
+{
+  "run_id":"22222222-2222-4222-8222-222222222222",
+  "tenant_id":"tenant-1",
+  "primary_cluster_id":"cluster-1",
+  "contract_version":"graph-dto-v1",
+  "graph_schema_version":2,
+  "graph_generation":4,
+  "context_version":3,
+  "snapshot_at":"2026-08-27T00:00:00Z",
+  "partial":false,
+  "stale":false,
+  "warning_codes":[],
+  "vertices":[],
+  "edges":[],
+  "events":["graph_context_created","rca_candidates_ranked","graph_context_finalized"]
+}

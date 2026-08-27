@@ -71,6 +71,10 @@ func (c boundaryClient) ListNodeDetails() ([]map[string]interface{}, error) {
 	return c.client.KubeNodeDetails()
 }
 
+func (c boundaryClient) ListGraphObjects() (map[string]interface{}, error) {
+	return c.client.KubeGraphObjects()
+}
+
 // boundaryToString 安全把边界 JSON 值转为 string。
 func boundaryToString(v interface{}) string {
 	if s, ok := v.(string); ok {

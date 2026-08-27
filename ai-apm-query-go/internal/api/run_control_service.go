@@ -28,9 +28,9 @@ import (
 
 // RunControlService 统一 Run 控制面（Cancel 权威事务）。
 type RunControlService struct {
-	runDAO    *store.AIRunDAO
-	cmdDAO    *store.AIControlCommandDAO
-	eventDAO  *store.AIRunEventDAO
+	runDAO   *store.AIRunDAO
+	cmdDAO   *store.AIControlCommandDAO
+	eventDAO *store.AIRunEventDAO
 }
 
 // CancelResult 是 Cancel 的返回值。

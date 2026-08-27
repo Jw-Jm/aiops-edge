@@ -1,0 +1,30 @@
+{
+  "schema_name": "aiops",
+  "schema_version": 2,
+  "graphspace": "DEFAULT",
+  "graph_name": "aiops",
+  "vertex_label": {"name": "Entity", "id_strategy": "CUSTOMIZE_STRING", "enable_label_index": true},
+  "entity_properties": [
+    "entity_uid", "entity_type", "tenant_id", "cluster_id", "namespace", "name", "name_key",
+    "source", "source_uid", "status", "health", "resolution", "confidence", "first_seen_ms",
+    "last_seen_ms", "generation", "attrs_version", "attrs_json"
+  ],
+  "entity_indexes": [
+    {"name": "entityByType", "fields": ["entity_type"], "type": "SECONDARY"},
+    {"name": "entityByTenantCluster", "fields": ["tenant_id", "cluster_id"], "type": "SECONDARY"},
+    {"name": "entityByClusterNs", "fields": ["cluster_id", "namespace"], "type": "SECONDARY"},
+    {"name": "entityByStatus", "fields": ["status"], "type": "SECONDARY"},
+    {"name": "entityBySource", "fields": ["source"], "type": "SECONDARY"},
+    {"name": "entityByLastSeen", "fields": ["last_seen_ms"], "type": "RANGE"}
+  ],
+  "edge_labels": [
+    "HAS_COMPONENT", "HOSTS", "CONTAINS", "OWNS", "INSTANCE_OF", "RUNS_ON", "TARGETS", "BACKED_BY",
+    "REPRESENTS", "USES_VOLUME", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO", "DEPENDS_ON", "BELONGS_TO",
+    "HAS_CHANGE", "RAISES", "CAUSED_BY", "MENTIONED_IN"
+  ],
+  "edge_properties": [
+    "edge_uid", "tenant_id", "cluster_id", "status", "source", "confidence", "generation", "first_seen_ms",
+    "last_seen_ms", "valid_from_ms", "valid_to_ms", "propagates_failure", "candidate_direction",
+    "impact_direction", "attrs_version", "attrs_json"
+  ]
+}

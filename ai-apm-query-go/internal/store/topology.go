@@ -31,12 +31,12 @@ type TopologyRelation struct {
 
 // TopologyNodeType 节点类型目录。
 type TopologyNodeType struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"display_name"`
 	DisplayNameEN string `json:"display_name_en,omitempty"`
-	Builtin     bool   `json:"builtin"`
-	Tier        int    `json:"tier"`
-	Description string `json:"description"`
+	Builtin       bool   `json:"builtin"`
+	Tier          int    `json:"tier"`
+	Description   string `json:"description"`
 }
 
 // TopologyRelationType 关系类型目录。

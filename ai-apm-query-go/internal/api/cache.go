@@ -101,14 +101,18 @@ func (w *cacheResponseWriter) WriteHeader(code int) {
 }
 
 func (w *cacheResponseWriter) Write(b []byte) (int, error) {
-	if w.statusCode == 0 { w.statusCode = 200 }
+	if w.statusCode == 0 {
+		w.statusCode = 200
+	}
 	w.body.Write(b)
 	return w.ResponseWriter.Write(b)
 }
 
 func cacheKey(r *http.Request) string {
 	tenant := r.Header.Get("X-Tenant-ID")
-	if tenant == "" { tenant = "default" }
+	if tenant == "" {
+		tenant = "default"
+	}
 	raw := tenant + "|" + r.URL.Path + "?" + r.URL.RawQuery
 	return fmt.Sprintf("cache:%x", md5.Sum([]byte(raw)))
 }
@@ -145,16 +149,16 @@ func GetCacheStats() map[string]interface{} {
 	expired := 0
 	now := time.Now()
 	for _, v := range appCache.store {
-		if now.After(v.ExpiresAt) { expired++ }
+		if now.After(v.ExpiresAt) {
+			expired++
+		}
 	}
 	return map[string]interface{}{
-		"total_entries": total,
+		"total_entries":   total,
 		"expired_entries": expired,
-		"active_entries": total - expired,
+		"active_entries":  total - expired,
 	}
 }
-
-
 
 // BuildCacheKey creates a cache key from components
 func BuildCacheKey(parts ...string) string {
@@ -166,7 +170,7 @@ func CachedRespondJSON(w http.ResponseWriter, r *http.Request, data interface{},
 	cacheKey := cacheKey(r)
 	dataJSON, _ := json.Marshal(data)
 	dataStr := string(dataJSON)
-	
+
 	appCache.Set(cacheKey, dataStr, ttl)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", "MISS")

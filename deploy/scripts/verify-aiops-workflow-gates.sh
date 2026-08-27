@@ -49,6 +49,7 @@ if command -v helm >/dev/null 2>&1; then
     --set secrets.mysqlRootPassword="gate-mysql-012345678901234567890123456789" \
     --set secrets.mysqlAppPassword="gate-app-012345678901234567890123456789" \
     --set secrets.mysqlMigratorPassword="gate-migrator-012345678901234567890123456789" \
+    --set secrets.hugeGraphPassword="gate-hugegraph-012345678901234567890123456789" \
     --set secrets.llmProxyToken="gate-proxy-token" \
     --set secrets.llmProviderKeys="deepseek:gate-provider-key" \
     --set secrets.orchestratorToQueryToken="gate-o2q-token" \

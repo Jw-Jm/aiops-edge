@@ -18,6 +18,8 @@ aiActionExecutor:
   enabled: false
 deepflow:
   enabled: false
+hugeGraph:
+  enabled: true
 backup:
   enabled: false
 traceSummaryBackfill:

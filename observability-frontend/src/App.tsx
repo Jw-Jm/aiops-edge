@@ -36,6 +36,8 @@ const IntelligentInvestigation = lazy(() => import('./pages/investigation/Intell
 const NewInvestigation = lazy(() => import('./pages/investigation/NewInvestigation'))
 // Evidence 详情深链（tenant+cluster+run 三元授权，只读）
 const EvidenceDetail = lazy(() => import('./pages/investigation/EvidenceDetail'))
+const ResourceRelationships = lazy(() => import('./pages/observability/ResourceRelationships'))
+const GraphOperations = lazy(() => import('./pages/admin/GraphOperations'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
 // ===== 侧栏导航：7 大板块 =====
@@ -51,6 +53,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '可观测',
     items: [
       { path: '/observability/service', label: '服务全景', icon: 'topology' },
+      { path: '/observability/relationships', label: '资源关系', icon: 'topology' },
       { path: '/observability/trace', label: '链路追踪', icon: 'traces' },
       { path: '/observability/log', label: '日志与指标', icon: 'logs' },
       { path: '/observability/vms', label: '虚拟机', icon: 'desktop' },
@@ -93,6 +96,7 @@ const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/approvals', label: '审批中心', icon: 'approvals' },
       { path: '/admin/users', label: '用户管理', icon: 'users' },
       { path: '/admin/settings', label: '系统设置', icon: 'settings' },
+      { path: '/admin/graph-operations', label: '图谱运维', icon: 'settings' },
     ],
   },
 ]
@@ -298,6 +302,7 @@ function AppLayout() {
             <Routes>
               <Route path="/overview" element={<Overview />} />
               <Route path="/observability/service" element={<ServiceObservability />} />
+              <Route path="/observability/relationships" element={<ResourceRelationships />} />
               <Route path="/observability/trace" element={<Trace />} />
               <Route path="/observability/log" element={<LogMetrics />} />
               <Route path="/observability/vms" element={<VirtualMachines />} />
@@ -319,6 +324,7 @@ function AppLayout() {
               <Route path="/admin/approvals" element={<Approvals />} />
               <Route path="/admin/users" element={<AdminUsers />} />
               <Route path="/admin/settings" element={<AdminSettings />} />
+              <Route path="/admin/graph-operations" element={<GraphOperations />} />
               <Route path="/" element={<Overview />} />
               <Route path="*" element={<NotFound />} />
             </Routes>

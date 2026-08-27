@@ -58,15 +58,15 @@ func (h *Handler) internalControlPlaneRunClaim(w http.ResponseWriter, r *http.Re
 	}
 	cp.inc("lease_claim")
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"run_id":     holder.RunID,
-		"owner_id":   holder.OwnerID,
-		"epoch":      holder.Epoch,
-		"claim_id":   holder.ClaimID,
-		"token":      holder.Token, // 明文只在本响应返回，DB 只存 hash
-		"token_hash": holder.TokenHash,
-		"expires_at": holder.ExpiresAt.UTC().Format(time.RFC3339),
-		"wait_kind":  holder.WaitKind,
-		"server_now": holder.ServerNow.UTC().Format(time.RFC3339),
+		"run_id":             holder.RunID,
+		"owner_id":           holder.OwnerID,
+		"epoch":              holder.Epoch,
+		"claim_id":           holder.ClaimID,
+		"token":              holder.Token, // 明文只在本响应返回，DB 只存 hash
+		"token_hash":         holder.TokenHash,
+		"expires_at":         holder.ExpiresAt.UTC().Format(time.RFC3339),
+		"wait_kind":          holder.WaitKind,
+		"server_now":         holder.ServerNow.UTC().Format(time.RFC3339),
 		"lease_remaining_ms": holder.LeaseRemainingMS,
 	})
 }
@@ -130,15 +130,15 @@ func (h *Handler) internalControlPlaneRunRelease(w http.ResponseWriter, r *http.
 
 // controlPlaneBodyCommit 是 Runtime Commit 请求体。
 type controlPlaneBodyCommit struct {
-	CommitID    string          `json:"commit_id"`
-	PayloadHash string          `json:"payload_hash"`
-	Target      string          `json:"target"`      // 提交后推进到的 Run 状态（终态或可等待态）
-	Result      json.RawMessage `json:"result"`      // 首次成功响应（响应丢失重试返回）
-	Events      []commitEvent   `json:"events"`      // 本 commit 原子追加的事件
-	ExpectedVersion int64       `json:"expected_version"` // Run CAS version
-	OwnerID     string          `json:"owner_id"`
-	Epoch       int64           `json:"epoch"`
-	Token       string          `json:"token"`
+	CommitID        string          `json:"commit_id"`
+	PayloadHash     string          `json:"payload_hash"`
+	Target          string          `json:"target"`           // 提交后推进到的 Run 状态（终态或可等待态）
+	Result          json.RawMessage `json:"result"`           // 首次成功响应（响应丢失重试返回）
+	Events          []commitEvent   `json:"events"`           // 本 commit 原子追加的事件
+	ExpectedVersion int64           `json:"expected_version"` // Run CAS version
+	OwnerID         string          `json:"owner_id"`
+	Epoch           int64           `json:"epoch"`
+	Token           string          `json:"token"`
 }
 
 type commitEvent struct {
@@ -297,17 +297,17 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 // P0-EVID-02：allowed_statuses 由服务端拥有（不接受调用方传入），fail-closed 只允许终态成功。
 func (h *Handler) internalControlPlaneToolEvidenceConsume(w http.ResponseWriter, r *http.Request, toolRunID string) {
 	var body struct {
-		RunID                string          `json:"run_id"`
-		TenantID             string          `json:"tenant_id"`
-		ClusterID            string          `json:"cluster_id"`
-		EvidenceID           string          `json:"evidence_id"`
-		EvidenceType         string          `json:"evidence_type"`
-		SourceRef            string          `json:"source_ref"`
-		RawRef               string          `json:"raw_ref"`
-		RawDigestSHA256      string          `json:"raw_digest_sha256"`
-		Summary              string          `json:"summary"`
-		Metadata             json.RawMessage `json:"metadata"`
-		ProvenanceFingerprint string         `json:"provenance_fingerprint"`
+		RunID                 string          `json:"run_id"`
+		TenantID              string          `json:"tenant_id"`
+		ClusterID             string          `json:"cluster_id"`
+		EvidenceID            string          `json:"evidence_id"`
+		EvidenceType          string          `json:"evidence_type"`
+		SourceRef             string          `json:"source_ref"`
+		RawRef                string          `json:"raw_ref"`
+		RawDigestSHA256       string          `json:"raw_digest_sha256"`
+		Summary               string          `json:"summary"`
+		Metadata              json.RawMessage `json:"metadata"`
+		ProvenanceFingerprint string          `json:"provenance_fingerprint"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "INVALID_BODY"})

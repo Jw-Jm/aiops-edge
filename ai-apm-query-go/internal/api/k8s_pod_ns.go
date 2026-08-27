@@ -18,7 +18,7 @@ const podNSFallbackTTL = 60 * time.Second
 // ReplicaSet 第一段要求 9~10 位 hash，避免把 DaemonSet 的 <base>-<word5>-<hash5>
 // （如 deepflow-agent-qkv8w 中 "agent-qkv8w"）误判为 ReplicaSet 后缀。
 var (
-	rsSuffixRe = regexp.MustCompile(`-[a-z0-9]{9,10}-[a-z0-9]{5}$`)
+	rsSuffixRe  = regexp.MustCompile(`-[a-z0-9]{9,10}-[a-z0-9]{5}$`)
 	ordSuffixRe = regexp.MustCompile(`-\d+$`)
 	dsSuffixRe  = regexp.MustCompile(`-[a-z0-9]{5}$`)
 )

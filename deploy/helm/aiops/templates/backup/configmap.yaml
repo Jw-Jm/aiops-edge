@@ -20,7 +20,7 @@ data:
     OUT=/backup/clickhouse
     mkdir -p "$OUT"
     # 关键业务表（与 init_clickhouse.sql 一致，均在 observability 库）
-    for t in trace_spans log_records service_topology alert_events; do
+    for t in trace_spans log_records service_topology change_records alert_events; do
       echo "exporting observability.$t"
       clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local \
         --password "$CLICKHOUSE_PASSWORD" \

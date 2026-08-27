@@ -37,6 +37,44 @@ networkPolicy:
   #   回滚：清空列表（[]）即解除对应组件的 egress 限制。
   egressCanaryServices: []
 
+# Graph projection backend. legacy_mysql is the safe rollback default; shadow
+# and hugegraph are enabled only by an explicit cutover profile.
+graph:
+  backend: legacy_mysql
+  readTimeoutMs: 1500
+  writeTimeoutMs: 3000
+  publicMaxDepth: 3
+  publicMaxVertices: 300
+  publicMaxEdges: 1000
+  internalMaxDepth: 6
+  internalMaxVertices: 2000
+  internalMaxEdges: 5000
+  traversalCapacity: 20000
+  outboxPollIntervalSeconds: 2
+  outboxBatchSize: 100
+  outboxMaxRetries: 10
+  outboxLockSeconds: 30
+  projectorLeaseTtlSeconds: 15
+  projectorLeaseRenewSeconds: 5
+  reconcileLeaseTtlSeconds: 120
+
+# Apache HugeGraph 1.7.0 standalone + RocksDB. It is a rebuildable projection;
+# the graph backend remains legacy_mysql until the shadow/cutover gates pass.
+hugeGraph:
+  enabled: false
+  image: "hugegraph/hugegraph:1.7.0"
+  imagePullPolicy: IfNotPresent
+  graphspace: DEFAULT
+  graph: aiops
+  username: admin
+  password: ""
+  storageClass: ""
+  storage: 20Gi
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits: { cpu: "2", memory: "2Gi" }
+  schemaMigratorImage: "graph-schema-migrator:{{ .Values.global.imageTag }}"
+
 # Stage D（报告 §21 / F-22）：ai-action-executor——独立生产 mutation 安全执行边界。
 # EXECUTION_MODE=disabled 默认关闭真实执行（A-C + D 全闭环后才可开 approved）。
 aiActionExecutor:
@@ -102,6 +140,7 @@ secrets:
   executorToken: ""
   aiActionExecutorSigningKey: ""           # Ed25519 private key, raw-url base64 without padding, 64-byte private key (seed||public)
   aiActionExecutorVerifyKeys: ""           # Ed25519 public key, raw-url base64 without padding
+  hugeGraphPassword: ""
 
 # ---------------------------------------------------------------------------
 # 中间件：enabled=true 由 Chart 内部拉起；enabled=false 走 external 复用已有实例
@@ -284,6 +323,10 @@ queryApi:
   # credential→kube-system UID registration is completed.
   systemClusterCredentialRef: ""
   systemClusterIdentityUID: ""
+  # Local validation supplies a fixed Secret name and writes the discovered
+  # credential_ref/identity into the validation values at deployment time.
+  # Production keeps this empty and supplies ADMIN_KUBECONFIG externally.
+  localCredentialSecretName: ""
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
@@ -297,6 +340,12 @@ queryApi:
   # P6.3.3/P6.4.0: reader 路由（legacy|new）。default=legacy（Phase 6 transition）。
   # cutover 受控窗口内翻为 new；显式非法值 → startup FAIL（拒绝启动）。
   queryReaderMode: "new"
+  graphBackend: "{{ .Values.graph.backend }}"
+  hugeGraphUrl: "http://hugegraph.{{ .Values.namespace.observability }}.svc.cluster.local:8080"
+  hugeGraphGraphspace: "{{ .Values.hugeGraph.graphspace }}"
+  hugeGraphGraph: "{{ .Values.hugeGraph.graph }}"
+  graphReadTimeoutMs: "{{ .Values.graph.readTimeoutMs }}"
+  graphWriteTimeoutMs: "{{ .Values.graph.writeTimeoutMs }}"
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits: { cpu: "1", memory: "1Gi" }

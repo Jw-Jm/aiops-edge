@@ -59,6 +59,24 @@ spec:
             # cutover 受控窗口内翻为 new。显式非法值 → startup FAIL（拒绝启动，绝不静默回 legacy）。
             - name: QUERY_READER_MODE
               value: {{ .Values.queryApi.queryReaderMode | default "legacy" | quote }}
+            - name: GRAPH_BACKEND
+              value: {{ tpl (.Values.queryApi.graphBackend | default .Values.graph.backend) . | quote }}
+            - name: HUGEGRAPH_URL
+              value: {{ tpl .Values.queryApi.hugeGraphUrl . | quote }}
+            - name: HUGEGRAPH_GRAPHSPACE
+              value: {{ tpl .Values.queryApi.hugeGraphGraphspace . | quote }}
+            - name: HUGEGRAPH_GRAPH
+              value: {{ tpl .Values.queryApi.hugeGraphGraph . | quote }}
+            - name: HUGEGRAPH_USERNAME
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_USERNAME }
+            - name: HUGEGRAPH_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_PASSWORD }
+            - name: GRAPH_READ_TIMEOUT_MS
+              value: {{ tpl .Values.queryApi.graphReadTimeoutMs . | quote }}
+            - name: GRAPH_WRITE_TIMEOUT_MS
+              value: {{ tpl .Values.queryApi.graphWriteTimeoutMs . | quote }}
             - name: K8S_API_URL
               value: {{ .Values.queryApi.k8sApiUrl | quote }}
             # C-05/F-12：生产必须验证 K8s API Server 证书（CA）。insecure 仅限本地验证 profile，

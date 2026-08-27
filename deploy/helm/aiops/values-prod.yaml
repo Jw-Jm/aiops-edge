@@ -30,6 +30,13 @@ chromadb:
   storageClass: "standard"
 mysql:
   storageClass: "standard"
+hugeGraph:
+  enabled: true
+  storageClass: "standard"
+
+# Keep the rollback backend until Phase 5 shadow gates have passed.
+graph:
+  backend: legacy_mysql
 # 备份 PVC（backup-pvc，mysql/clickhouse 每日备份落地盘）
 backup:
   storageClass: "standard"

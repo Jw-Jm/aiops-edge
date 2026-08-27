@@ -53,6 +53,8 @@ do
     exit 1
   fi
 done
+kubectl -n observability wait --for=condition=ready pod -l app=hugegraph --timeout=300s
+kubectl -n observability wait --for=condition=complete job/graph-schema-migrator --timeout=300s
 kubectl -n observability wait --for=condition=ready pod -l app=mysql --timeout=300s
 
 echo "[validator] Query API readiness endpoint"
@@ -61,6 +63,9 @@ if ! kubectl -n observability exec deploy/query-api -- wget -q -O - http://127.0
   echo "Query API /readyz failed" >&2
   exit 1
 fi
+query_graph_env="$(kubectl -n observability get deployment query-api -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}')"
+rg -n '^GRAPH_BACKEND=hugegraph$' <<<"${query_graph_env}" >/dev/null || { echo "query-api is not using hugegraph in local validation" >&2; exit 1; }
+rg -n '^HUGEGRAPH_URL=http://hugegraph' <<<"${query_graph_env}" >/dev/null || { echo "query-api HugeGraph URL is not cluster-local" >&2; exit 1; }
 
 echo "[validator] MySQL schema and migration accounts"
 root_password="$(kubectl -n observability get secret aiops-secrets -o jsonpath='{.data.MYSQL_ROOT_PASSWORD}' | base64 -d)"
@@ -76,7 +81,7 @@ migrator_password="$(kubectl -n observability get secret aiops-secrets -o jsonpa
 }
 schema_rows="$(kubectl -n observability exec statefulset/mysql -- env MYSQL_PWD="${root_password}" mysql -uroot -N -e \
   "SELECT migration_id FROM aiops.aiops_schema_migrations ORDER BY migration_id;")"
-for version in 0001 0002 0003 0004 0005 0006 0007 0008 0009; do
+for version in 0001 0002 0003 0004 0005 0006 0007 0008 0009 0010 0011; do
   if ! rg -n --fixed-strings "mysql/${version}" <<<"${schema_rows}" >/dev/null; then
     echo "schema migration ${version} is missing" >&2
     exit 1
@@ -84,6 +89,10 @@ for version in 0001 0002 0003 0004 0005 0006 0007 0008 0009; do
 done
 if ! rg -n --fixed-strings "mysql/0009_action_workflow_closure" <<<"${schema_rows}" >/dev/null; then
   echo "0009_action_workflow_closure is missing" >&2
+  exit 1
+fi
+if ! rg -n --fixed-strings "mysql/0011_graph_projection" <<<"${schema_rows}" >/dev/null; then
+  echo "0011_graph_projection is missing" >&2
   exit 1
 fi
 printf '%s\n' "${schema_rows}"

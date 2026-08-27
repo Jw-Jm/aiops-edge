@@ -47,13 +47,13 @@ func (r *ChangeRepository) List(ctx context.Context, scope ChangeScope, service,
 		conds = append(conds, "service_name="+sqlStr(service))
 	}
 	if since != "" {
-		conds = append(conds, "start_time >= '"+since+"'")
+		conds = append(conds, "observability.change_records.start_time >= '"+since+"'")
 	} else {
-		conds = append(conds, "start_time >= now() - INTERVAL 24 HOUR")
+		conds = append(conds, "observability.change_records.start_time >= now() - INTERVAL 24 HOUR")
 	}
 	sql := fmt.Sprintf(
 		"SELECT change_id, service_name, change_type, toString(start_time) AS start_time, actor, summary, revision "+
-			"FROM observability.change_records WHERE %s ORDER BY start_time DESC LIMIT 200",
+			"FROM observability.change_records WHERE %s ORDER BY observability.change_records.start_time DESC LIMIT 200",
 		strings.Join(conds, " AND "))
 	rows, err := r.ch.QueryJSON(ctx, sql)
 	if err != nil {

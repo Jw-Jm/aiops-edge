@@ -10,8 +10,8 @@ import (
 )
 
 // TestP0CommitHashConflictReal 真实 MySQL 验证 P0#2/#10 Runtime Commit 幂等 hash 冲突：
-//   1. 同 commit_id + 同 payload_hash → 首次结果（幂等命中）。
-//   2. 同 commit_id + 不同 payload_hash → 409 IDEMPOTENCY_KEY_REUSED。
+//  1. 同 commit_id + 同 payload_hash → 首次结果（幂等命中）。
+//  2. 同 commit_id + 不同 payload_hash → 409 IDEMPOTENCY_KEY_REUSED。
 func TestP0CommitHashConflictReal(t *testing.T) {
 	dsn := os.Getenv("TEST_MYSQL_DSN")
 	if dsn == "" {

@@ -16,6 +16,12 @@ import kg_graph
 router = APIRouter(prefix="/api/v1/ai/kg")
 
 
+def _require_legacy_backend():
+    """The old integer-ID facade is disabled once native graph backends run."""
+    if os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower() != "legacy_mysql":
+        raise HTTPException(503, "GRAPH_FEATURE_UNAVAILABLE_LEGACY")
+
+
 def _require_admin(request: Request):
     """仅 admin 可操作（内部 token + X-Internal-Role=admin），与 main.py 同源。
     kg_api 不能 import main.py（循环导入），故此处内联等价实现。"""
@@ -34,6 +40,7 @@ class _BuildBody(BaseModel):
 @router.get("/graph")
 def kg_graph_full(cluster_id: str = "default"):
     """全量图（按 props_json 里的 cluster_id 过滤）。"""
+    _require_legacy_backend()
     try:
         node_rows, rel_rows = kg_graph._load_graph()
         nodes = []
@@ -58,6 +65,7 @@ def kg_graph_full(cluster_id: str = "default"):
 @router.get("/entity")
 def kg_entity(type: str = "service", name: str = "", cluster_id: str = "default"):
     """按 (type, name, cluster_id) 查单个节点；无则返回 {"entity": null}。"""
+    _require_legacy_backend()
     node = kg_graph.get_node(type, name, cluster_id)
     return {"entity": node}
 
@@ -65,6 +73,7 @@ def kg_entity(type: str = "service", name: str = "", cluster_id: str = "default"
 @router.get("/neighbors")
 def kg_neighbors(id: int, hops: int = 1, edge_types: str = ""):
     """以节点 id 为中心做无向 BFS，返回 hops 跳内节点与边。"""
+    _require_legacy_backend()
     et = None
     if edge_types:
         et = [t.strip() for t in edge_types.split(",") if t.strip()]
@@ -76,6 +85,7 @@ def kg_path(from_type: str = "service", from_name: str = "",
             to_type: str = "service", to_name: str = "",
             cluster_id: str = "default"):
     """两节点最短路径（节点 id 序列）。"""
+    _require_legacy_backend()
     return {"path": kg_graph.shortest_path(
         from_type, from_name, to_type, to_name, cluster_id)}
 
@@ -83,6 +93,7 @@ def kg_path(from_type: str = "service", from_name: str = "",
 @router.get("/impact")
 def kg_impact(service: str, cluster_id: str = "default", depth: int = 3):
     """服务的下游影响面（沿出边 BFS 闭包）。"""
+    _require_legacy_backend()
     node = kg_graph.get_node("service", service, cluster_id)
     if node is None:
         return {"service": service, "nodes": [], "edges": []}
@@ -95,6 +106,7 @@ def kg_impact(service: str, cluster_id: str = "default", depth: int = 3):
 @router.get("/evidence")
 def kg_evidence(entity_id: int, limit: int = 10):
     """节点关联证据：出/入边 + 图中 change 节点的结构化详情。"""
+    _require_legacy_backend()
     try:
         node_rows, rel_rows = kg_graph._load_graph()
         nodes = {int(row["id"]): kg_graph._node_dict(row) for row in node_rows}
@@ -133,5 +145,6 @@ def kg_evidence(entity_id: int, limit: int = 10):
 @router.post("/build")
 def kg_build(body: _BuildBody, request: Request):
     """重建指定集群的知识图谱（仅 admin）。"""
+    _require_legacy_backend()
     _require_admin(request)
     return kg_graph.build_all(body.cluster_id)

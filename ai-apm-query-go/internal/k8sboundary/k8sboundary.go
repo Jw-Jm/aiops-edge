@@ -98,13 +98,49 @@ func (s *SecretResolver) ResolveKubeconfig(credentialRef string) (string, error)
 
 func (s *SecretResolver) runKubectl(args []string) (string, error) {
 	base := args
-	if s.adminKubeconfig != "" {
+	adminKubeconfig := strings.TrimSpace(s.adminKubeconfig)
+	if adminKubeconfig == "" {
+		// In the in-cluster deployment the management-plane credential is the
+		// query-api ServiceAccount. Build a short-lived kubeconfig that points
+		// at the in-cluster API and reads the projected token at execution time.
+		// This keeps the production boundary intact: the ServiceAccount may only
+		// read the explicitly bound credential Secret, and target-cluster access
+		// still comes from credential_ref -> Secret -> kubeconfig below.
+		if host := strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")); host != "" {
+			port := strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_PORT_HTTPS"))
+			if port == "" {
+				port = strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_PORT"))
+			}
+			if port == "" {
+				port = "443"
+			}
+			adminKubeconfig = fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: in-cluster
+  cluster:
+    server: https://%s:%s
+    certificate-authority: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+users:
+- name: in-cluster
+  user:
+    tokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+contexts:
+- name: in-cluster
+  context:
+    cluster: in-cluster
+    user: in-cluster
+current-context: in-cluster
+`, host, port)
+		}
+	}
+	if adminKubeconfig != "" {
 		tmp, err := os.CreateTemp("", "admin-kc-*.yaml")
 		if err != nil {
 			return "", err
 		}
 		defer os.Remove(tmp.Name())
-		if _, err := tmp.WriteString(s.adminKubeconfig); err != nil {
+		if _, err := tmp.WriteString(adminKubeconfig); err != nil {
 			return "", err
 		}
 		tmp.Close()
@@ -187,6 +223,14 @@ func (c *Client) KubeNodeDetails() ([]map[string]interface{}, error) {
 // KubePods returns pod name/namespace/status/restarts for this validated client.
 func (c *Client) KubePods(namespace string) ([]map[string]interface{}, error) {
 	return kubePods(c.kubeconfig, namespace)
+}
+
+// KubeGraphObjects returns the complete, allow-listed resource snapshot used
+// by the graph reconcile builder.  It never reads Secrets or accepts an
+// arbitrary resource name; every object is fetched through this already
+// identity-validated cluster client.
+func (c *Client) KubeGraphObjects() (map[string]interface{}, error) {
+	return kubeGraphObjects(c.kubeconfig, c.clusterID, c.identityUID)
 }
 
 // KubeDeploymentIdentity reads only the immutable identity fields used by the
@@ -478,4 +522,88 @@ func kubePods(kubeconfig, namespace string) ([]map[string]interface{}, error) {
 		})
 	}
 	return pods, nil
+}
+
+// kubeGraphObjects reads only the canonical Kubernetes graph resource set.
+// Optional CRDs (NAD) are reported in errors/partial rather than converting a
+// missing optional API into a fake empty authoritative snapshot.
+func kubeGraphObjects(kubeconfig, clusterID, identityUID string) (map[string]interface{}, error) {
+	result := map[string]interface{}{
+		"cluster": map[string]interface{}{
+			"apiVersion": "aiops/v1", "kind": "Cluster",
+			"metadata": map[string]interface{}{"uid": identityUID, "name": clusterID},
+		},
+	}
+	type resource struct {
+		field, name string
+		all         bool
+		optional    bool
+	}
+	resources := []resource{
+		{"namespaces", "namespaces", false, false}, {"nodes", "nodes", false, false},
+		{"deployments", "deployments", true, false}, {"replicasets", "replicasets", true, false},
+		{"statefulsets", "statefulsets", true, false}, {"daemonsets", "daemonsets", true, false},
+		{"pods", "pods", true, false}, {"services", "services", true, false},
+		{"endpoint_slices", "endpointslices", true, false}, {"pvcs", "persistentvolumeclaims", true, false},
+		{"pvs", "persistentvolumes", false, false}, {"storage_classes", "storageclasses", false, false},
+		{"nads", "network-attachment-definitions.k8s.cni.cncf.io", true, true},
+		{"virtual_machines", "virtualmachines.kubevirt.io", true, true},
+		{"virtual_machine_instances", "virtualmachineinstances.kubevirt.io", true, true},
+		{"migrations", "virtualmachineinstancemigrations.kubevirt.io", true, true},
+	}
+	errs := []string{}
+	for _, item := range resources {
+		args := []string{"get", item.name, "-o", "json"}
+		if item.all {
+			args = []string{"get", item.name, "-A", "-o", "json"}
+		}
+		data, err := kubectlJSON(kubeconfig, args...)
+		if err != nil {
+			if !item.optional {
+				errs = append(errs, item.field+": "+err.Error())
+			}
+			continue
+		}
+		var list struct {
+			Items []map[string]interface{} `json:"items"`
+		}
+		if err := json.Unmarshal(data, &list); err != nil {
+			errs = append(errs, item.field+": invalid Kubernetes response: "+err.Error())
+			continue
+		}
+		result[item.field] = list.Items
+	}
+	if pods, ok := result["pods"].([]map[string]interface{}); ok {
+		launchers := make([]map[string]interface{}, 0)
+		containers := make([]map[string]interface{}, 0)
+		for _, pod := range pods {
+			metadata, _ := pod["metadata"].(map[string]interface{})
+			labels, _ := metadata["labels"].(map[string]interface{})
+			if labels["kubevirt.io"] == "virt-launcher" {
+				launchers = append(launchers, pod)
+			}
+			podUID, _ := metadata["uid"].(string)
+			namespace, _ := metadata["namespace"].(string)
+			spec, _ := pod["spec"].(map[string]interface{})
+			for _, field := range []string{"containers", "initContainers", "ephemeralContainers"} {
+				list, _ := spec[field].([]interface{})
+				for _, raw := range list {
+					container, _ := raw.(map[string]interface{})
+					if name, _ := container["name"].(string); name != "" && podUID != "" {
+						containers = append(containers, map[string]interface{}{
+							"kind": "Container", "name": name, "pod_uid": podUID,
+							"metadata": map[string]interface{}{"namespace": namespace},
+						})
+					}
+				}
+			}
+		}
+		result["virt_launcher_pods"] = launchers
+		result["containers"] = containers
+	}
+	if len(errs) > 0 {
+		result["partial"] = true
+		result["errors"] = errs
+	}
+	return result, nil
 }

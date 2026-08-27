@@ -1,13 +1,19 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
+	graphpkg "github.com/observability-platform/ai-apm-query-go/internal/graph"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -17,24 +23,47 @@ const (
 )
 
 type knowledgeGraphRequest struct {
-	Operation  string                   `json:"operation"`
-	ClusterID  string                   `json:"cluster_id"`
-	Type       string                   `json:"type"`
-	Name       string                   `json:"name"`
-	Props      map[string]interface{}   `json:"props"`
-	SrcID      int64                    `json:"src_id"`
-	DstID      int64                    `json:"dst_id"`
-	EdgeType   string                   `json:"edge_type"`
-	EdgeProps  map[string]interface{}   `json:"edge_props"`
-	NodeID     int64                    `json:"node_id"`
-	Hops       int                      `json:"hops"`
-	Depth      int                      `json:"depth"`
-	EdgeTypes  []string                 `json:"edge_types"`
-	FromType   string                   `json:"from_type"`
-	FromName   string                   `json:"from_name"`
-	ToType     string                   `json:"to_type"`
-	ToName     string                   `json:"to_name"`
-	Operations []knowledgeGraphMutation `json:"operations"`
+	Operation      string                   `json:"operation"`
+	ClusterID      string                   `json:"cluster_id"`
+	Type           string                   `json:"type"`
+	Name           string                   `json:"name"`
+	Props          map[string]interface{}   `json:"props"`
+	SrcID          int64                    `json:"src_id"`
+	DstID          int64                    `json:"dst_id"`
+	EdgeType       string                   `json:"edge_type"`
+	EdgeProps      map[string]interface{}   `json:"edge_props"`
+	NodeID         int64                    `json:"node_id"`
+	Hops           int                      `json:"hops"`
+	Depth          int                      `json:"depth"`
+	EdgeTypes      []string                 `json:"edge_types"`
+	FromType       string                   `json:"from_type"`
+	FromName       string                   `json:"from_name"`
+	ToType         string                   `json:"to_type"`
+	ToName         string                   `json:"to_name"`
+	Operations     []knowledgeGraphMutation `json:"operations"`
+	EntityUID      string                   `json:"entity_uid"`
+	Generation     int64                    `json:"generation"`
+	Source         string                   `json:"source"`
+	Mutations      []graphMutationRequest   `json:"mutations"`
+	Phase          string                   `json:"phase"`
+	ReconcileRunID string                   `json:"reconcile_run_id"`
+	LeaseKey       string                   `json:"lease_key"`
+	LeaseOwnerID   string                   `json:"lease_owner_id"`
+	LeaseEpoch     int64                    `json:"lease_epoch"`
+	LeaseToken     string                   `json:"lease_token"`
+	Watermark      string                   `json:"watermark"`
+	Error          string                   `json:"error"`
+	VerticesSeen   int64                    `json:"vertices_seen"`
+	EdgesSeen      int64                    `json:"edges_seen"`
+	VerticesStaled int64                    `json:"vertices_staled"`
+	EdgesStaled    int64                    `json:"edges_staled"`
+}
+
+type graphMutationRequest struct {
+	MutationID string          `json:"mutation_id"`
+	Kind       string          `json:"kind"`
+	Vertex     graphpkg.Entity `json:"vertex"`
+	Edge       graphpkg.Edge   `json:"edge"`
 }
 
 type knowledgeGraphMutation struct {
@@ -57,12 +86,12 @@ func (h *Handler) InternalControlPlaneKnowledgeGraph(w http.ResponseWriter, r *h
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
-	if req.Operation == "" || (req.Operation != "snapshot" && req.Operation != "find_node" && req.Operation != "upsert_node" && req.Operation != "upsert_edge" && req.Operation != "batch_upsert" && req.Operation != "reconcile") {
+	if req.Operation == "" || (req.Operation != "snapshot" && req.Operation != "find_node" && req.Operation != "upsert_node" && req.Operation != "upsert_edge" && req.Operation != "batch_upsert" && req.Operation != "reconcile" && req.Operation != "get_vertex" && req.Operation != "batch_mutate" && req.Operation != "mark_stale_generation" && req.Operation != "reconcile_scope" && req.Operation != "health") {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
 	capability := knowledgeGraphReadCapability
-	if req.Operation == "upsert_node" || req.Operation == "upsert_edge" || req.Operation == "batch_upsert" || req.Operation == "reconcile" {
+	if req.Operation == "upsert_node" || req.Operation == "upsert_edge" || req.Operation == "batch_upsert" || req.Operation == "reconcile" || req.Operation == "batch_mutate" || req.Operation == "mark_stale_generation" || req.Operation == "reconcile_scope" {
 		capability = knowledgeGraphWriteCapability
 	}
 	rctx, authErr := authorizeInternalControlPlane(r, capability, "ai-orchestrator")
@@ -95,6 +124,15 @@ func (h *Handler) InternalControlPlaneKnowledgeGraph(w http.ResponseWriter, r *h
 		result map[string]interface{}
 		err    error
 	)
+	if req.Operation == "get_vertex" || req.Operation == "batch_mutate" || req.Operation == "mark_stale_generation" || req.Operation == "reconcile_scope" || req.Operation == "health" {
+		result, err = h.internalGraphControlOperation(req, rctx)
+		if err != nil {
+			respondGraphErrorFromGo(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, result)
+		return
+	}
 	switch req.Operation {
 	case "snapshot":
 		result, err = knowledgeGraphSnapshot(req.ClusterID)
@@ -114,6 +152,209 @@ func (h *Handler) InternalControlPlaneKnowledgeGraph(w http.ResponseWriter, r *h
 		return
 	}
 	respondJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) internalGraphControlOperation(req knowledgeGraphRequest, rctx *internalQueryCtx) (map[string]interface{}, error) {
+	if h.graphRepo == nil || h.graphInitErr != nil {
+		return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, "knowledge graph is not configured")
+	}
+	scope := graphpkg.GraphScope{TenantID: rctx.TenantID, ClusterIDs: map[string]struct{}{rctx.ClusterID: {}}}
+	switch req.Operation {
+	case "health":
+		return map[string]interface{}{"health": h.graphRepo.Health(context.Background())}, nil
+	case "get_vertex":
+		if req.EntityUID == "" {
+			return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "entity_uid is required")
+		}
+		entity, err := h.graphRepo.GetEntity(context.Background(), scope, req.EntityUID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"entity": entity}, nil
+	case "batch_mutate":
+		if len(req.Mutations) == 0 || len(req.Mutations) > 500 {
+			return nil, graphpkg.NewError(graphpkg.ErrGraphQueryLimitExceeded, "mutations must contain 1 to 500 items")
+		}
+		if err := h.verifyGraphReconcileLease(req); err != nil {
+			return nil, err
+		}
+		batch := graphpkg.MutationBatch{TenantID: rctx.TenantID, ClusterID: rctx.ClusterID, Source: req.Source, Generation: req.Generation}
+		for _, mutation := range req.Mutations {
+			switch mutation.Kind {
+			case "upsert_vertex":
+				batch.Vertices = append(batch.Vertices, mutation.Vertex)
+			case "upsert_edge":
+				batch.Edges = append(batch.Edges, mutation.Edge)
+			default:
+				return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "unsupported mutation kind")
+			}
+		}
+		result, err := h.graphRepo.BatchMutate(context.Background(), batch)
+		if err != nil {
+			return nil, err
+		}
+		if h.graphAliasDAO != nil {
+			for _, entity := range batch.Vertices {
+				_ = h.graphAliasDAO.Upsert(store.GraphEntityAlias{TenantID: entity.TenantID, ScopeClusterID: entity.ClusterID, Source: entity.Source, AliasType: "name", AliasValue: entity.NameKey, CanonicalEntityUID: entity.EntityUID})
+			}
+		}
+		return map[string]interface{}{"result": result}, nil
+	case "reconcile_scope":
+		return h.reconcileGraphScope(req, rctx)
+	case "mark_stale_generation":
+		if err := h.verifyGraphReconcileLease(req); err != nil {
+			return nil, err
+		}
+		if req.Source == "" || req.Generation <= 0 {
+			return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "source and positive generation are required")
+		}
+		marker, ok := h.graphRepo.(graphpkg.GenerationStaleMarker)
+		if !ok {
+			return nil, graphpkg.NewError(graphpkg.ErrGraphFeatureUnavailable, "generation stale marker is not configured")
+		}
+		vertices, edges, err := marker.MarkStaleByGeneration(context.Background(), req.Source, rctx.TenantID, req.ClusterID, req.Generation)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"marked_vertices": vertices, "marked_edges": edges}, nil
+	default:
+		return nil, graphpkg.NewError(graphpkg.ErrGraphFeatureUnavailable, req.Operation+" is not available in this backend")
+	}
+}
+
+var graphReconcileSources = map[string]struct{}{
+	"catalog": {}, "hardware": {}, "kubernetes": {}, "kubevirt": {},
+	"middleware": {}, "trace": {}, "change": {}, "network": {},
+}
+
+func graphReconcileLeaseTTL() time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("GRAPH_RECONCILE_LEASE_TTL_SECONDS")))
+	if err != nil || seconds < 30 {
+		seconds = 120
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func graphUUID() string {
+	var data [16]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return fmt.Sprintf("00000000-0000-4000-8000-%012d", time.Now().UnixNano()%1000000000000)
+	}
+	data[6] = (data[6] & 0x0f) | 0x40
+	data[8] = (data[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", data[0:4], data[4:6], data[6:8], data[8:10], data[10:16])
+}
+
+func (h *Handler) verifyGraphReconcileLease(req knowledgeGraphRequest) error {
+	if req.LeaseKey == "" || req.LeaseOwnerID == "" || req.LeaseToken == "" || req.LeaseEpoch <= 0 {
+		return graphpkg.NewError("GRAPH_LEASE_FENCED", "active graph reconcile lease is required")
+	}
+	ok, err := (&store.GraphWorkerLeaseDAO{}).Verify(req.LeaseKey, req.LeaseOwnerID, req.LeaseToken, req.LeaseEpoch)
+	if err != nil {
+		return graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+	}
+	if !ok {
+		return graphpkg.NewError("GRAPH_LEASE_FENCED", "graph reconcile lease is expired or replaced")
+	}
+	return nil
+}
+
+func (h *Handler) reconcileGraphScope(req knowledgeGraphRequest, rctx *internalQueryCtx) (map[string]interface{}, error) {
+	if req.Source == "" {
+		return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "source is required")
+	}
+	if _, ok := graphReconcileSources[req.Source]; !ok {
+		return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "unsupported reconcile source")
+	}
+	if req.ClusterID == "" {
+		return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "cluster_id is required")
+	}
+	leases := &store.GraphWorkerLeaseDAO{}
+	if req.Phase == "start" {
+		leaseKey := fmt.Sprintf("graph-reconcile:%s:%s:%s", req.Source, rctx.TenantID, req.ClusterID)
+		ownerID := "ai-orchestrator-" + graphUUID()
+		lease, acquired, err := leases.Acquire(leaseKey, ownerID, graphReconcileLeaseTTL())
+		if err != nil {
+			return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+		}
+		if !acquired {
+			return map[string]interface{}{"acquired": false}, nil
+		}
+		runID := graphUUID()
+		if err := (&store.GraphReconcileRunDAO{}).Start(store.GraphReconcileRun{
+			ReconcileRunID: runID, Source: req.Source, TenantID: rctx.TenantID,
+			ScopeClusterID: req.ClusterID, Generation: 0, Status: "running",
+		}); err != nil {
+			_ = leases.Release(lease.LeaseKey, lease.OwnerID, lease.TokenHash, lease.LeaseEpoch)
+			return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+		}
+		stateDAO := &store.GraphSyncStateDAO{}
+		previousGeneration, generation, err := stateDAO.StartLocked(req.Source, rctx.TenantID, req.ClusterID)
+		if err != nil {
+			_ = (&store.GraphReconcileRunDAO{}).Finish(runID, "failed", err.Error(), 0, 0, 0, 0)
+			_ = leases.Release(lease.LeaseKey, lease.OwnerID, lease.TokenHash, lease.LeaseEpoch)
+			return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+		}
+		// The run row is intentionally inserted before state.StartLocked.  Fill
+		// the generation assigned by the locked state row in the audit row.
+		if err := (&store.GraphReconcileRunDAO{}).SetGeneration(runID, generation); err != nil {
+			_ = stateDAO.Finish(req.Source, rctx.TenantID, req.ClusterID, "", previousGeneration, "failed", err.Error())
+			_ = (&store.GraphReconcileRunDAO{}).Finish(runID, "failed", err.Error(), 0, 0, 0, 0)
+			_ = leases.Release(lease.LeaseKey, lease.OwnerID, lease.TokenHash, lease.LeaseEpoch)
+			return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+		}
+		return map[string]interface{}{
+			"acquired": true, "reconcile_run_id": runID, "generation": generation,
+			"lease_key": lease.LeaseKey, "lease_owner_id": lease.OwnerID,
+			"lease_epoch": lease.LeaseEpoch, "lease_token": lease.TokenHash,
+		}, nil
+	}
+	if req.ReconcileRunID == "" || req.Generation <= 0 {
+		return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "reconcile run and generation are required")
+	}
+	if err := h.verifyGraphReconcileLease(req); err != nil {
+		return nil, err
+	}
+	stateDAO := &store.GraphSyncStateDAO{}
+	runDAO := &store.GraphReconcileRunDAO{}
+	previousGeneration := req.Generation - 1
+	if previousGeneration < 0 {
+		previousGeneration = 0
+	}
+	status := req.Phase
+	if status == "no_data" {
+		// An empty successful source view is safe, but it is not a new graph
+		// generation and must not trigger stale cleanup.
+		if err := stateDAO.Finish(req.Source, rctx.TenantID, req.ClusterID, req.Watermark, previousGeneration, "success", ""); err != nil {
+			return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+		}
+		if err := runDAO.Finish(req.ReconcileRunID, "success", "no_data", 0, 0, 0, 0); err != nil {
+			return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+		}
+		_ = leases.Release(req.LeaseKey, req.LeaseOwnerID, req.LeaseToken, req.LeaseEpoch)
+		return map[string]interface{}{"status": "no_data"}, nil
+	}
+	if status == "failed" {
+		if err := stateDAO.Finish(req.Source, rctx.TenantID, req.ClusterID, req.Watermark, previousGeneration, "failed", req.Error); err != nil {
+			return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+		}
+		_ = runDAO.Finish(req.ReconcileRunID, "failed", req.Error, req.VerticesSeen, req.EdgesSeen, 0, 0)
+		_ = leases.Release(req.LeaseKey, req.LeaseOwnerID, req.LeaseToken, req.LeaseEpoch)
+		return map[string]interface{}{"status": "failed"}, nil
+	}
+	if status != "success" {
+		return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "unsupported reconcile phase")
+	}
+	if err := stateDAO.Finish(req.Source, rctx.TenantID, req.ClusterID, req.Watermark, req.Generation, "success", ""); err != nil {
+		return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+	}
+	if err := runDAO.Finish(req.ReconcileRunID, "success", "", req.VerticesSeen, req.EdgesSeen, req.VerticesStaled, req.EdgesStaled); err != nil {
+		return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+	}
+	if err := leases.Release(req.LeaseKey, req.LeaseOwnerID, req.LeaseToken, req.LeaseEpoch); err != nil {
+		return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+	}
+	return map[string]interface{}{"status": "success"}, nil
 }
 
 func knowledgeGraphProps(raw string) map[string]interface{} {

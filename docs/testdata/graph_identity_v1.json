@@ -1,0 +1,47 @@
+{
+  "contract_version": "graph-identity-v1",
+  "hash_algorithm": "sha256",
+  "separator_hex": "1f",
+  "asset_namespace": "0b8607dd-6b92-5e95-b007-d32874ffefab",
+  "vectors": [
+    {
+      "name": "sha256_parts_a_b",
+      "parts": ["a", "b"],
+      "expected": "f04cdced9736a69da6103f08a4daaf8c485dd481217d218a1b4993c8c3968e13"
+    },
+    {
+      "name": "container_name_app",
+      "parts": ["app"],
+      "expected": "a172cedcae47474b615c54d510a5d84a8dea3032e958587430b413538be3f333"
+    },
+    {
+      "name": "dimm_locator",
+      "parts": ["DIMM_A1"],
+      "expected": "617496e30b1c0f7f6334c69cb125a5e97a934863174235d50ad129328ac181ab"
+    },
+    {
+      "name": "provisional_order_service",
+      "parts": ["order-service"],
+      "expected": "c1136991ddae1c23b956e7046e1fc2f4bde2d88edad1bfd02c0c18509daf8a1d"
+    },
+    {
+      "name": "runs_on_edge",
+      "parts": [
+        "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+        "RUNS_ON",
+        "k8s-pod:v1:cluster-1:pod-1",
+        "k8s-node:v1:cluster-1:node-1"
+      ],
+      "expected": "20ce92055a8cb7f01364ab5449af0f5a90478608a27de451ee93ce221d047e99"
+    }
+  ],
+  "entities": [
+    {"name": "pod", "kind": "k8s-pod", "parts": ["cluster-1", "pod-1"], "expected": "k8s-pod:v1:cluster-1:pod-1"},
+    {"name": "vm", "kind": "kubevirt-vm", "parts": ["cluster-1", "vm-1"], "expected": "kubevirt-vm:v1:cluster-1:vm-1"},
+    {"name": "vmi", "kind": "kubevirt-vmi", "parts": ["cluster-1", "vmi-1"], "expected": "kubevirt-vmi:v1:cluster-1:vmi-1"},
+    {"name": "physical_server", "kind": "physical-server", "parts": ["asset-1"], "expected": "physical-server:v1:asset-1"},
+    {"name": "dimm", "kind": "component", "parts": ["asset-1", "dimm", "617496e30b1c0f7f6334c69cb125a5e97a934863174235d50ad129328ac181ab"], "expected": "component:v1:asset-1:dimm:617496e30b1c0f7f6334c69cb125a5e97a934863174235d50ad129328ac181ab"},
+    {"name": "provisional_service", "kind": "service-provisional", "parts": ["tenant-1", "cluster-1", "c1136991ddae1c23b956e7046e1fc2f4bde2d88edad1bfd02c0c18509daf8a1d"], "expected": "service-provisional:v1:tenant-1:cluster-1:c1136991ddae1c23b956e7046e1fc2f4bde2d88edad1bfd02c0c18509daf8a1d"},
+    {"name": "canonical_service", "kind": "service", "parts": ["tenant-1", "service-1"], "expected": "service:v1:tenant-1:service-1"}
+  ]
+}

@@ -87,6 +87,7 @@ func (d *AIRunOutboxDAO) Insert(o AIRunOutbox) error {
 //   - epoch 单调递增 + 新 token，保证"新 claim 者获胜"，旧 owner 的 Deliver/Retry 会被
 //     fencing 拒绝；
 //   - lease 到期判断用 DB NOW()，避免应用层时钟偏差。
+//
 // RowsAffected==1 表示抢到，返回 true。
 func (d *AIRunOutboxDAO) Claim(invocationID, ownerID string, lease time.Duration) (DispatchFence, bool, error) {
 	conn := GetDB()

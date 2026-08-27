@@ -10,10 +10,10 @@ import (
 )
 
 // TestEvidenceConsumeReal 真实 MySQL 验证 Evidence 一次消费：
-//   1. 插入 eligible=1 未消费的 success ToolRun。
-//   2. ConsumeToolRunAsEvidence → 创建 ai_evidence + evidence_consumed_at 标记。
-//   3. 再次消费 → ErrEvidenceNotEligible（已消费，防重复转 Evidence）。
-//   4. 非 eligible / 跨 cluster 的 ToolRun → ErrEvidenceNotEligible（不跨 epoch/终态进入 Evidence）。
+//  1. 插入 eligible=1 未消费的 success ToolRun。
+//  2. ConsumeToolRunAsEvidence → 创建 ai_evidence + evidence_consumed_at 标记。
+//  3. 再次消费 → ErrEvidenceNotEligible（已消费，防重复转 Evidence）。
+//  4. 非 eligible / 跨 cluster 的 ToolRun → ErrEvidenceNotEligible（不跨 epoch/终态进入 Evidence）。
 func TestEvidenceConsumeReal(t *testing.T) {
 	dsn := os.Getenv("TEST_MYSQL_DSN")
 	if dsn == "" {

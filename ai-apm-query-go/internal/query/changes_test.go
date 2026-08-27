@@ -45,6 +45,23 @@ func TestChangeRepoListByService(t *testing.T) {
 	}
 }
 
+func TestChangeRepositoryQualifiesDateTimeSortColumn(t *testing.T) {
+	var gotQ string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQ = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}\n"))
+	}))
+	defer srv.Close()
+	r := NewChangeRepository(NewClickHouseRepo(srv.URL, nil))
+	if _, err := r.List(context.Background(), ChangeScope{TenantID: "t1"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQ, "ORDER BY observability.change_records.start_time DESC") {
+		t.Fatalf("change query sort is not qualified: %s", gotQ)
+	}
+}
+
 func TestChangeRepoSQLOwnershipScope(t *testing.T) {
 	var gotQ string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +79,7 @@ func TestChangeRepoSQLOwnershipScope(t *testing.T) {
 		"tenant_id='3f3c3b3a-0000-4000-8000-000000000001'",
 		"cluster_id='3f3c3b3a-0000-4000-8000-000000000002'",
 		"service_name='checkout'",
-		"start_time >= '2026-08-20 00:00:00'",
+		"observability.change_records.start_time >= '2026-08-20 00:00:00'",
 	} {
 		if !strings.Contains(gotQ, want) {
 			t.Errorf("repo SQL missing %q; got: %s", want, gotQ)

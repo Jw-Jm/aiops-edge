@@ -11,10 +11,10 @@ import (
 
 // Tenant represents a platform tenant
 type Tenant struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	QuotaAI  int    `json:"quota_ai_calls"` // max AI calls per day, 0=unlimited
-	Enabled  bool   `json:"enabled"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	QuotaAI int    `json:"quota_ai_calls"` // max AI calls per day, 0=unlimited
+	Enabled bool   `json:"enabled"`
 }
 
 var (

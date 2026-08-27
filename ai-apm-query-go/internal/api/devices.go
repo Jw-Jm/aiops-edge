@@ -69,14 +69,14 @@ func (h *Handler) deviceMetrics(w http.ResponseWriter, r *http.Request, id int64
 	}
 	// 尝试设备 IP:9100，若无数据则 fallback 到通用 node-exporter
 	promQLs := map[string]string{
-		"cpu_usage":       fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{instance="%s:9100",mode="idle"}[5m])) * 100`, instance),
-		"memory_usage":    fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes{instance="%s:9100"} / node_memory_MemTotal_bytes{instance="%s:9100"})`, instance, instance),
-		"disk_usage":      fmt.Sprintf(`max(100 * (1 - node_filesystem_avail_bytes{instance="%s:9100",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{instance="%s:9100",mountpoint="/",fstype!~"tmpfs|overlay"}))`, instance, instance),
-		"load1":           fmt.Sprintf(`node_load1{instance="%s:9100"}`, instance),
-		"network_rx_bps":  fmt.Sprintf(`sum(rate(node_network_receive_bytes_total{instance="%s:9100"}[5m]))`, instance),
-		"network_tx_bps":  fmt.Sprintf(`sum(rate(node_network_transmit_bytes_total{instance="%s:9100"}[5m]))`, instance),
-		"process_count":   fmt.Sprintf(`node_processes{instance="%s:9100"}`, instance),
-		"up":              fmt.Sprintf(`up{instance="%s:9100"}`, instance),
+		"cpu_usage":      fmt.Sprintf(`100 - avg(rate(node_cpu_seconds_total{instance="%s:9100",mode="idle"}[5m])) * 100`, instance),
+		"memory_usage":   fmt.Sprintf(`100 * (1 - node_memory_MemAvailable_bytes{instance="%s:9100"} / node_memory_MemTotal_bytes{instance="%s:9100"})`, instance, instance),
+		"disk_usage":     fmt.Sprintf(`max(100 * (1 - node_filesystem_avail_bytes{instance="%s:9100",mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{instance="%s:9100",mountpoint="/",fstype!~"tmpfs|overlay"}))`, instance, instance),
+		"load1":          fmt.Sprintf(`node_load1{instance="%s:9100"}`, instance),
+		"network_rx_bps": fmt.Sprintf(`sum(rate(node_network_receive_bytes_total{instance="%s:9100"}[5m]))`, instance),
+		"network_tx_bps": fmt.Sprintf(`sum(rate(node_network_transmit_bytes_total{instance="%s:9100"}[5m]))`, instance),
+		"process_count":  fmt.Sprintf(`node_processes{instance="%s:9100"}`, instance),
+		"up":             fmt.Sprintf(`up{instance="%s:9100"}`, instance),
 	}
 	metrics := make(map[string]float64)
 	for k, q := range promQLs {

@@ -15,12 +15,13 @@ func (h *Handler) DeepFlowStatus(w http.ResponseWriter, r *http.Request) {
 	// Try DeepFlow app health
 	resp, err := client.Get("http://deepflow-app.deepflow.svc.cluster.local:20418/")
 	if err != nil {
-		resp, err = client.Get("http://deepflow-server.deepflow.svc.cluster.local:20416/v1/health/")
+		// 20416 is the DeepFlow querier port; the server health API is on 20417.
+		resp, err = client.Get("http://deepflow-server.deepflow.svc.cluster.local:20417/v1/health/")
 		if err != nil {
 			log.Printf("DeepFlow check failed: %v", err)
 			respondJSON(w, 200, map[string]interface{}{
-				"status":   "not_available",
-				"message":  "DeepFlow 服务不可达",
+				"status":       "not_available",
+				"message":      "DeepFlow 服务不可达",
 				"deepflow_url": deepflowUIURL(),
 				"grafana_url":  deepflowGrafanaURL(),
 			})
@@ -35,7 +36,9 @@ func (h *Handler) DeepFlowStatus(w http.ResponseWriter, r *http.Request) {
 		var info map[string]interface{}
 		version := ""
 		if json.Unmarshal(body, &info) == nil {
-			if v, ok := info["version"]; ok { version = v.(string) }
+			if v, ok := info["version"]; ok {
+				version = v.(string)
+			}
 		}
 
 		ui := deepflowUIURL()
@@ -44,10 +47,10 @@ func (h *Handler) DeepFlowStatus(w http.ResponseWriter, r *http.Request) {
 		// 此前 URL 恒为空却返回 available，前端据此展示"已接入"误导用户）。
 		if ui == "" && grafana == "" {
 			respondJSON(w, 200, map[string]interface{}{
-				"status":      "not_configured",
-				"message":     "DeepFlow 服务可达但未配置对外访问地址（DEEPFLOW_UI_URL/DEEPFLOW_GRAFANA_URL）",
-				"http_status": resp.StatusCode,
-				"version":     version,
+				"status":       "not_configured",
+				"message":      "DeepFlow 服务可达但未配置对外访问地址（DEEPFLOW_UI_URL/DEEPFLOW_GRAFANA_URL）",
+				"http_status":  resp.StatusCode,
+				"version":      version,
 				"deepflow_url": ui,
 				"grafana_url":  grafana,
 			})
@@ -64,8 +67,8 @@ func (h *Handler) DeepFlowStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, 200, map[string]interface{}{
-		"status":   "not_available",
-		"message":  "DeepFlow 未响应",
+		"status":  "not_available",
+		"message": "DeepFlow 未响应",
 	})
 }
 

@@ -1,0 +1,17 @@
+{{- if .Values.hugeGraph.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hugegraph-data
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: hugegraph
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.hugeGraph.storageClass }}
+  storageClassName: {{ .Values.hugeGraph.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.hugeGraph.storage }}
+{{- end }}

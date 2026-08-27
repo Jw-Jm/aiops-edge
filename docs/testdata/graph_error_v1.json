@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "GRAPH_SCOPE_DENIED",
+    "message": "graph scope is not authorized",
+    "request_id": "33333333-3333-4333-8333-333333333333"
+  }
+}
