@@ -474,6 +474,15 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 	tid := extractTenantID(r)
 	// P1-5：默认过滤 deleted 残留服务；include_deleted=true 时放开
 	includeDeleted := r.URL.Query().Get("include_deleted") == "true"
+	minutes := 1440
+	if raw := r.URL.Query().Get("minutes"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			respondError(w, http.StatusBadRequest, "minutes must be a positive integer")
+			return
+		}
+		minutes = v
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -482,9 +491,10 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 		TenantID:  tid,
 		ClusterID: extractClusterIDIfSpecific(r),
 		Services:  currentScope(r).Services,
+		Minutes:   minutes,
 	}
 
-	// 1. 从 ClickHouse 拿动态服务列表（P1-5：近 24h 有 trace 的活跃服务，与 stats 口径一致）。
+	// 1. 从 ClickHouse 拿动态服务列表（P1-5：请求窗口内有 trace 的活跃服务，与 stats 口径一致）。
 	//    P6.2c：SQL ownership 在 resource repository。
 	//    no_data（空 trace_spans）→ 空列表，语义=合法空结果（HTTP 200），非故障。
 	svcNames, err := h.resourceRepo.ActiveServices(ctx, scope, includeDeleted)
@@ -509,7 +519,7 @@ func (h *Handler) ListServices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. 从 ClickHouse 拿各服务指标聚合（调用量/错误数/平均延迟，近 24h）。
+	// 2. 从 ClickHouse 拿各服务指标聚合（调用量/错误数/平均延迟，请求窗口内）。
 	//    P6.2c：SQL ownership 在 resource repository。
 	metrics := make(map[string]map[string]interface{})
 	if mets, merr := h.resourceRepo.ServiceMetrics(ctx, scope); merr == nil {

@@ -81,3 +81,35 @@ func TestResourceRepoSQLOwnershipScope(t *testing.T) {
 		}
 	}
 }
+
+func TestResourceRepoTimeWindowUsesMinutesFromScope(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		queries = append(queries, q)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(q, "DISTINCT service_name") {
+			_, _ = w.Write([]byte(`{"service_name":"frontend"}` + "\n"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"service":"frontend","calls":3,"errs":1,"avg_ms":12.5}` + "\n"))
+	}))
+	defer srv.Close()
+
+	r := NewResourceRepository(NewClickHouseRepo(srv.URL, nil))
+	scope := ResourceScope{TenantID: "t1", Minutes: 60}
+	if _, err := r.ActiveServices(context.Background(), scope, false); err != nil {
+		t.Fatalf("ActiveServices: %v", err)
+	}
+	if _, err := r.ServiceMetrics(context.Background(), scope); err != nil {
+		t.Fatalf("ServiceMetrics: %v", err)
+	}
+	if len(queries) != 2 {
+		t.Fatalf("expected two queries, got %d", len(queries))
+	}
+	for _, q := range queries {
+		if !strings.Contains(q, "start_time >= now() - INTERVAL 60 MINUTE") {
+			t.Errorf("resource query ignored scope minutes: %s", q)
+		}
+	}
+}

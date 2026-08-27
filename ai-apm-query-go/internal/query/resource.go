@@ -11,6 +11,18 @@ type ResourceScope struct {
 	TenantID  string
 	ClusterID string
 	Services  []string
+	// Minutes bounds resource discovery and metrics to the requested window.
+	// Zero keeps the legacy 24-hour default for callers that do not specify it.
+	Minutes int
+}
+
+func resourceTimeWhere(scope ResourceScope) string {
+	minutes := scope.Minutes
+	if minutes <= 0 {
+		minutes = 1440
+	}
+	days := (minutes + 1439) / 1440
+	return fmt.Sprintf("date >= today()-%d AND start_time >= now() - INTERVAL %d MINUTE", days, minutes)
 }
 
 // ServiceMetric 单个服务的近 24h 指标聚合（calls/errors/avg_ms）。
@@ -49,11 +61,11 @@ func resourceWhere(scope ResourceScope) string {
 	return strings.Join(parts, " AND ")
 }
 
-// ActiveServices 返回近 24h 活跃的去重服务名列表（P1-5 口径，与 stats 一致）。
+// ActiveServices 返回时间窗口内活跃的去重服务名列表（P1-5 口径，与 stats 一致）。
 // includeDeleted 不在此过滤——deleted 过滤是业务展示逻辑，由 handler 决定。
 func (r *ResourceRepository) ActiveServices(ctx context.Context, scope ResourceScope, includeDeleted bool) ([]string, error) {
 	sql := "SELECT DISTINCT service_name FROM observability.trace_spans WHERE " +
-		resourceWhere(scope) + " AND date >= today()-1 AND service_name != '' ORDER BY service_name"
+		resourceWhere(scope) + " AND " + resourceTimeWhere(scope) + " AND service_name != '' ORDER BY service_name"
 	rows, err := r.ch.QueryJSON(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -67,12 +79,12 @@ func (r *ResourceRepository) ActiveServices(ctx context.Context, scope ResourceS
 	return out, nil
 }
 
-// ServiceMetrics 返回各服务近 24h 的 calls/errors/avg_ms 聚合（ListServices 指标列）。
+// ServiceMetrics 返回各服务时间窗口内的 calls/errors/avg_ms 聚合（ListServices 指标列）。
 func (r *ResourceRepository) ServiceMetrics(ctx context.Context, scope ResourceScope) ([]ServiceMetric, error) {
 	sql := fmt.Sprintf(
 		"SELECT service_name AS service, count() AS calls, countIf(is_error=1) AS errs, avg(duration_ns)/1000000 AS avg_ms "+
-			"FROM observability.trace_spans WHERE %s AND date >= today()-1 GROUP BY service_name",
-		resourceWhere(scope))
+			"FROM observability.trace_spans WHERE %s AND %s GROUP BY service_name",
+		resourceWhere(scope), resourceTimeWhere(scope))
 	rows, err := r.ch.QueryJSON(ctx, sql)
 	if err != nil {
 		return nil, err

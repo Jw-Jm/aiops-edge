@@ -299,6 +299,45 @@ func TestListServicesEmptyResult(t *testing.T) {
 	}
 }
 
+func TestListServicesUsesRequestedMinutes(t *testing.T) {
+	var queries []string
+	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		queries = append(queries, q)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(q, "DISTINCT service_name") {
+			_, _ = w.Write([]byte(`{"service_name":"frontend"}` + "\n"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"service":"frontend","calls":3,"errs":1,"avg_ms":12.5}` + "\n"))
+	}))
+	defer chSrv.Close()
+
+	h := &Handler{client: &http.Client{}}
+	host, port := splitHostPort(chSrv.URL)
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.resourceRepo = query.NewResourceRepository(&h.repo)
+
+	req := httptest.NewRequest("GET", "/api/v1/services?minutes=60", nil)
+	w := httptest.NewRecorder()
+	h.ListServices(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	for _, q := range queries {
+		if !strings.Contains(q, "start_time >= now() - INTERVAL 60 MINUTE") {
+			t.Errorf("service query ignored requested minutes: %s", q)
+		}
+	}
+
+	badReq := httptest.NewRequest("GET", "/api/v1/services?minutes=invalid", nil)
+	badW := httptest.NewRecorder()
+	h.ListServices(badW, badReq)
+	if badW.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid minutes, got %d: %s", badW.Code, badW.Body.String())
+	}
+}
+
 // ===== loadServiceMetadata sqlmock 单测（MySQL 富化路径，不依赖真实 DB）=====
 
 func TestLoadServiceMetadata_SQLConstructionAndScan(t *testing.T) {

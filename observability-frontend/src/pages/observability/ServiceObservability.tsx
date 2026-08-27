@@ -85,7 +85,7 @@ const ServiceObservability: React.FC = () => {
     const topoParams: Record<string, unknown> = { minutes: timeRange }
     // 选具体命名空间时带 namespace 参数，后端只返回该 ns 的拓扑 + 跨 ns 外部节点
     if (namespace) topoParams.namespace = namespace
-    Promise.all([getTopology(topoParams), getServices()])
+    Promise.all([getTopology(topoParams), getServices({ minutes: timeRange })])
       .then(([t, s]) => {
         const td = t.data
         // 命名空间下拉来源：优先用响应顶层 namespaces 字段；降级从 nodes 的 namespace 去重
@@ -350,7 +350,7 @@ const ServiceObservability: React.FC = () => {
     setDrawerOpen(true)
     setDrawerLoading(true)
     setNodeDetail(null)
-    getTopologyNodeDetail(name).then((r) => setNodeDetail(r.data)).catch(() => setNodeDetail({})).finally(() => setDrawerLoading(false))
+    getTopologyNodeDetail(name, { minutes: timeRange }).then((r) => setNodeDetail(r.data)).catch(() => setNodeDetail({})).finally(() => setDrawerLoading(false))
   }
 
   const openServiceDetail = (name: string) => {

@@ -89,7 +89,7 @@ api.interceptors.response.use(
 )
 
 // Services
-export const getServices = () => api.get('/services')
+export const getServices = (params?: Record<string, unknown>) => api.get('/services', { params })
 export const getServiceDetail = (name: string, params?: Record<string, unknown>) => api.get(`/services/${name}`, { params })
 export const getTraces = (params?: Record<string, unknown>) => api.get('/traces', { params })
 export const getTraceDetail = (id: string) => api.get(`/traces/${id}`)
