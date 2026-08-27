@@ -83,12 +83,13 @@ type TraceServiceSeq struct {
 // topology 的 SoT 固定 ClickHouse（service_topology / trace_spans，冻结职责），
 // 无 SoT 切换。SQL ownership 在此：handler 不组业务 SQL，只提交 typed request。
 type TopologyRepository struct {
-	ch *ClickHouseRepo
+	ch        *ClickHouseRepo
+	traceRepo *TraceRepository
 }
 
 // NewTopologyRepository 构造 topology repository，共享 ClickHouseExecutor。
 func NewTopologyRepository(ch *ClickHouseRepo) *TopologyRepository {
-	return &TopologyRepository{ch: ch}
+	return &TopologyRepository{ch: ch, traceRepo: NewTraceRepository(ch)}
 }
 
 // topoServiceWhere 构造基于 service_name 列的 tenant/cluster/service 过滤子句。
@@ -544,20 +545,38 @@ func (r *TopologyRepository) NodeDetail(ctx context.Context, scope TopologyScope
 		}
 	}
 
-	// 3. 调用链列表
-	traceSQL := "SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, " +
-		"max(duration_ns)/1000000 as max_ms, sum(is_error) as errors " +
-		"FROM observability.trace_spans WHERE " + where + svc + win + " GROUP BY trace_id ORDER BY start DESC LIMIT 20"
-	if trows, err := r.ch.QueryJSON(ctx, traceSQL); err == nil {
-		for _, row := range trows {
-			out.Traces = append(out.Traces, NodeTrace{
-				TraceID: str(row, "trace_id"),
-				Start:   str(row, "start"),
-				End:     str(row, "end"),
-				Spans:   toInt64Val(row, "spans"),
-				MaxMS:   toFloatVal(row, "max_ms"),
-				Errors:  toInt64Val(row, "errors"),
-			})
+	// 3. 调用链列表。与主 Trace 列表保持同一 Summary/Index 数据路径：
+	// 先按服务和时间窗读取少量候选 Trace，再只对这些 Trace 回查精确错误数。
+	// 禁止在 trace_spans 上先 GROUP BY trace_id 再 LIMIT，避免服务抽屉复现
+	// 主 Trace 列表的高基数聚合 OOM。
+	if r.traceRepo != nil {
+		traceMinutes := minutes
+		if traceMinutes < 1 {
+			traceMinutes = 1
+		}
+		traces, err := r.traceRepo.FindTraces(ctx, TraceQuery{
+			TenantID:  scope.TenantID,
+			ClusterID: scope.ClusterID,
+			Service:   name,
+			Minutes:   traceMinutes,
+			Limit:     20,
+		})
+		if err == nil {
+			ids := make([]string, 0, len(traces))
+			for _, trace := range traces {
+				ids = append(ids, trace.TraceID)
+			}
+			errorsByTrace, _ := r.traceRepo.TraceErrorCounts(ctx, scope.TenantID, scope.ClusterID, ids)
+			for _, trace := range traces {
+				out.Traces = append(out.Traces, NodeTrace{
+					TraceID: trace.TraceID,
+					Start:   trace.Start.Format("2006-01-02 15:04:05"),
+					End:     trace.End.Format("2006-01-02 15:04:05"),
+					Spans:   int64(trace.Spans),
+					MaxMS:   trace.MaxMS,
+					Errors:  errorsByTrace[trace.TraceID],
+				})
+			}
 		}
 	}
 

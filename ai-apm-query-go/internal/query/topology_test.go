@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,10 +208,22 @@ func TestTopologyRepoGlobalServiceNS(t *testing.T) {
 func TestTopologyRepoNodeDetail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		q := r.URL.Query().Get("query")
+		var q string
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			q = string(body)
+		} else {
+			q = r.URL.Query().Get("query")
+		}
 		switch {
-		case strings.Contains(q, "GROUP BY trace_id"):
-			_, _ = w.Write([]byte(`{"trace_id":"tr-1","start":"2026-08-20 10:00:00","end":"2026-08-20 10:00:05","spans":3,"max_ms":99.0,"errors":1}` + "\n"))
+		case strings.Contains(q, "trace_summary_index"):
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("tr-1\n"))
+		case strings.Contains(q, "trace_summary_state"):
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("tr-1\t2026-08-20 10:00:00\t2026-08-20 10:00:05\t3\t2\t99.0\n"))
+		case strings.Contains(q, "sum(is_error)"):
+			_, _ = w.Write([]byte(`{"trace_id":"tr-1","errors":1}` + "\n"))
 		case strings.Contains(q, "operation_name"):
 			_, _ = w.Write([]byte(`{"span_id":"sp-1","trace_id":"tr-1","start_time":"2026-08-20 10:00:00","service_name":"frontend","operation_name":"GET /x","ms":10.0,"is_error":0,"http_url":"http://x"}` + "\n"))
 		case strings.Contains(q, "toStartOfMinute(start_time)"):
@@ -239,6 +252,60 @@ func TestTopologyRepoNodeDetail(t *testing.T) {
 	}
 	if len(d.Spans) != 1 || d.Spans[0].SpanID != "sp-1" || d.Spans[0].MS != 10.0 {
 		t.Fatalf("spans = %+v", d.Spans)
+	}
+}
+
+func TestTopologyRepoNodeDetailUsesTraceSummaryForTraceList(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var q string
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			q = string(body)
+		} else {
+			q = r.URL.Query().Get("query")
+		}
+		queries = append(queries, q)
+		switch {
+		case strings.Contains(q, "trace_summary_index"):
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("tr-summary\n"))
+		case strings.Contains(q, "trace_summary_state"):
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("tr-summary\t2026-08-20 10:00:00\t2026-08-20 10:00:05\t3\t2\t99.0\n"))
+		case strings.Contains(q, "sum(is_error)"):
+			_, _ = w.Write([]byte(`{"trace_id":"tr-summary","errors":1}` + "\n"))
+		case strings.Contains(q, "operation_name"):
+			_, _ = w.Write([]byte(`{"span_id":"sp-1","trace_id":"tr-summary","start_time":"2026-08-20 10:00:00","service_name":"frontend","operation_name":"GET /x","ms":10.0,"is_error":0,"http_url":"http://x"}` + "\n"))
+		case strings.Contains(q, "toStartOfMinute(start_time)"):
+			_, _ = w.Write([]byte(`{"t":"2026-08-20 10:00:00","calls":10,"errors":1,"avg_ms":12.0}` + "\n"))
+		case strings.Contains(q, "as calls, countIf(is_error=1) as errors, avg(duration_ns)/1000000 as avg_ms"):
+			_, _ = w.Write([]byte(`{"calls":100,"errors":2,"avg_ms":15.5,"max_ms":200.0}` + "\n"))
+		}
+	}))
+	defer srv.Close()
+
+	r := NewTopologyRepository(NewClickHouseRepo(srv.URL, nil))
+	d, err := r.NodeDetail(context.Background(), TopologyScope{TenantID: "t1"}, "frontend", 15)
+	if err != nil {
+		t.Fatalf("NodeDetail: %v", err)
+	}
+	if len(d.Traces) != 1 || d.Traces[0].TraceID != "tr-summary" || d.Traces[0].Errors != 1 {
+		t.Fatalf("traces = %+v", d.Traces)
+	}
+	for _, q := range queries {
+		if strings.Contains(q, "FROM observability.trace_spans") && strings.Contains(q, "GROUP BY trace_id") && !strings.Contains(q, "sum(is_error)") {
+			t.Fatalf("service detail trace list must not aggregate raw spans: %s", q)
+		}
+	}
+	var indexSeen, summarySeen bool
+	for _, q := range queries {
+		indexSeen = indexSeen || strings.Contains(q, "trace_summary_index")
+		summarySeen = summarySeen || strings.Contains(q, "trace_summary_state")
+	}
+	if !indexSeen || !summarySeen {
+		t.Fatalf("service detail trace list must use Summary/Index, queries=%v", queries)
 	}
 }
 

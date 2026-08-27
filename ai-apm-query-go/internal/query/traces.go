@@ -15,8 +15,12 @@ type TraceQuery struct {
 	Services  []string
 	Keyword   string // 搜索 trace_id/operation/http_url
 	Hours     int
-	Limit     int
-	Offset    int
+	// Minutes is an optional exact window for callers such as the service
+	// detail drawer. When it is zero, Hours keeps the public trace-list
+	// contract and its legacy 24-hour default.
+	Minutes int
+	Limit   int
+	Offset  int
 }
 
 // TraceSummary 一条 trace 的摘要（list 行）。
@@ -140,6 +144,38 @@ func (r *TraceRepository) TraceService(ctx context.Context, tenantID, clusterID,
 	return "", nil
 }
 
+// TraceErrorCounts reads error counts only for an already bounded set of
+// Trace IDs. It is intentionally separate from FindTraces: summary state
+// keeps the list query cheap, while this small raw-span lookup preserves the
+// exact error count shown by the service detail drawer.
+func (r *TraceRepository) TraceErrorCounts(ctx context.Context, tenantID, clusterID string, traceIDs []string) (map[string]int64, error) {
+	out := make(map[string]int64)
+	if len(traceIDs) == 0 {
+		return out, nil
+	}
+	conds := []string{"tenant_id=" + sqlStr(tenantID)}
+	if clusterID != "" {
+		conds = append(conds, "cluster_id="+sqlStr(clusterID))
+	}
+	quoted := make([]string, 0, len(traceIDs))
+	for _, id := range traceIDs {
+		quoted = append(quoted, sqlStr(id))
+	}
+	conds = append(conds, "trace_id IN ("+strings.Join(quoted, ",")+")")
+	rows, err := r.ch.QueryJSON(ctx, "SELECT trace_id, sum(is_error) AS errors FROM observability.trace_spans WHERE "+strings.Join(conds, " AND ")+" GROUP BY trace_id")
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		id := str(row, "trace_id")
+		if id == "" {
+			continue
+		}
+		out[id] = toInt64Val(row, "errors")
+	}
+	return out, nil
+}
+
 // TraceRepository 是 traces 资源域的 domain repository（V9.2 Phase 6）。
 // trace/edge SoT 固定 ClickHouse（冻结职责），无 SoT 切换。
 type TraceRepository struct {
@@ -161,11 +197,8 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 	}
 	// The UI always supplies a window. Keep an omitted window bounded as well,
 	// so older clients cannot turn the index scan into an unbounded history scan.
-	hours := q.Hours
-	if hours < 1 {
-		hours = 24
-	}
-	days := (hours + 23) / 24
+	windowMinutes, windowExpr := traceWindow(q)
+	days := (windowMinutes + 24*60 - 1) / (24 * 60)
 
 	// First read only candidate IDs from the time-ordered lightweight index.
 	// This keeps FINAL (which merges AggregateFunction states) limited to a
@@ -177,7 +210,7 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 	if candidateLimit > 5000 {
 		candidateLimit = 5000
 	}
-	traceIDs, err := r.findTraceCandidates(ctx, q, hours, days, candidateLimit)
+	traceIDs, err := r.findTraceCandidates(ctx, q, windowExpr, days, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +222,7 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 		var conds []string
 		conds = append(conds, "tenant_id='"+q.TenantID+"'")
 		conds = append(conds, fmt.Sprintf("date >= today() - INTERVAL %d DAY", days))
-		conds = append(conds, fmt.Sprintf("finalizeAggregation(start_state) >= now() - INTERVAL %d HOUR", hours))
+		conds = append(conds, "finalizeAggregation(start_state) >= now() - INTERVAL "+windowExpr)
 		if q.ClusterID != "" {
 			conds = append(conds, "cluster_id='"+q.ClusterID+"'")
 		}
@@ -259,13 +292,24 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 	}
 }
 
+func traceWindow(q TraceQuery) (int, string) {
+	if q.Minutes > 0 {
+		return q.Minutes, fmt.Sprintf("%d MINUTE", q.Minutes)
+	}
+	hours := q.Hours
+	if hours < 1 {
+		hours = 24
+	}
+	return hours * 60, fmt.Sprintf("%d HOUR", hours)
+}
+
 // findTraceCandidates reads the time-ordered index without a high-cardinality
 // ClickHouse LIMIT BY. The index stores a negative nanosecond timestamp, so
 // ascending physical order is newest-first. Reading one exact date partition
 // at a time lets ClickHouse stop at the physical candidate limit while keeping
 // the request count bounded by the number of date partitions (normally 1–2,
 // rather than one request per five-minute bucket).
-func (r *TraceRepository) findTraceCandidates(ctx context.Context, q TraceQuery, hours, days, candidateLimit int) ([]string, error) {
+func (r *TraceRepository) findTraceCandidates(ctx context.Context, q TraceQuery, windowExpr string, days, candidateLimit int) ([]string, error) {
 	indexReadLimit := candidateLimit * 2
 	if indexReadLimit > 10000 {
 		indexReadLimit = 10000
@@ -295,7 +339,7 @@ func (r *TraceRepository) findTraceCandidates(ctx context.Context, q TraceQuery,
 		conds := append([]string{}, baseConds...)
 		conds = append(conds,
 			fmt.Sprintf("date = today() - INTERVAL %d DAY", dayOffset),
-			fmt.Sprintf("latest_start >= now() - INTERVAL %d HOUR", hours),
+			"latest_start >= now() - INTERVAL "+windowExpr,
 		)
 		indexSQL := "SELECT trace_id FROM observability.trace_summary_index WHERE " + strings.Join(conds, " AND ") +
 			fmt.Sprintf(" ORDER BY latest_start_key ASC, cluster_id ASC, trace_id ASC, service_name ASC LIMIT %d", indexReadLimit) +
