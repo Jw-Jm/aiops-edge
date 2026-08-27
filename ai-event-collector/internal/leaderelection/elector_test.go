@@ -43,9 +43,9 @@ func (s *leaseStore) server(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"metadata": map[string]any{"name": name, "resourceVersion": "100"},
 				"spec": map[string]any{
-					"holderIdentity":    s.holder,
+					"holderIdentity":       s.holder,
 					"leaseDurationSeconds": s.leaseSec,
-					"renewTime":          s.renewTime.Format(time.RFC3339),
+					"renewTime":            s.renewTime.Format(time.RFC3339),
 				},
 			})
 		case http.MethodPost:
@@ -139,6 +139,50 @@ func TestElectorOnlyOneLeaderThenHandoff(t *testing.T) {
 		defer mu.Unlock()
 		return leaders["pod-b"]
 	})
+}
+
+type existingEmptyLeaseClient struct {
+	resourceVersion string
+	holder          string
+	creates         int
+	updates         int
+}
+
+func (c *existingEmptyLeaseClient) Get(context.Context, string, string) (LeaseInfo, error) {
+	return LeaseInfo{
+		Holder:          c.holder,
+		AcquireTime:     "2026-08-20T09:00:00Z",
+		RenewTime:       time.Now(),
+		ResourceVersion: c.resourceVersion,
+	}, nil
+}
+
+func (c *existingEmptyLeaseClient) Create(context.Context, string, string, string) error {
+	c.creates++
+	return nil
+}
+
+func (c *existingEmptyLeaseClient) Update(context.Context, string, string, string) error {
+	c.updates++
+	c.holder = "pod-a"
+	return nil
+}
+
+func (c *existingEmptyLeaseClient) Release(context.Context, string, string) error { return nil }
+
+func TestElectorUpdatesExistingEmptyLease(t *testing.T) {
+	client := &existingEmptyLeaseClient{resourceVersion: "100"}
+	e := NewElector(client, optsFor("pod-a"))
+
+	if !e.tryAcquire(context.Background()) {
+		t.Fatal("expected elector to acquire an existing empty lease")
+	}
+	if client.creates != 0 {
+		t.Fatalf("must not POST an existing lease, create calls=%d", client.creates)
+	}
+	if client.updates != 1 {
+		t.Fatalf("expected one update of the existing lease, update calls=%d", client.updates)
+	}
 }
 
 // TestElectorRenewFailStopsLeadership 场景5：leader 续租失败 → 立即停止 watch（fail-safe）。

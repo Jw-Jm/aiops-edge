@@ -92,8 +92,13 @@ func (e *Elector) tryAcquire(ctx context.Context) bool {
 	}
 	// Lease 不存在或已过期：尝试获取。
 	if info.Holder == "" {
-		if err := e.client.Create(ctx, e.opts.Namespace, e.opts.Name, e.opts.Identity); err != nil {
-			log.Printf("leader election: create lease failed: %v", err)
+		if info.ResourceVersion == "" {
+			if err := e.client.Create(ctx, e.opts.Namespace, e.opts.Name, e.opts.Identity); err != nil {
+				log.Printf("leader election: create lease failed: %v", err)
+				return false
+			}
+		} else if !e.tryUpdate(ctx) {
+			log.Printf("leader election: acquire existing empty lease failed (name=%s)", e.opts.Name)
 			return false
 		}
 	} else {
