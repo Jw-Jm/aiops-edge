@@ -17,3 +17,17 @@ func TestLatestTSQueryIncludesTenant(t *testing.T) {
 		t.Errorf("query must filter source, got: %s", q)
 	}
 }
+
+func TestLatestTSQueryEscapesStringFilters(t *testing.T) {
+	q := latestTSQuery("k8s' OR 1=1 --", "tenant' OR 1=1 --", "cluster\\\\' OR 1=1 --")
+
+	if strings.Contains(q, "source = 'k8s' OR 1=1") {
+		t.Fatalf("source must remain inside a SQL string literal, got: %s", q)
+	}
+	if strings.Contains(q, "tenant_id = 'tenant' OR 1=1") {
+		t.Fatalf("tenant must remain inside a SQL string literal, got: %s", q)
+	}
+	if strings.Contains(q, "cluster_id = 'cluster\\\\' OR 1=1") {
+		t.Fatalf("cluster must remain inside a SQL string literal, got: %s", q)
+	}
+}

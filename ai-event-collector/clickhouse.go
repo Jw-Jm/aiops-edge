@@ -147,7 +147,7 @@ func (w *EventWriter) ensureSchema() error {
 
 // tableExists 只读检查 observability.<table> 是否存在。
 func (w *EventWriter) tableExists(table string) (bool, error) {
-	q := "SELECT count() FROM system.tables WHERE database = 'observability' AND name = '" + table + "'"
+	q := "SELECT count() FROM system.tables WHERE database = 'observability' AND name = " + chSQLString(table)
 	u := w.endpoint + "/?" + chQueryParams(q)
 	resp, err := w.httpClient.Get(u)
 	if err != nil {
@@ -347,7 +347,17 @@ func (w *EventWriter) insertBatch(rows []byte) error {
 // latestTSQuery 构造 checkpoint 查询，key 限定 tenant_id + cluster_id + source（V9.2 §71：
 // checkpoint key = tenant+cluster+source）。三个字段缺一不可，避免多租户/多集群串读断点。
 func latestTSQuery(source, tenantID, clusterID string) string {
-	return fmt.Sprintf("SELECT max(ts) FROM observability.k8s_events WHERE source = '%s' AND tenant_id = '%s' AND cluster_id = '%s'", source, tenantID, clusterID)
+	return "SELECT max(ts) FROM observability.k8s_events WHERE source = " + chSQLString(source) +
+		" AND tenant_id = " + chSQLString(tenantID) +
+		" AND cluster_id = " + chSQLString(clusterID)
+}
+
+// chSQLString quotes a ClickHouse string literal. Backslashes are escaped
+// before quotes so user/config-derived scope values cannot terminate it.
+func chSQLString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return "'" + s + "'"
 }
 
 // QueryLatestTS 查询指定 source 在 CH 中的最新事件时间戳（断点续采 checkpoint），
