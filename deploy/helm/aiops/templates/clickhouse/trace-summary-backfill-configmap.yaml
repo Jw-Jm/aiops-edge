@@ -1,0 +1,50 @@
+{{- if and .Values.clickhouse.enabled .Values.traceSummaryBackfill.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trace-summary-backfill-{{ .Release.Revision }}
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: trace-summary-backfill
+data:
+  backfill.sh: |-
+    #!/bin/sh
+    set -eu
+    ch() {
+      clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT" --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" "$@" </dev/null
+    }
+    summary_exists=""
+    attempt=0
+    while [ "$attempt" -lt 60 ]; do
+      attempt=$((attempt + 1))
+      if summary_exists="$(ch --query "SELECT count() FROM system.tables WHERE database='observability' AND name IN ('trace_summary_state','trace_summary_index') FORMAT TSVRaw" 2>/dev/null)" && [ "$summary_exists" = "2" ]; then
+        break
+      fi
+      sleep 5
+    done
+    if [ "$summary_exists" != "2" ]; then
+      echo "trace_summary_state is not ready" >&2
+      exit 1
+    fi
+    dates="$(ch --query "SELECT toString(date) FROM observability.trace_spans WHERE date >= today() - INTERVAL ${LOOKBACK_DAYS} DAY GROUP BY date ORDER BY date FORMAT TSVRaw")"
+    for date_value in $dates; do
+      [ -z "$date_value" ] && continue
+      summary_done="$(ch --query "SELECT count() FROM observability.trace_summary_backfill_markers WHERE tenant_id='' AND date=toDate('$date_value') FORMAT TSVRaw")"
+      index_done="$(ch --query "SELECT count() FROM observability.trace_summary_index_backfill_markers WHERE tenant_id='' AND date=toDate('$date_value') FORMAT TSVRaw")"
+      [ "$summary_done" = "1" ] && [ "$index_done" = "1" ] && continue
+      chunk_start=0
+      while [ "$chunk_start" -lt 1440 ]; do
+        chunk_end=$((chunk_start + 5))
+        [ "$chunk_end" -gt 1440 ] && chunk_end=1440
+        if [ "$summary_done" != "1" ]; then
+          ch --query "INSERT INTO observability.trace_summary_state SELECT tenant_id, cluster_id, date, trace_id, minState(start_time), maxState(start_time), uniqExactState(if(span_dedup_key = '', span_id, span_dedup_key)), uniqExactState(service_name), maxState(duration_ns), maxState(is_error), groupUniqArrayState(service_name), groupUniqArrayState(operation_name), groupUniqArrayState(http_url) FROM observability.trace_spans WHERE date=toDate('$date_value') AND start_time >= toDateTime('$date_value 00:00:00') + INTERVAL $chunk_start MINUTE AND start_time < toDateTime('$date_value 00:00:00') + INTERVAL $chunk_end MINUTE GROUP BY tenant_id, cluster_id, date, trace_id SETTINGS max_threads=1, max_bytes_before_external_group_by=33554432, max_bytes_before_external_sort=33554432"
+        fi
+        if [ "$index_done" != "1" ]; then
+          ch --query "INSERT INTO observability.trace_summary_index (tenant_id, cluster_id, date, time_bucket, trace_id, latest_start, latest_start_key, service_name, search_text) SELECT tenant_id, cluster_id, date, toStartOfFiveMinutes(start_time), trace_id, max(start_time), -toUnixTimestamp64Nano(max(start_time)), service_name, arrayStringConcat(groupUniqArray(concat(operation_name, ' ', http_url)), ' ') FROM observability.trace_spans WHERE date=toDate('$date_value') AND start_time >= toDateTime('$date_value 00:00:00') + INTERVAL $chunk_start MINUTE AND start_time < toDateTime('$date_value 00:00:00') + INTERVAL $chunk_end MINUTE GROUP BY tenant_id, cluster_id, date, toStartOfFiveMinutes(start_time), trace_id, service_name SETTINGS max_threads=1, max_bytes_before_external_group_by=33554432, max_bytes_before_external_sort=33554432"
+        fi
+        chunk_start=$chunk_end
+      done
+      [ "$summary_done" = "1" ] || ch --query "INSERT INTO observability.trace_summary_backfill_markers (tenant_id, date, completed_at, version) VALUES ('', toDate('$date_value'), now64(3), toUnixTimestamp64Milli(now64(3)))"
+      [ "$index_done" = "1" ] || ch --query "INSERT INTO observability.trace_summary_index_backfill_markers (tenant_id, date, completed_at, version) VALUES ('', toDate('$date_value'), now64(3), toUnixTimestamp64Milli(now64(3)))"
+    done
+{{- end }}

@@ -65,7 +65,8 @@ const maxGrafanaPayload = 20 << 20
 
 // proxy 是三个端点的公共转发逻辑：
 //   - 上游连接失败 → 502（grafana 不可达）
-//   - 上游 4xx/5xx → 状态码与响应体原样透传
+//   - 上游 404 等资源错误 → 状态码与响应体原样透传
+//   - 上游 401/403 → 映射为 502，避免把 Grafana 自身认证失败误判为平台 JWT 失效
 //   - rawQuery 非空时原样透传到上游（search 的 query 参数等）
 func (h *grafanaHandler) proxy(w http.ResponseWriter, r *http.Request, upstreamPath, rawQuery string) {
 	if h.cfg.RootURL == "" {
@@ -98,6 +99,10 @@ func (h *grafanaHandler) proxy(w http.ResponseWriter, r *http.Request, upstreamP
 	}
 	if len(body) > maxGrafanaPayload {
 		respondError(w, http.StatusBadGateway, "grafana 响应过大(>20MB)")
+		return
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		respondError(w, http.StatusBadGateway, "grafana authentication failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

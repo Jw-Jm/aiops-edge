@@ -460,15 +460,20 @@ func TestDashboardStatsEdgesFallsBackToMySQL(t *testing.T) {
 	}
 }
 
-func TestListTracesHoursAddsStartTimePredicate(t *testing.T) {
+func TestListTracesUsesTraceSummaryAndExactWindow(t *testing.T) {
 	var gotSQL string
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// P6.2b：统一 repository 用 POST body 传 SQL。
-		if b, err := io.ReadAll(r.Body); err == nil {
+		b, err := io.ReadAll(r.Body)
+		if err == nil {
 			gotSQL = string(b)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(""))
+		if strings.Contains(gotSQL, "trace_summary_index") {
+			_, _ = w.Write([]byte("trace-test\n"))
+			return
+		}
+		_, _ = w.Write([]byte("trace-test\t2026-08-27 12:00:00\t2026-08-27 12:00:01\t1\t1\t10.0\n"))
 	}))
 	defer chSrv.Close()
 
@@ -484,7 +489,16 @@ func TestListTracesHoursAddsStartTimePredicate(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(gotSQL, "start_time >= now() - INTERVAL 6 HOUR") {
-		t.Fatalf("expected six-hour start_time predicate, got query: %s", gotSQL)
+	if !strings.Contains(gotSQL, "FROM observability.trace_summary_state FINAL") {
+		t.Fatalf("expected Trace Summary source, got query: %s", gotSQL)
+	}
+	if !strings.Contains(gotSQL, "date >= today() - INTERVAL 1 DAY") {
+		t.Fatalf("expected date partition predicate, got query: %s", gotSQL)
+	}
+	if !strings.Contains(gotSQL, "finalizeAggregation(start_state) >= now() - INTERVAL 6 HOUR") {
+		t.Fatalf("expected six-hour summary start predicate, got query: %s", gotSQL)
+	}
+	if strings.Contains(gotSQL, "FROM observability.trace_spans") {
+		t.Fatalf("trace list must not aggregate raw spans, got query: %s", gotSQL)
 	}
 }

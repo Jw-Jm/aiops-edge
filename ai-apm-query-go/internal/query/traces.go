@@ -31,14 +31,14 @@ type TraceSummary struct {
 
 // Span 一条 span 详情。
 type Span struct {
-	SpanID       string
-	ParentSpanID string
-	ServiceName  string
+	SpanID        string
+	ParentSpanID  string
+	ServiceName   string
 	OperationName string
-	SpanKind     string
-	StartTime    time.Time
-	MS           float64
-	IsError      bool
+	SpanKind      string
+	StartTime     time.Time
+	MS            float64
+	IsError       bool
 }
 
 // FindSpans 查询某 trace 的所有 span（按 start_time 排序）。trace SoT 固定 ClickHouse。
@@ -153,41 +153,193 @@ func NewTraceRepository(ch *ClickHouseRepo) *TraceRepository {
 
 // FindTraces 列出 trace 摘要（按 start 倒序，支持分页/搜索/服务过滤）。
 func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]TraceSummary, error) {
-	var conds []string
-	conds = append(conds, "tenant_id='"+q.TenantID+"'")
+	if q.Limit <= 0 {
+		q.Limit = 20
+	}
+	if q.Offset < 0 {
+		q.Offset = 0
+	}
+	// The UI always supplies a window. Keep an omitted window bounded as well,
+	// so older clients cannot turn the index scan into an unbounded history scan.
+	hours := q.Hours
+	if hours < 1 {
+		hours = 24
+	}
+	days := (hours + 23) / 24
+
+	// First read only candidate IDs from the time-ordered lightweight index.
+	// This keeps FINAL (which merges AggregateFunction states) limited to a
+	// small candidate set instead of forcing it to merge millions of summaries.
+	candidateLimit := (q.Limit + q.Offset) * 20
+	if candidateLimit < 1000 {
+		candidateLimit = 1000
+	}
+	if candidateLimit > 5000 {
+		candidateLimit = 5000
+	}
+	traceIDs, err := r.findTraceCandidates(ctx, q, hours, days, candidateLimit)
+	if err != nil {
+		return nil, err
+	}
+	if len(traceIDs) == 0 {
+		return []TraceSummary{}, nil
+	}
+
+	for {
+		var conds []string
+		conds = append(conds, "tenant_id='"+q.TenantID+"'")
+		conds = append(conds, fmt.Sprintf("date >= today() - INTERVAL %d DAY", days))
+		conds = append(conds, fmt.Sprintf("finalizeAggregation(start_state) >= now() - INTERVAL %d HOUR", hours))
+		if q.ClusterID != "" {
+			conds = append(conds, "cluster_id='"+q.ClusterID+"'")
+		}
+		quotedIDs := make([]string, 0, len(traceIDs))
+		for _, id := range traceIDs {
+			quotedIDs = append(quotedIDs, sqlStr(id))
+		}
+		conds = append(conds, "trace_id IN ("+strings.Join(quotedIDs, ",")+")")
+
+		// FINAL is applied only after the index has reduced the candidate set.
+		// The inner query finalizes bounded Summary rows; the outer GROUP BY merges
+		// date partitions into one logical Trace without touching raw trace_spans.
+		sql := "SELECT trace_id, min(trace_start) AS start, max(trace_end) AS end, " +
+			"sum(span_count) AS spans, " +
+			"length(arrayDistinct(arrayFlatten(groupArray(service_names)))) AS services, " +
+			"max(max_ms) AS max_ms " +
+			"FROM (SELECT trace_id, " +
+			"finalizeAggregation(start_state) AS trace_start, " +
+			"finalizeAggregation(end_state) AS trace_end, " +
+			"finalizeAggregation(span_count_state) AS span_count, " +
+			"finalizeAggregation(service_names_state) AS service_names, " +
+			"finalizeAggregation(operation_names_state) AS operation_names, " +
+			"finalizeAggregation(http_urls_state) AS http_urls, " +
+			"finalizeAggregation(max_duration_state)/1000000 AS max_ms " +
+			"FROM observability.trace_summary_state FINAL WHERE " + strings.Join(conds, " AND ") +
+			") GROUP BY trace_id"
+		var having []string
+		serviceNames := "arrayDistinct(arrayFlatten(groupArray(service_names)))"
+		if q.Service != "" {
+			having = append(having, "has("+serviceNames+", "+sqlStr(q.Service)+")")
+		}
+		if len(q.Services) > 0 {
+			quoted := make([]string, 0, len(q.Services))
+			for _, s := range q.Services {
+				quoted = append(quoted, sqlStr(s))
+			}
+			having = append(having, "hasAny("+serviceNames+", ["+strings.Join(quoted, ",")+"])")
+		}
+		if q.Keyword != "" {
+			kw := sqlStr(q.Keyword)
+			operations := "arrayDistinct(arrayFlatten(groupArray(operation_names)))"
+			urls := "arrayDistinct(arrayFlatten(groupArray(http_urls)))"
+			having = append(having, "(trace_id LIKE concat('%', "+kw+", '%') OR "+
+				"arrayExists(x -> positionCaseInsensitive(x, "+kw+") > 0, "+operations+") OR "+
+				"arrayExists(x -> positionCaseInsensitive(x, "+kw+") > 0, "+urls+"))")
+		}
+		if len(having) > 0 {
+			sql += " HAVING " + strings.Join(having, " AND ")
+		}
+		sql += fmt.Sprintf(" ORDER BY start DESC LIMIT %d OFFSET %d", q.Limit, q.Offset)
+
+		body, err := r.ch.Query(ctx, sql)
+		if err != nil {
+			if qe, ok := err.(*QueryError); !ok || qe.Code != NoDataCode {
+				return nil, err
+			}
+			body = nil
+		}
+		out := parseTraceSummaries(body)
+		if len(out) >= q.Limit || len(traceIDs) < candidateLimit || candidateLimit >= 5000 {
+			return out, nil
+		}
+		candidateLimit *= 2
+		if candidateLimit > 5000 {
+			candidateLimit = 5000
+		}
+	}
+}
+
+// findTraceCandidates reads the time-ordered index without a high-cardinality
+// ClickHouse LIMIT BY. The index stores a negative nanosecond timestamp, so
+// ascending physical order is newest-first. Reading one exact date partition
+// at a time lets ClickHouse stop at the physical candidate limit while keeping
+// the request count bounded by the number of date partitions (normally 1–2,
+// rather than one request per five-minute bucket).
+func (r *TraceRepository) findTraceCandidates(ctx context.Context, q TraceQuery, hours, days, candidateLimit int) ([]string, error) {
+	indexReadLimit := candidateLimit * 2
+	if indexReadLimit > 10000 {
+		indexReadLimit = 10000
+	}
+	baseConds := []string{"tenant_id='" + q.TenantID + "'"}
 	if q.ClusterID != "" {
-		conds = append(conds, "cluster_id='"+q.ClusterID+"'")
+		baseConds = append(baseConds, "cluster_id='"+q.ClusterID+"'")
 	}
 	if q.Service != "" {
-		conds = append(conds, "service_name='"+q.Service+"'")
+		baseConds = append(baseConds, "service_name="+sqlStr(q.Service))
 	}
 	if len(q.Services) > 0 {
 		quoted := make([]string, 0, len(q.Services))
 		for _, s := range q.Services {
 			quoted = append(quoted, sqlStr(s))
 		}
-		conds = append(conds, "service_name IN ("+strings.Join(quoted, ",")+")")
+		baseConds = append(baseConds, "service_name IN ("+strings.Join(quoted, ",")+")")
 	}
 	if q.Keyword != "" {
-		kw := "'%" + q.Keyword + "%'"
-		conds = append(conds, "(trace_id LIKE "+kw+" OR operation_name LIKE "+kw+" OR http_url LIKE "+kw+")")
-	}
-	if q.Hours >= 1 {
-		conds = append(conds, fmt.Sprintf("start_time >= now() - INTERVAL %d HOUR", q.Hours))
-	}
-	if q.Limit <= 0 {
-		q.Limit = 20
+		kw := sqlStr(q.Keyword)
+		baseConds = append(baseConds, "(trace_id LIKE concat('%', "+kw+", '%') OR search_text LIKE concat('%', "+kw+", '%'))")
 	}
 
-	sql := "SELECT trace_id, min(start_time) as start, max(start_time) as end, count() as spans, " +
-		"count(DISTINCT service_name) as services, max(duration_ns)/1000000 as max_ms " +
-		"FROM observability.trace_spans WHERE " + strings.Join(conds, " AND ") +
-		fmt.Sprintf(" GROUP BY trace_id ORDER BY start DESC LIMIT %d OFFSET %d", q.Limit, q.Offset)
-
-	body, err := r.ch.Query(ctx, sql)
-	if err != nil {
-		return nil, err
+	seen := make(map[string]struct{})
+	var ids []string
+	for dayOffset := 0; dayOffset <= days && len(ids) < candidateLimit; dayOffset++ {
+		conds := append([]string{}, baseConds...)
+		conds = append(conds,
+			fmt.Sprintf("date = today() - INTERVAL %d DAY", dayOffset),
+			fmt.Sprintf("latest_start >= now() - INTERVAL %d HOUR", hours),
+		)
+		indexSQL := "SELECT trace_id FROM observability.trace_summary_index WHERE " + strings.Join(conds, " AND ") +
+			fmt.Sprintf(" ORDER BY latest_start_key ASC, cluster_id ASC, trace_id ASC, service_name ASC LIMIT %d", indexReadLimit) +
+			" SETTINGS optimize_read_in_order=1, max_threads=1, max_block_size=256, max_read_buffer_size=1048576"
+		body, err := r.ch.Query(ctx, indexSQL)
+		if err != nil {
+			if qe, ok := err.(*QueryError); ok && qe.Code == NoDataCode {
+				continue
+			}
+			return nil, err
+		}
+		for _, id := range parseTraceIDs(body) {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+			if len(ids) >= candidateLimit {
+				break
+			}
+		}
 	}
+	return ids, nil
+}
+
+func parseTraceIDs(body []byte) []string {
+	seen := make(map[string]struct{})
+	var ids []string
+	for _, line := range strings.Split(string(body), "\n") {
+		cols := strings.Split(line, "\t")
+		if len(cols) == 0 || strings.TrimSpace(cols[0]) == "" {
+			continue
+		}
+		id := cols[0]
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func parseTraceSummaries(body []byte) []TraceSummary {
 	var out []TraceSummary
 	for _, line := range strings.Split(string(body), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -210,5 +362,5 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 		fmt.Sscanf(cols[5], "%f", &ts.MaxMS)
 		out = append(out, ts)
 	}
-	return out, nil
+	return out
 }

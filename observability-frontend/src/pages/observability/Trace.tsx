@@ -9,6 +9,19 @@ interface TraceRow { trace_id: string; services?: any; max_ms?: number; spans?: 
 
 interface SpanNode { span: any; depth: number }
 
+export function extractServiceNames(payload: any): string[] {
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.services)
+      ? payload.services
+      : Array.isArray(payload?.data?.services)
+        ? payload.data.services
+        : Array.isArray(payload?.data)
+          ? payload.data
+          : []
+  return rows.map((x: any) => x?.service_name || x?.name).filter(Boolean)
+}
+
 // B5 修复：start_time 单位防御 —— 后端 DateTime64 为纳秒时间戳，
 // 兼容毫秒/微秒输入，统一归一为毫秒（文档：ns=1e-9s, µs=1e-6s, ms=1e-3s）。
 function startToMs(v: unknown): number {
@@ -115,8 +128,7 @@ const Trace: React.FC = () => {
   // B5: 服务下拉选项（复用 /services 活跃服务列表）
   useEffect(() => {
     getServices().then((r) => {
-      const d = Array.isArray(r.data) ? r.data : r.data?.data || []
-      setServices(d.map((x: any) => x.service_name || x.name).filter(Boolean))
+      setServices(extractServiceNames(r.data))
     }).catch(() => setServices([]))
   }, [currentClusterId])
 

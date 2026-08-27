@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import Trace, { buildSpanTree } from './Trace'
+import Trace, { buildSpanTree, extractServiceNames } from './Trace'
 import { getServices, getTraces } from '../../api/client'
 
 vi.mock('../../api/client', () => ({ getServices: vi.fn(), getTraces: vi.fn(), getTraceDetail: vi.fn(), getTraceContext: vi.fn() }))
@@ -32,5 +33,26 @@ describe('Trace span tree safety', () => {
     ])
 
     expect(roots.map(({ span }) => span.span_id)).toEqual(['root', 'child'])
+  })
+})
+
+describe('Trace service filter contract', () => {
+  it('accepts the services envelope returned by /api/v1/services', () => {
+    expect(extractServiceNames({
+      services: [{ service_name: 'checkout' }, { name: 'payments' }],
+      total: 2,
+    })).toEqual(['checkout', 'payments'])
+    expect(extractServiceNames({
+      data: { services: [{ service_name: 'nested-checkout' }] },
+    })).toEqual(['nested-checkout'])
+  })
+
+  it('renders service options from the services envelope', async () => {
+    vi.mocked(getTraces).mockResolvedValue({ data: { data: [] } } as never)
+    vi.mocked(getServices).mockResolvedValue({ data: { services: [{ service_name: 'checkout' }] } } as never)
+    render(<MemoryRouter><Trace /></MemoryRouter>)
+    const user = userEvent.setup()
+    await user.click(screen.getAllByRole('combobox')[0])
+    expect((await screen.findAllByText('checkout')).length).toBeGreaterThan(0)
   })
 })

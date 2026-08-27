@@ -1648,6 +1648,15 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	source := r.URL.Query().Get("source")
 	level := r.URL.Query().Get("level")
+	limit := 100
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		if v, err := strconv.Atoi(rawLimit); err != nil || v < 1 {
+			respondError(w, http.StatusBadRequest, "invalid limit")
+			return
+		} else {
+			limit = v
+		}
+	}
 	minutes := 1440 // 默认近 24 小时
 
 	if m := r.URL.Query().Get("minutes"); m != "" {
@@ -1684,6 +1693,7 @@ func (h *Handler) QueryLogs(w http.ResponseWriter, r *http.Request) {
 		Services:      parseCSV(r.URL.Query().Get("services")),
 		Minutes:       minutes,
 		ExcludeHealth: r.URL.Query().Get("exclude_health") == "true" || r.URL.Query().Get("exclude_health") == "1",
+		Limit:         limit,
 	}
 	actualSource := h.logRepo.RawLogSource()
 	var records []query.LogRecord

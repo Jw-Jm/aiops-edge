@@ -49,6 +49,43 @@ func TestVLogsSearchSuccess(t *testing.T) {
 	}
 }
 
+func TestVLogsSearchNormalizesUnstructuredSeverity(t *testing.T) {
+	out := "" +
+		`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","_msg":"request failed with Failure"}` + "\n" +
+		`{"_time":"2026-08-20T10:00:01Z","service_name":"checkout","_msg":"mysql: [Warning] insecure password"}` + "\n" +
+		`{"_time":"2026-08-20T10:00:02Z","service_name":"checkout","_msg":"worker started"}` + "\n" +
+		`{"_time":"2026-08-20T10:00:03Z","service_name":"checkout","_msg":"Post-timeout activity"}` + "\n"
+	r := mockVLogs(t, map[string]string{"service_name": out})
+	recs, err := r.Search(context.Background(), LogQuery{TenantID: "t1", Service: "checkout", Minutes: 60})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	want := []string{"error", "warning", "info", ""}
+	for i, got := range recs {
+		if got.Severity != want[i] {
+			t.Fatalf("recs[%d].Severity = %q, want %q", i, got.Severity, want[i])
+		}
+	}
+}
+
+func TestVLogsSearchAppliesResponseLimit(t *testing.T) {
+	var gotLimit string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotLimit = r.URL.Query().Get("limit")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","service_name":"checkout","level":"info","_msg":"hello"}` + "\n"))
+	}))
+	defer srv.Close()
+	r := NewVLogsReader(srv.URL, &http.Client{Timeout: 5 * time.Second})
+	_, err := r.Search(context.Background(), LogQuery{TenantID: "t1", Limit: 7, Minutes: 60})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotLimit != "7" {
+		t.Fatalf("VictoriaLogs limit = %q, want 7", gotLimit)
+	}
+}
+
 func TestVLogsEmptyIsNoData(t *testing.T) {
 	r := mockVLogs(t, map[string]string{})
 	_, err := r.Search(context.Background(), LogQuery{TenantID: "t1", ClusterID: "c1", Minutes: 60})
@@ -128,6 +165,56 @@ func TestVLogsQueryHonorsLevelAndHealthFilter(t *testing.T) {
 	} {
 		if !strings.Contains(gotQuery, want) {
 			t.Errorf("LogsQL missing %q; got: %s", want, gotQuery)
+		}
+	}
+}
+
+func TestVLogsStatsReadersUseRealVictoriaLogsAggregates(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		queries = append(queries, q)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(q, "stats by (service_name)"):
+			_, _ = w.Write([]byte(`{"service_name":"checkout","logs":"9"}` + "\n"))
+		case strings.Contains(q, "stats by (_time:5m)"):
+			_, _ = w.Write([]byte(`{"_time":"2026-08-20T10:00:00Z","logs":"5"}` + "\n"))
+		default:
+			_, _ = w.Write([]byte(`{"total":"10","errors":"2","warnings":"1","debugs":"3","infos":"4"}` + "\n"))
+		}
+	}))
+	defer srv.Close()
+	r := NewVLogsReader(srv.URL, &http.Client{Timeout: 5 * time.Second})
+	q := LogQuery{TenantID: "tenant-a", ClusterID: "cluster-a", Minutes: 60}
+	services, err := r.AggregateServices(context.Background(), q, 10)
+	if err != nil || len(services) != 1 || services[0].Service != "checkout" || services[0].Count != 9 {
+		t.Fatalf("services = %+v, err=%v", services, err)
+	}
+	trend, err := r.AggregateTrend(context.Background(), q, 5)
+	if err != nil || len(trend) != 1 || trend[0].Count != 5 {
+		t.Fatalf("trend = %+v, err=%v", trend, err)
+	}
+	levels, err := r.AggregateLevels(context.Background(), q)
+	if err != nil || len(levels) != 4 || levels[0].Level != "error" || levels[0].Count != 2 {
+		t.Fatalf("levels = %+v, err=%v", levels, err)
+	}
+	for _, want := range []string{
+		`tenant_id:"tenant-a"`,
+		`cluster_id:"cluster-a"`,
+		`stats by (service_name)`,
+		`stats by (_time:5m)`,
+		`count() if (error OR err`,
+	} {
+		found := false
+		for _, query := range queries {
+			if strings.Contains(query, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("stats query missing %q; got %v", want, queries)
 		}
 	}
 }

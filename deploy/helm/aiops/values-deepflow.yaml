@@ -52,6 +52,21 @@ grafana:
 deepflow-agent:
   image:
     pullPolicy: IfNotPresent
+  # 临时测试策略：未收到明确开启指令前，关闭 Agent 自保护熔断。
+  # DeepFlow 官方约定对应阈值为 0 时不检查该条件；仅修改 Helm 配置，不改 DeepFlow 源码。
+  deepflowAgentConfig:
+    deepflow-agent.yaml: |
+      controller-ips:
+      - 'deepflow-server'
+      global:
+        circuit_breakers:
+          relative_sys_load:
+            trigger_threshold: 0
+            recovery_threshold: 0
+          sys_memory_percentage:
+            trigger_threshold: 0
+          free_disk:
+            percentage_trigger_threshold: 0
 
 # 环境修复: mysql/clickhouse 各自 image.pullPolicy=Always → IfNotPresent (本地缓存镜像)。
 mysql:

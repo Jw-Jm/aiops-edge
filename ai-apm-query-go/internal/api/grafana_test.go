@@ -104,6 +104,24 @@ func TestGrafanaUpstream404Passthrough(t *testing.T) {
 	}
 }
 
+func TestGrafanaUpstreamAuthFailureDoesNotLookLikePlatform401(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Grafana login required"}`))
+	}))
+	defer upstream.Close()
+
+	gh := NewGrafanaHandler(GrafanaConfig{RootURL: upstream.URL, TLSInsecure: true})
+	rec := httptest.NewRecorder()
+	gh.Search(rec, httptest.NewRequest(http.MethodGet, "/api/v1/grafana/search?query=MySQL", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 for upstream Grafana auth failure", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "grafana authentication failed") {
+		t.Fatalf("body = %q, want a non-sensitive Grafana auth error", rec.Body.String())
+	}
+}
+
 // TestGrafanaAuthorizationHeader: 配置 APIToken 时上游请求应带 Bearer Authorization。
 func TestGrafanaAuthorizationHeader(t *testing.T) {
 	var gotAuth string

@@ -100,6 +100,60 @@ require_contains 'DEEPFLOW_ENABLED' "${tmp_dir}/validation.yaml" 'frontend does 
 require_contains 'CREATE TABLE IF NOT EXISTS observability.k8s_events' "${tmp_dir}/validation.yaml" 'ClickHouse bootstrap omits the event-collector table'
 require_contains 'name: CLICKHOUSE_HTTP_URL' "${tmp_dir}/validation.yaml" 'ingest does not configure the ClickHouse Trace SoT HTTP endpoint'
 require_contains 'name: TRACE_SOT_MODE' "${tmp_dir}/validation.yaml" 'ingest does not enforce fail-closed Trace SoT mode'
+require_contains 'CREATE TABLE IF NOT EXISTS observability.trace_summary_state' "${tmp_dir}/validation.yaml" 'ClickHouse bootstrap omits the Trace Summary table'
+require_contains 'ENGINE = AggregatingMergeTree' "${tmp_dir}/validation.yaml" 'Trace Summary table is not a pre-aggregated ClickHouse table'
+require_contains 'CREATE MATERIALIZED VIEW IF NOT EXISTS observability.trace_spans_to_summary_state' "${tmp_dir}/validation.yaml" 'Trace Summary incremental builder is missing'
+require_contains 'CREATE TABLE IF NOT EXISTS observability.trace_summary_index' "${tmp_dir}/validation.yaml" 'Trace Summary candidate index is missing'
+require_contains 'CREATE MATERIALIZED VIEW IF NOT EXISTS observability.trace_spans_to_summary_index' "${tmp_dir}/validation.yaml" 'Trace Summary candidate index builder is missing'
+fail_if_contains 'trace_spans_to_summary_index_v2' "${tmp_dir}/validation.yaml" 'legacy duplicate Trace Summary index builder remains'
+fail_if_contains 'trace_summary_index_v2_backfill_markers' "${tmp_dir}/validation.yaml" 'legacy duplicate Trace Summary index marker remains'
+require_contains 'toStartOfFiveMinutes(start_time)' "${tmp_dir}/validation.yaml" 'Trace Summary candidate index has no bounded time bucket'
+require_contains 'latest_start_key' "${tmp_dir}/validation.yaml" 'Trace Summary candidate index has no newest-first physical key'
+require_contains 'arrayStringConcat(groupUniqArray' "${tmp_dir}/validation.yaml" 'Trace Summary candidate index does not retain bounded operation/url search text'
+deepflow_values="${chart_dir}/values-deepflow.yaml"
+require_contains 'trigger_threshold: 0' "${deepflow_values}" 'DeepFlow Agent system breaker is not explicitly disabled'
+require_contains 'recovery_threshold: 0' "${deepflow_values}" 'DeepFlow Agent breaker recovery threshold is not explicitly disabled'
+require_contains 'percentage_trigger_threshold: 0' "${deepflow_values}" 'DeepFlow Agent disk breaker is not explicitly disabled'
+require_contains 'uniqExactState' "${tmp_dir}/validation.yaml" 'Trace Summary does not deduplicate spans by stable identity'
+require_contains 'span_dedup_key' "${tmp_dir}/validation.yaml" 'Trace Summary does not have a stable span identity'
+require_contains 'name: trace-summary-backfill-' "${tmp_dir}/validation.yaml" 'Trace Summary history backfill Job is not rendered'
+require_contains 'name: trace-summary-backfill-' "${tmp_dir}/validation.yaml" 'Trace Summary backfill ConfigMap is not rendered'
+if ! rg -n --fixed-strings 'finalizeAggregation' "${repo_root}/ai-apm-query-go/internal/query/traces.go" >/dev/null; then
+  echo "contract failed: Trace list query does not finalize Summary aggregate states" >&2
+  exit 1
+fi
+require_contains 'max_block_size=256' "${repo_root}/ai-apm-query-go/internal/query/traces.go" 'Trace candidate index query has no bounded read block'
+backfill_script="${repo_root}/deploy/scripts/backfill-trace-summaries.sh"
+if [[ ! -x "${backfill_script}" ]]; then
+  echo "contract failed: Trace Summary backfill script is missing or not executable" >&2
+  exit 1
+fi
+require_contains 'INSERT INTO observability.trace_summary_state' "${backfill_script}" 'Trace Summary backfill target is missing'
+require_contains 'FROM observability.trace_spans' "${backfill_script}" 'Trace Summary backfill source is missing'
+require_contains 'WHERE date=toDate' "${backfill_script}" 'Trace Summary backfill is not date-partitioned'
+require_contains 'GROUP BY tenant_id, cluster_id, date, trace_id' "${backfill_script}" 'Trace Summary backfill does not aggregate one date partition at a time'
+require_contains 'GROUP BY tenant_id, cluster_id, date, time_bucket, trace_id, service_name' "${backfill_script}" 'Trace Summary index backfill is not one row per trace/service/time bucket'
+fail_if_contains 'index_v2' "${backfill_script}" 'legacy duplicate Trace Summary index backfill remains'
+require_contains 'max_bytes_before_external_group_by' "${backfill_script}" 'Trace Summary backfill lacks bounded aggregation settings'
+require_contains '</dev/null' "${backfill_script}" 'Trace Summary backfill leaks its date stream into INSERT stdin'
+rebuild_script="${repo_root}/deploy/scripts/rebuild-trace-summary-index.sh"
+if [[ ! -x "${rebuild_script}" ]]; then
+  echo "contract failed: Trace Summary index convergence script is missing or not executable" >&2
+  exit 1
+fi
+require_contains 'REBUILD_LEGACY_INDEX=true' "${rebuild_script}" 'derived Trace Summary index rebuild is not explicit'
+require_contains 'TRUNCATE TABLE observability.trace_summary_index' "${rebuild_script}" 'Trace Summary index convergence does not rebuild the derived index'
+require_contains 'trace_spans_to_summary_index_v2' "${rebuild_script}" 'Trace Summary convergence does not remove the legacy duplicate MV'
+probe_timeout_count="$(rg -c --fixed-strings 'timeoutSeconds: 5' "${tmp_dir}/validation.yaml" || true)"
+if [[ "${probe_timeout_count}" -lt 2 ]]; then
+  echo "contract failed: ClickHouse readiness/liveness probes need a five-second timeout" >&2
+  exit 1
+fi
+probe_failure_count="$(rg -c --fixed-strings 'failureThreshold: 6' "${tmp_dir}/validation.yaml" || true)"
+if [[ "${probe_failure_count}" -lt 2 ]]; then
+  echo "contract failed: ClickHouse readiness/liveness probes need a six-failure threshold" >&2
+  exit 1
+fi
 
 echo "[contract] disabled executor is absent"
 render "${tmp_dir}/disabled.yaml" \

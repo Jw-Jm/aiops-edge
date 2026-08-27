@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +24,7 @@ type LogQuery struct {
 	Services      []string
 	Minutes       int
 	ExcludeHealth bool
+	Limit         int // raw-log response bound; VictoriaLogs queries must never be unbounded
 }
 
 // LogRecord 一条规范化日志记录。
@@ -246,7 +249,12 @@ func vlogsQuery(q LogQuery) string {
 		switch level {
 		case "error", "warning", "info", "debug":
 			value := strconv.Quote(level)
-			parts = append(parts, fmt.Sprintf(`(level:equals_common_case(%s) OR severity:equals_common_case(%s))`, value, value))
+			// K8s/container logs in the live VictoriaLogs source are often
+			// unstructured: they have only _msg and no level/severity field.
+			// Keep the structured predicate, but include the same message terms
+			// used by inferVLogsLevel so level filtering remains real for those
+			// records instead of returning an empty page.
+			parts = append(parts, fmt.Sprintf(`(level:equals_common_case(%s) OR severity:equals_common_case(%s) OR (%s))`, value, value, vlogsLevelMessageExpr(level)))
 		}
 	}
 	if q.ExcludeHealth {
@@ -260,6 +268,89 @@ func vlogsQuery(q LogQuery) string {
 	expr := strings.Join(parts, " AND ")
 	// VictoriaLogs 相对时长过滤用 `_time:30m`（过去 N 分钟），不是 `now-Nm`。
 	return expr + fmt.Sprintf(" AND _time:%dm", q.Minutes)
+}
+
+// vlogsLevelMessageExpr returns the LogsQL word expression used for
+// unstructured records whose severity is encoded in _msg. The expression is
+// deliberately conservative and follows inferVLogsLevel's priority order.
+func vlogsLevelMessageExpr(level string) string {
+	terms := map[string][]string{
+		"error":   {"error", "err", "fatal", "panic", "exception", "failed", "failure", "oomkilled", "crashloop", "unavailable", "badrequest"},
+		"warning": {"warning", "warn"},
+		"info":    {"info", "information", "started", "completed", "succeeded", "updated", "enabled", "listening"},
+		"debug":   {"debug"},
+	}
+	words := terms[strings.ToLower(strings.TrimSpace(level))]
+	parts := make([]string, 0, len(words))
+	for _, word := range words {
+		parts = append(parts, word)
+	}
+	return strings.Join(parts, " OR ")
+}
+
+var (
+	vlogsErrorPattern = regexp.MustCompile(`(?i)\b(error|err|fatal|panic|exception|failed|failure|oomkilled|crashloop|unavailable|badrequest)\b`)
+	vlogsWarnPattern  = regexp.MustCompile(`(?i)\b(warn|warning)\b`)
+	vlogsInfoPattern  = regexp.MustCompile(`(?i)\b(info|information|started|completed|succeeded|updated|enabled|listening)\b`)
+	vlogsDebugPattern = regexp.MustCompile(`(?i)\bdebug\b`)
+)
+
+// inferVLogsLevel derives a canonical level only when the message contains a
+// conventional, unambiguous marker. An unstructured message without such a
+// marker remains unknown; it is never silently relabeled as info.
+func inferVLogsLevel(message string) string {
+	switch {
+	case vlogsErrorPattern.MatchString(message):
+		return "error"
+	case vlogsWarnPattern.MatchString(message):
+		return "warning"
+	case vlogsDebugPattern.MatchString(message):
+		return "debug"
+	case vlogsInfoPattern.MatchString(message):
+		return "info"
+	default:
+		return ""
+	}
+}
+
+func canonicalVLogsLevel(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "fatal", "panic", "critical", "crit", "error", "err":
+		return "error"
+	case "warn", "warning":
+		return "warning"
+	case "info", "information", "notice":
+		return "info"
+	case "debug":
+		return "debug"
+	default:
+		return ""
+	}
+}
+
+func normalizeVLogsLevel(level, severity, message string) string {
+	if canonical := canonicalVLogsLevel(level); canonical != "" {
+		return canonical
+	}
+	if canonical := canonicalVLogsLevel(severity); canonical != "" {
+		return canonical
+	}
+	return inferVLogsLevel(message)
+}
+
+const (
+	defaultVLogsLimit   = 100
+	maxVLogsSearchLimit = 1000
+)
+
+func normalizedVLogsLimit(limit int) int {
+	if limit <= 0 {
+		return defaultVLogsLimit
+	}
+	if limit > maxVLogsSearchLimit {
+		return maxVLogsSearchLimit
+	}
+	return limit
 }
 
 // vlogsRecord 是 VictoriaLogs JSON Line 的一条日志。
@@ -282,7 +373,10 @@ func (r *VLogsReader) Search(ctx context.Context, q LogQuery) ([]LogRecord, erro
 	if err != nil {
 		return nil, err
 	}
-	req.URL.RawQuery = "query=" + url.QueryEscape(vlogsQuery(q))
+	values := url.Values{}
+	values.Set("query", vlogsQuery(q))
+	values.Set("limit", strconv.Itoa(normalizedVLogsLimit(q.Limit)))
+	req.URL.RawQuery = values.Encode()
 
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -308,10 +402,7 @@ func (r *VLogsReader) Search(ctx context.Context, q LogQuery) ([]LogRecord, erro
 		if rec.Msg == "" && rec.ServiceName == "" {
 			continue
 		}
-		level := rec.Level
-		if level == "" {
-			level = rec.Severity
-		}
+		level := normalizeVLogsLevel(rec.Level, rec.Severity, rec.Msg)
 		// VictoriaLogs may accept a field filter while still returning
 		// unstructured records without that field. Enforce the requested level
 		// against the normalized response so missing severity never masquerades
@@ -331,6 +422,120 @@ func (r *VLogsReader) Search(ctx context.Context, q LogQuery) ([]LogRecord, erro
 		return nil, NoData()
 	}
 	return out, nil
+}
+
+// queryStats executes a bounded VictoriaLogs stats query and decodes its JSON
+// Lines response. It keeps derived analytics on the same real log source as
+// Raw Logs in new mode, instead of presenting empty legacy ClickHouse data.
+func (r *VLogsReader) queryStats(ctx context.Context, q LogQuery, pipe string) ([]map[string]string, error) {
+	u := r.endpoint + "/select/logsql/query"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	values := url.Values{}
+	values.Set("query", vlogsQuery(q)+" | "+pipe)
+	values.Set("limit", "1000")
+	req.URL.RawQuery = values.Encode()
+	resp, err := r.client.Do(req)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, Timeout("victorialogs stats: " + err.Error())
+		}
+		return nil, Unavailable("victorialogs stats: " + err.Error())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, Unavailable(fmt.Sprintf("victorialogs stats: status %d", resp.StatusCode))
+	}
+	var out []map[string]string
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var raw map[string]interface{}
+		if err := dec.Decode(&raw); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, Unavailable("victorialogs stats: decode: " + err.Error())
+		}
+		row := make(map[string]string, len(raw))
+		for key, value := range raw {
+			switch typed := value.(type) {
+			case string:
+				row[key] = typed
+			default:
+				row[key] = fmt.Sprint(typed)
+			}
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (r *VLogsReader) AggregateTrend(ctx context.Context, q LogQuery, intervalMinutes int) ([]TrendBucket, error) {
+	if intervalMinutes <= 0 {
+		intervalMinutes = 5
+	}
+	rows, err := r.queryStats(ctx, q, fmt.Sprintf("stats by (_time:%dm) count() as logs | sort by (_time)", intervalMinutes))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TrendBucket, 0, len(rows))
+	for _, row := range rows {
+		t := parseVLogsTime(row["_time"])
+		if t.IsZero() {
+			continue
+		}
+		count, _ := strconv.Atoi(row["logs"])
+		out = append(out, TrendBucket{Bucket: t, Count: count})
+	}
+	return out, nil
+}
+
+func (r *VLogsReader) AggregateServices(ctx context.Context, q LogQuery, limit int) ([]ServiceCount, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := r.queryStats(ctx, q, fmt.Sprintf("stats by (service_name) count() as logs | sort by (logs desc) | limit %d", limit))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ServiceCount, 0, len(rows))
+	for _, row := range rows {
+		count, _ := strconv.Atoi(row["logs"])
+		out = append(out, ServiceCount{Service: row["service_name"], Count: count})
+	}
+	return out, nil
+}
+
+func (r *VLogsReader) AggregateLevels(ctx context.Context, q LogQuery) ([]LevelCount, error) {
+	const errorWords = "error OR err OR fatal OR panic OR exception OR failed OR failure OR oomkilled OR crashloop OR unavailable OR badrequest"
+	const warningWords = "warning OR warn"
+	const debugWords = "debug"
+	const infoWords = "info OR information OR started OR completed OR succeeded OR updated OR enabled OR listening"
+	pipe := fmt.Sprintf("stats count() as total, count() if (%s) as errors, count() if (%s) as warnings, count() if (%s) as debugs, count() if (NOT (%s OR %s OR %s)) as infos", errorWords, warningWords, debugWords, errorWords, warningWords, debugWords)
+	rows, err := r.queryStats(ctx, q, pipe)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	row := rows[0]
+	return []LevelCount{
+		{Level: "error", Count: parseStatCount(row["errors"])},
+		{Level: "warning", Count: parseStatCount(row["warnings"])},
+		{Level: "info", Count: parseStatCount(row["infos"])},
+		{Level: "debug", Count: parseStatCount(row["debugs"])},
+	}, nil
+}
+
+func parseStatCount(value string) int {
+	n, _ := strconv.Atoi(value)
+	return n
 }
 
 // parseVLogsTime 解析 VictoriaLogs 时间（RFC3339）。
@@ -370,6 +575,9 @@ func logWhere(q LogQuery) string {
 
 // AggregateTrend 按 interval 聚合日志量时间序列（derived analytics，走 ClickHouse）。
 func (r *LogRepository) AggregateTrend(ctx context.Context, q LogQuery, intervalMinutes int) ([]TrendBucket, error) {
+	if r.router != nil && r.router.Mode() == ModeNew && r.vlogs != nil {
+		return r.vlogs.AggregateTrend(ctx, q, intervalMinutes)
+	}
 	if intervalMinutes <= 0 {
 		intervalMinutes = 5
 	}
@@ -408,6 +616,9 @@ type LevelCount struct {
 
 // AggregateLevels 按级别聚合日志量（derived analytics，走 ClickHouse）。
 func (r *LogRepository) AggregateLevels(ctx context.Context, q LogQuery) ([]LevelCount, error) {
+	if r.router != nil && r.router.Mode() == ModeNew && r.vlogs != nil {
+		return r.vlogs.AggregateLevels(ctx, q)
+	}
 	sql := "SELECT severity AS level, count() AS cnt FROM observability.log_records WHERE " + logWhere(q) +
 		" GROUP BY severity ORDER BY cnt DESC"
 	body, err := r.ch.Query(ctx, sql)
@@ -438,6 +649,9 @@ type ServiceCount struct {
 
 // AggregateServices 按服务聚合日志量 TOP N（derived analytics，走 ClickHouse）。
 func (r *LogRepository) AggregateServices(ctx context.Context, q LogQuery, limit int) ([]ServiceCount, error) {
+	if r.router != nil && r.router.Mode() == ModeNew && r.vlogs != nil {
+		return r.vlogs.AggregateServices(ctx, q, limit)
+	}
 	if limit <= 0 {
 		limit = 10
 	}

@@ -239,3 +239,13 @@ func TestMetricsRepoServiceRuleValue(t *testing.T) {
 		t.Fatal("expected error for unknown metric")
 	}
 }
+
+func TestParseCHTimeAcceptsDateTime64Fraction(t *testing.T) {
+	got, err := parseCHTime("2026-08-27 12:34:56.123456789")
+	if err != nil {
+		t.Fatalf("parseCHTime: %v", err)
+	}
+	if got.Nanosecond() != 123456789 {
+		t.Fatalf("nanoseconds = %d, want 123456789", got.Nanosecond())
+	}
+}

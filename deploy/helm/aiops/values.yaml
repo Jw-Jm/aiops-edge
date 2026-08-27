@@ -126,6 +126,11 @@ clickhouse:
     requests: { cpu: "500m", memory: "2Gi" }
     limits: { cpu: "2", memory: "4Gi" }
 
+# Trace Summary/Index 的历史回填独立运行，不阻塞 query-api 启动。
+traceSummaryBackfill:
+  enabled: true
+  lookbackDays: 30
+
 victoriaMetrics:
   enabled: true
   external:

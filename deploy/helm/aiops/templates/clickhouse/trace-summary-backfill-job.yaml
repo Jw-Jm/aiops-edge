@@ -1,0 +1,43 @@
+{{- if and .Values.clickhouse.enabled .Values.traceSummaryBackfill.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trace-summary-backfill-{{ .Release.Revision }}
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: trace-summary-backfill
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: trace-summary-backfill
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: backfill
+          image: {{ .Values.clickhouse.image }}
+          command: ["/bin/bash", "/scripts/backfill.sh"]
+          env:
+            - name: CLICKHOUSE_HOST
+              value: clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local
+            - name: CLICKHOUSE_PORT
+              value: "9000"
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
+            - name: LOOKBACK_DAYS
+              value: {{ .Values.traceSummaryBackfill.lookbackDays | default 30 | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: trace-summary-backfill-{{ .Release.Revision }}
+            defaultMode: 0555
+{{- end }}

@@ -134,12 +134,18 @@ func TestTraceRepoFindSpansSQLOwnership(t *testing.T) {
 
 func TestTraceRepoFindTracesSQLOwnership(t *testing.T) {
 	var gotQ string
+	var queries []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, r.ContentLength)
 		r.Body.Read(buf)
 		gotQ = string(buf)
+		queries = append(queries, gotQ)
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(""))
+		if strings.Contains(gotQ, "trace_summary_index") {
+			w.Write([]byte("trace-1\n"))
+			return
+		}
+		w.Write([]byte("trace-1\t2026-08-20 10:00:00\t2026-08-20 10:00:05\t3\t2\t150.5\n"))
 	}))
 	defer srv.Close()
 
@@ -157,7 +163,11 @@ func TestTraceRepoFindTracesSQLOwnership(t *testing.T) {
 	for _, want := range []string{
 		"tenant_id='3f3c3b3a-0000-4000-8000-000000000001'",
 		"cluster_id='3f3c3b3a-0000-4000-8000-000000000002'",
-		"service_name='checkout'",
+		"has(arrayDistinct(arrayFlatten(groupArray(service_names))), 'checkout')",
+		"FROM observability.trace_summary_state FINAL",
+		"finalizeAggregation(start_state)",
+		"sum(span_count)",
+		"arrayDistinct(arrayFlatten(groupArray(service_names)))",
 		"GROUP BY trace_id",
 		"ORDER BY start DESC",
 		"LIMIT 20 OFFSET 0",
@@ -165,5 +175,98 @@ func TestTraceRepoFindTracesSQLOwnership(t *testing.T) {
 		if !strings.Contains(gotQ, want) {
 			t.Errorf("repo SQL missing %q; got: %s", want, gotQ)
 		}
+	}
+	indexSeen := false
+	for _, sql := range queries {
+		if strings.Contains(sql, "FROM observability.trace_summary_index") && strings.Contains(sql, "optimize_read_in_order=1") {
+			indexSeen = true
+			break
+		}
+	}
+	if !indexSeen {
+		t.Fatalf("trace list must first read the ordered candidate index, got: %v", queries)
+	}
+	if strings.Contains(gotQ, "FROM observability.trace_spans") {
+		t.Fatalf("trace list must not aggregate raw spans, got: %s", gotQ)
+	}
+}
+
+func TestTraceRepoFindTracesMergesCandidateSummaryRows(t *testing.T) {
+	var summarySQL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		sql := string(buf)
+		w.Header().Set("Content-Type", "text/plain")
+		if strings.Contains(sql, "trace_summary_index") {
+			_, _ = w.Write([]byte("trace-cross-midnight\n"))
+			return
+		}
+		summarySQL = sql
+		_, _ = w.Write([]byte("trace-cross-midnight\t2026-08-20 23:59:59\t2026-08-21 00:00:01\t3\t2\t150.5\n"))
+	}))
+	defer srv.Close()
+
+	repo := &TraceRepository{ch: NewClickHouseRepo(srv.URL, nil)}
+	traces, err := repo.FindTraces(context.Background(), TraceQuery{
+		TenantID: "tenant-1",
+		Hours:    24,
+		Limit:    20,
+	})
+	if err != nil {
+		t.Fatalf("FindTraces: %v", err)
+	}
+	if len(traces) != 1 || traces[0].TraceID != "trace-cross-midnight" {
+		t.Fatalf("unexpected traces: %+v", traces)
+	}
+	for _, want := range []string{
+		"min(trace_start) AS start",
+		"max(trace_end) AS end",
+		"sum(span_count) AS spans",
+		"length(arrayDistinct(arrayFlatten(groupArray(service_names)))) AS services",
+		"GROUP BY trace_id",
+	} {
+		if !strings.Contains(summarySQL, want) {
+			t.Fatalf("summary query missing %q; got: %s", want, summarySQL)
+		}
+	}
+}
+
+func TestTraceRepoFindTracesUnfilteredUsesOneBoundedIndexRead(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		sql := string(buf)
+		queries = append(queries, sql)
+		w.Header().Set("Content-Type", "text/plain")
+		if strings.Contains(sql, "trace_summary_index") {
+			_, _ = w.Write([]byte("trace-1\ntrace-2\n"))
+			return
+		}
+		_, _ = w.Write([]byte("trace-1\t2026-08-20 10:00:00\t2026-08-20 10:00:05\t3\t2\t150.5\n"))
+	}))
+	defer srv.Close()
+
+	repo := &TraceRepository{ch: NewClickHouseRepo(srv.URL, nil)}
+	traces, err := repo.FindTraces(context.Background(), TraceQuery{
+		TenantID: "tenant-1",
+		Hours:    24,
+		Limit:    20,
+	})
+	if err != nil {
+		t.Fatalf("FindTraces: %v", err)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("expected one summary row, got %d", len(traces))
+	}
+	if len(queries) != 3 {
+		t.Fatalf("expected two date-partition index reads plus one summary read, got %d queries: %v", len(queries), queries)
+	}
+	if !strings.Contains(queries[0], "date = today() - INTERVAL 0 DAY") ||
+		!strings.Contains(queries[0], "latest_start >= now() - INTERVAL 24 HOUR") ||
+		!strings.Contains(queries[0], "ORDER BY latest_start_key ASC, cluster_id ASC, trace_id ASC, service_name ASC") ||
+		!strings.Contains(queries[0], "LIMIT 2000") {
+		t.Fatalf("candidate read is not bounded and time ordered: %s", queries[0])
 	}
 }

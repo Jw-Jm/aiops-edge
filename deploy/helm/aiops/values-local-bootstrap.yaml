@@ -20,3 +20,5 @@ deepflow:
   enabled: false
 backup:
   enabled: false
+traceSummaryBackfill:
+  enabled: false
