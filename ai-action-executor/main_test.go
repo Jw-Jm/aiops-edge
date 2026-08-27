@@ -118,22 +118,22 @@ func TestPatchTargetRoutesCanonicalResourceOperations(t *testing.T) {
 		{
 			name:   "statefulset scale",
 			ctx:    ActionExecutionContext{ResourceType: "statefulset", Namespace: "prod", TargetName: "orders", Operation: "scale", TargetSpec: json.RawMessage(`{"replicas":3}`)},
-			method: http.MethodPatch, path: "/apis/apps/v1/namespaces/prod/statefulsets/orders", wantBody: `{"spec":{"replicas":3}}`, statusCode: http.StatusOK,
+			method: http.MethodPatch, path: "/apis/apps/v1/namespaces/prod/statefulsets/orders", wantBody: `{"metadata":{"resourceVersion":"41"},"spec":{"replicas":3}}`, statusCode: http.StatusOK,
 		},
 		{
 			name:   "node cordon",
 			ctx:    ActionExecutionContext{ResourceType: "node", TargetName: "node-a", Operation: "cordon", TargetSpec: json.RawMessage(`{}`)},
-			method: http.MethodPatch, path: "/api/v1/nodes/node-a", wantBody: `{"spec":{"unschedulable":true}}`, statusCode: http.StatusOK,
+			method: http.MethodPatch, path: "/api/v1/nodes/node-a", wantBody: `{"metadata":{"resourceVersion":"41"},"spec":{"unschedulable":true}}`, statusCode: http.StatusOK,
 		},
 		{
 			name:   "pod delete",
 			ctx:    ActionExecutionContext{ResourceType: "pod", Namespace: "prod", TargetName: "worker-1", Operation: "delete_pod", TargetSpec: json.RawMessage(`{"grace_period_seconds":30}`)},
-			method: http.MethodDelete, path: "/api/v1/namespaces/prod/pods/worker-1", wantBody: `{"gracePeriodSeconds":30}`, statusCode: http.StatusOK,
+			method: http.MethodDelete, path: "/api/v1/namespaces/prod/pods/worker-1", wantBody: `{"gracePeriodSeconds":30,"preconditions":{"resourceVersion":"41"}}`, statusCode: http.StatusOK,
 		},
 		{
 			name:   "pod eviction",
 			ctx:    ActionExecutionContext{ResourceType: "pod", Namespace: "prod", TargetName: "worker-1", Operation: "evict_pod", TargetSpec: json.RawMessage(`{"grace_period_seconds":30}`)},
-			method: http.MethodPost, path: "/apis/policy/v1/namespaces/prod/pods/worker-1/eviction", wantBody: `{"apiVersion":"policy/v1","deleteOptions":{"gracePeriodSeconds":30},"kind":"Eviction","metadata":{"name":"worker-1","namespace":"prod"}}`, statusCode: http.StatusCreated,
+			method: http.MethodPost, path: "/apis/policy/v1/namespaces/prod/pods/worker-1/eviction", wantBody: `{"apiVersion":"policy/v1","deleteOptions":{"gracePeriodSeconds":30,"preconditions":{"resourceVersion":"41"}},"kind":"Eviction","metadata":{"name":"worker-1","namespace":"prod"}}`, statusCode: http.StatusCreated,
 		},
 	}
 	for _, tt := range tests {
@@ -150,7 +150,7 @@ func TestPatchTargetRoutesCanonicalResourceOperations(t *testing.T) {
 			}))
 			defer testServer.Close()
 			s := &server{k8sEnabled: true, k8sHost: testServer.URL, httpClient: testServer.Client()}
-			if err := s.patchTarget(tt.ctx, "rv-1"); err != nil {
+			if err := s.patchTarget(tt.ctx, "41"); err != nil {
 				t.Fatalf("patchTarget() error = %v", err)
 			}
 		})

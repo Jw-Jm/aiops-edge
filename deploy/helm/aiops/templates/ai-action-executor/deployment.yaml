@@ -90,8 +90,14 @@ metadata:
   namespace: {{ $targetNamespace }}
 rules:
   - apiGroups: ["apps"]
-    resources: ["deployments"]
+    resources: ["deployments", "deployments/scale", "statefulsets", "statefulsets/scale", "daemonsets"]
     verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -107,5 +113,36 @@ roleRef:
   name: ai-action-executor
   apiGroup: rbac.authorization.k8s.io
 {{- end }}
+---
+# Node actions and drain inventory are cluster-scoped. Workload/pod mutation
+# remains namespace-scoped above; this ClusterRole only adds the minimal node
+# and pod-list/eviction verbs needed by cordon/uncordon/drain.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ai-action-executor-node
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["policy"]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ai-action-executor-node
+subjects:
+  - kind: ServiceAccount
+    name: ai-action-executor
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: ai-action-executor-node
+  apiGroup: rbac.authorization.k8s.io
 {{- end }}
 {{- end }}

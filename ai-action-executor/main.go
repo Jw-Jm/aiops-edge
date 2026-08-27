@@ -41,6 +41,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -506,16 +507,20 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 		return errors.New("cannot resolve target name")
 	}
 	if ctx.Operation == "delete_pod" {
-		return s.deletePod(ctx, ns, name)
+		return s.deletePod(ctx, ns, name, observedVersion)
 	}
 	if ctx.Operation == "evict_pod" {
-		return s.evictPod(ctx, ns, name)
+		return s.evictPod(ctx, ns, name, observedVersion)
 	}
 	if ctx.Operation == "drain" {
 		return s.drainNode(ctx, observedVersion, name)
 	}
 	// 仅允许白名单操作（workload annotation/scale、node cordon），防任意 mutation。
 	payload, err := buildPatchPayload(ctx)
+	if err != nil {
+		return err
+	}
+	payload, err = addResourceVersionPrecondition(payload, observedVersion)
 	if err != nil {
 		return err
 	}
@@ -545,7 +550,32 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	return nil
 }
 
-func (s *server) deletePod(ctx ActionExecutionContext, namespace, name string) error {
+type k8sDeletePreconditions struct {
+	UID             string `json:"uid,omitempty"`
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+}
+
+type k8sDeleteOptions struct {
+	GracePeriodSeconds int64                   `json:"gracePeriodSeconds"`
+	Preconditions      *k8sDeletePreconditions `json:"preconditions,omitempty"`
+}
+
+func deleteOptionsPayload(ctx ActionExecutionContext, grace, observedVersion int64) (string, error) {
+	options := k8sDeleteOptions{GracePeriodSeconds: grace}
+	if ctx.TargetUID != "" || observedVersion > 0 {
+		options.Preconditions = &k8sDeletePreconditions{UID: ctx.TargetUID}
+		if observedVersion > 0 {
+			options.Preconditions.ResourceVersion = fmt.Sprintf("%d", observedVersion)
+		}
+	}
+	payload, err := json.Marshal(options)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+func (s *server) deletePod(ctx ActionExecutionContext, namespace, name, observedVersion string) error {
 	grace, err := buildGracePeriod(ctx)
 	if err != nil {
 		return err
@@ -557,13 +587,21 @@ func (s *server) deletePod(ctx ActionExecutionContext, namespace, name string) e
 	if err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(struct {
-		GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
-	}{GracePeriodSeconds: grace})
+	version := int64(0)
+	if observedVersion != "" {
+		version, err = parseResourceVersion(observedVersion)
+		if err != nil {
+			return err
+		}
+	}
+	payload, err := deleteOptionsPayload(ctx, grace, version)
+	if err != nil {
+		return err
+	}
 	return s.doK8sMutation(http.MethodDelete, endpoint, string(payload), "application/json", "")
 }
 
-func (s *server) evictPod(ctx ActionExecutionContext, namespace, name string) error {
+func (s *server) evictPod(ctx ActionExecutionContext, namespace, name, observedVersion string) error {
 	grace, err := buildGracePeriod(ctx)
 	if err != nil {
 		return err
@@ -575,27 +613,18 @@ func (s *server) evictPod(ctx ActionExecutionContext, namespace, name string) er
 		return errors.New("namespace is required for pod eviction")
 	}
 	endpoint := s.k8sHost + "/apis/policy/v1/namespaces/" + url.PathEscape(namespace) + "/pods/" + url.PathEscape(name) + "/eviction"
-	payload, _ := json.Marshal(struct {
-		APIVersion    string `json:"apiVersion"`
-		DeleteOptions struct {
-			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
-		} `json:"deleteOptions"`
-		Kind     string `json:"kind"`
-		Metadata struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
-		} `json:"metadata"`
-	}{
-		APIVersion: "policy/v1",
-		DeleteOptions: struct {
-			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
-		}{GracePeriodSeconds: grace},
-		Kind: "Eviction",
-		Metadata: struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
-		}{Name: name, Namespace: namespace},
-	})
+	version := int64(0)
+	if observedVersion != "" {
+		version, err = parseResourceVersion(observedVersion)
+		if err != nil {
+			return err
+		}
+	}
+	options, err := deleteOptionsPayload(ctx, grace, version)
+	if err != nil {
+		return err
+	}
+	payload := `{"apiVersion":"policy/v1","deleteOptions":` + options + `,"kind":"Eviction","metadata":{"name":` + strconv.Quote(name) + `,"namespace":` + strconv.Quote(namespace) + `}}`
 	return s.doK8sMutation(http.MethodPost, endpoint, string(payload), "application/json", "")
 }
 
@@ -614,6 +643,10 @@ func (s *server) drainNode(ctx ActionExecutionContext, observedVersion, name str
 		return err
 	}
 	patchPayload := `{"spec":{"unschedulable":true}}`
+	patchPayload, err = addResourceVersionPrecondition(patchPayload, observedVersion)
+	if err != nil {
+		return err
+	}
 	endpoint, err := k8sObjectURL(s.k8sHost, "node", "", name)
 	if err != nil {
 		return err
@@ -622,7 +655,7 @@ func (s *server) drainNode(ctx ActionExecutionContext, observedVersion, name str
 		return err
 	}
 	for _, pod := range pods {
-		podCtx := ActionExecutionContext{ResourceType: "pod", Namespace: pod.Namespace, TargetName: pod.Name, Operation: "evict_pod", TargetSpec: json.RawMessage(fmt.Sprintf(`{"grace_period_seconds":%d}`, timeout))}
+		podCtx := ActionExecutionContext{ResourceType: "pod", Namespace: pod.Namespace, TargetName: pod.Name, TargetUID: pod.UID, ResourceVersion: pod.ResourceVersion, Operation: "evict_pod", TargetSpec: json.RawMessage(`{"grace_period_seconds":30}`)}
 		if err := s.evictPodWithContext(requestContext, podCtx); err != nil {
 			return fmt.Errorf("drain pod %s/%s: %w", pod.Namespace, pod.Name, err)
 		}
@@ -631,8 +664,10 @@ func (s *server) drainNode(ctx ActionExecutionContext, observedVersion, name str
 }
 
 type drainPod struct {
-	Name      string
-	Namespace string
+	Name            string
+	Namespace       string
+	UID             string
+	ResourceVersion string
 }
 
 func (s *server) listDrainPods(ctx context.Context, nodeName string) ([]drainPod, error) {
@@ -661,6 +696,8 @@ func (s *server) listDrainPods(ctx context.Context, nodeName string) ([]drainPod
 			Metadata struct {
 				Name            string            `json:"name"`
 				Namespace       string            `json:"namespace"`
+				UID             string            `json:"uid"`
+				ResourceVersion string            `json:"resourceVersion"`
 				Annotations     map[string]string `json:"annotations"`
 				OwnerReferences []struct {
 					Kind string `json:"kind"`
@@ -684,7 +721,7 @@ func (s *server) listDrainPods(ctx context.Context, nodeName string) ([]drainPod
 			}
 		}
 		if !isDaemonSet && item.Metadata.Name != "" && item.Metadata.Namespace != "" {
-			pods = append(pods, drainPod{Name: item.Metadata.Name, Namespace: item.Metadata.Namespace})
+			pods = append(pods, drainPod{Name: item.Metadata.Name, Namespace: item.Metadata.Namespace, UID: item.Metadata.UID, ResourceVersion: item.Metadata.ResourceVersion})
 		}
 	}
 	return pods, nil
@@ -702,27 +739,18 @@ func (s *server) evictPodWithContext(requestContext context.Context, ctx ActionE
 	endpoint += "/eviction"
 	// Replace the core API path with the policy eviction subresource.
 	endpoint = strings.Replace(endpoint, "/api/v1/", "/apis/policy/v1/", 1)
-	payload, _ := json.Marshal(struct {
-		APIVersion    string `json:"apiVersion"`
-		DeleteOptions struct {
-			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
-		} `json:"deleteOptions"`
-		Kind     string `json:"kind"`
-		Metadata struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
-		} `json:"metadata"`
-	}{
-		APIVersion: "policy/v1",
-		DeleteOptions: struct {
-			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
-		}{GracePeriodSeconds: grace},
-		Kind: "Eviction",
-		Metadata: struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
-		}{Name: ctx.TargetName, Namespace: ctx.Namespace},
-	})
+	version := int64(0)
+	if ctx.ResourceVersion != "" {
+		version, err = parseResourceVersion(ctx.ResourceVersion)
+		if err != nil {
+			return err
+		}
+	}
+	options, err := deleteOptionsPayload(ctx, grace, version)
+	if err != nil {
+		return err
+	}
+	payload := `{"apiVersion":"policy/v1","deleteOptions":` + options + `,"kind":"Eviction","metadata":{"name":` + strconv.Quote(ctx.TargetName) + `,"namespace":` + strconv.Quote(ctx.Namespace) + `}}`
 	return s.doK8sMutationWithContext(requestContext, http.MethodPost, endpoint, string(payload), "application/json", "")
 }
 
@@ -797,6 +825,44 @@ func decodeStrictObject(raw json.RawMessage, target interface{}) error {
 		return errors.New("target spec must contain one JSON value")
 	}
 	return nil
+}
+
+func parseResourceVersion(raw string) (int64, error) {
+	version, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || version < 0 {
+		return 0, errors.New("resourceVersion must be a non-negative integer")
+	}
+	return version, nil
+}
+
+func addResourceVersionPrecondition(payload, resourceVersion string) (string, error) {
+	if strings.TrimSpace(resourceVersion) == "" {
+		return payload, nil
+	}
+	if _, err := parseResourceVersion(resourceVersion); err != nil {
+		return "", err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &object); err != nil {
+		return "", err
+	}
+	metadata := map[string]json.RawMessage{}
+	if raw := object["metadata"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &metadata); err != nil {
+			return "", err
+		}
+	}
+	metadata["resourceVersion"] = json.RawMessage(strconv.Quote(strings.TrimSpace(resourceVersion)))
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return "", err
+	}
+	object["metadata"] = metadataJSON
+	result, err := json.Marshal(object)
+	if err != nil {
+		return "", err
+	}
+	return string(result), nil
 }
 
 // validateExecutionConfig prevents an approved request from entering a path

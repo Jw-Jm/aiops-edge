@@ -68,6 +68,15 @@ fail_if_matches() {
   fi
 }
 
+fail_if_multiline_matches() {
+  local pattern="$1" file="$2" message="$3"
+  if rg -n -U "${pattern}" "${file}" >/dev/null; then
+    echo "contract failed: ${message}" >&2
+    rg -n -U "${pattern}" "${file}" >&2 || true
+    exit 1
+  fi
+}
+
 require_contains() {
   local pattern="$1" file="$2" message="$3"
   if ! rg -n --fixed-strings "${pattern}" "${file}" >/dev/null; then
@@ -195,7 +204,10 @@ render "${tmp_dir}/approved.yaml" \
   --set aiActionExecutor.targetNamespaces[0]=aiops-canary
 require_contains 'namespace: aiops-canary' "${tmp_dir}/approved.yaml" 'approved executor role is not scoped to canary'
 require_contains 'verbs: ["get", "patch"]' "${tmp_dir}/approved.yaml" 'approved executor does not have the exact get/patch verbs'
-fail_if_contains 'verbs: ["get", "patch", "delete"]' "${tmp_dir}/approved.yaml" 'executor has delete permission'
+require_contains 'resources: ["pods"]' "${tmp_dir}/approved.yaml" 'approved executor does not have pod action resource rules'
+require_contains 'resources: ["pods/eviction"]' "${tmp_dir}/approved.yaml" 'approved executor does not have pod eviction resource rules'
+require_contains 'name: ai-action-executor-node' "${tmp_dir}/approved.yaml" 'approved executor does not have node action boundary'
+fail_if_multiline_matches 'resources: \["deployments", "deployments/scale", "statefulsets", "statefulsets/scale", "daemonsets"\][[:space:]]*\n[[:space:]]*verbs: \[[^]]*"delete"' "${tmp_dir}/approved.yaml" 'executor apps rule unexpectedly includes delete'
 fail_if_contains 'namespace: action-test' "${tmp_dir}/approved.yaml" 'historical action-test namespace remains'
 
 echo "deployment contract tests passed"
