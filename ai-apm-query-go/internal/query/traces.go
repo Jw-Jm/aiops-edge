@@ -48,11 +48,11 @@ type Span struct {
 // FindSpans 查询某 trace 的所有 span（按 start_time 排序）。trace SoT 固定 ClickHouse。
 func (r *TraceRepository) FindSpans(ctx context.Context, tenantID, clusterID, traceID string) ([]Span, error) {
 	var conds []string
-	conds = append(conds, "tenant_id='"+tenantID+"'")
+	conds = append(conds, "tenant_id="+sqlStr(tenantID))
 	if clusterID != "" {
-		conds = append(conds, "cluster_id='"+clusterID+"'")
+		conds = append(conds, "cluster_id="+sqlStr(clusterID))
 	}
-	conds = append(conds, "trace_id='"+traceID+"'")
+	conds = append(conds, "trace_id="+sqlStr(traceID))
 	sql := "SELECT span_id, parent_span_id, service_name, operation_name, span_kind, start_time, duration_ns/1000000 as ms, is_error " +
 		"FROM observability.trace_spans WHERE " + strings.Join(conds, " AND ") + " ORDER BY start_time"
 
@@ -120,11 +120,11 @@ func (r *TraceRepository) TraceRuleValue(ctx context.Context, service, metric st
 // 无该 trace / 无服务返回空串（NoData 由调用方容忍为"无关联服务"）。
 func (r *TraceRepository) TraceService(ctx context.Context, tenantID, clusterID, traceID string) (string, error) {
 	var conds []string
-	conds = append(conds, "tenant_id='"+tenantID+"'")
+	conds = append(conds, "tenant_id="+sqlStr(tenantID))
 	if clusterID != "" {
-		conds = append(conds, "cluster_id='"+clusterID+"'")
+		conds = append(conds, "cluster_id="+sqlStr(clusterID))
 	}
-	conds = append(conds, "trace_id='"+traceID+"'")
+	conds = append(conds, "trace_id="+sqlStr(traceID))
 	sql := "SELECT DISTINCT service_name FROM observability.trace_spans WHERE " +
 		strings.Join(conds, " AND ") + " LIMIT 1"
 

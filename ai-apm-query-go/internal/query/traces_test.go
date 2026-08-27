@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +129,42 @@ func TestTraceRepoFindSpansSQLOwnership(t *testing.T) {
 	} {
 		if !strings.Contains(gotQ, want) {
 			t.Errorf("repo SQL missing %q; got: %s", want, gotQ)
+		}
+	}
+}
+
+func TestTraceRepoEscapesTraceDetailIdentifiers(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			queries = append(queries, string(body))
+		} else {
+			queries = append(queries, r.URL.Query().Get("query"))
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(""))
+	}))
+	defer srv.Close()
+
+	repo := &TraceRepository{ch: NewClickHouseRepo(srv.URL, nil)}
+	tenant := "tenant' OR 1=1 --"
+	cluster := "cluster' OR 1=1 --"
+	traceID := "trace' OR 1=1 --"
+	_, _ = repo.FindSpans(context.Background(), tenant, cluster, traceID)
+	_, _ = repo.TraceService(context.Background(), tenant, cluster, traceID)
+	if len(queries) != 2 {
+		t.Fatalf("expected two trace detail queries, got %d", len(queries))
+	}
+	for _, q := range queries {
+		for _, want := range []string{
+			"tenant_id=" + sqlStr(tenant),
+			"cluster_id=" + sqlStr(cluster),
+			"trace_id=" + sqlStr(traceID),
+		} {
+			if !strings.Contains(q, want) {
+				t.Fatalf("query missing escaped condition %q: %s", want, q)
+			}
 		}
 	}
 }
