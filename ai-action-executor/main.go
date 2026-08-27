@@ -26,6 +26,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/tls"
@@ -63,6 +64,7 @@ type ActionExecutionContext struct {
 	TargetName      string          `json:"target_name"`      // 目标对象 name（K8s lookup 用）
 	ResourceVersion string          `json:"resource_version"` // TOCTOU：执行前校验当前版本一致
 	ClusterID       string          `json:"cluster_id"`
+	ResourceType    string          `json:"resource_type"` // deployment/statefulset/daemonset/pod/node
 	Namespace       string          `json:"namespace"`
 	Operation       string          `json:"operation"` // patch/scale/restart 等（白名单）
 	TargetSpec      json.RawMessage `json:"target_spec"`
@@ -118,6 +120,7 @@ type ReconcileRequest struct {
 	TargetName      string          `json:"target_name"`
 	ResourceVersion string          `json:"resource_version"`
 	Namespace       string          `json:"namespace"`
+	ResourceType    string          `json:"resource_type"`
 	Operation       string          `json:"operation"`
 	TargetSpec      json.RawMessage `json:"target_spec"`
 }
@@ -127,6 +130,17 @@ type reconcileObserved struct {
 	ResourceVersion string
 	Replicas        int32
 	Annotations     map[string]string
+	Unschedulable   bool
+	PodsRemaining   int
+}
+
+type k8sNotFoundError struct {
+	resourceType string
+	name         string
+}
+
+func (e *k8sNotFoundError) Error() string {
+	return fmt.Sprintf("kubernetes %s %q not found", e.resourceType, e.name)
 }
 
 // newK8sClient 初始化 in-cluster K8s client（SA token + service host）。
@@ -242,6 +256,11 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
+	if ctx.ResourceType == "" {
+		// Legacy signed contexts defaulted to deployment. New canonical Actions
+		// always carry the concrete resource type in the signed body.
+		ctx.ResourceType = "deployment"
+	}
 	// 校验 action 身份完整性（action_hash 必须非空——绑定 immutable action）。
 	if ctx.ActionID == "" || ctx.ActionHash == "" || ctx.TargetUID == "" {
 		writeJSON(w, http.StatusBadRequest, ActionResult{
@@ -349,7 +368,7 @@ func (s *server) readCurrentState(ctx ActionExecutionContext) (string, string, b
 	}
 	if s.k8sEnabled {
 		ns := ctx.Namespace
-		if ns == "" {
+		if ns == "" && ctx.ResourceType != "node" {
 			ns = "default"
 		}
 		name := ctx.TargetName
@@ -359,13 +378,13 @@ func (s *server) readCurrentState(ctx ActionExecutionContext) (string, string, b
 		if name == "" {
 			return "", "", false, errors.New("cannot resolve target name for real K8s reread")
 		}
-		observedUID, observedVersion, err := s.k8sReadDeployment(ns, name)
+		observed, err := s.k8sReadObjectState(firstNonEmpty(ctx.ResourceType, "deployment"), ns, name)
 		if err != nil {
 			return "", "", false, err
 		}
 		// drift：UID 或 resourceVersion 与批准时不一致（TOCTOU precondition）。
-		drift := observedUID != ctx.TargetUID || (ctx.ResourceVersion != "" && observedVersion != ctx.ResourceVersion)
-		return observedUID, observedVersion, drift, nil
+		drift := observed.UID != ctx.TargetUID || (ctx.ResourceVersion != "" && observed.ResourceVersion != ctx.ResourceVersion)
+		return observed.UID, observed.ResourceVersion, drift, nil
 	}
 	// 回退（无 K8s 访问）：模拟（无 drift）。
 	return ctx.TargetUID, ctx.ResourceVersion, false, nil
@@ -381,10 +400,17 @@ func (s *server) k8sReadDeployment(namespace, name string) (string, string, erro
 }
 
 func (s *server) k8sReadDeploymentState(namespace, name string) (reconcileObserved, error) {
+	return s.k8sReadObjectState("deployment", namespace, name)
+}
+
+func (s *server) k8sReadObjectState(resourceType, namespace, name string) (reconcileObserved, error) {
 	if !s.k8sEnabled || s.httpClient == nil {
 		return reconcileObserved{}, errors.New("k8s client not configured")
 	}
-	endpoint := s.k8sHost + "/apis/apps/v1/namespaces/" + url.PathEscape(namespace) + "/deployments/" + url.PathEscape(name)
+	endpoint, err := k8sObjectURL(s.k8sHost, resourceType, namespace, name)
+	if err != nil {
+		return reconcileObserved{}, err
+	}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return reconcileObserved{}, err
@@ -395,6 +421,9 @@ func (s *server) k8sReadDeploymentState(namespace, name string) (reconcileObserv
 		return reconcileObserved{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return reconcileObserved{}, &k8sNotFoundError{resourceType: resourceType, name: name}
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return reconcileObserved{}, errors.New("k8s read failed: " + resp.Status + " " + string(body))
@@ -406,17 +435,57 @@ func (s *server) k8sReadDeploymentState(namespace, name string) (reconcileObserv
 			Annotations     map[string]string `json:"annotations"`
 		} `json:"metadata"`
 		Spec struct {
-			Replicas int32 `json:"replicas"`
+			Replicas      int32 `json:"replicas"`
+			Unschedulable bool  `json:"unschedulable"`
 		} `json:"spec"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&obj); err != nil {
 		return reconcileObserved{}, err
 	}
 	return reconcileObserved{UID: obj.Metadata.UID, ResourceVersion: obj.Metadata.ResourceVersion,
-		Replicas: obj.Spec.Replicas, Annotations: obj.Metadata.Annotations}, nil
+		Replicas: obj.Spec.Replicas, Annotations: obj.Metadata.Annotations, Unschedulable: obj.Spec.Unschedulable}, nil
 }
 
-// patchTarget 对目标 deployment 执行真实 strategic merge patch（F5 已废除，经 in-cluster SA）。
+func (s *server) k8sReadDrainState(name string) (reconcileObserved, error) {
+	state, err := s.k8sReadObjectState("node", "", name)
+	if err != nil {
+		return reconcileObserved{}, err
+	}
+	pods, err := s.listDrainPods(context.Background(), name)
+	if err != nil {
+		return reconcileObserved{}, err
+	}
+	state.PodsRemaining = len(pods)
+	return state, nil
+}
+
+func k8sObjectURL(host, resourceType, namespace, name string) (string, error) {
+	resourceType = strings.ToLower(strings.TrimSpace(resourceType))
+	if name == "" {
+		return "", errors.New("target name is empty")
+	}
+	switch resourceType {
+	case "deployment", "statefulset", "daemonset":
+		if namespace == "" {
+			return "", errors.New("namespace is required for workload")
+		}
+		return host + "/apis/apps/v1/namespaces/" + url.PathEscape(namespace) + "/" + resourceType + "s/" + url.PathEscape(name), nil
+	case "pod":
+		if namespace == "" {
+			return "", errors.New("namespace is required for pod")
+		}
+		return host + "/api/v1/namespaces/" + url.PathEscape(namespace) + "/pods/" + url.PathEscape(name), nil
+	case "node":
+		if namespace != "" {
+			return "", errors.New("node must not include a namespace")
+		}
+		return host + "/api/v1/nodes/" + url.PathEscape(name), nil
+	default:
+		return "", errors.New("unsupported resource type: " + resourceType)
+	}
+}
+
+// patchTarget 按 canonical resource_type/operation 路由到受控 Kubernetes API。
 func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string) error {
 	if s.patchTargetFn != nil {
 		return s.patchTargetFn(ctx, observedVersion)
@@ -424,8 +493,9 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	if !s.k8sEnabled || s.httpClient == nil {
 		return errors.New("k8s client not configured")
 	}
+	resourceType := strings.ToLower(strings.TrimSpace(firstNonEmpty(ctx.ResourceType, "deployment")))
 	ns := ctx.Namespace
-	if ns == "" {
+	if ns == "" && resourceType != "node" {
 		ns = "default"
 	}
 	name := ctx.TargetName
@@ -435,13 +505,25 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	if name == "" {
 		return errors.New("cannot resolve target name")
 	}
-	// 仅允许白名单操作（patch annotation / scale），防任意 mutation。
+	if ctx.Operation == "delete_pod" {
+		return s.deletePod(ctx, ns, name)
+	}
+	if ctx.Operation == "evict_pod" {
+		return s.evictPod(ctx, ns, name)
+	}
+	if ctx.Operation == "drain" {
+		return s.drainNode(ctx, observedVersion, name)
+	}
+	// 仅允许白名单操作（workload annotation/scale、node cordon），防任意 mutation。
 	payload, err := buildPatchPayload(ctx)
 	if err != nil {
 		return err
 	}
-	url := s.k8sHost + "/apis/apps/v1/namespaces/" + url.PathEscape(ns) + "/deployments/" + url.PathEscape(name)
-	req, err := http.NewRequest(http.MethodPatch, url, strings.NewReader(payload))
+	endpoint, err := k8sObjectURL(s.k8sHost, resourceType, ns, name)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPatch, endpoint, strings.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -459,6 +541,260 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		return errors.New("k8s patch failed: " + resp.Status + " " + string(body))
+	}
+	return nil
+}
+
+func (s *server) deletePod(ctx ActionExecutionContext, namespace, name string) error {
+	grace, err := buildGracePeriod(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.ToLower(strings.TrimSpace(ctx.ResourceType)) != "pod" {
+		return errors.New("delete_pod requires pod")
+	}
+	endpoint, err := k8sObjectURL(s.k8sHost, "pod", namespace, name)
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(struct {
+		GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
+	}{GracePeriodSeconds: grace})
+	return s.doK8sMutation(http.MethodDelete, endpoint, string(payload), "application/json", "")
+}
+
+func (s *server) evictPod(ctx ActionExecutionContext, namespace, name string) error {
+	grace, err := buildGracePeriod(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.ToLower(strings.TrimSpace(ctx.ResourceType)) != "pod" {
+		return errors.New("evict_pod requires pod")
+	}
+	if namespace == "" {
+		return errors.New("namespace is required for pod eviction")
+	}
+	endpoint := s.k8sHost + "/apis/policy/v1/namespaces/" + url.PathEscape(namespace) + "/pods/" + url.PathEscape(name) + "/eviction"
+	payload, _ := json.Marshal(struct {
+		APIVersion    string `json:"apiVersion"`
+		DeleteOptions struct {
+			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
+		} `json:"deleteOptions"`
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}{
+		APIVersion: "policy/v1",
+		DeleteOptions: struct {
+			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
+		}{GracePeriodSeconds: grace},
+		Kind: "Eviction",
+		Metadata: struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		}{Name: name, Namespace: namespace},
+	})
+	return s.doK8sMutation(http.MethodPost, endpoint, string(payload), "application/json", "")
+}
+
+func (s *server) drainNode(ctx ActionExecutionContext, observedVersion, name string) error {
+	if strings.ToLower(strings.TrimSpace(ctx.ResourceType)) != "node" {
+		return errors.New("drain requires node")
+	}
+	timeout, err := buildDrainTimeout(ctx)
+	if err != nil {
+		return err
+	}
+	requestContext, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+	pods, err := s.listDrainPods(requestContext, name)
+	if err != nil {
+		return err
+	}
+	patchPayload := `{"spec":{"unschedulable":true}}`
+	endpoint, err := k8sObjectURL(s.k8sHost, "node", "", name)
+	if err != nil {
+		return err
+	}
+	if err := s.doK8sMutationWithContext(requestContext, http.MethodPatch, endpoint, patchPayload, "application/strategic-merge-patch+json", observedVersion); err != nil {
+		return err
+	}
+	for _, pod := range pods {
+		podCtx := ActionExecutionContext{ResourceType: "pod", Namespace: pod.Namespace, TargetName: pod.Name, Operation: "evict_pod", TargetSpec: json.RawMessage(fmt.Sprintf(`{"grace_period_seconds":%d}`, timeout))}
+		if err := s.evictPodWithContext(requestContext, podCtx); err != nil {
+			return fmt.Errorf("drain pod %s/%s: %w", pod.Namespace, pod.Name, err)
+		}
+	}
+	return nil
+}
+
+type drainPod struct {
+	Name      string
+	Namespace string
+}
+
+func (s *server) listDrainPods(ctx context.Context, nodeName string) ([]drainPod, error) {
+	if nodeName == "" {
+		return nil, errors.New("node name is empty")
+	}
+	values := url.Values{}
+	values.Set("fieldSelector", "spec.nodeName="+nodeName)
+	endpoint := s.k8sHost + "/api/v1/pods?" + values.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, errors.New("k8s pod list failed: " + resp.Status + " " + string(body))
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name            string            `json:"name"`
+				Namespace       string            `json:"namespace"`
+				Annotations     map[string]string `json:"annotations"`
+				OwnerReferences []struct {
+					Kind string `json:"kind"`
+				} `json:"ownerReferences"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, err
+	}
+	pods := make([]drainPod, 0, len(list.Items))
+	for _, item := range list.Items {
+		if item.Metadata.Annotations["kubernetes.io/config.mirror"] != "" {
+			continue
+		}
+		isDaemonSet := false
+		for _, owner := range item.Metadata.OwnerReferences {
+			if owner.Kind == "DaemonSet" {
+				isDaemonSet = true
+				break
+			}
+		}
+		if !isDaemonSet && item.Metadata.Name != "" && item.Metadata.Namespace != "" {
+			pods = append(pods, drainPod{Name: item.Metadata.Name, Namespace: item.Metadata.Namespace})
+		}
+	}
+	return pods, nil
+}
+
+func (s *server) evictPodWithContext(requestContext context.Context, ctx ActionExecutionContext) error {
+	grace, err := buildGracePeriod(ctx)
+	if err != nil {
+		return err
+	}
+	endpoint, err := k8sObjectURL(s.k8sHost, "pod", ctx.Namespace, ctx.TargetName)
+	if err != nil {
+		return err
+	}
+	endpoint += "/eviction"
+	// Replace the core API path with the policy eviction subresource.
+	endpoint = strings.Replace(endpoint, "/api/v1/", "/apis/policy/v1/", 1)
+	payload, _ := json.Marshal(struct {
+		APIVersion    string `json:"apiVersion"`
+		DeleteOptions struct {
+			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
+		} `json:"deleteOptions"`
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}{
+		APIVersion: "policy/v1",
+		DeleteOptions: struct {
+			GracePeriodSeconds int64 `json:"gracePeriodSeconds"`
+		}{GracePeriodSeconds: grace},
+		Kind: "Eviction",
+		Metadata: struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		}{Name: ctx.TargetName, Namespace: ctx.Namespace},
+	})
+	return s.doK8sMutationWithContext(requestContext, http.MethodPost, endpoint, string(payload), "application/json", "")
+}
+
+func (s *server) doK8sMutation(method, endpoint, payload, contentType, observedVersion string) error {
+	return s.doK8sMutationWithContext(context.Background(), method, endpoint, payload, contentType, observedVersion)
+}
+
+func (s *server) doK8sMutationWithContext(ctx context.Context, method, endpoint, payload, contentType, observedVersion string) error {
+	if s.httpClient == nil {
+		return errors.New("k8s client not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if observedVersion != "" {
+		req.Header.Set("If-Match", `"`+observedVersion+`"`)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		return errors.New("k8s mutation failed: " + resp.Status + " " + string(body))
+	}
+	return nil
+}
+
+func buildGracePeriod(ctx ActionExecutionContext) (int64, error) {
+	if strings.ToLower(strings.TrimSpace(ctx.Operation)) != "delete_pod" && strings.ToLower(strings.TrimSpace(ctx.Operation)) != "evict_pod" {
+		return 0, errors.New("pod deletion requires delete_pod or evict_pod")
+	}
+	var params struct {
+		GracePeriodSeconds *int64 `json:"grace_period_seconds"`
+	}
+	if err := decodeStrictObject(ctx.TargetSpec, &params); err != nil || params.GracePeriodSeconds == nil || *params.GracePeriodSeconds < 0 || *params.GracePeriodSeconds > 600 {
+		return 0, errors.New("grace_period_seconds must be an integer between 0 and 600")
+	}
+	return *params.GracePeriodSeconds, nil
+}
+
+func buildDrainTimeout(ctx ActionExecutionContext) (int64, error) {
+	if strings.ToLower(strings.TrimSpace(ctx.ResourceType)) != "node" || strings.ToLower(strings.TrimSpace(ctx.Operation)) != "drain" {
+		return 0, errors.New("drain requires node")
+	}
+	var params struct {
+		DrainTimeout *int64 `json:"drain_timeout"`
+	}
+	if err := decodeStrictObject(ctx.TargetSpec, &params); err != nil || params.DrainTimeout == nil || *params.DrainTimeout < 1 || *params.DrainTimeout > 3600 {
+		return 0, errors.New("drain_timeout must be an integer between 1 and 3600")
+	}
+	return *params.DrainTimeout, nil
+}
+
+func decodeStrictObject(raw json.RawMessage, target interface{}) error {
+	if len(raw) == 0 {
+		return errors.New("missing target spec")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("target spec must contain one JSON value")
 	}
 	return nil
 }
@@ -483,7 +819,10 @@ func validateExecutionConfig(mode ExecutionMode, k8sEnabled bool, verifyKeyB64 s
 // buildPatchPayload 根据 operation 构造受控 patch（annotation / replicas 白名单）。
 func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 	switch ctx.Operation {
-	case "patch":
+	case "patch", "rollout_restart":
+		if ctx.Operation == "rollout_restart" && (len(ctx.TargetSpec) == 0 || string(ctx.TargetSpec) == "{}") {
+			return `{"metadata":{"annotations":{"aiops.observability.io/restartedAt":"requested"}}}`, nil
+		}
 		if len(ctx.TargetSpec) == 0 || string(ctx.TargetSpec) == "null" {
 			// Keep manually constructed test/preview contexts safe and useful; all
 			// production candidates pass preflight and therefore carry an explicit
@@ -509,6 +848,9 @@ func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 		}
 		return string(payload), nil
 	case "scale":
+		if ctx.ResourceType != "" && ctx.ResourceType != "deployment" && ctx.ResourceType != "statefulset" {
+			return "", errors.New("scale requires deployment or statefulset")
+		}
 		var spec struct {
 			Replicas *int32 `json:"replicas"`
 		}
@@ -520,6 +862,16 @@ func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 			r = *spec.Replicas
 		}
 		return fmt.Sprintf(`{"spec":{"replicas":%d}}`, r), nil
+	case "cordon":
+		if ctx.ResourceType != "" && ctx.ResourceType != "node" {
+			return "", errors.New("cordon requires node")
+		}
+		return `{"spec":{"unschedulable":true}}`, nil
+	case "uncordon":
+		if ctx.ResourceType != "" && ctx.ResourceType != "node" {
+			return "", errors.New("uncordon requires node")
+		}
+		return `{"spec":{"unschedulable":false}}`, nil
 	default:
 		return "", errors.New("unsupported operation: " + ctx.Operation)
 	}
@@ -572,13 +924,33 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 	if s.readReconcileStateFn != nil {
 		observed, err = s.readReconcileStateFn(req)
 	} else if s.k8sEnabled {
-		observed, err = s.k8sReadDeploymentState(firstNonEmpty(req.Namespace, "default"), req.TargetName)
+		resourceType := firstNonEmpty(strings.ToLower(strings.TrimSpace(req.ResourceType)), "deployment")
+		if resourceType == "node" && req.Operation == "drain" {
+			observed, err = s.k8sReadDrainState(req.TargetName)
+		} else {
+			ns := req.Namespace
+			if resourceType != "node" {
+				ns = firstNonEmpty(ns, "default")
+			}
+			observed, err = s.k8sReadObjectState(resourceType, ns, req.TargetName)
+		}
 	} else {
 		writeJSON(w, http.StatusServiceUnavailable, ActionResult{ActionID: req.ActionID, Status: "execution_unknown",
 			Message: "reconciliation requires a Kubernetes read capability"})
 		return
 	}
 	if err != nil {
+		var notFound *k8sNotFoundError
+		if errors.As(err, &notFound) && (req.Operation == "delete_pod" || req.Operation == "evict_pod") {
+			res := ActionResult{ActionID: req.ActionID, Status: "applied",
+				Message:    "target pod is absent; the approved pod deletion is already reflected, no retry was issued",
+				ExecutedAt: time.Now().UTC().Format(time.RFC3339)}
+			s.mu.Lock()
+			s.results[req.ActionID] = res
+			s.mu.Unlock()
+			writeJSON(w, http.StatusOK, res)
+			return
+		}
 		writeJSON(w, http.StatusServiceUnavailable, ActionResult{ActionID: req.ActionID, Status: "execution_unknown",
 			Message: "reconciliation state read failed: " + err.Error()})
 		return
@@ -615,6 +987,9 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 func desiredStateMatches(req ReconcileRequest, observed reconcileObserved) (bool, error) {
 	switch req.Operation {
 	case "scale":
+		if req.ResourceType != "" && req.ResourceType != "deployment" && req.ResourceType != "statefulset" {
+			return false, errors.New("scale reconciliation requires deployment or statefulset")
+		}
 		var desired struct {
 			Replicas *int32 `json:"replicas"`
 		}
@@ -622,7 +997,10 @@ func desiredStateMatches(req ReconcileRequest, observed reconcileObserved) (bool
 			return false, errors.New("scale reconciliation requires target_spec.replicas")
 		}
 		return observed.Replicas == *desired.Replicas, nil
-	case "patch":
+	case "patch", "rollout_restart":
+		if req.Operation == "rollout_restart" && req.ResourceType != "" && req.ResourceType != "deployment" && req.ResourceType != "statefulset" && req.ResourceType != "daemonset" {
+			return false, errors.New("rollout_restart reconciliation requires a workload")
+		}
 		var desired struct {
 			Metadata struct {
 				Annotations map[string]string `json:"annotations"`
@@ -637,6 +1015,26 @@ func desiredStateMatches(req ReconcileRequest, observed reconcileObserved) (bool
 			}
 		}
 		return true, nil
+	case "cordon":
+		if req.ResourceType != "" && req.ResourceType != "node" {
+			return false, errors.New("cordon reconciliation requires node")
+		}
+		return observed.Unschedulable, nil
+	case "uncordon":
+		if req.ResourceType != "" && req.ResourceType != "node" {
+			return false, errors.New("uncordon reconciliation requires node")
+		}
+		return !observed.Unschedulable, nil
+	case "drain":
+		if req.ResourceType != "" && req.ResourceType != "node" {
+			return false, errors.New("drain reconciliation requires node")
+		}
+		return observed.Unschedulable && observed.PodsRemaining == 0, nil
+	case "delete_pod", "evict_pod":
+		if req.ResourceType != "" && req.ResourceType != "pod" {
+			return false, errors.New("pod deletion reconciliation requires pod")
+		}
+		return false, nil
 	default:
 		return false, errors.New("unsupported reconciliation operation: " + req.Operation)
 	}

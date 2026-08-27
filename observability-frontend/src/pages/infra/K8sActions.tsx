@@ -1,14 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  Button, Col, Input, InputNumber, Modal, Row, Select, Segmented, Space, Spin, Table, Tag, Typography,
+  Button, Col, Input, InputNumber, Modal, Row, Select, Segmented, Space, Table, Tag, Typography,
 } from 'antd'
 import {
-  k8sPreflight, k8sExecute,
+  createK8sActionProposal, executeAiAction,
   listK8sNamespaces, listK8sPods, listK8sDeployments, listK8sNodes,
-  K8S_ACTION_KINDS, K8S_DESTRUCTIVE,
-  type K8sPreflightResult, type K8sExecuteResult,
+  K8S_ACTION_KINDS,
+  type K8sActionName, type K8sActionProjection, type K8sActionExecuteResult,
 } from '../../api/k8s'
-import { listApprovalTasks } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
 
@@ -51,8 +50,6 @@ function actionParams(action: string): string[] {
   }
 }
 
-interface ApprovalTaskOption { id: string; script: string; created_at?: string }
-
 const K8sActions: React.FC = () => {
   const currentClusterId = useUIStore((s) => s.currentClusterId)
   const scopeLabel = useMemo(() => currentClusterId === 'all' ? '全部集群' : `集群 ${currentClusterId}`, [currentClusterId])
@@ -73,19 +70,14 @@ const K8sActions: React.FC = () => {
   const [replicas, setReplicas] = useState<number | null>(1)
   const [gracePeriod, setGracePeriod] = useState<number | null>(30)
   const [drainTimeout, setDrainTimeout] = useState<number | null>(300)
-  const [approvalTaskId, setApprovalTaskId] = useState('')
-  const [approvalOptions, setApprovalOptions] = useState<ApprovalTaskOption[]>([])
-  const [approvalLoading, setApprovalLoading] = useState(false)
-
-  // ── 预检 / 执行 ──
-  const [preflight, setPreflight] = useState<K8sPreflightResult | null>(null)
+  // ── Canonical Action proposal / execute ──
+  const [proposalKey, setProposalKey] = useState('')
+  const [actionRecord, setActionRecord] = useState<K8sActionProjection | null>(null)
   const [preflightLoading, setPreflightLoading] = useState(false)
-  const [execResult, setExecResult] = useState<K8sExecuteResult | null>(null)
+  const [execResult, setExecResult] = useState<K8sActionExecuteResult | null>(null)
   const [execLoading, setExecLoading] = useState(false)
   const [execError, setExecError] = useState('')
   const [confirmVisible, setConfirmVisible] = useState(false)
-
-  const destructive = K8S_DESTRUCTIVE.includes(action as any)
 
   // 资源列表加载
   const loadList = () => {
@@ -125,7 +117,13 @@ const K8sActions: React.FC = () => {
   }, [kind])
 
   // 资源参数变化 → 失效旧预检
-  const resetPreflight = () => { setPreflight(null); setExecResult(null); setExecError(''); setConfirmVisible(false) }
+  const resetPreflight = () => {
+    setProposalKey('')
+    setActionRecord(null)
+    setExecResult(null)
+    setExecError('')
+    setConfirmVisible(false)
+  }
 
   const buildExtra = (): Record<string, unknown> => {
     const extra: Record<string, unknown> = {}
@@ -137,39 +135,45 @@ const K8sActions: React.FC = () => {
   }
 
   const doPreflight = async () => {
-    if (!name) return
-    setExecResult(null); setExecError(''); setPreflight(null)
+    if (!name || currentClusterId === 'all') return
+    setExecResult(null); setExecError(''); setActionRecord(null)
     setPreflightLoading(true)
     try {
-      const r = await k8sPreflight({ action, kind, namespace, name, extra: buildExtra() })
-      setPreflight(r.data)
-      if (r.data?.ok === false) setExecError(r.data?.error || '预检失败')
+      const key = proposalKey || `ui-k8s-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      setProposalKey(key)
+      const r = await createK8sActionProposal({
+        idempotency_key: key,
+        cluster_id: currentClusterId,
+        resource_type: kind,
+        namespace,
+        target_name: name,
+        operation: action as K8sActionName,
+        params: buildExtra(),
+      })
+      setActionRecord(r.data)
     } catch (e: any) {
       setExecError(errText(e))
-      setPreflight(null)
+      setActionRecord(null)
     } finally {
       setPreflightLoading(false)
     }
   }
 
   const doExecute = async () => {
-    if (!preflight?.preflight_token) return
+    if (!actionRecord?.action_id) return
     setExecError(''); setExecResult(null)
     setExecLoading(true)
     try {
-      const r = await k8sExecute({
-        action, kind, namespace, name,
-        extra: buildExtra(),
-        preflight_token: preflight.preflight_token,
-        expected_resource_version: preflight.resource_version || '',
-        ...(destructive ? { approval_task_id: approvalTaskId } : {}),
-      })
+      const r = await executeAiAction(actionRecord.action_id)
       setExecResult(r.data)
+      if (r.data?.status === 'rejected') {
+        setExecError(r.data.message || '执行器已拒绝，未发生真实变更')
+      }
     } catch (e: any) {
       const st = e?.response?.status
-      if (st === 400) setExecError('预检凭证无效或已过期，请重新预检后执行')
-      else if (st === 409) setExecError('资源版本已变化，请重新预检后执行')
-      else if (st === 403) setExecError(e?.response?.data?.error || '无审批权限或审批未通过')
+      if (st === 422) setExecError('Canonical Action 尚未审批通过，未发生真实变更')
+      else if (st === 409) setExecError('Action 状态或资源版本已变化，请重新查看审批中心')
+      else if (st === 403) setExecError(e?.response?.data?.message || e?.response?.data?.error || '无执行权限，未发生真实变更')
       else setExecError(errText(e))
       setExecResult(null)
     } finally {
@@ -178,27 +182,13 @@ const K8sActions: React.FC = () => {
   }
 
   const requestExecute = () => {
-    if (!preflight?.preflight_token || preflight.ok === false) return
+    if (!actionRecord?.action_id || actionRecord.status !== 'approved') return
     setConfirmVisible(true)
   }
 
-  // 载入已批准审批单（供 destructive 动作选择 approval_task_id）
-  const loadApprovedTasks = () => {
-    setApprovalLoading(true)
-    listApprovalTasks({ status: 'approved' })
-      .then((r) => {
-        const list = (r.data as any)?.tasks || []
-        setApprovalOptions(Array.isArray(list) ? list.map((t: any) => ({
-          id: t.id || t.task_id || '', script: t.script || '', created_at: t.created_at || '',
-        })) : [])
-      })
-      .catch(() => setApprovalOptions([]))
-      .finally(() => setApprovalLoading(false))
-  }
-  useEffect(() => { if (destructive) loadApprovedTasks() }, [destructive])
-
   const pickRow = (r: any) => {
-    setKind(r.kind || 'pod')
+    const pickedKind = r.kind || (resView === 'deployments' ? 'deployment' : resView === 'pods' ? 'pod' : 'node')
+    setKind(pickedKind)
     setNamespace(r.namespace || r.ns || '')
     setName(r.name || '')
     resetPreflight()
@@ -292,45 +282,43 @@ const K8sActions: React.FC = () => {
               )}
             </Space>
 
-            {destructive && (
-              <div style={{ padding: '10px 12px', marginBottom: 12, borderRadius: 8, background: 'var(--danger-soft)', border: '1px solid rgba(220,38,38,.18)' }}>
-                <div style={{ color: 'var(--danger)', fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
-                  该动作属于破坏性操作，必须关联已批准审批单才能执行
-                </div>
-                <Space wrap>
-                  <Input value={approvalTaskId} onChange={(e) => setApprovalTaskId(e.target.value)}
-                    placeholder="审批单 ID（approval_task_id）" style={{ width: 220 }} />
-                  <Select value={approvalTaskId} onChange={setApprovalTaskId} placeholder="或从已批准审批单选择"
-                    loading={approvalLoading} style={{ width: 260 }} allowClear showSearch
-                    optionFilterProp="label"
-                    options={approvalOptions.map((t) => ({ value: t.id, label: `${t.id} · ${(t.script || '').slice(0, 60)}` }))} />
-                  <Button size="small" onClick={loadApprovedTasks} loading={approvalLoading}>刷新</Button>
-                </Space>
+            <div style={{ padding: '10px 12px', marginBottom: 12, borderRadius: 8, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Canonical Action 审批边界</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                预检会创建不可变 Action 并进入审批中心；页面不再接受旧 approval_task_id。
+                当前执行器保持禁用，未审批或被拒绝的动作不会改变环境。
               </div>
-            )}
+            </div>
 
             <Space wrap>
-              <Button type="primary" onClick={doPreflight} loading={preflightLoading} disabled={!name}>
-                ① 预检
+              <Button type="primary" onClick={doPreflight} loading={preflightLoading} disabled={!name || currentClusterId === 'all'}>
+                ① 预检并提交审批
               </Button>
               <Button danger type="primary" onClick={requestExecute} loading={execLoading}
-                disabled={!preflight?.preflight_token || preflight.ok === false || (destructive && !approvalTaskId)}>
-                ② 执行{preflight?.preflight_token ? '' : '（需先预检）'}
+                disabled={!actionRecord?.action_id || actionRecord.status !== 'approved'}>
+                ② 执行{actionRecord?.status === 'approved' ? '' : '（需 Canonical Action 审批）'}
               </Button>
               <Button size="small" onClick={resetPreflight}>清空</Button>
             </Space>
 
-            {preflight && (
+            {currentClusterId === 'all' && (
+              <div style={{ marginTop: 12, color: 'var(--warning)', fontSize: 12 }}>
+                请先在全局导航选择一个具体集群，再创建 K8s Canonical Action。
+              </div>
+            )}
+
+            {actionRecord && (
               <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 8, background: 'var(--surface-2)', border: '1px solid var(--border)' }}>
-                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--text-secondary)' }}>预检通过 · 命令预览</div>
-                <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, whiteSpace: 'pre-wrap', margin: 0 }}>{preflight.command}</pre>
-                <div style={{ marginTop: 8, fontSize: 12 }}>
-                  <Text type="secondary">resourceVersion：</Text>
-                  <Text code>{preflight.resource_version}</Text>
+                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, color: 'var(--text-secondary)' }}>
+                  Action 已创建 · {actionRecord.status === 'proposed' ? '待审批' : actionRecord.status}
                 </div>
-                {preflight.category && (
-                  <Tag style={{ marginTop: 6 }} color="blue">{preflight.category}</Tag>
-                )}
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '5px 10px', fontSize: 12 }}>
+                  <Text type="secondary">Action ID</Text><Text code>{actionRecord.action_id}</Text>
+                  <Text type="secondary">Hash</Text><Text code>{actionRecord.action_hash}</Text>
+                  <Text type="secondary">目标 UID</Text><Text code>{actionRecord.target_uid}</Text>
+                  <Text type="secondary">ResourceVersion</Text><Text code>{actionRecord.resource_version}</Text>
+                  <Text type="secondary">执行状态</Text><Tag color={actionRecord.execution_status === 'rejected' ? 'red' : 'blue'}>{actionRecord.execution_status}</Tag>
+                </div>
               </div>
             )}
 
@@ -341,10 +329,10 @@ const K8sActions: React.FC = () => {
             )}
 
             {execResult && (
-              <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 8, background: 'var(--success-soft)', border: '1px solid rgba(22,163,74,.2)' }}>
-                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: 'var(--success)' }}>执行结果</div>
+              <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 8, background: execResult.status === 'rejected' ? 'var(--danger-soft)' : 'var(--success-soft)', border: '1px solid rgba(22,163,74,.2)' }}>
+                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: execResult.status === 'rejected' ? 'var(--danger)' : 'var(--success)' }}>执行结果：{execResult.status}</div>
                 <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, whiteSpace: 'pre-wrap', margin: 0, color: 'var(--text)' }}>
-                  {execResult.output || '(无输出)'}
+                  {execResult.message || '(无附加消息)'}
                 </pre>
               </div>
             )}
@@ -369,9 +357,9 @@ const K8sActions: React.FC = () => {
           目标：{kind}/{name}{namespace ? ` · ${namespace}` : ''}
         </div>
         <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, whiteSpace: 'pre-wrap', background: 'var(--surface-2)', padding: 10, borderRadius: 6 }}>
-          {preflight?.command || '(预检未返回命令)'}
+          {JSON.stringify({ action_id: actionRecord?.action_id, action_hash: actionRecord?.action_hash, params: actionRecord?.params }, null, 2)}
         </pre>
-        {destructive && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warning)' }}>该动作还需要已批准的审批单。</div>}
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warning)' }}>该动作已通过 Canonical Action 审批，确认后将进入执行器；执行器当前配置为 disabled。</div>
       </Modal>
     </div>
   )

@@ -41,6 +41,14 @@ type KubeClient interface {
 	GetDeploymentIdentity(namespace, name string) (KubeObjectIdentity, error)
 }
 
+// KubeTargetIdentityClient is the optional extension used by the canonical
+// Action preflight path. Keeping it separate preserves existing read-only
+// clients while requiring the production boundary adapter to expose only
+// immutable target identity, never credentials or a full unbounded object.
+type KubeTargetIdentityClient interface {
+	GetObjectIdentity(resourceType, namespace, name string) (KubeObjectIdentity, error)
+}
+
 // KubernetesAccessor 解析 canonical cluster_id → 校验身份的 K8s 客户端。
 // 生产实现包装 k8sboundary.ClusterClientManager；测试提供 fake。
 type KubernetesAccessor interface {
@@ -81,6 +89,7 @@ func (r *KubernetesRepository) clientFor(ctx context.Context, clusterID string) 
 // mapKubeBoundaryError 将 K8s Access Boundary 错误映射为统一 QueryError 语义：
 //   - 身份不匹配/不可达/非法引用 → permission_denied
 //   - 边界/后端故障 → unavailable
+//
 // 边界已 fail-closed，不产生超时（kubectl 超时由边界控制），超时保留供未来扩展。
 func mapKubeBoundaryError(err error) error {
 	if err == nil {
@@ -127,6 +136,38 @@ func (r *KubernetesRepository) GetDeploymentIdentity(ctx context.Context, scope 
 		return KubeObjectIdentity{}, err
 	}
 	identity, err := client.GetDeploymentIdentity(namespace, name)
+	if err != nil {
+		return KubeObjectIdentity{}, mapKubeBoundaryError(err)
+	}
+	if identity.UID == "" || identity.ResourceVersion == "" {
+		return KubeObjectIdentity{}, Unavailable("kubernetes: target identity incomplete")
+	}
+	return identity, nil
+}
+
+// GetObjectIdentity resolves a workload, Pod, or Node identity through the
+// existing canonical cluster boundary. It is the only repository entry point
+// used by the multi-kind Action preflight flow.
+func (r *KubernetesRepository) GetObjectIdentity(ctx context.Context, scope KubernetesScope, clusterID, resourceType, namespace, name string) (KubeObjectIdentity, error) {
+	resourceType = strings.ToLower(strings.TrimSpace(resourceType))
+	if resourceType != "node" && strings.TrimSpace(namespace) == "" {
+		return KubeObjectIdentity{}, PermissionDenied("kubernetes: namespace is required for namespaced target")
+	}
+	if strings.TrimSpace(name) == "" {
+		return KubeObjectIdentity{}, PermissionDenied("kubernetes: target name is required")
+	}
+	if resourceType != "deployment" && resourceType != "statefulset" && resourceType != "daemonset" && resourceType != "pod" && resourceType != "node" {
+		return KubeObjectIdentity{}, PermissionDenied("kubernetes: unsupported target resource type")
+	}
+	client, err := r.clientFor(ctx, clusterID)
+	if err != nil {
+		return KubeObjectIdentity{}, err
+	}
+	identityClient, ok := client.(KubeTargetIdentityClient)
+	if !ok {
+		return KubeObjectIdentity{}, Unavailable("kubernetes: target identity capability not configured")
+	}
+	identity, err := identityClient.GetObjectIdentity(resourceType, namespace, name)
 	if err != nil {
 		return KubeObjectIdentity{}, mapKubeBoundaryError(err)
 	}

@@ -46,23 +46,24 @@ func validateActionDecision(req ActionDecisionRequest) error {
 }
 
 type actionDecisionRow struct {
-	actionID          string
-	runID             string
-	tenantID          string
-	clusterID         string
-	actionHash        string
-	hashSchemaVersion int
-	actionVersion     int64
-	proposedBy        sql.NullString
-	preflightStatus   string
-	dryRun            int
-	status            string
-	targetName        string
-	targetUID         string
-	resourceVersion   string
-	namespace         string
-	operation         string
-	params            []byte
+	actionID           string
+	runID              string
+	tenantID           string
+	clusterID          string
+	actionHash         string
+	hashSchemaVersion  int
+	actionVersion      int64
+	proposedBy         sql.NullString
+	preflightStatus    string
+	dryRun             int
+	status             string
+	targetResourceType string
+	targetName         string
+	targetUID          string
+	resourceVersion    string
+	namespace          string
+	operation          string
+	params             []byte
 }
 
 type actionDecisionRunRow struct {
@@ -162,11 +163,11 @@ func (h *Handler) decideAction(ctx context.Context, actionID string, auth Author
 	var action actionDecisionRow
 	err = tx.QueryRowContext(ctx, `SELECT action_id, run_id, tenant_id, cluster_id, action_hash,
 		hash_schema_version, action_version, proposed_by, preflight_status, dry_run, status,
-		target_name, target_uid, resource_version, namespace, operation, params_json
+		target_resource_type, target_name, target_uid, resource_version, namespace, operation, params_json
 		FROM ai_actions WHERE action_id = ? FOR UPDATE`, actionID).Scan(
 		&action.actionID, &action.runID, &action.tenantID, &action.clusterID, &action.actionHash,
 		&action.hashSchemaVersion, &action.actionVersion, &action.proposedBy, &action.preflightStatus,
-		&action.dryRun, &action.status, &action.targetName, &action.targetUID, &action.resourceVersion,
+		&action.dryRun, &action.status, &action.targetResourceType, &action.targetName, &action.targetUID, &action.resourceVersion,
 		&action.namespace, &action.operation, &action.params)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ActionDecisionResult{}, errActionDecisionConflict
@@ -176,11 +177,11 @@ func (h *Handler) decideAction(ctx context.Context, actionID string, auth Author
 	}
 	if action.tenantID != auth.TenantID || action.actionVersion != req.ActionVersion || action.hashSchemaVersion != 2 ||
 		action.preflightStatus != "passed" || action.dryRun != 0 || action.status != "proposed" ||
-		action.targetUID == "" || action.resourceVersion == "" {
+		action.targetResourceType == "" || action.targetUID == "" || action.resourceVersion == "" {
 		return ActionDecisionResult{}, errActionDecisionConflict
 	}
 	canonicalHash, hashErr := contract.CanonicalActionHash(contract.CanonicalActionPayloadV2{
-		Version: 1, ActionType: "kubernetes", ResourceType: "deployment",
+		Version: 1, ActionType: "kubernetes", ResourceType: action.targetResourceType,
 		Namespace: action.namespace, TargetName: action.targetName,
 		TargetUID: action.targetUID, ResourceVersion: action.resourceVersion,
 		Operation: action.operation, Params: action.params, PolicyVersion: "action-policy-v1",

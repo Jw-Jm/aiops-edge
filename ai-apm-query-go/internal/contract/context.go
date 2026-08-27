@@ -428,7 +428,7 @@ func (result ToolResult) Validate() error {
 //
 // 字段与 ai-action-executor 的 ActionExecutionContext JSON 严格对应（action_id /
 // action_hash / approval_id / target_uid / target_name / resource_version / cluster_id /
-// namespace / operation / target_spec / credential_ref / approved_at / executed_by）。
+// resource_type / namespace / operation / target_spec / credential_ref / approved_at / executed_by）。
 type ActionExecutionContext struct {
 	ActionID        string          `json:"action_id"`   // 绑定 immutable action 身份
 	ActionHash      string          `json:"action_hash"` // 绑定 immutable action
@@ -437,8 +437,9 @@ type ActionExecutionContext struct {
 	TargetName      string          `json:"target_name"`      // K8s lookup 用
 	ResourceVersion string          `json:"resource_version"` // TOCTOU precondition
 	ClusterID       string          `json:"cluster_id"`
+	ResourceType    string          `json:"resource_type"` // deployment/statefulset/daemonset/pod/node
 	Namespace       string          `json:"namespace"`
-	Operation       string          `json:"operation"` // patch/scale（白名单）
+	Operation       string          `json:"operation"` // canonical K8s operation（白名单）
 	TargetSpec      json.RawMessage `json:"target_spec"`
 	CredentialRef   string          `json:"credential_ref"`
 	ApprovedAt      string          `json:"approved_at"`
@@ -463,13 +464,21 @@ func (c ActionExecutionContext) Validate() error {
 	if c.TargetName == "" {
 		return errors.New("target_name is required")
 	}
-	if c.Operation == "" {
+	if c.ResourceType == "" || c.Operation == "" {
 		return errors.New("operation is required")
 	}
-	switch c.Operation {
-	case "patch", "scale":
-	default:
-		return fmt.Errorf("unsupported operation %q (allowed: patch|scale)", c.Operation)
+	allowed := map[string]map[string]bool{
+		"patch":           {"deployment": true}, // legacy internal executor compatibility; browser proposals use canonical operations
+		"rollout_restart": {"deployment": true, "statefulset": true, "daemonset": true},
+		"scale":           {"deployment": true, "statefulset": true},
+		"delete_pod":      {"pod": true},
+		"evict_pod":       {"pod": true},
+		"cordon":          {"node": true},
+		"uncordon":        {"node": true},
+		"drain":           {"node": true},
+	}
+	if kinds, ok := allowed[c.Operation]; !ok || !kinds[c.ResourceType] {
+		return fmt.Errorf("unsupported operation %q for resource_type %q", c.Operation, c.ResourceType)
 	}
 	return nil
 }

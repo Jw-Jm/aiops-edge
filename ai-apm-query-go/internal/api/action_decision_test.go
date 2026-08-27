@@ -55,9 +55,9 @@ func TestActionDecisionEndpointAtomicallyQueuesApprovedAction(t *testing.T) {
 		WithArgs("action-1").
 		WillReturnRows(sqlmock.NewRows([]string{"action_id", "run_id", "tenant_id", "cluster_id", "action_hash",
 			"hash_schema_version", "action_version", "proposed_by", "preflight_status", "dry_run", "status",
-			"target_name", "target_uid", "resource_version", "namespace", "operation", "params_json"}).
+			"target_resource_type", "target_name", "target_uid", "resource_version", "namespace", "operation", "params_json"}).
 			AddRow("action-1", "run-1", "tenant-1", "cluster-1", actionHash, 2, 1, "owner-1", "passed", 0, "proposed",
-				"orders", "uid-1", "rv-7", "prod", "scale", []byte(`{"replicas":2}`)))
+				"deployment", "orders", "uid-1", "rv-7", "prod", "scale", []byte(`{"replicas":2}`)))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, tenant_id, principal, status, state_version,") +
 		"\\s+COALESCE\\(primary_cluster_id, ''\\) FROM ai_runs").
 		WithArgs("run-1").

@@ -193,7 +193,31 @@ func (c *Client) KubePods(namespace string) ([]map[string]interface{}, error) {
 // Action preflight/TOCTOU boundary. The full Deployment object never leaves
 // this package.
 func (c *Client) KubeDeploymentIdentity(namespace, name string) (map[string]interface{}, error) {
-	data, err := kubectlJSON(c.kubeconfig, "get", "deployment", name, "-n", namespace, "-o", "json")
+	return c.KubeObjectIdentity("deployment", namespace, name)
+}
+
+// KubeObjectIdentity reads only metadata identity for the allow-listed target
+// kinds used by Canonical Action preflight. The kind is never accepted from an
+// arbitrary Kubernetes URL; it is mapped to one of the fixed kubectl resource
+// names below.
+func (c *Client) KubeObjectIdentity(resourceType, namespace, name string) (map[string]interface{}, error) {
+	resourceType = strings.ToLower(strings.TrimSpace(resourceType))
+	if strings.TrimSpace(name) == "" {
+		return nil, errors.New("target name is empty")
+	}
+	var args []string
+	switch resourceType {
+	case "deployment", "statefulset", "daemonset", "pod":
+		if strings.TrimSpace(namespace) == "" {
+			return nil, errors.New("namespace is empty")
+		}
+		args = []string{"get", resourceType, name, "-n", namespace, "-o", "json"}
+	case "node":
+		args = []string{"get", "node", name, "-o", "json"}
+	default:
+		return nil, errors.New("unsupported target resource type: " + resourceType)
+	}
+	data, err := kubectlJSON(c.kubeconfig, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -217,10 +241,10 @@ func (c *Client) KubeDeploymentIdentity(namespace, name string) (map[string]inte
 // clientEntry is a validated cache entry. It records the credential_ref it was
 // resolved from so a credential change forces re-validation.
 type clientEntry struct {
-	clusterID    string
+	clusterID     string
 	credentialRef string
-	identityUID  string
-	kubeconfig   string
+	identityUID   string
+	kubeconfig    string
 }
 
 // ClusterClientManager resolves, identity-validates and caches a client per
@@ -296,10 +320,10 @@ func (m *ClusterClientManager) GetClient(clusterID string) (*Client, error) {
 	}
 
 	m.cache[clusterID] = &clientEntry{
-		clusterID:    clusterID,
+		clusterID:     clusterID,
 		credentialRef: cluster.CredentialRef,
-		identityUID:  observedUID,
-		kubeconfig:   kubeconfig,
+		identityUID:   observedUID,
+		kubeconfig:    kubeconfig,
 	}
 	return &Client{clusterID: clusterID, identityUID: observedUID, kubeconfig: kubeconfig}, nil
 }
@@ -434,7 +458,7 @@ func kubePods(kubeconfig, namespace string) ([]map[string]interface{}, error) {
 			Metadata struct{ Name, Namespace string } `json:"metadata"`
 			Spec     struct{ NodeName string }        `json:"spec"`
 			Status   struct {
-				Phase             string `json:"phase"`
+				Phase             string                       `json:"phase"`
 				ContainerStatuses []struct{ RestartCount int } `json:"containerStatuses"`
 			} `json:"status"`
 		} `json:"items"`

@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -74,6 +76,132 @@ func TestDisabledModeRejectsExecution(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &res)
 	if res.Status != "rejected" {
 		t.Fatalf("expected rejected, got %s", res.Status)
+	}
+}
+
+func TestBuildPatchPayloadSupportsCanonicalWorkloadAndNodeOperations(t *testing.T) {
+	tests := []struct {
+		operation string
+		resource  string
+		spec      string
+		want      string
+	}{
+		{"rollout_restart", "deployment", `{"metadata":{"annotations":{"aiops.observability.io/restartedAt":"requested"}}}`, `{"metadata":{"annotations":{"aiops.observability.io/restartedAt":"requested"}}}`},
+		{"cordon", "node", `{}`, `{"spec":{"unschedulable":true}}`},
+		{"uncordon", "node", `{}`, `{"spec":{"unschedulable":false}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.operation, func(t *testing.T) {
+			got, err := buildPatchPayload(ActionExecutionContext{Operation: tt.operation, ResourceType: tt.resource, TargetSpec: json.RawMessage(tt.spec)})
+			if err != nil || got != tt.want {
+				t.Fatalf("buildPatchPayload() = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalMutationRouteRejectsUnknownOperation(t *testing.T) {
+	if _, err := k8sObjectURL("https://kubernetes", "service", "prod", "orders"); err == nil {
+		t.Fatal("unknown resource type must not produce a mutation URL")
+	}
+}
+
+func TestPatchTargetRoutesCanonicalResourceOperations(t *testing.T) {
+	tests := []struct {
+		name       string
+		ctx        ActionExecutionContext
+		method     string
+		path       string
+		wantBody   string
+		statusCode int
+	}{
+		{
+			name:   "statefulset scale",
+			ctx:    ActionExecutionContext{ResourceType: "statefulset", Namespace: "prod", TargetName: "orders", Operation: "scale", TargetSpec: json.RawMessage(`{"replicas":3}`)},
+			method: http.MethodPatch, path: "/apis/apps/v1/namespaces/prod/statefulsets/orders", wantBody: `{"spec":{"replicas":3}}`, statusCode: http.StatusOK,
+		},
+		{
+			name:   "node cordon",
+			ctx:    ActionExecutionContext{ResourceType: "node", TargetName: "node-a", Operation: "cordon", TargetSpec: json.RawMessage(`{}`)},
+			method: http.MethodPatch, path: "/api/v1/nodes/node-a", wantBody: `{"spec":{"unschedulable":true}}`, statusCode: http.StatusOK,
+		},
+		{
+			name:   "pod delete",
+			ctx:    ActionExecutionContext{ResourceType: "pod", Namespace: "prod", TargetName: "worker-1", Operation: "delete_pod", TargetSpec: json.RawMessage(`{"grace_period_seconds":30}`)},
+			method: http.MethodDelete, path: "/api/v1/namespaces/prod/pods/worker-1", wantBody: `{"gracePeriodSeconds":30}`, statusCode: http.StatusOK,
+		},
+		{
+			name:   "pod eviction",
+			ctx:    ActionExecutionContext{ResourceType: "pod", Namespace: "prod", TargetName: "worker-1", Operation: "evict_pod", TargetSpec: json.RawMessage(`{"grace_period_seconds":30}`)},
+			method: http.MethodPost, path: "/apis/policy/v1/namespaces/prod/pods/worker-1/eviction", wantBody: `{"apiVersion":"policy/v1","deleteOptions":{"gracePeriodSeconds":30},"kind":"Eviction","metadata":{"name":"worker-1","namespace":"prod"}}`, statusCode: http.StatusCreated,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != tt.method || r.URL.Path != tt.path {
+					t.Fatalf("request = %s %s, want %s %s", r.Method, r.URL.Path, tt.method, tt.path)
+				}
+				body, _ := io.ReadAll(r.Body)
+				if string(body) != tt.wantBody {
+					t.Fatalf("body = %s, want %s", string(body), tt.wantBody)
+				}
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer testServer.Close()
+			s := &server{k8sEnabled: true, k8sHost: testServer.URL, httpClient: testServer.Client()}
+			if err := s.patchTarget(tt.ctx, "rv-1"); err != nil {
+				t.Fatalf("patchTarget() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDrainRequiresNodeAndUsesTimeoutParameter(t *testing.T) {
+	if _, err := buildDrainTimeout(ActionExecutionContext{ResourceType: "deployment", Operation: "drain", TargetSpec: json.RawMessage(`{"drain_timeout":30}`)}); err == nil {
+		t.Fatal("drain on a non-node must be rejected")
+	}
+	if got, err := buildDrainTimeout(ActionExecutionContext{ResourceType: "node", Operation: "drain", TargetSpec: json.RawMessage(`{"drain_timeout":30}`)}); err != nil || got != 30 {
+		t.Fatalf("buildDrainTimeout() = %d, %v; want 30", got, err)
+	}
+}
+
+func TestDesiredStateMatchesCanonicalOperations(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		resource  string
+		spec      string
+		observed  reconcileObserved
+		want      bool
+	}{
+		{"restart", "rollout_restart", "deployment", `{"metadata":{"annotations":{"aiops.observability.io/restartedAt":"requested"}}}`, reconcileObserved{Annotations: map[string]string{"aiops.observability.io/restartedAt": "requested"}}, true},
+		{"cordon", "cordon", "node", `{}`, reconcileObserved{Unschedulable: true}, true},
+		{"uncordon", "uncordon", "node", `{}`, reconcileObserved{Unschedulable: false}, true},
+		{"drain complete", "drain", "node", `{"drain_timeout":30}`, reconcileObserved{Unschedulable: true, PodsRemaining: 0}, true},
+		{"drain incomplete", "drain", "node", `{"drain_timeout":30}`, reconcileObserved{Unschedulable: true, PodsRemaining: 1}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := desiredStateMatches(ReconcileRequest{Operation: tt.operation, ResourceType: tt.resource, TargetSpec: json.RawMessage(tt.spec)}, tt.observed)
+			if err != nil || got != tt.want {
+				t.Fatalf("desiredStateMatches() = %v, %v; want %v", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestK8sObjectURLEscapesAndRejectsNamespacedNode(t *testing.T) {
+	got, err := k8sObjectURL("https://kubernetes", "pod", "prod/team", "worker/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(got)
+	if err != nil || parsed.EscapedPath() != "/api/v1/namespaces/prod%2Fteam/pods/worker%2F1" {
+		t.Fatalf("escaped URL path = %q, err=%v", parsed.EscapedPath(), err)
+	}
+	if _, err := k8sObjectURL("https://kubernetes", "node", "prod", "node-a"); err == nil {
+		t.Fatal("node URL must not accept a namespace")
 	}
 }
 

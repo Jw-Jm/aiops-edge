@@ -52,7 +52,11 @@ func (c boundaryClient) ListPods(namespace string) ([]query.KubePod, error) {
 }
 
 func (c boundaryClient) GetDeploymentIdentity(namespace, name string) (query.KubeObjectIdentity, error) {
-	raw, err := c.client.KubeDeploymentIdentity(namespace, name)
+	return c.GetObjectIdentity("deployment", namespace, name)
+}
+
+func (c boundaryClient) GetObjectIdentity(resourceType, namespace, name string) (query.KubeObjectIdentity, error) {
+	raw, err := c.client.KubeObjectIdentity(resourceType, namespace, name)
 	if err != nil {
 		return query.KubeObjectIdentity{}, err
 	}

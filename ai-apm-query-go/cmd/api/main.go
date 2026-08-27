@@ -372,7 +372,13 @@ func main() {
 	// Action control plane：GET 详情只需 canonical tenant，写操作按动作类型授权；
 	// decision 允许 admin/approver，execute 仍由 executor 策略要求 admin。
 	mux.HandleFunc("/api/v1/ai/actions/", handler.RequireAnyRole([]string{"admin", "approver"}, handler.ActionPublicHandler))
-	mux.HandleFunc("/api/v1/ai/actions", handler.RequireAnyRole([]string{"admin", "approver"}, handler.ActionPublicHandler))
+	mux.HandleFunc("/api/v1/ai/actions", handler.RequireAnyRole([]string{"admin", "approver"}, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handler.ActionProposalPublicHandler(w, r)
+			return
+		}
+		handler.ActionPublicHandler(w, r)
+	}))
 	// P10 (V9.3 Phase 10)：/api/v1/ai/runs 由 query-api 作为 Run 持久化 owner 处理。
 	// POST=创建（JWT 鉴权 + 写 outbox 可靠派发），GET=列表（当前 tenant）。不再代理到 orchestrator。
 	mux.HandleFunc("/api/v1/ai/runs", func(w http.ResponseWriter, r *http.Request) {

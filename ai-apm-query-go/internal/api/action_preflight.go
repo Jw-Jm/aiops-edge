@@ -24,7 +24,7 @@ type KubeObjectIdentity struct {
 // ActionTargetResolver is the narrow read-only boundary used by preflight.
 // Implementations must resolve the canonical cluster identity before reading.
 type ActionTargetResolver interface {
-	ResolveDeployment(ctx context.Context, clusterID, namespace, name string) (KubeObjectIdentity, error)
+	ResolveTarget(ctx context.Context, clusterID, resourceType, namespace, name string) (KubeObjectIdentity, error)
 }
 
 // queryActionTargetResolver adapts the existing K8s query repository without
@@ -33,8 +33,8 @@ type queryActionTargetResolver struct {
 	repo *query.KubernetesRepository
 }
 
-func (r queryActionTargetResolver) ResolveDeployment(ctx context.Context, clusterID, namespace, name string) (KubeObjectIdentity, error) {
-	identity, err := r.repo.GetDeploymentIdentity(ctx, query.KubernetesScope{ClusterID: clusterID}, clusterID, namespace, name)
+func (r queryActionTargetResolver) ResolveTarget(ctx context.Context, clusterID, resourceType, namespace, name string) (KubeObjectIdentity, error) {
+	identity, err := r.repo.GetObjectIdentity(ctx, query.KubernetesScope{ClusterID: clusterID}, clusterID, resourceType, namespace, name)
 	if err != nil {
 		return KubeObjectIdentity{}, err
 	}
@@ -86,51 +86,26 @@ func (s *ActionPreflightService) Resolve(ctx context.Context, input PreflightInp
 	if s == nil || s.resolver == nil {
 		return ActionPreflightResult{}, errors.New("action preflight resolver unavailable")
 	}
-	if strings.TrimSpace(input.ClusterID) == "" || strings.TrimSpace(input.Namespace) == "" || strings.TrimSpace(input.TargetName) == "" {
+	input.ClusterID = strings.TrimSpace(input.ClusterID)
+	input.ResourceType = strings.ToLower(strings.TrimSpace(input.ResourceType))
+	input.Namespace = strings.TrimSpace(input.Namespace)
+	input.TargetName = strings.TrimSpace(input.TargetName)
+	input.Operation = strings.ToLower(strings.TrimSpace(input.Operation))
+	if strings.TrimSpace(input.ClusterID) == "" || strings.TrimSpace(input.TargetName) == "" {
 		return ActionPreflightResult{}, errors.New("cluster_id, namespace and target_name are required")
 	}
-	if input.ResourceType != "deployment" {
-		return ActionPreflightResult{}, fmt.Errorf("unsupported target resource type %q", input.ResourceType)
+	if input.ResourceType != "node" && strings.TrimSpace(input.Namespace) == "" {
+		return ActionPreflightResult{}, errors.New("namespace is required for namespaced targets")
 	}
-	if input.Operation != "patch" && input.Operation != "scale" {
-		return ActionPreflightResult{}, fmt.Errorf("unsupported executable operation %q", input.Operation)
+	allowedKinds, ok := canonicalK8sActionKinds[input.Operation]
+	if !ok || !allowedKinds[input.ResourceType] {
+		return ActionPreflightResult{}, fmt.Errorf("unsupported operation %q for target resource type %q", input.Operation, input.ResourceType)
 	}
-	params := input.Params
-	if len(params) == 0 {
-		params = json.RawMessage(`{}`)
+	params, err := canonicalizeActionParams(input.Operation, input.Params)
+	if err != nil {
+		return ActionPreflightResult{}, err
 	}
-	var object map[string]any
-	if err := json.Unmarshal(params, &object); err != nil || object == nil {
-		return ActionPreflightResult{}, errors.New("params must be a JSON object")
-	}
-	if input.Operation == "scale" {
-		replicas, ok := object["replicas"]
-		if !ok {
-			return ActionPreflightResult{}, errors.New("scale requires params.replicas")
-		}
-		if number, ok := replicas.(float64); !ok || number < 0 || number > 10000 || number != float64(int(number)) {
-			return ActionPreflightResult{}, errors.New("params.replicas must be an integer between 0 and 10000")
-		}
-	} else {
-		// Patch is intentionally limited to metadata annotations. The same
-		// structured payload is sent to the executor and used by reconciliation;
-		// arbitrary JSON patches would make the approval hash an incomplete
-		// description of the mutation surface.
-		metadata, ok := object["metadata"].(map[string]any)
-		annotations, annotationsOK := metadata["annotations"].(map[string]any)
-		if !ok || !annotationsOK || len(annotations) == 0 {
-			return ActionPreflightResult{}, errors.New("patch requires params.metadata.annotations")
-		}
-		for key, value := range annotations {
-			if !strings.HasPrefix(key, "aiops.observability.io/") && !strings.HasPrefix(key, "aio-action-executor/") {
-				return ActionPreflightResult{}, fmt.Errorf("patch annotation %q is outside the allowlist", key)
-			}
-			if text, ok := value.(string); !ok || len(text) > 256 {
-				return ActionPreflightResult{}, fmt.Errorf("patch annotation %q must be a string of at most 256 bytes", key)
-			}
-		}
-	}
-	identity, err := s.resolver.ResolveDeployment(ctx, input.ClusterID, input.Namespace, input.TargetName)
+	identity, err := s.resolver.ResolveTarget(ctx, input.ClusterID, input.ResourceType, input.Namespace, input.TargetName)
 	if err != nil {
 		return ActionPreflightResult{}, fmt.Errorf("resolve target: %w", err)
 	}

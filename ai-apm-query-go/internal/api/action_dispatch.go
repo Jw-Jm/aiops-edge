@@ -132,7 +132,8 @@ func (h *Handler) reconcileAction(action *store.AIAction) (contract.ActionResult
 	result, reached, err := client.Reconcile(contract.ActionExecutionContext{
 		ActionID: action.ActionID, ActionHash: action.ActionHash, TargetUID: action.TargetUID,
 		TargetName: action.TargetName, ResourceVersion: action.ResourceVersion,
-		ClusterID: action.ClusterID, Namespace: action.Namespace, Operation: action.Operation,
+		ClusterID: action.ClusterID, ResourceType: firstNonEmpty(action.TargetResourceType, "deployment"),
+		Namespace: action.Namespace, Operation: action.Operation,
 		TargetSpec: targetSpec,
 	})
 	if err != nil {
