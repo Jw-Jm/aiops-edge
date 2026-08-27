@@ -499,6 +499,40 @@ func TestDashboardStatsEdgesFallsBackToMySQL(t *testing.T) {
 	}
 }
 
+func TestDashboardStatsDoesNotRunRawTraceTopologyFallback(t *testing.T) {
+	var heavyFallbackSeen bool
+	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("query")
+		if strings.Contains(q, "JOIN observability.trace_spans") || strings.Contains(q, "lagInFrame") {
+			heavyFallbackSeen = true
+		}
+		switch {
+		case strings.Contains(q, "FROM observability.service_topology"):
+			_, _ = w.Write([]byte(`{"cnt":0}` + "\n"))
+		default:
+			_, _ = w.Write([]byte(""))
+		}
+	}))
+	defer chSrv.Close()
+
+	h := &Handler{client: &http.Client{}}
+	host, port := splitHostPort(chSrv.URL)
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.topoRepo = query.NewTopologyRepository(&h.repo)
+
+	req := httptest.NewRequest("GET", "/api/v1/dashboard/stats?case=no-raw-trace-fallback", nil)
+	rr := httptest.NewRecorder()
+	h.DashboardStats(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if heavyFallbackSeen {
+		t.Fatal("DashboardStats must not run parent-span or sequence self-join against raw trace_spans")
+	}
+}
+
 func TestListTracesUsesTraceSummaryAndExactWindow(t *testing.T) {
 	var gotSQL string
 	chSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

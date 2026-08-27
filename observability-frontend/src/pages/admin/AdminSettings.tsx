@@ -37,7 +37,7 @@ function cpuQuantityToCores(s?: string): number | null {
   return isNaN(n) ? null : n
 }
 import api, {
-  getLLMSettings, saveLLMSettings, testLLMConnection, listLLMModels,
+  getLLMAdminConfig, saveLLMSettings, testLLMConnection, listLLMModels,
   listClusters,
   createCluster,
   deleteCluster,
@@ -389,15 +389,16 @@ function LLMConfig() {
   const [configAlert, setConfigAlert] = useState(false)
 
   useEffect(() => {
-    getLLMSettings().then((r) => {
+    getLLMAdminConfig().then((r) => {
       const d = r.data?.data || r.data
       if (d) {
         form.setFieldsValue({
           provider: d.active_provider || d.provider || 'deepseek',
           base_url: d.base_url || '',
           model: d.model || '',
-          // 后端已脱敏（api_key_masked），前端直接回显，不二次脱敏
-          api_key: d.api_key_masked || '',
+          // 脱敏标记只用于提示，不写入表单；否则“测试当前配置”会把
+          // sk-*** 当成真实凭据发送给上游并产生误报。
+          api_key: '',
         })
         setCfg({ configured: !!d.configured, api_key_set: !!d.api_key_set })
         // P0-1: 已配置时自动测一次连接（空 body），失败则提示重新填写 API Key
@@ -438,16 +439,24 @@ function LLMConfig() {
   }
 
   const onSave = async () => {
-    const v = await form.validateFields()
+    const v = await form.validateFields(['provider', 'base_url', 'model'])
+    const apiKey = String(form.getFieldValue('api_key') || '').trim()
+    if (!apiKey && !cfg?.api_key_set) {
+      message.error('请先填写 API Key')
+      return
+    }
+    const payload: Record<string, unknown> = { provider: v.provider, base_url: v.base_url, model: v.model }
+    if (apiKey) payload.api_key = apiKey
     setSaving(true)
     try {
-      await testLLMConnection({ provider: v.provider, base_url: v.base_url, model: v.model, api_key: v.api_key })
-      await saveLLMSettings({ provider: v.provider, base_url: v.base_url, model: v.model, api_key: v.api_key })
+      const test = await testLLMConnection(payload)
+      if (test.data?.success === false) throw new Error(test.data?.message || 'API Key 验证失败')
+      await saveLLMSettings(payload)
       setHasSaved(true)
-      setCfg({ configured: true, api_key_set: !!v.api_key })
+      setCfg({ configured: true, api_key_set: !!apiKey || !!cfg?.api_key_set })
       message.success('配置已保存')
     } catch (e) {
-      message.error((e as any)?.response?.data?.message || 'API Key 验证失败，未保存')
+      message.error((e as any)?.response?.data?.message || (e as any)?.message || 'API Key 验证失败，未保存')
     } finally {
       setSaving(false)
     }
@@ -455,14 +464,18 @@ function LLMConfig() {
 
   // 测试当前生效配置是否可用（主动确认）
   const testCurrent = async () => {
-    const v = await form.validateFields().catch(() => null)
+    const v = await form.validateFields(['provider', 'base_url', 'model']).catch(() => null)
     if (!v) return
+    const apiKey = String(form.getFieldValue('api_key') || '').trim()
+    const payload: Record<string, unknown> = { provider: v.provider, base_url: v.base_url, model: v.model }
+    if (apiKey) payload.api_key = apiKey
     setTesting(true)
     try {
-      await testLLMConnection({ provider: v.provider, base_url: v.base_url, model: v.model, api_key: v.api_key })
+      const test = await testLLMConnection(payload)
+      if (test.data?.success === false) throw new Error(test.data?.message || '连接失败：请检查 API Key / Base URL')
       message.success('连接正常：API Key 与模型可用')
     } catch (e) {
-      message.error((e as any)?.response?.data?.message || '连接失败：请检查 API Key / Base URL')
+      message.error((e as any)?.response?.data?.message || (e as any)?.message || '连接失败：请检查 API Key / Base URL')
     } finally {
       setTesting(false)
     }

@@ -321,6 +321,7 @@ export const chatWithAI = (data: Record<string, unknown>) =>
 
 // LLM Settings
 export const getLLMSettings = () => api.get('/settings/llm')
+export const getLLMAdminConfig = () => api.get('/settings/llm/config')
 export const saveLLMSettings = (data: Record<string, unknown>) => api.post('/settings/llm', data)
 export const testLLMConnection = (data: Record<string, unknown>) => api.post('/settings/llm/test', data)
 export const listLLMModels = (data: Record<string, unknown>) => api.post('/settings/llm/models', data)

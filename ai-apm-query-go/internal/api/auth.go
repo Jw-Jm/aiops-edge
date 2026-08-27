@@ -672,6 +672,7 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/ai/runs",                // P12：Run API 只读代理（JWT+tenant 校验后进 ProxyAI → orchestrator）
 		"/api/v1/me",                     // Phase E：前端用户信息端点（JWT + canonical tenant 授权）
 		"/api/v1/settings/llm",           // LLM 设置：GET 读当前配置 / POST 保存（admin 由 RequireRoleForWrite 校验）
+		"/api/v1/settings/llm/config",    // LLM 管理页所需的非敏感配置（admin 由 handler 校验）
 		"/api/v1/settings/llm/test",      // LLM 连接测试（admin 由 RequireRole 校验）
 		"/api/v1/settings/llm/models",    // 拉取模型列表（admin 由 RequireRole 校验）
 		"/api/v1/settings/llm/history",   // LLM 配置历史

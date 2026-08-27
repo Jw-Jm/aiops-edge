@@ -302,6 +302,34 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetLLMAdminConfig handles the admin-only configuration view used by the
+// settings page.  The public health endpoint above intentionally exposes only
+// readiness; this endpoint returns the non-secret fields needed to render the
+// editable form and a constant masked-key marker, never the decrypted key.
+func (h *Handler) GetLLMAdminConfig(w http.ResponseWriter, r *http.Request) {
+	settingsMu.RLock()
+	decrypted := decryptAPIKey(settings.LLM.APIKey)
+	llm := settings.LLM
+	settingsMu.RUnlock()
+
+	apiKeySet := decrypted != ""
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"data": map[string]interface{}{
+			"provider":    llm.Provider,
+			"model":       llm.Model,
+			"base_url":    llm.BaseURL,
+			"configured":  llm.Provider != "" && llm.Model != "" && llm.BaseURL != "" && apiKeySet,
+			"api_key_set": apiKeySet,
+			"api_key_masked": func() string {
+				if apiKeySet {
+					return "sk-***"
+				}
+				return ""
+			}(),
+		},
+	})
+}
+
 // GetInternalLLMSettings handles GET /api/v1/settings/llm/internal.
 // The control plane exposes only routing metadata. Provider credentials live
 // exclusively in the egress-proxy Secret and never cross into orchestrator

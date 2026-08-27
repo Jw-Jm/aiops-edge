@@ -16,6 +16,7 @@ import (
 //   - service_topology 查询 → 边行
 //   - 含 k8s_namespace 的聚合 → service→ns 行
 //   - 其余 trace_spans 节点聚合 → 节点行
+//
 // 返回可直接调用 GlobalTopology 的 Handler。
 func mockGlobalTopologyCH(t *testing.T, edgeRows, nodeRows, nsRows string) *Handler {
 	t.Helper()
@@ -85,6 +86,41 @@ func callGlobalTopology(t *testing.T, h *Handler, query string) map[string]inter
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return resp
+}
+
+func TestGlobalTopologyDoesNotRunRawTraceTopologySelfJoins(t *testing.T) {
+	var heavyFallbackSeen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("query")
+		if strings.Contains(q, "JOIN observability.trace_spans") || strings.Contains(q, "lagInFrame") {
+			heavyFallbackSeen = true
+		}
+		switch {
+		case strings.Contains(q, "FROM observability.service_topology"):
+			_, _ = w.Write([]byte(""))
+		case strings.Contains(q, "k8s_namespace"):
+			_, _ = w.Write([]byte(gtNSRows))
+		case strings.Contains(q, "GROUP BY service_name"):
+			_, _ = w.Write([]byte(gtNodeRows))
+		default:
+			_, _ = w.Write([]byte(""))
+		}
+	}))
+	defer srv.Close()
+
+	h := &Handler{client: &http.Client{}}
+	host, port := splitHostPort(srv.URL)
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.topoRepo = query.NewTopologyRepository(&h.repo)
+
+	resp := callGlobalTopology(t, h, "case=no-raw-trace-fallback")
+	if _, ok := resp["nodes"]; !ok {
+		t.Fatalf("expected topology response, got %v", resp)
+	}
+	if heavyFallbackSeen {
+		t.Fatal("GlobalTopology must not run parent-span or sequence self-join against raw trace_spans")
+	}
 }
 
 // nodeByName 把响应 nodes 转为 name → node 映射（节点顺序不保证）。
@@ -349,9 +385,9 @@ func TestGlobalTopologyPodNSFallback(t *testing.T) {
 		`{"service":"query-api","ns":"","calls":80}` + "\n" +
 		`{"service":"victoria-logs","ns":"","calls":60}` + "\n"
 	podMap := map[string]string{
-		"query-api":      "observability",
-		"victoria-logs":  "observability",
-		"ingest":         "observability",
+		"query-api":     "observability",
+		"victoria-logs": "observability",
+		"ingest":        "observability",
 	}
 
 	h := mockGlobalTopologyCHWithPodNS(t, edgeRows, nodeRows, nsRows, podMap)

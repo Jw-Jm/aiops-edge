@@ -1049,7 +1049,12 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 
 	// 拓扑边数（与 GlobalTopology 同口径：service_topology 近 1440 分钟、
 	// source!=target 去重后的边数，自环不计入）。
-	edgeCount, eerr := h.topoRepo.EdgeCountWithTraceFallback(ctx, scope, 1440)
+	//
+	// 这里故意只读已物化的 service_topology。不能在总览请求中回退到
+	// parent_span_id self-join 或 trace 内窗口重建：那会对千万级
+	// trace_spans 执行高成本全量计算，导致核心总览统计超时。拓扑派生数据
+	// 的补齐由后台同步任务负责；派生表为空时返回可解释的 0，不阻塞总览。
+	edgeCount, eerr := h.topoRepo.EdgeCount(ctx, scope)
 	if eerr != nil {
 		edgeCount = 0
 	}
@@ -1184,28 +1189,12 @@ func (h *Handler) GlobalTopology(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// P6.2c：边聚合统一经 topology repository（SQL ownership 在 repository）。
-	// 优先 service_topology（真实调用边），无数据时回退到 trace_spans 按服务对聚合。
+	// 优先读取已物化的 service_topology；页面请求不能临时从原始 spans 重建边。
 	edgeRows := []map[string]interface{}{}
 	if edges, eerr := h.topoRepo.GlobalEdges(ctx, scope, minutes); eerr == nil && len(edges) > 0 {
 		edgeRows = topologyEdgesToRows(edges)
 	}
-	// P0-2: 若 service_topology 无调用边，回退到 trace_spans 按 trace 内相邻 span 的服务对聚合（尽力而为）
-	if len(edgeRows) == 0 {
-		// 第一级：parent_span_id self-join（最准确，依赖完整调用链）
-		if fb, ferr := h.topoRepo.ParentSpanEdges(ctx, scope, minutes); ferr == nil && len(fb) > 0 {
-			edgeRows = topologyEdgesToRows(fb)
-		}
-	}
-	// P0-2b: 若仍无边（数据无 parent_span_id 关联），改用 trace 内服务时序的相邻调用统计。
-	// 不依赖父子链：按 trace 分组后，统计同一 trace 内相邻出现(按 start_time 排序)的不同服务对，
-	// 能反映真实的服务间调用关系与调用量。
-	// 注：用 lagInFrame 窗口函数（neighbor 在 ClickHouse 24.8 已弃用会报错）。
-	if len(edgeRows) == 0 {
-		if fb, ferr := h.topoRepo.SequenceEdges(ctx, scope, minutes); ferr == nil && len(fb) > 0 {
-			edgeRows = topologyEdgesToRows(fb)
-		}
-	}
-	// P0-2: 若 ClickHouse 仍无边（service_topology 为空且 trace 无 parent_span_id），
+	// 若 ClickHouse 派生表暂时为空，
 	// 回退到 MySQL topology_relations（由 SyncTopologyCatalog 按 trace 内服务时序生成的真实调用边）。
 	// 安全(P1-9)：MySQL 边无 cluster/tenant/scope 区分，仅在未按集群过滤（全集群视图）时回退，
 	// 避免按集群过滤后返回他集群合成边。

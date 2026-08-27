@@ -310,6 +310,7 @@ func main() {
 	// 篡改 base_url 窃取/回传已保存的 API key（GET /settings/llm 保持登录可读，
 	// 仅返回脱敏配置供前端判断"已配置"状态）。
 	mux.HandleFunc("/api/v1/settings/llm", handler.RequireRoleForWrite("admin", handler.SettingsLLM))
+	mux.HandleFunc("/api/v1/settings/llm/config", handler.RequireRole("admin", handler.GetLLMAdminConfig))
 	mux.HandleFunc("/api/v1/settings/llm/internal", handler.GetInternalLLMSettings)
 	mux.HandleFunc("/api/v1/settings/llm/test", handler.RequireRole("admin", handler.TestLLMConnection))
 	mux.HandleFunc("/api/v1/settings/llm/models", handler.RequireRole("admin", handler.ModelsLLM))
