@@ -4,8 +4,9 @@
 
 - 当前工作区已执行破坏性 Fresh Install：删除并重建 `observability`、`deepflow`
   和 `aiops-canary`，随后按 bootstrap → migration → runtime 两阶段 Helm 流程安装。
-- 当前 Git 基线为 `26b9e8a196dd`；全部自研镜像已使用统一标签
-  `git-26b9e8a196dd` 构建。
+- 破坏性 Fresh Install 首次基于 `26b9e8a196dd` 完成；随后已将当前修复提交
+  `2f0423237876` 以统一标签 `git-2f0423237876` 非破坏性升级到同一套本机集群。
+  当前所有自研 Deployment 均运行该提交对应的镜像。
 - MySQL users/schema hooks、`0011_graph_projection`、HugeGraph schema migrator、
   Query API、Worker（2 副本）、LLM Proxy、Ingest、Event Collector、Frontend、
   ClickHouse、Victoria Metrics/Logs、HugeGraph 均 Ready；只读栈验证退出码为 0。
@@ -13,6 +14,8 @@
   `POD_SA_ACCESS=false`，且 disabled 模式没有 canary namespace RBAC；本轮没有执行真实
   Kubernetes mutation。
 - DeepFlow Helm release 已部署，Agent/Server/ClickHouse/MySQL/Grafana Pod 均 Ready。
+
+- 当前运行时 Helm release 为 `aiops` revision 4，结构/就绪验证退出码为 0。
 
 ## 图谱 fixture
 
