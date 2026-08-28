@@ -189,7 +189,7 @@ func TestHugeGraphClientKNeighborUsesHugeGraph17AdvancedPayload(t *testing.T) {
 		if len(edgeSteps) != 2 || edgeSteps[0].(map[string]interface{})["label"] != "DEPENDS_ON" || edgeSteps[1].(map[string]interface{})["label"] != "CALLS" {
 			t.Fatalf("edge_steps = %#v", edgeSteps)
 		}
-		if body["max_depth"] != float64(3) || body["nearest"] != true || body["with_path"] != true || body["with_edge"] != true {
+		if body["max_depth"] != float64(3) || body["nearest"] != nil || body["with_path"] != true || body["with_edge"] != true {
 			t.Fatalf("traversal options = %#v", body)
 		}
 		w.Header().Set("Content-Type", "application/json")
