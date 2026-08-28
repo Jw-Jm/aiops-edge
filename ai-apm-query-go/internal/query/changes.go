@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ChangeScope 是 changes 资源域的作用域（租户/集群）。
 type ChangeScope struct {
-	TenantID  string
-	ClusterID string
+	TenantID    string
+	ClusterID   string
+	WindowStart *time.Time
+	WindowEnd   *time.Time
 }
 
 // ChangeRecord 一条结构化变更记录（Change Agent / changes.read 的事实来源）。
@@ -46,7 +49,9 @@ func (r *ChangeRepository) List(ctx context.Context, scope ChangeScope, service,
 	if service != "" {
 		conds = append(conds, "service_name="+sqlStr(service))
 	}
-	if since != "" {
+	if scope.WindowStart != nil && scope.WindowEnd != nil {
+		conds = append(conds, fmt.Sprintf("observability.change_records.start_time >= %s AND observability.change_records.start_time < %s", chTimeLiteral(*scope.WindowStart), chTimeLiteral(*scope.WindowEnd)))
+	} else if since != "" {
 		conds = append(conds, "observability.change_records.start_time >= '"+since+"'")
 	} else {
 		conds = append(conds, "observability.change_records.start_time >= now() - INTERVAL 24 HOUR")

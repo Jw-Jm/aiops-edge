@@ -18,6 +18,8 @@ type VMQuery struct {
 	Service   string
 	Resource  string
 	Minutes   int
+	StartTime *time.Time
+	EndTime   *time.Time
 }
 
 // VictoriaMetricsReader 是 Raw Metrics 新 SoT（VictoriaMetrics）的 reader（P6.3）。
@@ -43,7 +45,7 @@ type vmQueryRangeResp struct {
 		ResultType string `json:"resultType"`
 		Result     []struct {
 			Metric map[string]string `json:"metric"`
-			Values [][2]interface{} `json:"values"`
+			Values [][2]interface{}  `json:"values"`
 		} `json:"result"`
 	} `json:"data"`
 }
@@ -74,6 +76,10 @@ func (r *VictoriaMetricsReader) ServiceRED(ctx context.Context, q VMQuery) ([]RE
 	now := time.Now()
 	start := now.Add(-time.Duration(q.Minutes) * time.Minute).Unix()
 	end := now.Unix()
+	if q.StartTime != nil && q.EndTime != nil {
+		start = q.StartTime.Unix()
+		end = q.EndTime.Unix()
+	}
 	step := int64(60)
 	sel := vmLabelSelectors(q)
 
@@ -164,5 +170,3 @@ func toFloat64(v interface{}) float64 {
 	}
 	return 0
 }
-
-

@@ -32,6 +32,7 @@ class TaskCreateRequest(BaseModel):
     service: str = ""
     context: str = ""
     cluster_id: str = ""     # 必须由已授权 TrustedRequestContext 提供 canonical UUID
+    run_id: str = ""         # production RCA must bind to a persisted ai_run
 
 
 class AlertRCARequest(BaseModel):
@@ -47,6 +48,7 @@ class AlertRCARequest(BaseModel):
     last_timestamp: str = ""
     namespace: str = ""  # 告警对象所在的真实命名空间，kubectl 查询用真实值（不再硬编码 observability）
     object: str = ""  # 告警对象（如 Pod 名列表），用于 RCA 针对性过滤集群状态
+    run_id: str = ""  # production RCA must bind to a persisted ai_run
 
 
 class WebhookPayload(BaseModel):

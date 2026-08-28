@@ -304,6 +304,33 @@ class ControlPlaneClient:
         )
         return self._post("/internal/v1/control-plane/knowledge-graph", claims, payload)
 
+    def append_graph_context(self, *, run_id: str, tenant_id: str, cluster_id: str,
+                            context_version: int, context: Mapping[str, Any],
+                            trigger_entity_uid: str = "", root_cause_entity_uid: str = "",
+                            is_final: bool = False, graph_generation: int = 0,
+                            graph_schema_version: int = 2) -> dict:
+        """Persist one immutable/versioned RCA graph-context projection.
+
+        Graph context is owned by query-api just like Run/Event persistence. The
+        payload is structured JSON; no LLM text is accepted as a fact source.
+        ``run_id`` is bound into the signed control-plane context so a worker
+        cannot append context to another investigation.
+        """
+        if not run_id or int(context_version) <= 0:
+            raise ValueError("run_id and positive context_version are required")
+        claims = self._claims(run_id=run_id, capability=CP_KNOWLEDGE_GRAPH_WRITE,
+                              tenant_id=tenant_id, cluster_id=cluster_id,
+                              scope_kind="cluster" if cluster_id else "run")
+        return self._post("/internal/v1/control-plane/knowledge-graph", claims, {
+            "operation": "append_graph_context", "run_id": run_id,
+            "cluster_id": cluster_id, "context_version": int(context_version),
+            "graph_schema_version": int(graph_schema_version),
+            "graph_generation": int(graph_generation),
+            "trigger_entity_uid": trigger_entity_uid,
+            "root_cause_entity_uid": root_cause_entity_uid,
+            "is_final": bool(is_final), "context": dict(context),
+        })
+
     # ── lease / commit（B2-01 / A1）────────────────────────────────────────
     def claim_lease(self, *, run_id: str, tenant_id: str, owner_id: str,
                     lease_seconds: int = 60, claim_id: str = "",

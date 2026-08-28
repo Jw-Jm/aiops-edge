@@ -98,6 +98,19 @@ class InvestigationRuntime:
 
     async def accept(self, item: AcceptedInvocation) -> AcceptedWork:
         snapshot = self._run(self.control_plane.get(run_id=item.run_id, tenant_id=item.tenant_id))
+        # The control plane is the sole source of truth for RCA identity and
+        # time bounds. Never derive a window from worker wall-clock time.
+        # Recovery and older test doubles may omit the fields; production then
+        # fails closed in the RCA adapter rather than silently drifting.
+        frozen = dict(
+            target_type=str(snapshot.get("target_type") or item.target_type or "service"),
+            resource_id=str(snapshot.get("target_resource_id") or item.resource_id or ""),
+            service=str(snapshot.get("target_resource_id") or item.service or item.resource_id or ""),
+            window_start=str(snapshot.get("time_range_start") or item.window_start or ""),
+            window_end=str(snapshot.get("time_range_end") or item.window_end or ""),
+        )
+        frozen["symptom_time"] = str(snapshot.get("symptom_time") or item.symptom_time or frozen["window_end"] or "")
+        item = replace(item, **frozen)
         status = str(snapshot.get("status", ""))
         version = int(snapshot.get("state_version", 0))
         if status in {"success", "partial", "failed", "cancelled", "regressed"}:
@@ -172,6 +185,29 @@ class InvestigationRuntime:
                     tenant_id=item.tenant_id, command_id=str(uuid.uuid4()),
                 )
                 version = int(self._run(response).get("state_version", version + 1))
+            # Mark the last RCA graph context final only at the same terminal
+            # commit boundary.  This keeps active Runs on latest context while
+            # making historical Run reads immutable and replayable.
+            rca_payload = result.get("rca") if isinstance(result, dict) else None
+            if target in _TERMINAL_OUTCOMES and isinstance(rca_payload, dict):
+                context_payload = rca_payload.get("graph_context")
+                append_context = getattr(self.control_plane, "append_graph_context", None)
+                if isinstance(context_payload, dict) and callable(append_context):
+                    try:
+                        append_context(
+                            run_id=item.run_id, tenant_id=item.tenant_id, cluster_id=item.cluster_id,
+                            context_version=int(context_payload.get("context_version") or 1),
+                            context=context_payload,
+                            trigger_entity_uid=str(context_payload.get("symptom_entity_uid") or ""),
+                            root_cause_entity_uid=str(rca_payload.get("root_cause") or ""),
+                            is_final=True,
+                            graph_generation=int(context_payload.get("graph_generation") or 0),
+                            graph_schema_version=int(context_payload.get("graph_schema_version") or 2),
+                        )
+                    except Exception as exc:  # noqa: BLE001 - never claim durable RCA finality
+                        target = "partial"
+                        result["error_code"] = "GRAPH_CONTEXT_FINALIZE_FAILED"
+                        result["error_message"] = str(exc)[:200]
             work.lease.commit(
                 target=target, result=result,
                 events=_runtime_events(events, invocation_id=item.invocation_id,

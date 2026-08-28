@@ -25,6 +25,7 @@ class GraphContext:
     window_start: str = ""
     window_end: str = ""
     symptom_time: str = ""
+    symptom_entity_uid: str = ""
 
     def record(self, event: str) -> None:
         self.events.append(event)
@@ -36,7 +37,8 @@ class GraphContext:
             "contract_version": self.contract_version, "graph_schema_version": self.schema_version,
             "graph_generation": self.graph_generation, "context_version": self.context_version,
             "snapshot_at": self.snapshot_at, "window_start": self.window_start, "window_end": self.window_end,
-            "symptom_time": self.symptom_time, "partial": self.partial, "stale": self.stale,
+            "symptom_time": self.symptom_time, "symptom_entity_uid": self.symptom_entity_uid,
+            "partial": self.partial, "stale": self.stale,
             "warning_codes": list(self.warning_codes), "vertices": list(self.vertices), "edges": list(self.edges),
             "propagation_paths": list(self.propagation_paths),
             "events": list(self.events),

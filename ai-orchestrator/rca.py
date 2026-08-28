@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from contracts import RequestContext
 from invocation_scope import ScopeView
@@ -789,3 +789,92 @@ def _k8s_rca(affected_service: str, anomaly_event: dict) -> dict:
         },
         "message": "K8s 集群告警确定性分析",
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compatibility facade
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The historical implementation above remains available only for old direct
+# K8s/CLI callers that do not have a persisted Investigation Run.  All callers
+# that provide a frozen ai_runs snapshot and a lease-bound execution context
+# are routed through RCAEngineV2.  This keeps the public function signatures
+# stable while making the production worker's path unambiguous and preventing
+# a wall-clock/legacy topology fallback from being used for a Run.
+_legacy_diagnose_root_cause = diagnose_root_cause
+_legacy_full_rca_analysis = full_rca_analysis
+
+
+def _diagnose_from_run_snapshot(*, run_snapshot: dict, execution_context: Any,
+                                resource_id: str = "", entity_uid: str = "",
+                                entity_name: str = "", symptoms: tuple[str, ...] = (),
+                                evidence: tuple[dict, ...] = ()) -> dict:
+    from types import SimpleNamespace
+    from rca_engine import RCARequest
+    from rca_engine.engine import RCAEngineV2
+    from rca_engine.runtime import InvestigationEvidenceProvider, InvestigationGraphClient, persist_graph_context
+    from control_plane_client import ControlPlaneClient
+
+    item = SimpleNamespace(
+        run_id=str(run_snapshot.get("run_id") or ""),
+        invocation_id=str(run_snapshot.get("invocation_id") or run_snapshot.get("run_id") or ""),
+        request_id=str(run_snapshot.get("request_id") or run_snapshot.get("run_id") or ""),
+        tenant_id=str(run_snapshot.get("tenant_id") or ""),
+        cluster_id=str(run_snapshot.get("primary_cluster_id") or run_snapshot.get("cluster_id") or ""),
+        resource_id=resource_id or str(run_snapshot.get("target_resource_id") or ""),
+        service=entity_name or resource_id or str(run_snapshot.get("target_resource_id") or ""),
+        request_context=execution_context,
+        window_start=str(run_snapshot.get("time_range_start") or ""),
+        window_end=str(run_snapshot.get("time_range_end") or ""),
+        symptom_time=str(run_snapshot.get("symptom_time") or run_snapshot.get("time_range_end") or ""),
+    )
+    request = RCARequest.from_ai_run(
+        run_snapshot,
+        resource_id=item.resource_id, entity_uid=entity_uid,
+        entity_name=entity_name or item.service, symptoms=symptoms,
+        evidence=evidence,
+    )
+    cp = ControlPlaneClient()
+
+    def persist(result_payload, context_payload):
+        return persist_graph_context(cp, result=result_payload, context=context_payload,
+                                     run_id=item.run_id, tenant_id=item.tenant_id,
+                                     cluster_id=item.cluster_id)
+
+    result = RCAEngineV2(
+        graph_client=InvestigationGraphClient(item),
+        evidence_provider=InvestigationEvidenceProvider(item),
+        persistence=persist,
+    ).diagnose(request, execution_context)
+    return {"mode": "graph_rca_v2", "result": result.to_dict()}
+
+
+def diagnose_root_cause(affected_service: str, cluster_id: str = "", *,
+                        request_context: ScopeView | None = None,
+                        run_snapshot: dict | None = None,
+                        execution_context: Any = None, **kwargs) -> dict:
+    """Stable facade; persisted Investigation calls always use RCAEngineV2."""
+    if run_snapshot is not None:
+        return _diagnose_from_run_snapshot(
+            run_snapshot=run_snapshot, execution_context=execution_context or request_context,
+            resource_id=affected_service, entity_name=affected_service,
+            symptoms=(affected_service,), evidence=tuple(kwargs.get("evidence") or ()),
+        )
+    return _legacy_diagnose_root_cause(affected_service, cluster_id=cluster_id,
+                                       request_context=request_context)
+
+
+def full_rca_analysis(affected_service: str, anomaly_event: dict = None,
+                      cluster_id: str = "", *, request_context: ScopeView | None = None,
+                      run_snapshot: dict | None = None, execution_context: Any = None,
+                      **kwargs) -> dict:
+    """Stable facade; only the no-Run compatibility path can use legacy RCA."""
+    if run_snapshot is not None:
+        return _diagnose_from_run_snapshot(
+            run_snapshot=run_snapshot, execution_context=execution_context or request_context,
+            resource_id=str(run_snapshot.get("target_resource_id") or affected_service),
+            entity_name=affected_service, symptoms=(str((anomaly_event or {}).get("message") or affected_service),),
+            evidence=tuple(kwargs.get("evidence") or ()),
+        )
+    return _legacy_full_rca_analysis(affected_service, anomaly_event=anomaly_event,
+                                     cluster_id=cluster_id, request_context=request_context)

@@ -120,6 +120,14 @@ func validateToolRunRequest(req *internalQueryRequest) error {
 		req.ExecutorID == "" || req.LeaseEpoch <= 0 || req.LeaseToken == "" {
 		return &internalQueryError{Code: "VALIDATION_FAILED", Message: "investigation ToolRun lease context required"}
 	}
+	if req.QueryWindowStart == "" || req.QueryWindowEnd == "" {
+		return &internalQueryError{Code: "VALIDATION_FAILED", Message: "investigation ToolRun frozen query window required"}
+	}
+	start, startErr := time.Parse(time.RFC3339, req.QueryWindowStart)
+	end, endErr := time.Parse(time.RFC3339, req.QueryWindowEnd)
+	if startErr != nil || endErr != nil || start.After(end) {
+		return &internalQueryError{Code: "VALIDATION_FAILED", Message: "investigation ToolRun query window must be valid and ordered"}
+	}
 	return nil
 }
 
@@ -128,35 +136,38 @@ func validateToolRunRequest(req *internalQueryRequest) error {
 // 同 key 不同 args → 409 IDEMPOTENCY_KEY_REUSED。
 func toolArgsHash(req *internalQueryRequest) string {
 	args := struct {
-		Service         string   `json:"service"`
-		Services        []string `json:"services"`
-		Query           string   `json:"query"`
-		Since           string   `json:"since"`
-		Minutes         int      `json:"minutes"`
-		Hours           int      `json:"hours"`
-		Namespace       string   `json:"namespace"`
-		Limit           int      `json:"limit"`
-		Offset          int      `json:"offset"`
-		TopK            int      `json:"top_k"`
-		GraphOperation  string   `json:"graph_operation"`
-		EntityUID       string   `json:"entity_uid"`
-		TargetEntityUID string   `json:"target_entity_uid"`
-		EntityType      string   `json:"entity_type"`
-		Name            string   `json:"name"`
-		Direction       string   `json:"direction"`
-		RelationTypes   []string `json:"relation_types"`
-		RelationPolicy  string   `json:"relation_policy"`
-		MaxDepth        int      `json:"max_depth"`
-		MaxVertices     int      `json:"max_vertices"`
-		MaxEdges        int      `json:"max_edges"`
-		IncludeStale    bool     `json:"include_stale"`
-		Cursor          string   `json:"cursor"`
-		ContextVersion  int64    `json:"context_version"`
+		Service          string   `json:"service"`
+		Services         []string `json:"services"`
+		Query            string   `json:"query"`
+		Since            string   `json:"since"`
+		Minutes          int      `json:"minutes"`
+		Hours            int      `json:"hours"`
+		Namespace        string   `json:"namespace"`
+		Limit            int      `json:"limit"`
+		Offset           int      `json:"offset"`
+		TopK             int      `json:"top_k"`
+		GraphOperation   string   `json:"graph_operation"`
+		EntityUID        string   `json:"entity_uid"`
+		TargetEntityUID  string   `json:"target_entity_uid"`
+		EntityType       string   `json:"entity_type"`
+		Name             string   `json:"name"`
+		Direction        string   `json:"direction"`
+		RelationTypes    []string `json:"relation_types"`
+		RelationPolicy   string   `json:"relation_policy"`
+		MaxDepth         int      `json:"max_depth"`
+		MaxVertices      int      `json:"max_vertices"`
+		MaxEdges         int      `json:"max_edges"`
+		IncludeStale     bool     `json:"include_stale"`
+		Cursor           string   `json:"cursor"`
+		ContextVersion   int64    `json:"context_version"`
+		QueryWindowStart string   `json:"query_window_start"`
+		QueryWindowEnd   string   `json:"query_window_end"`
 	}{req.Service, req.Services, req.Query, req.Since, req.Minutes, req.Hours,
 		req.Namespace, req.Limit, req.Offset, req.TopK, req.GraphOperation,
 		req.EntityUID, req.TargetEntityUID, req.EntityType, req.Name, req.Direction,
 		req.RelationTypes, req.RelationPolicy, req.MaxDepth, req.MaxVertices,
-		req.MaxEdges, req.IncludeStale, req.Cursor, req.ContextVersion}
+		req.MaxEdges, req.IncludeStale, req.Cursor, req.ContextVersion,
+		req.QueryWindowStart, req.QueryWindowEnd}
 	canonical, _ := json.Marshal(args)
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])

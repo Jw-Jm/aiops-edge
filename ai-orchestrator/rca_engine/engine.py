@@ -132,6 +132,7 @@ class RCAEngineV2:
             entity = resolve_entity(request, self._graph_call)
             if not entity:
                 raise ValueError("GRAPH_ENTITY_NOT_FOUND")
+            context.symptom_entity_uid = str(entity.get("entity_uid") or "")
             context.record("graph_context_created")
             subgraph = graph_candidates(entity, self._graph_call)
             context.vertices = list(subgraph.get("vertices") or [])
@@ -150,6 +151,18 @@ class RCAEngineV2:
             context.warning_codes = ["GRAPH_UNAVAILABLE", str(exc)[:100]]
             context.record("graph_context_created")
             result.graph_context = context.to_dict()
+            if self.persistence is not None:
+                try:
+                    # Persist the local-only context as well.  A graph outage
+                    # must remain replayable/auditable instead of silently
+                    # disappearing before the worker records its terminal
+                    # state.
+                    self.persistence(result.to_dict(), result.graph_context)
+                except Exception as persist_exc:  # noqa: BLE001 - preserve partial RCA
+                    context.partial = True
+                    context.warning_codes.append(f"GRAPH_CONTEXT_PERSIST_FAILED:{str(persist_exc)[:100]}")
+                    result.missing_evidence.append("graph_context_persistence")
+                    result.graph_context = context.to_dict()
             return result
 
         evidence = [dict(item) for item in request.evidence]
@@ -157,6 +170,9 @@ class RCAEngineV2:
             fetched = self.evidence_provider(request, context)
             if fetched:
                 evidence.extend(fetched)
+        provider_failures = list(getattr(self.evidence_provider, "failures", []) or [])
+        if provider_failures:
+            context.partial = True
         ranked = []
         for candidate in candidate_rows(subgraph):
             uid = str(candidate.get("entity_uid") or "")
@@ -178,9 +194,12 @@ class RCAEngineV2:
         paths = propagation_paths(subgraph, top["entity_uid"], str(entity.get("entity_uid") or "")) if top else []
         context.propagation_paths = paths
         context.record("propagation_paths_built") if paths else None
+        missing_evidence = [] if top and top["evidence_categories"] >= 2 else ["independent_evidence"]
+        if provider_failures:
+            missing_evidence.append("evidence_source_unavailable")
         payload = {"root_cause_status": status, "root_cause": top["entity_uid"] if top else None,
                    "candidate_roots": ranked[:5], "propagation_paths": paths, "evidence": evidence,
-                   "missing_evidence": [] if top and top["evidence_categories"] >= 2 else ["independent_evidence"],
+                   "missing_evidence": missing_evidence,
                    "contradictions": []}
         if status == "confirmed":
             context.record("graph_context_finalized")

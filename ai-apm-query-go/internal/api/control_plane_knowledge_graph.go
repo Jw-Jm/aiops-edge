@@ -23,40 +23,48 @@ const (
 )
 
 type knowledgeGraphRequest struct {
-	Operation      string                   `json:"operation"`
-	ClusterID      string                   `json:"cluster_id"`
-	Type           string                   `json:"type"`
-	Name           string                   `json:"name"`
-	Props          map[string]interface{}   `json:"props"`
-	SrcID          int64                    `json:"src_id"`
-	DstID          int64                    `json:"dst_id"`
-	EdgeType       string                   `json:"edge_type"`
-	EdgeProps      map[string]interface{}   `json:"edge_props"`
-	NodeID         int64                    `json:"node_id"`
-	Hops           int                      `json:"hops"`
-	Depth          int                      `json:"depth"`
-	EdgeTypes      []string                 `json:"edge_types"`
-	FromType       string                   `json:"from_type"`
-	FromName       string                   `json:"from_name"`
-	ToType         string                   `json:"to_type"`
-	ToName         string                   `json:"to_name"`
-	Operations     []knowledgeGraphMutation `json:"operations"`
-	EntityUID      string                   `json:"entity_uid"`
-	Generation     int64                    `json:"generation"`
-	Source         string                   `json:"source"`
-	Mutations      []graphMutationRequest   `json:"mutations"`
-	Phase          string                   `json:"phase"`
-	ReconcileRunID string                   `json:"reconcile_run_id"`
-	LeaseKey       string                   `json:"lease_key"`
-	LeaseOwnerID   string                   `json:"lease_owner_id"`
-	LeaseEpoch     int64                    `json:"lease_epoch"`
-	LeaseToken     string                   `json:"lease_token"`
-	Watermark      string                   `json:"watermark"`
-	Error          string                   `json:"error"`
-	VerticesSeen   int64                    `json:"vertices_seen"`
-	EdgesSeen      int64                    `json:"edges_seen"`
-	VerticesStaled int64                    `json:"vertices_staled"`
-	EdgesStaled    int64                    `json:"edges_staled"`
+	Operation          string                   `json:"operation"`
+	RunID              string                   `json:"run_id"`
+	ClusterID          string                   `json:"cluster_id"`
+	Type               string                   `json:"type"`
+	Name               string                   `json:"name"`
+	Props              map[string]interface{}   `json:"props"`
+	SrcID              int64                    `json:"src_id"`
+	DstID              int64                    `json:"dst_id"`
+	EdgeType           string                   `json:"edge_type"`
+	EdgeProps          map[string]interface{}   `json:"edge_props"`
+	NodeID             int64                    `json:"node_id"`
+	Hops               int                      `json:"hops"`
+	Depth              int                      `json:"depth"`
+	EdgeTypes          []string                 `json:"edge_types"`
+	FromType           string                   `json:"from_type"`
+	FromName           string                   `json:"from_name"`
+	ToType             string                   `json:"to_type"`
+	ToName             string                   `json:"to_name"`
+	Operations         []knowledgeGraphMutation `json:"operations"`
+	EntityUID          string                   `json:"entity_uid"`
+	Generation         int64                    `json:"generation"`
+	Source             string                   `json:"source"`
+	Mutations          []graphMutationRequest   `json:"mutations"`
+	Phase              string                   `json:"phase"`
+	ReconcileRunID     string                   `json:"reconcile_run_id"`
+	LeaseKey           string                   `json:"lease_key"`
+	LeaseOwnerID       string                   `json:"lease_owner_id"`
+	LeaseEpoch         int64                    `json:"lease_epoch"`
+	LeaseToken         string                   `json:"lease_token"`
+	Watermark          string                   `json:"watermark"`
+	Error              string                   `json:"error"`
+	VerticesSeen       int64                    `json:"vertices_seen"`
+	EdgesSeen          int64                    `json:"edges_seen"`
+	VerticesStaled     int64                    `json:"vertices_staled"`
+	ContextVersion     int64                    `json:"context_version"`
+	GraphSchemaVersion int64                    `json:"graph_schema_version"`
+	GraphGeneration    int64                    `json:"graph_generation"`
+	TriggerEntityUID   string                   `json:"trigger_entity_uid"`
+	RootCauseEntityUID string                   `json:"root_cause_entity_uid"`
+	IsFinal            bool                     `json:"is_final"`
+	Context            map[string]interface{}   `json:"context"`
+	EdgesStaled        int64                    `json:"edges_staled"`
 }
 
 type graphMutationRequest struct {
@@ -86,12 +94,12 @@ func (h *Handler) InternalControlPlaneKnowledgeGraph(w http.ResponseWriter, r *h
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
-	if req.Operation == "" || (req.Operation != "snapshot" && req.Operation != "find_node" && req.Operation != "upsert_node" && req.Operation != "upsert_edge" && req.Operation != "batch_upsert" && req.Operation != "reconcile" && req.Operation != "get_vertex" && req.Operation != "batch_mutate" && req.Operation != "mark_stale_generation" && req.Operation != "reconcile_scope" && req.Operation != "health") {
+	if req.Operation == "" || (req.Operation != "snapshot" && req.Operation != "find_node" && req.Operation != "upsert_node" && req.Operation != "upsert_edge" && req.Operation != "batch_upsert" && req.Operation != "reconcile" && req.Operation != "get_vertex" && req.Operation != "batch_mutate" && req.Operation != "mark_stale_generation" && req.Operation != "reconcile_scope" && req.Operation != "health" && req.Operation != "append_graph_context") {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": contract.ErrorCodeValidationFailed})
 		return
 	}
 	capability := knowledgeGraphReadCapability
-	if req.Operation == "upsert_node" || req.Operation == "upsert_edge" || req.Operation == "batch_upsert" || req.Operation == "reconcile" || req.Operation == "batch_mutate" || req.Operation == "mark_stale_generation" || req.Operation == "reconcile_scope" {
+	if req.Operation == "upsert_node" || req.Operation == "upsert_edge" || req.Operation == "batch_upsert" || req.Operation == "reconcile" || req.Operation == "batch_mutate" || req.Operation == "mark_stale_generation" || req.Operation == "reconcile_scope" || req.Operation == "append_graph_context" {
 		capability = knowledgeGraphWriteCapability
 	}
 	rctx, authErr := authorizeInternalControlPlane(r, capability, "ai-orchestrator")
@@ -124,6 +132,15 @@ func (h *Handler) InternalControlPlaneKnowledgeGraph(w http.ResponseWriter, r *h
 		result map[string]interface{}
 		err    error
 	)
+	if req.Operation == "append_graph_context" {
+		result, err = h.appendRunGraphContext(req, rctx)
+		if err != nil {
+			respondGraphErrorFromGo(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, result)
+		return
+	}
 	if req.Operation == "get_vertex" || req.Operation == "batch_mutate" || req.Operation == "mark_stale_generation" || req.Operation == "reconcile_scope" || req.Operation == "health" {
 		result, err = h.internalGraphControlOperation(req, rctx)
 		if err != nil {
@@ -152,6 +169,68 @@ func (h *Handler) InternalControlPlaneKnowledgeGraph(w http.ResponseWriter, r *h
 		return
 	}
 	respondJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) appendRunGraphContext(req knowledgeGraphRequest, rctx *internalQueryCtx) (map[string]interface{}, error) {
+	if h.runGraphDAO == nil || h.runDAO == nil || req.RunID == "" || req.RunID != rctx.RunID {
+		return nil, graphpkg.NewError("GRAPH_SCOPE_DENIED", "run scope mismatch")
+	}
+	if req.ContextVersion <= 0 || req.Context == nil {
+		return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "context and positive context_version are required")
+	}
+	run, err := h.runDAO.Get(req.RunID)
+	if err != nil || run == nil {
+		return nil, graphpkg.NewError("ENTITY_NOT_FOUND", "run not found")
+	}
+	if run.TenantID != rctx.TenantID {
+		return nil, graphpkg.NewError("GRAPH_SCOPE_DENIED", "run is outside tenant scope")
+	}
+	if contextRunID, ok := req.Context["run_id"].(string); ok && contextRunID != "" && contextRunID != req.RunID {
+		return nil, graphpkg.NewError("GRAPH_SCOPE_DENIED", "context run scope mismatch")
+	}
+	if run.TimeRangeStart != nil && run.TimeRangeEnd != nil {
+		contextStart, startOK := req.Context["window_start"].(string)
+		contextEnd, endOK := req.Context["window_end"].(string)
+		start, startErr := time.Parse(time.RFC3339Nano, contextStart)
+		end, endErr := time.Parse(time.RFC3339Nano, contextEnd)
+		if !startOK || !endOK || startErr != nil || endErr != nil ||
+			!run.TimeRangeStart.UTC().Truncate(time.Millisecond).Equal(start.UTC().Truncate(time.Millisecond)) ||
+			!run.TimeRangeEnd.UTC().Truncate(time.Millisecond).Equal(end.UTC().Truncate(time.Millisecond)) {
+			return nil, graphpkg.NewError("GRAPH_SCOPE_DENIED", "context window does not match persisted Run")
+		}
+	}
+	if rctx.ClusterID != "" && req.ClusterID != "" && req.ClusterID != rctx.ClusterID {
+		return nil, graphpkg.NewError("GRAPH_SCOPE_DENIED", "cluster scope mismatch")
+	}
+	if req.ClusterID == "" {
+		req.ClusterID = rctx.ClusterID
+	}
+	raw, err := json.Marshal(req.Context)
+	if err != nil {
+		return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "context must be JSON")
+	}
+	if req.GraphSchemaVersion <= 0 {
+		req.GraphSchemaVersion = 2
+	}
+	evidenceCutoffAt := time.Now().UTC()
+	if snapshotAt, ok := req.Context["snapshot_at"].(string); ok && snapshotAt != "" {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, snapshotAt)
+		if parseErr != nil {
+			return nil, graphpkg.NewError("GRAPH_INVALID_ARGUMENT", "context snapshot_at must be RFC3339")
+		}
+		evidenceCutoffAt = parsed.UTC()
+	}
+	if err := h.runGraphDAO.Insert(store.AIRunGraphContext{
+		RunID: req.RunID, ContextVersion: req.ContextVersion, TenantID: rctx.TenantID,
+		ScopeKind: run.ScopeKind, PrimaryClusterID: req.ClusterID,
+		GraphSchemaVersion: req.GraphSchemaVersion, GraphGeneration: req.GraphGeneration,
+		EvidenceCutoffAt: evidenceCutoffAt,
+		TriggerEntityUID: req.TriggerEntityUID, RootCauseEntityUID: req.RootCauseEntityUID,
+		IsFinal: req.IsFinal, ContextJSON: string(raw),
+	}); err != nil {
+		return nil, graphpkg.NewError(graphpkg.ErrGraphUnavailable, err.Error())
+	}
+	return map[string]interface{}{"run_id": req.RunID, "context_version": req.ContextVersion, "is_final": req.IsFinal}, nil
 }
 
 func (h *Handler) internalGraphControlOperation(req knowledgeGraphRequest, rctx *internalQueryCtx) (map[string]interface{}, error) {

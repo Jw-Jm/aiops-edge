@@ -453,3 +453,10 @@ func nullableStringValue(s string) interface{} {
 	}
 	return s
 }
+
+func nullableTimeValue(value *time.Time) interface{} {
+	if value == nil {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}

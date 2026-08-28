@@ -55,6 +55,7 @@ func authorizeInternalControlPlane(r *http.Request, capability, expectedIssuer s
 		TenantID:   ctx.TenantID,
 		ClusterID:  ctx.ClusterID,
 		Capability: ctx.Capability,
+		RunID:      ctx.RunID,
 	}, nil
 }
 

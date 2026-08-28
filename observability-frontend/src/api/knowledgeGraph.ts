@@ -117,13 +117,13 @@ export const getGraphImpact = (uid: string, params?: { max_depth?: number }) =>
 export const getGraphPath = (source_entity_uid: string, target_entity_uid: string, max_depth = 6) =>
   api.post<GraphSubgraph>('/ai/kg/path', { source_entity_uid, target_entity_uid, max_depth })
 
-export const getServiceOverview = (params?: { minutes?: number }) =>
+export const getServiceOverview = (params?: { minutes?: number; namespace?: string; application_uid?: string }) =>
   api.get<ServiceOverviewResponse>('/services/overview', { params })
-export const getServiceMap = (params?: { minutes?: number; group_by?: 'application' | 'namespace' }) =>
+export const getServiceMap = (params?: { minutes?: number; group_by?: 'application' | 'namespace'; namespace?: string; application_uid?: string }) =>
   api.get<ServiceMapResponse>('/services/map', { params })
-export const getServiceDependencies = (entityUID: string, params?: { minutes?: number; upstream_depth?: number; downstream_depth?: number }) =>
+export const getServiceDependencies = (entityUID: string, params?: { minutes?: number; upstream_depth?: number; downstream_depth?: number; include_middleware?: boolean }) =>
   api.get<ServiceDependenciesResponse>(`/services/${encodeURIComponent(entityUID)}/dependencies`, { params })
-export const getServiceDependencyMatrix = (params?: { minutes?: number }) =>
+export const getServiceDependencyMatrix = (params?: { minutes?: number; namespace?: string; application_uid?: string }) =>
   api.get<ServiceMatrixResponse>('/services/dependency-matrix', { params })
 export const getRunGraphContext = (runId: string) =>
   api.get<Record<string, unknown>>(`/ai/runs/${encodeURIComponent(runId)}/graph-context`)

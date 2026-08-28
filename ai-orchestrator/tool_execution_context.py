@@ -28,6 +28,8 @@ class ToolExecutionContext:
     lease_token: str
     tool_run_id: str
     idempotency_key: str
+    query_window_start: str = ""
+    query_window_end: str = ""
 
     @classmethod
     def from_mapping(cls, context: Mapping[str, Any], *, tool_id: str,
@@ -39,7 +41,9 @@ class ToolExecutionContext:
             # Chat/platform are not allowed to silently masquerade as an
             # Investigation; they carry no lease-bound fields.
             return cls(kind, "", "", str(context.get("tenant_id") or ""),
-                       str(context.get("cluster_id") or ""), "", 0, "", "", "")
+                       str(context.get("cluster_id") or ""), "", 0, "", "", "",
+                       str(context.get("query_window_start") or ""),
+                       str(context.get("query_window_end") or ""))
         run_id = _uuid(context.get("run_id"), "run_id")
         invocation_id = _uuid(context.get("invocation_id"), "invocation_id")
         tenant_id = _uuid(context.get("tenant_id"), "tenant_id")
@@ -59,7 +63,9 @@ class ToolExecutionContext:
         digest = hashlib.sha256(raw).hexdigest()
         idempotency_key = str(context.get("idempotency_key") or f"{invocation_id}:{tool_id}:{digest}")
         return cls(kind, run_id, invocation_id, tenant_id, cluster_id, executor_id,
-                   lease_epoch, lease_token, tool_run_id, idempotency_key)
+                   lease_epoch, lease_token, tool_run_id, idempotency_key,
+                   str(context.get("query_window_start") or ""),
+                   str(context.get("query_window_end") or ""))
 
     def to_body(self) -> dict[str, Any]:
         if self.workload_kind != "investigation":
@@ -72,4 +78,6 @@ class ToolExecutionContext:
             "executor_id": self.executor_id,
             "lease_epoch": self.lease_epoch,
             "lease_token": self.lease_token,
+            "query_window_start": self.query_window_start,
+            "query_window_end": self.query_window_end,
         }

@@ -84,3 +84,27 @@ def test_rca_request_and_result_keep_frozen_window_and_actual_paths():
     path = result.propagation_paths[0]
     assert path["vertex_uids"] == ["service:db", "service:checkout"]
     assert path["edge_uids"] == ["edge:db-checkout"]
+
+
+def test_graph_outage_persists_local_only_context_for_replay():
+    persisted = []
+
+    def graph_client(**_params):
+        raise RuntimeError("query-api unavailable")
+
+    request = RCARequest(
+        run_id="run-graph-down", tenant_id="tenant-1", cluster_id="cluster-1",
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z", entity_uid="service:checkout",
+    )
+    result = RCAEngineV2(
+        graph_client=graph_client,
+        persistence=lambda result_payload, context_payload: persisted.append(
+            (result_payload, context_payload)
+        ),
+    ).diagnose(request)
+
+    assert result.root_cause_scope == "local_only"
+    assert result.graph_enhanced is False
+    assert len(persisted) == 1
+    assert persisted[0][1]["warning_codes"][0] == "GRAPH_UNAVAILABLE"

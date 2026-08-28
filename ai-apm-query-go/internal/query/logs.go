@@ -25,6 +25,8 @@ type LogQuery struct {
 	Minutes       int
 	ExcludeHealth bool
 	Limit         int // raw-log response bound; VictoriaLogs queries must never be unbounded
+	WindowStart   *time.Time
+	WindowEnd     *time.Time
 }
 
 // LogRecord 一条规范化日志记录。
@@ -174,10 +176,14 @@ func (r *LogRepository) searchLegacy(ctx context.Context, q LogQuery) ([]LogReco
 	if q.ExcludeHealth {
 		conds = append(conds, "(body NOT LIKE '%/health%' AND body NOT LIKE '%/ready%' AND body NOT LIKE '%/livez%' AND body NOT LIKE '%/v1/query%' AND body NOT LIKE '%metrics%')")
 	}
-	if q.Minutes <= 0 {
-		q.Minutes = 1440
+	if q.WindowStart != nil && q.WindowEnd != nil {
+		conds = append(conds, fmt.Sprintf("timestamp >= %s AND timestamp < %s", chTimeLiteral(*q.WindowStart), chTimeLiteral(*q.WindowEnd)))
+	} else {
+		if q.Minutes <= 0 {
+			q.Minutes = 1440
+		}
+		conds = append(conds, fmt.Sprintf("timestamp >= now() - INTERVAL %d MINUTE", q.Minutes))
 	}
-	conds = append(conds, fmt.Sprintf("timestamp >= now() - INTERVAL %d MINUTE", q.Minutes))
 
 	sql := "SELECT timestamp, service_name, severity, body, trace_id FROM observability.log_records WHERE " +
 		strings.Join(conds, " AND ") + " ORDER BY timestamp DESC LIMIT 100"
@@ -262,10 +268,16 @@ func vlogsQuery(q LogQuery) string {
 			parts = append(parts, fmt.Sprintf(`NOT *%s*`, term))
 		}
 	}
+	expr := strings.Join(parts, " AND ")
+	if q.WindowStart != nil && q.WindowEnd != nil {
+		// The HTTP API receives absolute start/end parameters below; keeping the
+		// LogsQL predicate free of a relative `_time` clause prevents retries from
+		// drifting with the wall clock.
+		return expr
+	}
 	if q.Minutes <= 0 {
 		q.Minutes = 1440
 	}
-	expr := strings.Join(parts, " AND ")
 	// VictoriaLogs 相对时长过滤用 `_time:30m`（过去 N 分钟），不是 `now-Nm`。
 	return expr + fmt.Sprintf(" AND _time:%dm", q.Minutes)
 }
@@ -376,6 +388,10 @@ func (r *VLogsReader) Search(ctx context.Context, q LogQuery) ([]LogRecord, erro
 	values := url.Values{}
 	values.Set("query", vlogsQuery(q))
 	values.Set("limit", strconv.Itoa(normalizedVLogsLimit(q.Limit)))
+	if q.WindowStart != nil && q.WindowEnd != nil {
+		values.Set("start", q.WindowStart.UTC().Format(time.RFC3339Nano))
+		values.Set("end", q.WindowEnd.UTC().Format(time.RFC3339Nano))
+	}
 	req.URL.RawQuery = values.Encode()
 
 	resp, err := r.client.Do(req)
@@ -436,6 +452,10 @@ func (r *VLogsReader) queryStats(ctx context.Context, q LogQuery, pipe string) (
 	values := url.Values{}
 	values.Set("query", vlogsQuery(q)+" | "+pipe)
 	values.Set("limit", "1000")
+	if q.WindowStart != nil && q.WindowEnd != nil {
+		values.Set("start", q.WindowStart.UTC().Format(time.RFC3339Nano))
+		values.Set("end", q.WindowEnd.UTC().Format(time.RFC3339Nano))
+	}
 	req.URL.RawQuery = values.Encode()
 	resp, err := r.client.Do(req)
 	if err != nil {

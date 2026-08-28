@@ -463,6 +463,8 @@ func airunToMap(r *store.AIRun) map[string]interface{} {
 		"action_mode":        r.ActionMode,
 		"target_type":        nullableStringValue(r.TargetType),
 		"target_resource_id": nullableStringValue(r.TargetResourceID),
+		"time_range_start":   nullableTimeValue(r.TimeRangeStart),
+		"time_range_end":     nullableTimeValue(r.TimeRangeEnd),
 		"status":             r.Status,
 		"state_version":      r.StateVersion,
 		"created_at":         r.CreatedAt.Format(time.RFC3339),

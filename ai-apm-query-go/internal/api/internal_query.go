@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 	graphpkg "github.com/observability-platform/ai-apm-query-go/internal/graph"
@@ -127,6 +128,34 @@ func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID st
 		}
 		return nil, false, nil
 	}
+	if req.WorkloadKind == "investigation" {
+		// The caller may only echo the immutable window persisted on ai_runs;
+		// accepting a merely well-formed but different range would let an old
+		// executor widen or shift the evidence it is allowed to read.
+		if h.runDAO == nil {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "Run persistence unavailable"}
+		}
+		run, runErr := h.runDAO.Get(trc.RunID)
+		if runErr != nil || run == nil {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeResourceNotFound, Message: "run not found"}
+		}
+		if run.TenantID != tenantID {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeTenantAccessDenied, Message: "run tenant does not match signed tenant"}
+		}
+		if run.PrimaryClusterID != "" && run.PrimaryClusterID != clusterID {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "run cluster does not match signed cluster"}
+		}
+		if run.TimeRangeStart == nil || run.TimeRangeEnd == nil {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeValidationFailed, Message: "run frozen query window is missing"}
+		}
+		start, startErr := time.Parse(time.RFC3339, req.QueryWindowStart)
+		end, endErr := time.Parse(time.RFC3339, req.QueryWindowEnd)
+		if startErr != nil || endErr != nil ||
+			!run.TimeRangeStart.UTC().Truncate(time.Millisecond).Equal(start.UTC().Truncate(time.Millisecond)) ||
+			!run.TimeRangeEnd.UTC().Truncate(time.Millisecond).Equal(end.UTC().Truncate(time.Millisecond)) {
+			return nil, false, &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "query window does not match persisted Run"}
+		}
+	}
 	if h.toolDAO == nil {
 		if req.WorkloadKind == "investigation" {
 			return nil, false, &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "ToolRun persistence unavailable"}
@@ -198,6 +227,18 @@ func (h *Handler) respondToolReplay(w http.ResponseWriter, trc *toolRunContext) 
 		status = http.StatusAccepted
 	}
 	respondJSON(w, status, toolReplayEnvelope(trc))
+}
+
+func investigationWindow(req *internalQueryRequest) (*time.Time, *time.Time) {
+	if req == nil || req.WorkloadKind != "investigation" || req.QueryWindowStart == "" || req.QueryWindowEnd == "" {
+		return nil, nil
+	}
+	start, startErr := time.Parse(time.RFC3339, req.QueryWindowStart)
+	end, endErr := time.Parse(time.RFC3339, req.QueryWindowEnd)
+	if startErr != nil || endErr != nil || start.After(end) {
+		return nil, nil
+	}
+	return &start, &end
 }
 
 // endToolRun 包装 internal query 的 ToolRun 结束并返回 ToolResultEnvelope。
@@ -277,8 +318,10 @@ func (h *Handler) InternalQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		h.respondToolReplay(w, trc)
 		return
 	}
+	windowStart, windowEnd := investigationWindow(req)
 	pts, err := h.metricsRepo.ServiceRED(r.Context(), query.Scope{
 		TenantID: rctx.TenantID, ClusterID: rctx.ClusterID, Services: req.Services,
+		WindowStart: windowStart, WindowEnd: windowEnd,
 	}, req.Service, req.Minutes)
 	if err != nil {
 		if trc != nil {
@@ -300,6 +343,7 @@ func (h *Handler) InternalQueryLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		windowStart, windowEnd := investigationWindow(req)
 		records, err := h.logRepo.SearchRawLogs(r.Context(), query.LogQuery{
 			TenantID:   rctx.TenantID,
 			ClusterID:  rctx.ClusterID,
@@ -307,7 +351,7 @@ func (h *Handler) InternalQueryLogs(w http.ResponseWriter, r *http.Request) {
 			Service:    req.Service,
 			Query:      req.Query,
 			Services:   req.Services,
-			Minutes:    req.Minutes,
+			Minutes:    req.Minutes, WindowStart: windowStart, WindowEnd: windowEnd,
 		})
 		if err != nil {
 			return nil, err
@@ -324,19 +368,21 @@ func (h *Handler) InternalQueryTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		windowStart, windowEnd := investigationWindow(req)
 		limit, offset := req.Limit, req.Offset
 		if limit <= 0 {
 			limit = 20
 		}
 		traces, err := h.traceRepo.FindTraces(r.Context(), query.TraceQuery{
-			TenantID:  rctx.TenantID,
-			ClusterID: rctx.ClusterID,
-			Service:   req.Service,
-			Services:  req.Services,
-			Keyword:   req.Query,
-			Hours:     req.Hours,
-			Limit:     limit,
-			Offset:    offset,
+			TenantID:    rctx.TenantID,
+			ClusterID:   rctx.ClusterID,
+			Service:     req.Service,
+			Services:    req.Services,
+			Keyword:     req.Query,
+			Hours:       req.Hours,
+			Limit:       limit,
+			Offset:      offset,
+			WindowStart: windowStart, WindowEnd: windowEnd,
 		})
 		if err != nil {
 			return nil, err
@@ -353,11 +399,12 @@ func (h *Handler) InternalQueryAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		windowStart, windowEnd := investigationWindow(req)
 		limit := req.Limit
 		if limit <= 0 {
 			limit = 50
 		}
-		events, err := h.alertRepo.ListEvents(r.Context(), req.Service, limit, req.Offset)
+		events, err := h.alertRepo.ListEventsScoped(r.Context(), rctx.ClusterID, windowStart, windowEnd, req.Service, limit, req.Offset)
 		if err != nil {
 			return nil, err
 		}
@@ -514,8 +561,10 @@ func (h *Handler) InternalQueryChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		windowStart, windowEnd := investigationWindow(req)
 		changes, err := h.changeRepo.List(r.Context(), query.ChangeScope{
 			TenantID: rctx.TenantID, ClusterID: rctx.ClusterID,
+			WindowStart: windowStart, WindowEnd: windowEnd,
 		}, req.Service, req.Since)
 		if err != nil {
 			return nil, err

@@ -18,9 +18,11 @@ type TraceQuery struct {
 	// Minutes is an optional exact window for callers such as the service
 	// detail drawer. When it is zero, Hours keeps the public trace-list
 	// contract and its legacy 24-hour default.
-	Minutes int
-	Limit   int
-	Offset  int
+	Minutes     int
+	Limit       int
+	Offset      int
+	WindowStart *time.Time
+	WindowEnd   *time.Time
 }
 
 // TraceSummary 一条 trace 的摘要（list 行）。
@@ -197,7 +199,7 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 	}
 	// The UI always supplies a window. Keep an omitted window bounded as well,
 	// so older clients cannot turn the index scan into an unbounded history scan.
-	windowMinutes, windowExpr := traceWindow(q)
+	windowMinutes, windowCondition := traceWindow(q)
 	days := (windowMinutes + 24*60 - 1) / (24 * 60)
 
 	// First read only candidate IDs from the time-ordered lightweight index.
@@ -210,7 +212,7 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 	if candidateLimit > 5000 {
 		candidateLimit = 5000
 	}
-	traceIDs, err := r.findTraceCandidates(ctx, q, windowExpr, days, candidateLimit)
+	traceIDs, err := r.findTraceCandidates(ctx, q, windowCondition, days, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +223,13 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 	for {
 		var conds []string
 		conds = append(conds, "tenant_id='"+q.TenantID+"'")
-		conds = append(conds, fmt.Sprintf("date >= today() - INTERVAL %d DAY", days))
-		conds = append(conds, "finalizeAggregation(start_state) >= now() - INTERVAL "+windowExpr)
+		dateCondition := fmt.Sprintf("date >= today() - INTERVAL %d DAY", days)
+		if q.WindowStart != nil && q.WindowEnd != nil {
+			dateCondition = fmt.Sprintf("date >= toDate(%s) AND date <= toDate(%s)",
+				sqlStr(q.WindowStart.UTC().Format("2006-01-02")), sqlStr(q.WindowEnd.UTC().Format("2006-01-02")))
+		}
+		conds = append(conds, dateCondition)
+		conds = append(conds, windowCondition)
 		if q.ClusterID != "" {
 			conds = append(conds, "cluster_id='"+q.ClusterID+"'")
 		}
@@ -293,14 +300,21 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 }
 
 func traceWindow(q TraceQuery) (int, string) {
+	if q.WindowStart != nil && q.WindowEnd != nil {
+		minutes := int(q.WindowEnd.Sub(*q.WindowStart).Minutes())
+		if minutes < 1 {
+			minutes = 1
+		}
+		return minutes, fmt.Sprintf("finalizeAggregation(start_state) >= %s AND finalizeAggregation(start_state) < %s", chTimeLiteral(*q.WindowStart), chTimeLiteral(*q.WindowEnd))
+	}
 	if q.Minutes > 0 {
-		return q.Minutes, fmt.Sprintf("%d MINUTE", q.Minutes)
+		return q.Minutes, fmt.Sprintf("finalizeAggregation(start_state) >= now() - INTERVAL %d MINUTE", q.Minutes)
 	}
 	hours := q.Hours
 	if hours < 1 {
 		hours = 24
 	}
-	return hours * 60, fmt.Sprintf("%d HOUR", hours)
+	return hours * 60, fmt.Sprintf("finalizeAggregation(start_state) >= now() - INTERVAL %d HOUR", hours)
 }
 
 // findTraceCandidates reads the time-ordered index without a high-cardinality
@@ -309,7 +323,7 @@ func traceWindow(q TraceQuery) (int, string) {
 // at a time lets ClickHouse stop at the physical candidate limit while keeping
 // the request count bounded by the number of date partitions (normally 1–2,
 // rather than one request per five-minute bucket).
-func (r *TraceRepository) findTraceCandidates(ctx context.Context, q TraceQuery, windowExpr string, days, candidateLimit int) ([]string, error) {
+func (r *TraceRepository) findTraceCandidates(ctx context.Context, q TraceQuery, windowCondition string, days, candidateLimit int) ([]string, error) {
 	indexReadLimit := candidateLimit * 2
 	if indexReadLimit > 10000 {
 		indexReadLimit = 10000
@@ -335,11 +349,34 @@ func (r *TraceRepository) findTraceCandidates(ctx context.Context, q TraceQuery,
 
 	seen := make(map[string]struct{})
 	var ids []string
+	if q.WindowStart != nil && q.WindowEnd != nil {
+		conds := append([]string{}, baseConds...)
+		conds = append(conds,
+			fmt.Sprintf("date >= toDate(%s) AND date <= toDate(%s)", sqlStr(q.WindowStart.UTC().Format("2006-01-02")), sqlStr(q.WindowEnd.UTC().Format("2006-01-02"))),
+			fmt.Sprintf("latest_start >= %s AND latest_start < %s", chTimeLiteral(*q.WindowStart), chTimeLiteral(*q.WindowEnd)))
+		indexSQL := "SELECT trace_id FROM observability.trace_summary_index WHERE " + strings.Join(conds, " AND ") +
+			fmt.Sprintf(" ORDER BY latest_start_key ASC, cluster_id ASC, trace_id ASC, service_name ASC LIMIT %d", indexReadLimit) +
+			" SETTINGS optimize_read_in_order=1, max_threads=1, max_block_size=256, max_read_buffer_size=1048576"
+		body, err := r.ch.Query(ctx, indexSQL)
+		if err != nil {
+			if qe, ok := err.(*QueryError); ok && qe.Code == NoDataCode {
+				return ids, nil
+			}
+			return nil, err
+		}
+		for _, id := range parseTraceIDs(body) {
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+		return ids, nil
+	}
 	for dayOffset := 0; dayOffset <= days && len(ids) < candidateLimit; dayOffset++ {
 		conds := append([]string{}, baseConds...)
 		conds = append(conds,
 			fmt.Sprintf("date = today() - INTERVAL %d DAY", dayOffset),
-			"latest_start >= now() - INTERVAL "+windowExpr,
+			strings.Replace(windowCondition, "finalizeAggregation(start_state)", "latest_start", 1),
 		)
 		indexSQL := "SELECT trace_id FROM observability.trace_summary_index WHERE " + strings.Join(conds, " AND ") +
 			fmt.Sprintf(" ORDER BY latest_start_key ASC, cluster_id ASC, trace_id ASC, service_name ASC LIMIT %d", indexReadLimit) +

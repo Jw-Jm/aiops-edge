@@ -72,3 +72,26 @@ The map is grouped by Application when identity is available and falls back to
 Namespace. Cross-group edges are aggregated with route/call/error/latency
 metrics. The matrix is sparse and capped at 200 services; expert G6/Dagre
 exploration is the only raw relationship view.
+
+## RCA production wiring
+
+Persistent Investigation work is accepted only after query-api returns the
+stored `ai_runs.time_range_start/time_range_end`. The worker carries those
+absolute bounds into `RCARequest`, then executes the fixed sequence:
+
+```text
+resolve_entity → candidate_subgraph → bounded typed evidence queries
+→ deterministic temporal/root score → graph-context append → explanation
+```
+
+Graph and evidence reads use `InternalQueryClient` with a distinct,
+retry-stable ToolRun/lease identity per graph or evidence operation. Query API
+rejects missing, reversed, or Run-mismatched bounds and applies the persisted
+absolute window to metrics, logs, traces, alerts, and changes; it never
+re-expands a historical Investigation as `now - N minutes`. Query results
+eligible for evidence are consumed through the control-plane evidence
+boundary; graph context is appended to `ai_run_graph_contexts` and marked final
+only at the terminal Run commit (including an explicit local-only context when
+the graph backend is unavailable). The old `rca.py` exports remain a
+compatibility facade for non-Run development/K8s callers; production Run RCA
+cannot execute without a persisted Run and active lease.

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Button, Card, Col, Empty as AntEmpty, Input, Row, Select, Space, Statistic, Table, Tag } from 'antd'
+import { Alert, Button, Card, Checkbox, Empty as AntEmpty, Input, Select, Space, Table } from 'antd'
 import { useUIStore } from '../../store/uiStore'
 import { getGraphHealth, getGraphImpact, getGraphNeighbors, searchGraphEntities, getServiceDependencies, getServiceDependencyMatrix, getServiceMap, getServiceOverview } from '../../api/knowledgeGraph'
 import type { GraphHealth, GraphSubgraph } from '../../api/graphContracts'
@@ -13,6 +13,7 @@ import ImpactTree from '../../components/graph/ImpactTree'
 import ServiceMapView from '../../components/graph/ServiceMapView'
 import ServiceDependencyView from '../../components/graph/ServiceDependencyView'
 import CallMatrix from '../../components/graph/CallMatrix'
+import ServiceSummary from './service/ServiceSummary'
 
 type ServiceRow = PanoramaService & { service: string; avg_latency_ms: number }
 const EMPTY_GRAPH: GraphSubgraph = { center_entity_uid: '', vertices: [], edges: [], meta: { contract_version: 'graph-dto-v1', schema_version: 0, partial: false, stale: true, generated_at: '', warning_codes: [] } }
@@ -48,8 +49,13 @@ const ServiceObservability: React.FC = () => {
   const [selectedService, setSelectedService] = useState('')
   const [selectedEntityUID, setSelectedEntityUID] = useState('')
   const [serviceFilter, setServiceFilter] = useState('')
+  const [namespaceFilter, setNamespaceFilter] = useState('')
+  const [applicationFilter, setApplicationFilter] = useState('')
+  const [healthFilter, setHealthFilter] = useState('')
+  const [onlyAbnormal, setOnlyAbnormal] = useState(false)
   const [mapData, setMapData] = useState<ServiceMapResponse>()
   const mapDataRef = useRef<ServiceMapResponse>()
+  const mapFilterRef = useRef('')
   mapDataRef.current = mapData
   const [overview, setOverview] = useState<ServiceOverviewResponse>()
   const [matrix, setMatrix] = useState<ServiceMatrixResponse>()
@@ -68,13 +74,16 @@ const ServiceObservability: React.FC = () => {
     setLoading(true); setError('')
     try {
       if (typeof getServiceOverview === 'function' && typeof getServiceMap === 'function') {
-        const [overviewResponse, healthResponse] = await Promise.all([getServiceOverview({ minutes: timeRange }), getGraphHealth()])
+        const filters = { minutes: timeRange, ...(namespaceFilter ? { namespace: namespaceFilter } : {}), ...(applicationFilter ? { application_uid: applicationFilter } : {}) }
+        const filterKey = `${namespaceFilter}\u0000${applicationFilter}`
+        const [overviewResponse, healthResponse] = await Promise.all([getServiceOverview(filters), getGraphHealth()])
         const nextOverview = overviewResponse.data
         let nextMap = mapDataRef.current
-        if (!nextMap || nextMap.topology_revision !== nextOverview.topology_revision) {
-          nextMap = (await getServiceMap({ minutes: timeRange, group_by: nextMap?.group_by === 'namespace' ? 'namespace' : 'application' })).data
+        if (!nextMap || nextMap.topology_revision !== nextOverview.topology_revision || mapFilterRef.current !== filterKey) {
+          nextMap = (await getServiceMap({ ...filters, group_by: nextMap?.group_by === 'namespace' ? 'namespace' : 'application' })).data
         }
         if (!nextMap) throw new Error('service map response is empty')
+        mapFilterRef.current = filterKey
         setOverview(nextOverview); setMapData(nextMap); setHealth(healthResponse.data)
         const rows = nextMap.services.map((service) => ({ ...service, service: service.service_name }))
         setServices(rows)
@@ -89,13 +98,13 @@ const ServiceObservability: React.FC = () => {
       setError('服务摘要或服务地图暂时不可用，请检查 query-api 与事实数据源状态。')
       setServices([]); setMapData(undefined); setOverview(undefined)
     } finally { setLoading(false) }
-  }, [timeRange])
+  }, [applicationFilter, namespaceFilter, timeRange])
 
   const loadMatrix = useCallback(async () => {
     if (typeof getServiceDependencyMatrix !== 'function') return
     setMatrixLoading(true)
-    try { setMatrix((await getServiceDependencyMatrix({ minutes: timeRange })).data) } catch { setError('调用矩阵暂时不可用，请检查 query-api。') } finally { setMatrixLoading(false) }
-  }, [timeRange])
+    try { setMatrix((await getServiceDependencyMatrix({ minutes: timeRange, ...(namespaceFilter ? { namespace: namespaceFilter } : {}), ...(applicationFilter ? { application_uid: applicationFilter } : {}) })).data) } catch { setError('调用矩阵暂时不可用，请检查 query-api。') } finally { setMatrixLoading(false) }
+  }, [applicationFilter, namespaceFilter, timeRange])
 
   useEffect(() => { void loadOverview(); void loadMatrix() }, [currentClusterId, loadMatrix, loadOverview])
   useEffect(() => { const timer = window.setInterval(() => { void loadOverview() }, 30_000); return () => window.clearInterval(timer) }, [loadOverview])
@@ -137,16 +146,15 @@ const ServiceObservability: React.FC = () => {
     void loadDependency(); return () => { cancelled = true }
   }, [selectedEntityUID, structureRefresh, timeRange])
 
-  const visibleServices = useMemo(() => services.filter((row) => row.service.toLowerCase().includes(serviceFilter.toLowerCase())), [serviceFilter, services])
-  const summary = services.find((service) => service.service === selectedService) || services[0]
+  const visibleServices = useMemo(() => services.filter((row) => row.service.toLowerCase().includes(serviceFilter.toLowerCase())).filter((row) => !healthFilter || row.health === healthFilter).filter((row) => !onlyAbnormal || ['degraded', 'critical'].includes(row.health)), [healthFilter, onlyAbnormal, serviceFilter, services])
   const fallbackGraph = graph.vertices.length > 0 ? graph : EMPTY_GRAPH
 
   return <div className="page">
     <Breadcrumb items={[{ t: '可观测性' }, { t: '服务全景' }]} />
-    <PageHeader title="服务全景" desc="服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索。默认地图按 Application/Namespace 聚合，原始关系仅在专家探索中展开。" actions={<Space><Select aria-label="时间范围" value={timeRange} onChange={setTimeRange} options={[{ value: 15, label: '近 15 分钟' }, { value: 60, label: '近 1 小时' }, { value: 1440, label: '近 24 小时' }]} /><Button onClick={() => void loadOverview()}>刷新摘要</Button></Space>} />
+    <PageHeader title="服务全景" desc="服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索。默认地图按 Application/Namespace 聚合，原始关系仅在专家探索中展开。" actions={<Space wrap><Select aria-label="时间范围" value={timeRange} onChange={setTimeRange} options={[{ value: 15, label: '近 15 分钟' }, { value: 60, label: '近 1 小时' }, { value: 1440, label: '近 24 小时' }]} /><Select allowClear aria-label="命名空间" placeholder="命名空间" value={namespaceFilter || undefined} onChange={(value) => setNamespaceFilter(value || '')} options={[...new Set(services.map((service) => service.namespace).filter(Boolean))].map((value) => ({ value, label: value }))} /><Select allowClear aria-label="应用" placeholder="应用" value={applicationFilter || undefined} onChange={(value) => setApplicationFilter(value || '')} options={[...new Map(services.filter((service) => service.application_uid).map((service) => [service.application_uid, service.application_name || service.application_uid])).entries()].map(([value, label]) => ({ value, label }))} /><Select allowClear aria-label="健康状态" placeholder="健康状态" value={healthFilter || undefined} onChange={(value) => setHealthFilter(value || '')} options={[{ value: 'healthy', label: '健康' }, { value: 'degraded', label: '降级' }, { value: 'critical', label: '严重' }]} /><Checkbox checked={onlyAbnormal} onChange={(event) => setOnlyAbnormal(event.target.checked)}>仅看异常</Checkbox><Button onClick={() => void loadOverview()}>刷新摘要</Button></Space>} />
     {error && <Alert type="warning" showIcon message={error} style={{ marginBottom: 16 }} />}
-    <section aria-label="服务摘要"><Card title="服务摘要" loading={loading}><Row gutter={16}><Col xs={12} md={3}><Statistic title="服务总数" value={overview?.total ?? services.length} /></Col><Col xs={12} md={3}><Statistic title="健康" value={overview?.healthy ?? services.filter((s) => s.health === 'healthy').length} /></Col><Col xs={12} md={3}><Statistic title="异常" value={(overview?.degraded ?? 0) + (overview?.critical ?? 0)} /></Col><Col xs={12} md={3}><Statistic title="调用量" value={overview?.calls ?? summary?.calls ?? 0} /></Col><Col xs={12} md={3}><Statistic title="错误率" value={`${((overview?.error_rate ?? summary?.error_rate ?? 0) * 100).toFixed(1)}%`} /></Col><Col xs={12} md={3}><Statistic title="平均延迟" value={`${(overview?.avg_latency_ms ?? summary?.avg_latency_ms ?? 0).toFixed(0)}ms`} /></Col><Col xs={12} md={3}><Statistic title="P95 延迟" value={`${(overview?.p95_latency_ms ?? 0).toFixed(0)}ms`} /></Col><Col xs={12} md={3}><Statistic title="跨 namespace" value={overview?.cross_namespace_edges ?? 0} /></Col><Col xs={12} md={3}><Statistic title="循环依赖" value={overview?.cycle_count ?? 0} /></Col></Row><div style={{ marginTop: 12 }}><Tag color={health?.ready ? 'green' : 'red'}>图谱：{health?.ready ? `${health.backend} 就绪` : '不可用'}</Tag><Tag>窗口：近 {timeRange} 分钟</Tag></div></Card></section>
-    <section aria-label="服务地图" style={{ marginTop: 16 }}><Card title="服务地图" loading={mapLoading} extra={<Space><Select aria-label="地图分组" size="small" defaultValue="application" options={[{ value: 'application', label: '按 Application' }, { value: 'namespace', label: '按 Namespace' }]} onChange={async (group_by) => { const selectedGroup = group_by as 'application' | 'namespace'; setMapLoading(true); try { if (typeof getServiceMap === 'function') setMapData((await getServiceMap({ minutes: timeRange, group_by: selectedGroup })).data) } finally { setMapLoading(false) } }} /><Button size="small" onClick={() => void loadOverview()}>刷新摘要</Button></Space>}>{mapData ? <ServiceMapView data={mapData} onServiceSelect={setSelectedService} /> : <AntEmpty description="暂无服务地图数据" />}</Card><div style={{ marginTop: 12 }}><GraphSummary subgraph={fallbackGraph} health={health} /></div></section>
+    <section aria-label="服务摘要"><ServiceSummary overview={overview} services={services} health={health} timeRange={timeRange} loading={loading} /></section>
+    <section aria-label="服务地图" style={{ marginTop: 16 }}><Card title="服务地图" loading={mapLoading} extra={<Space><Select aria-label="地图分组" size="small" value={mapData?.group_by || 'application'} options={[{ value: 'application', label: '按 Application' }, { value: 'namespace', label: '按 Namespace' }]} onChange={async (group_by) => { const selectedGroup = group_by as 'application' | 'namespace'; setMapLoading(true); try { if (typeof getServiceMap === 'function') setMapData((await getServiceMap({ minutes: timeRange, group_by: selectedGroup, ...(namespaceFilter ? { namespace: namespaceFilter } : {}), ...(applicationFilter ? { application_uid: applicationFilter } : {}) })).data) } finally { setMapLoading(false) } }} /><Button size="small" onClick={() => void loadOverview()}>刷新摘要</Button></Space>}>{mapData ? <ServiceMapView data={mapData} onServiceSelect={setSelectedService} /> : <AntEmpty description="暂无服务地图数据" />}</Card><div style={{ marginTop: 12 }}><GraphSummary subgraph={fallbackGraph} health={health} /></div></section>
     <section style={{ marginTop: 16 }}><ServiceDependencyView data={dependency} onEntitySelect={(entity) => { setSelectedEntityUID(entity.entity_uid); setSelectedService(entity.name) }} /></section>
     <section style={{ marginTop: 16 }}><Card loading={matrixLoading} extra={<Button size="small" onClick={() => void loadMatrix()}>刷新矩阵</Button>}><CallMatrix matrix={matrix} vertices={fallbackGraph.vertices} edges={fallbackGraph.edges} /></Card></section>
     <section aria-label="服务列表" style={{ marginTop: 16 }}><Card title="服务列表" extra={<Input allowClear placeholder="筛选服务" value={serviceFilter} onChange={(event) => setServiceFilter(event.target.value)} style={{ width: 220 }} />}><Table<ServiceRow> rowKey="service" size="small" dataSource={visibleServices} pagination={{ pageSize: 20, showSizeChanger: false }} columns={[{ title: '服务', dataIndex: 'service', render: (value: string, row) => <Button type="link" onClick={() => { setSelectedService(value); if (row.entity_uid) setSelectedEntityUID(row.entity_uid) }}>{value}</Button> }, { title: '调用量', dataIndex: 'calls' }, { title: '错误数', dataIndex: 'errors' }, { title: '错误率', dataIndex: 'error_rate', render: (value: number) => `${(value * 100).toFixed(1)}%` }, { title: '平均延迟', dataIndex: 'avg_latency_ms', render: (value: number) => `${value.toFixed(0)}ms` }]} locale={{ emptyText: '暂无服务指标' }} /></Card></section>

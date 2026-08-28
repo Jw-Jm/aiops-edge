@@ -9,17 +9,19 @@ import (
 
 // Scope 是查询的租户/集群作用域。tenant/cluster 为 canonical UUID（已由鉴权层解析）。
 type Scope struct {
-	TenantID  string
-	ClusterID string
-	Services  []string // 可选：限定服务范围
+	TenantID    string
+	ClusterID   string
+	Services    []string // 可选：限定服务范围
+	WindowStart *time.Time
+	WindowEnd   *time.Time
 }
 
 // REDPoint 一条 service RED（Rate/Error/Duration）时序列采样点。
 type REDPoint struct {
-	T          time.Time
-	CallCount  int
-	ErrorCount int
-	AvgMS      float64
+	T          time.Time `json:"t"`
+	CallCount  int       `json:"call_count"`
+	ErrorCount int       `json:"error_count"`
+	AvgMS      float64   `json:"avg_ms"`
 }
 
 // MetricsRepository 是 metrics 资源域的 domain repository（V9.2 Phase 6 统一查询层）。
@@ -56,19 +58,28 @@ func (r *MetricsRepository) ServiceRED(ctx context.Context, scope Scope, service
 		}
 		return r.vm.ServiceRED(ctx, VMQuery{
 			TenantID: scope.TenantID, ClusterID: scope.ClusterID, Service: service, Minutes: minutes,
+			StartTime: scope.WindowStart, EndTime: scope.WindowEnd,
 		})
+	}
+	window := fmt.Sprintf("start_time >= now() - INTERVAL %d MINUTE", minutes)
+	if scope.WindowStart != nil && scope.WindowEnd != nil {
+		window = fmt.Sprintf("start_time >= %s AND start_time < %s", chTimeLiteral(*scope.WindowStart), chTimeLiteral(*scope.WindowEnd))
 	}
 	q := fmt.Sprintf(
 		"SELECT toStartOfMinute(start_time) as t, count() as call_count, countIf(is_error=1) as error_count, "+
 			"avg(duration_ns)/1000000 as avg_ms FROM observability.trace_spans "+
-			"WHERE %s AND service_name=%s AND start_time >= now() - INTERVAL %d MINUTE GROUP BY t ORDER BY t",
-		scopeClause(scope), sqlStr(service), minutes)
+			"WHERE %s AND service_name=%s AND %s GROUP BY t ORDER BY t",
+		scopeClause(scope), sqlStr(service), window)
 
 	body, err := r.ch.Query(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	return parseREDPoints(body)
+}
+
+func chTimeLiteral(value time.Time) string {
+	return fmt.Sprintf("toDateTime64('%s', 3, 'UTC')", value.UTC().Format("2006-01-02 15:04:05.000"))
 }
 
 // scopeClause 构造 tenant/cluster/service 过滤子句（SQL ownership 在 repository）。

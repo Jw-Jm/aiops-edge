@@ -447,41 +447,107 @@ class _InvestigationBrainAdapter:
         plan_persist_error = ""
         proposal_error = ""
         saw_done = False
+        result = {}
         if item.request_context is None:
             raise RuntimeError("RUN_CONTEXT_REQUIRED")
+        # Canonical RCA order: Entity Resolution → Graph Candidate → Evidence
+        # → deterministic score/classification → persisted graph context →
+        # explanation.  The legacy graph stream is only a post-RCA narrative /
+        # action planner and never supplies the root-cause claim.
+        rca_result = None
+        try:
+            from rca_engine import RCARequest
+            from rca_engine.engine import RCAEngineV2
+            from rca_engine.runtime import InvestigationEvidenceProvider, InvestigationGraphClient, persist_graph_context
+            from control_plane_client import ControlPlaneClient
+            if not item.window_start or not item.window_end or not item.symptom_time:
+                raise ValueError("RUN_TIME_RANGE_REQUIRED")
+            ai_run = {
+                "run_id": item.run_id, "tenant_id": item.tenant_id,
+                "primary_cluster_id": item.cluster_id,
+                "target_type": item.target_type,
+                "target_resource_id": item.resource_id,
+                "time_range_start": item.window_start,
+                "time_range_end": item.window_end,
+                "symptom_time": item.symptom_time,
+            }
+            request = RCARequest.from_ai_run(
+                ai_run, resource_id=item.resource_id,
+                entity_name=item.service or item.resource_id,
+                symptoms=(item.intent or "diagnosis",),
+            )
+            control_plane = ControlPlaneClient()
+
+            def _persist(result_payload, context_payload):
+                return persist_graph_context(
+                    control_plane, result=result_payload, context=context_payload,
+                    run_id=item.run_id, tenant_id=item.tenant_id, cluster_id=item.cluster_id,
+                )
+
+            rca_result = await asyncio.to_thread(
+                RCAEngineV2(
+                    graph_client=InvestigationGraphClient(item),
+                    evidence_provider=InvestigationEvidenceProvider(item),
+                    persistence=_persist,
+                ).diagnose,
+                request, item.request_context,
+            )
+            rca_payload = rca_result.to_dict()
+            events.append({"type": "rca.v2", "event_type": "rca.v2", "status": rca_result.root_cause_status,
+                           "root_cause": rca_result.root_cause, "confidence": rca_result.confidence,
+                           "propagation_paths": rca_result.propagation_paths,
+                           "window_start": rca_result.window_start, "window_end": rca_result.window_end,
+                           "symptom_time": rca_result.symptom_time})
+            result["rca"] = rca_payload
+            if not rca_result.graph_enhanced:
+                status = "partial"
+                error_code = "GRAPH_UNAVAILABLE"
+            elif rca_result.root_cause_status == "insufficient_evidence":
+                status = "partial"
+                error_code = "INSUFFICIENT_EVIDENCE"
+        except Exception as exc:  # noqa: BLE001 - explicit partial RCA, never fake success
+            events.append({"type": "rca.error", "event_type": "rca.error",
+                           "error": str(exc)[:200], "status": "partial"})
+            status = "partial"
+            error_code = "RCA_V2_UNAVAILABLE"
+
         # read_only Investigations are reports, not approval-gated mutation
-        # workflows.  Use the chat graph so they do not manufacture a
-        # suggestion and then get stuck in an approval state.
-        mode = "chat" if item.action_mode == "read_only" else "full"
-        async for event in _get_brain().stream_sync(
-            item.intent or "diagnosis", item.service or "", item.message or "",
-            item.invocation_id, mode=mode, request_context=item.request_context,
-        ):
-            lease.check_active()
-            events.append(event)
-            if isinstance(event, dict):
-                event_type = str(event.get("type") or event.get("event_type") or "")
-                if event_type == "error":
-                    status = "failed"
-                    error_code = str(event.get("error") or "BRAIN_ERROR")
-                elif event_type == "suggestion" and item.action_mode != "read_only":
-                    status = "awaiting_approval"
-                    proposal = event
-                elif event_type == "progress":
-                    plan_events.append(event)
-                elif event_type == "hypothesis":
-                    hypothesis_events.append(event)
-                elif event_type == "tool_end":
-                    tool_status = str(event.get("status") or "").lower()
-                    if tool_status in {"failed", "unavailable"}:
+        # workflows. Their final narrative comes from the structured RCA. For
+        # plan/full modes, the existing graph stream runs only after RCA.
+        if item.action_mode == "read_only":
+            saw_done = True
+            final_text = str(getattr(rca_result, "explanation", "") or "")
+        else:
+            mode = "full"
+            async for event in _get_brain().stream_sync(
+                item.intent or "diagnosis", item.service or "", item.message or "",
+                item.invocation_id, mode=mode, request_context=item.request_context,
+            ):
+                lease.check_active()
+                events.append(event)
+                if isinstance(event, dict):
+                    event_type = str(event.get("type") or event.get("event_type") or "")
+                    if event_type == "error":
                         status = "failed"
-                        error_code = str(event.get("error") or f"TOOL_{tool_status.upper()}")
-                    elif tool_status == "no_data" and status == "success":
-                        status = "partial"
-                        error_code = "NO_DATA"
-                if event_type == "done":
-                    saw_done = True
-                    final_text = str(event.get("text") or "")
+                        error_code = str(event.get("error") or "BRAIN_ERROR")
+                    elif event_type == "suggestion":
+                        status = "awaiting_approval"
+                        proposal = event
+                    elif event_type == "progress":
+                        plan_events.append(event)
+                    elif event_type == "hypothesis":
+                        hypothesis_events.append(event)
+                    elif event_type == "tool_end":
+                        tool_status = str(event.get("status") or "").lower()
+                        if tool_status in {"failed", "unavailable"}:
+                            status = "failed"
+                            error_code = str(event.get("error") or f"TOOL_{tool_status.upper()}")
+                        elif tool_status == "no_data" and status == "success":
+                            status = "partial"
+                            error_code = "NO_DATA"
+                    if event_type == "done":
+                        saw_done = True
+                        final_text = str(event.get("text") or "")
         if status == "success" and (not saw_done or not final_text.strip()):
             status = "partial"
             error_code = error_code or ("INCOMPLETE_STREAM" if not saw_done else "NO_DATA")
@@ -538,7 +604,8 @@ class _InvestigationBrainAdapter:
                     target_name=candidate["target_name"], namespace=candidate["namespace"],
                     operation=candidate["operation"], resource_type=candidate["resource_type"],
                 )
-        result = {"report": final_text} if final_text else {}
+        if final_text:
+            result["report"] = final_text
         if plan_persist_error:
             result["plan_persist_error"] = plan_persist_error
         if proposal_error:
@@ -2518,6 +2585,28 @@ async def trigger_decay():
 #  RCA Engine
 # ═══════════════════════════════════════════════════════════════
 
+def _persisted_rca_snapshot(run_id: str, request_context):
+    """Resolve the immutable Run snapshot for the V2 RCA facade.
+
+    Direct legacy RCA endpoints remain development compatibility only. In a
+    production deployment a caller must present a lease-bound Investigation
+    context; otherwise only the durable /internal/v1/run-invocations worker is
+    allowed to execute data-plane RCA reads.
+    """
+    if not run_id:
+        if _DEPLOYMENT_MODE == "production":
+            raise HTTPException(status_code=422, detail="RCA_RUN_REQUIRED")
+        return None
+    if not request_context or int(getattr(request_context, "lease_epoch", 0) or 0) <= 0:
+        raise HTTPException(status_code=409, detail="RCA_LEASE_REQUIRED")
+    from control_plane_client import ControlPlaneClient
+    try:
+        return ControlPlaneClient().get(
+            run_id=str(run_id), tenant_id=str(getattr(request_context, "tenant_id", "") or ""),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="RCA_RUN_UNAVAILABLE") from exc
+
 @app.post("/api/v1/ops/rca")
 async def rca_analysis(req: TaskCreateRequest, request: Request):
     """独立 RCA 分析 — 不依赖 LLM (确定性模式)"""
@@ -2525,10 +2614,12 @@ async def rca_analysis(req: TaskCreateRequest, request: Request):
     if not req.service:
         raise HTTPException(400, "service is required")
     request_context = _request_context_from_request(request)
+    snapshot = _persisted_rca_snapshot(req.run_id, request_context)
     return diagnose_root_cause(
         req.service,
         cluster_id=str(request_context.cluster_id),
         request_context=request_context,
+        run_snapshot=snapshot, execution_context=request_context,
     )
 
 
@@ -2540,10 +2631,12 @@ async def rca_deep_analysis(req: TaskCreateRequest, request: Request):
     if not req.service:
         raise HTTPException(400, "service is required")
     request_context = _request_context_from_request(request)
+    snapshot = _persisted_rca_snapshot(req.run_id, request_context)
     result = full_rca_analysis(
         req.service,
         cluster_id=str(request_context.cluster_id),
         request_context=request_context,
+        run_snapshot=snapshot, execution_context=request_context,
     )
     # P11 只读提案（best-effort，不影响 RCA 主流程）
     try:
@@ -2597,6 +2690,7 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
     _parse_llm_config(request)
     from rca import full_rca_analysis
     request_context = _request_context_from_request(request)
+    snapshot = _persisted_rca_snapshot(req.run_id, request_context)
 
     if not req.service and not req.rule_id:
         raise HTTPException(400, "service or rule_id is required")
@@ -2619,6 +2713,7 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
         anomaly_event=anomaly_event,
         cluster_id=str(request_context.cluster_id),
         request_context=request_context,
+        run_snapshot=snapshot, execution_context=request_context,
     )
     result["alert"] = {
         "rule_id": req.rule_id,
@@ -2753,6 +2848,7 @@ async def rca_alert_export(req: AlertRCARequest, request: Request, format: str =
     _parse_llm_config(request)
     from rca import full_rca_analysis
     request_context = _request_context_from_request(request)
+    snapshot = _persisted_rca_snapshot(req.run_id, request_context)
 
     anomaly_event = {
         "service": req.service,
@@ -2771,6 +2867,7 @@ async def rca_alert_export(req: AlertRCARequest, request: Request, format: str =
         anomaly_event=anomaly_event,
         cluster_id=str(request_context.cluster_id),
         request_context=request_context,
+        run_snapshot=snapshot, execution_context=request_context,
     )
     result["alert"] = {
         "rule_id": req.rule_id,

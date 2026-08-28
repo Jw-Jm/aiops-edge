@@ -14,6 +14,26 @@ func TestInvestigationToolRequestRequiresLeaseBoundContext(t *testing.T) {
 	}
 }
 
+func TestInvestigationToolRequestRequiresOrderedFrozenWindow(t *testing.T) {
+	req := &internalQueryRequest{
+		WorkloadKind: "investigation", RunID: "22222222-2222-4222-8222-222222222222",
+		ToolRunID: "33333333-3333-4333-8333-333333333333", IdempotencyKey: "idem-1",
+		ExecutorID: "orchestrator:test", LeaseEpoch: 1, LeaseToken: "lease-token",
+	}
+	if err := validateToolRunRequest(req); err == nil {
+		t.Fatal("investigation query without frozen window must be rejected")
+	}
+	req.QueryWindowStart = "2026-08-27T01:00:00Z"
+	req.QueryWindowEnd = "2026-08-27T00:00:00Z"
+	if err := validateToolRunRequest(req); err == nil {
+		t.Fatal("investigation query with reversed frozen window must be rejected")
+	}
+	req.QueryWindowEnd = "2026-08-27T02:00:00Z"
+	if err := validateToolRunRequest(req); err != nil {
+		t.Fatalf("valid frozen window rejected: %v", err)
+	}
+}
+
 func TestToolArgsHashDistinguishesFullNumericArguments(t *testing.T) {
 	a := &internalQueryRequest{Service: "orders", Minutes: 1}
 	b := &internalQueryRequest{Service: "orders", Minutes: 257}

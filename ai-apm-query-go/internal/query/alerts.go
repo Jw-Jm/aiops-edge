@@ -3,29 +3,31 @@ package query
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // AlertEvent 一条告警事件（query 层的规范化结构）。
 type AlertEvent struct {
-	ID            string
-	RuleID        string
-	RuleName      string
-	Service       string
-	Severity      string
-	Message       string
-	Value         string
-	Threshold     string
-	Timestamp     string
-	Count         string
-	FirstTS       string
-	LastTS        string
-	Status        string
-	Acknowledged  string
-	ResolvedAt    string
-	ResolvedBy    string
-	ClusterID     string
-	Signature     string
-	Extra         map[string]interface{}
+	ID           string
+	RuleID       string
+	RuleName     string
+	Service      string
+	Severity     string
+	Message      string
+	Value        string
+	Threshold    string
+	Timestamp    string
+	Count        string
+	FirstTS      string
+	LastTS       string
+	Status       string
+	Acknowledged string
+	ResolvedAt   string
+	ResolvedBy   string
+	ClusterID    string
+	Signature    string
+	Extra        map[string]interface{}
 }
 
 // AlertRepository 是 alerts 资源域的 domain repository（V9.2 Phase 6）。
@@ -41,9 +43,30 @@ func NewAlertRepository(ch *ClickHouseRepo) *AlertRepository {
 
 // ListEvents 查询告警事件（按 last_timestamp 倒序，分页/服务过滤）。
 func (r *AlertRepository) ListEvents(ctx context.Context, service string, limit, offset int) ([]AlertEvent, error) {
+	return r.listEvents(ctx, "", nil, nil, service, limit, offset)
+}
+
+// ListEventsScoped is the Investigation-only form. It binds cluster and the
+// persisted absolute window before querying ClickHouse; relative wall-clock
+// windows are intentionally not accepted on this path.
+func (r *AlertRepository) ListEventsScoped(ctx context.Context, clusterID string, start, end *time.Time, service string, limit, offset int) ([]AlertEvent, error) {
+	return r.listEvents(ctx, clusterID, start, end, service, limit, offset)
+}
+
+func (r *AlertRepository) listEvents(ctx context.Context, clusterID string, start, end *time.Time, service string, limit, offset int) ([]AlertEvent, error) {
 	where := ""
+	var conditions []string
+	if clusterID != "" {
+		conditions = append(conditions, "cluster_id = "+sqlStr(clusterID))
+	}
 	if service != "" {
-		where = " WHERE service = '" + service + "'"
+		conditions = append(conditions, "service = "+sqlStr(service))
+	}
+	if start != nil && end != nil {
+		conditions = append(conditions, fmt.Sprintf("last_timestamp >= %s AND last_timestamp < %s", chTimeLiteral(*start), chTimeLiteral(*end)))
+	}
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
 	if limit <= 0 {
 		limit = 100

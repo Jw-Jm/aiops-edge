@@ -20,6 +20,13 @@ class AcceptedInvocation:
     message: str
     action_mode: str
     request_context: Any = None
+    # Frozen by query-api's persisted ai_runs record at acceptance.  These are
+    # intentionally optional for compatibility with old in-process tests; a
+    # production Investigation must receive both bounds before RCA executes.
+    target_type: str = "service"
+    window_start: str = ""
+    window_end: str = ""
+    symptom_time: str = ""
 
 
 @dataclass(frozen=True)
