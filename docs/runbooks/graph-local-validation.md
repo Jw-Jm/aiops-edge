@@ -2,7 +2,9 @@
 
 The validation profile uses OrbStack Kubernetes, namespace `observability`, and
 the only mutation canary namespace `aiops-canary`. It deploys Apache HugeGraph
-1.7.0 with its RocksDB data directory at `/var/lib/hugegraph/data`.
+1.7.0 with its RocksDB data directory at `/var/lib/hugegraph/data`. The local
+200k/1M gate profile requests 2Gi and limits HugeGraph to 10Gi, with a startup
+probe that allows the large RocksDB fixture to open before liveness checks.
 
 ```bash
 LLM_PROVIDER_KEYS='deepseek:<real-key>' \
@@ -40,3 +42,8 @@ bash deploy/scripts/graph-load-test.sh --output /tmp/aiops-graph-load-report.jso
 `--dry-run` only validates the requested 200k/1M shape. It is not a performance
 pass. Missing HugeGraph access, authentication, or real observations must be
 reported as `BLOCKED_BY_ENV`.
+
+The fixture writer is idempotent by UID but repeated full loads in the same
+RocksDB process can grow the server cache. Run the full gate once per fresh
+validation install, archive its JSON report, and do not treat a second load of
+the same fixture as a new independent performance sample.

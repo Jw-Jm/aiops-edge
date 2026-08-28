@@ -64,7 +64,7 @@
 - [x] Step 3: 实现 HugeGraph 1.7 REST 映射：`/graphspaces/DEFAULT/graphs/aiops`、CUSTOMIZE_STRING Entity、固定 PropertyKey/IndexLabel/EdgeLabel。
 - [x] Step 4: 实现 `cmd/graph-schema-migrator`，第二次执行幂等、定义差异失败、checksum 写入 `graph_schema_state`。
 - [x] Step 5: 补齐 StatefulSet/Service/PVC/Secret/NetworkPolicy/Job，验证 query-api 是唯一 HugeGraph 网络访问者，orchestrator 与 frontend 无 HugeGraph 凭据。
-- [x] Step 6: `helm lint`、部署契约、生产 values 模板渲染与 Go 全量测试均通过。
+- [x] Step 6: `helm lint`、部署契约、生产 values 模板渲染与 Go 全量测试均通过；按 HugeGraph 1.7 实际 OpenAPI 修正 traverser 请求格式，并为 200k/1M 本机门禁将 HugeGraph 本地 profile 固定为 10Gi、增加 startupProbe。
 
 ### Task 3: Task C — Graph Repository、Backend 模式、Scope 与 Graph API 基础
 
@@ -169,7 +169,7 @@
 - [x] Step 2: 精确锁定 `@antv/g6@5.1.1`，运行 `npm ci`/生产构建使用的依赖安装与 targeted tests。
 - [x] Step 3: 实现摘要→服务地图→依赖主链→调用矩阵→专家关系探索；默认使用有界 DAG 布局，节点/边分别限制为 300/1000，禁止自由力导向全量图。
 - [x] Step 4: 实现影响树、RCA graph-context、Graph Ops、health/partial/stale/warning 区分与 30 秒摘要刷新；关系结构仍由手工“刷新关系”控制，避免探索中重布局。
-- [x] Step 5: 运行前端全量测试与生产构建，确认浏览器无 HugeGraph 请求；本机结果为 24 个文件/39 个测试通过且构建成功。
+- [x] Step 5: 运行前端全量测试与生产构建，确认浏览器无 HugeGraph 请求；本机结果为 25 个文件/39 个测试通过且构建成功。
 
 ### Task 9: Task I — 性能、切换门禁、本机部署与最终验证
 
@@ -180,13 +180,13 @@
 
 - [x] Step 1: 写 Helm/render/load/shadow/recovery 门禁测试，覆盖 200k vertex/1M edge 数据模型、固定 P95、资源采集字段和长时配置；真实负载结果仍由环境门禁单独判定。
 - [x] Step 2: `helm lint`、`helm template ... values-prod.yaml`、Go/Python/Frontend 回归均已执行并修复当前失败项。
-- [x] Step 3: Fresh Install 按 bootstrap → runtime upgrade 执行；最终提交已构建全部自研镜像并使用统一 `git-d3da28c9ad06` 标签。
+- [x] Step 3: Fresh Install 按 bootstrap → runtime upgrade 执行；最终提交已构建全部自研镜像并使用统一 `git-9f2123adc95b` 标签，Helm revision 5 已就绪。
 - [x] Step 4: OrbStack `aiops-canary` workload、Query API/Worker/Proxy/Frontend/Executor、canary-only RBAC 与 disabled mutation 均已核验。
 - [x] Step 5: HugeGraph 1.7.0/Java 11/RocksDB、schema migrator、backfill/identity/ontology/path/impact/RCA/Graph Ops 代码与本机结构验证通过；真实 LLM/DeepFlow 仍为环境阻断。
-- [ ] Step 6: 运行 shadow compare 与完整性能脚本；最终提交 Fresh Install 后 200k/1k（`loaded=true`，batch P95 47.394ms）及此前 200k/10k 小样本通过，但完整 200k/1M 在单节点审计/REST 吞吐下未完成，固定 P95 门禁为 `BLOCKED_BY_ENV`。
+- [x] Step 6: 运行完整性能脚本；统一镜像部署后真实加载 200k vertices/1M edges，七类操作全部成功，P95 为 `10/185/594/92/690/921/94.581ms`，固定门禁全部 PASS，原始报告为 `/tmp/aiops-graph-load-report-final-9f2123adc95b.json`，持久化证据为 `docs/testdata/graph-load-report-2026-08-28.json`。shadow compare 仍需真实双读窗口，不能由性能报告替代。
 - [ ] Step 7: 2 小时切换观察与 24 小时 Shadow/soak 尚未完成，保留 `docs/runbooks/graph-cutover.md` 可重放命令。
 - [x] Step 8: 最终 Go 全量/竞态、Python 全量、Frontend 全量测试与构建、Helm lint 已通过。
-- [x] Step 9: 已写最终验证报告并逐项记录 DoD；由于真实数据、长时和完整性能门禁未完成，未宣称全部 DoD 通过。
+- [x] Step 9: 已写最终验证报告并逐项记录 DoD；真实 200k/1M 性能门禁已通过，但真实 marker/provider、DeepFlow、多节点、PITR、Credential Broker 以及 2 小时 shadow/24 小时 soak 仍明确记录为 `BLOCKED_BY_ENV`，未宣称全部 DoD 通过。
 
 ## Execution Order and Checkpoints
 

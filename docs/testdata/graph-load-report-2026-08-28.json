@@ -1,0 +1,27 @@
+{
+  "vertices": 200000,
+  "edges": 1000000,
+  "batch_size": 500,
+  "loaded": true,
+  "anchor_uid": "loadtest:vertex:000000",
+  "target_uid": "loadtest:vertex:000001",
+  "operations": {
+    "entity": {"iterations": 20, "success": 20, "success_rate": 1.0, "p95_ms": 10, "max_ms": 18, "gate_ms": 500, "passed": true},
+    "one_hop": {"iterations": 20, "success": 20, "success_rate": 1.0, "p95_ms": 185, "max_ms": 316, "gate_ms": 1000, "passed": true},
+    "two_hop": {"iterations": 20, "success": 20, "success_rate": 1.0, "p95_ms": 594, "max_ms": 710, "gate_ms": 2000, "passed": true},
+    "shortest_path": {"iterations": 20, "success": 20, "success_rate": 1.0, "p95_ms": 92, "max_ms": 106, "gate_ms": 3000, "passed": true},
+    "rca_candidate": {"iterations": 20, "success": 20, "success_rate": 1.0, "p95_ms": 690, "max_ms": 788, "gate_ms": 3000, "passed": true},
+    "impact": {"iterations": 20, "success": 20, "success_rate": 1.0, "p95_ms": 921, "max_ms": 940, "gate_ms": 3000, "passed": true},
+    "batch_mutation": {"iterations": 20, "p95_ms": 94.581, "gate_ms": 1000, "passed": true}
+  },
+  "gate_status": "PASS",
+  "gate_definition": {
+    "entity": 500,
+    "one_hop": 1000,
+    "two_hop": 2000,
+    "shortest_path": 3000,
+    "rca_candidate": 3000,
+    "impact": 3000,
+    "batch_mutation": 1000
+  }
+}

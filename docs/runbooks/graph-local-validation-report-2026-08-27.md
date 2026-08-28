@@ -1,15 +1,15 @@
-# 双存储本机验证报告（2026-08-27）
+# 双存储本机验证报告（2026-08-28）
 
 ## 结论
 
 本机 OrbStack Kubernetes 已完成 Fresh Install + runtime upgrade：最新一轮 AIOps
-Helm release `aiops` revision 2 为 `deployed`，MySQL 作为控制面权威，Query API
+Helm release `aiops` revision 5 为 `deployed`，MySQL 作为控制面权威，Query API
 运行在 `GRAPH_BACKEND=hugegraph`，HugeGraph 只承载可重建图投影。本轮验证显式跳过
 DeepFlow（`--skip-deepflow`），因此不把 DeepFlow 环境门禁记为通过。
 
-本报告中的集群观测数据来自 2026-08-28 当日 Fresh Install；最终验证镜像标签为
-`git-d3da28c9ad06`（提交 `d3da28c9ad06e038085135404830725ecea885ff`）。代码提交已在本地
-`main`，远端 `origin/main` 尚未同步。
+本报告中的集群观测数据来自 2026-08-28 当日 Fresh Install；当前全部自研工作负载统一使用
+`git-9f2123adc95b`（提交 `9f2123adc95b`）。代码提交已在本地 `main`，远端
+`origin/main` 尚未同步。
 
 ## 2026-08-28 代码闭环补充
 
@@ -18,10 +18,10 @@ DeepFlow（`--skip-deepflow`），因此不把 DeepFlow 环境门禁记为通过
 - 服务全景主页面已固定为“服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索”；移除 ECharts force 全量图、稳定坐标缓存和 30 秒 force 重启轮询。服务地图使用有界 DAG 布局（最多 300 个实体、1000 条边）。
 - 调用矩阵改为二维服务×服务表格，支持调用量、错误率、延迟、分页和滚动；新增页面、矩阵和地图契约测试。
 - RCARequest 现在从 `ai_runs.time_range_start/time_range_end` 冻结窗口（提供 `from_ai_run` 工厂），RCAResult/GraphContext 保留同一时间窗；temporal score 在 RCA scorer 内按固定时间带计算；传播解释只保留实际的根因→症状有向路径。
-- `graph-load-test.sh` 与类型化 Go fixture generator 已实现 200,000 vertex / 1,000,000 edge 数据集加载，以及 entity、1-hop、2-hop、shortest path、RCA candidate、impact、batch mutation 的 P95 固定门禁。真实环境已实际尝试：默认 2Gi HugeGraph 在约 50.5k vertex 写入时 EOF；本机验证 profile 已调整为 6Gi。最终提交 Fresh Install 后再次执行 200k/1k：`loaded=true`、`duration_ms=16539`、batch mutation P95 `47.394ms`；此前 200k/10k 也通过。完整 1M edge 在单节点审计/REST 吞吐下未在本轮完成，最终门禁仍为 `BLOCKED_BY_ENV`。
+- `graph-load-test.sh` 与类型化 Go fixture generator 已实现 200,000 vertex / 1,000,000 edge 数据集加载，以及 entity、1-hop、2-hop、shortest path、RCA candidate、impact、batch mutation 的 P95 固定门禁。真实环境已实际尝试：默认 2Gi HugeGraph 在约 50.5k vertex 写入时 EOF；本机验证 profile 已调整为 10Gi，并增加启动探针避免大数据启动阶段被 liveness 重启。统一镜像部署后完整门禁报告 `/tmp/aiops-graph-load-report-final-9f2123adc95b.json` 为 `loaded=true`、`gate_status=PASS`：entity/1-hop/2-hop/shortest-path/RCA-candidate/impact/batch-mutation 的 P95 分别为 `10/185/594/92/690/921/94.581ms`，全部低于 `500/1000/2000/3000/3000/3000/1000ms`；已将同一证据归档至 `docs/testdata/graph-load-report-2026-08-28.json`。
 - HugeGraph edge batching 已修正为在服务端 16KiB `id in [...]` 限制下使用 15KB 预算，避免旧 12KB 拆分造成不必要的请求放大；对应客户端单测已通过。
 - 本机代码验证：Go `go test ./... -count=1` 通过；Go Graph/API/Store `go test -race` 通过；Python `.venv314/bin/python -m pytest -q` 为 `1181 passed, 1 skipped`；前端全量 `25 files / 39 tests` 和 `npm run build` 通过。
-- 最终提交已按 `git-d3da28c9ad06` 重建全部自研镜像，并完成一次破坏性 Fresh Install + runtime upgrade；Helm revision 2、MySQL 0011、HugeGraph schema migrator、核心工作负载 Ready、Executor disabled/canary RBAC 与本地结构验证均通过。
+- 最终提交已按 `git-9f2123adc95b` 重建全部自研镜像，并完成一次破坏性 Fresh Install + runtime upgrade；Helm revision 5、MySQL 0011、HugeGraph schema migrator、核心工作负载 Ready、Executor disabled/canary RBAC 与本地结构验证均通过。统一版本运行期间 HugeGraph `restartCount=0`；重复加载既有 fixture 时内存峰值约 9.6Gi，未发生 OOM。
 
 ## 已通过
 
@@ -58,13 +58,13 @@ DeepFlow（`--skip-deepflow`），因此不把 DeepFlow 环境门禁记为通过
 以下不是静态测试替代项，当前没有伪造通过：
 
 - 没有提供真实 metric/log/event marker，因此真实观测数据链路未判通过。
-- 已提供本机可写 HugeGraph 并执行真实加载尝试；由于 1M edge 在单节点审计/REST 吞吐下未完成，完整负载与全部 P95 采样仍为 `BLOCKED_BY_ENV`。小规模 200k/1k、200k/10k 只作为连通性/批处理回归，不替代固定门禁。
+- 200k/1M 图数据与七类 P95 门禁已在本机真实执行并通过；原始报告为 `/tmp/aiops-graph-load-report-final-9f2123adc95b.json`，持久化副本为 `docs/testdata/graph-load-report-2026-08-28.json`。不能用重复加载结果替代首次门禁证据。
 - 没有执行真实 LLM provider response、DeepFlow flow/span、multi-node failover、PITR
   和 Credential Broker 证据。
 - 未在本次会话内持续完成 2 小时 shadow 或 24 小时 soak；需要按
   `docs/runbooks/graph-cutover.md` 的切换前置条件继续观察。
 
-验证脚本会将上述状态报告为 `BLOCKED_BY_ENV`，而不是将空数据当成成功。
+验证脚本会将上述仍缺少外部证据的状态报告为 `BLOCKED_BY_ENV`，而不是将空数据当成成功。
 
 ## 依赖源
 
