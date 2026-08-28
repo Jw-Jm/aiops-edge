@@ -21,3 +21,22 @@ Read-only follow-ups:
 bash deploy/scripts/graph-recovery-test.sh
 bash deploy/scripts/validate-local-stack.sh
 ```
+
+## Graph performance gate
+
+The performance gate is a real fixture load, not a one-entity smoke test. It
+uses the typed `ai-apm-query-go/cmd/graph-load-generator` to write exactly
+200,000 vertices and 1,000,000 unique `DEPENDS_ON` edges, then measures P95 for
+entity, 1-hop, 2-hop, shortest path, RCA candidate, impact and batch mutation.
+The fixed limits are 500/1000/2000/3000/3000/3000/1000 ms in that order.
+
+```bash
+HUGEGRAPH_URL=http://127.0.0.1:8080 \
+GRAPH_API_BASE_URL=http://127.0.0.1:8080/api/v1/ai/kg \
+GRAPH_API_TOKEN='<jwt>' \
+bash deploy/scripts/graph-load-test.sh --output /tmp/aiops-graph-load-report.json
+```
+
+`--dry-run` only validates the requested 200k/1M shape. It is not a performance
+pass. Missing HugeGraph access, authentication, or real observations must be
+reported as `BLOCKED_BY_ENV`.

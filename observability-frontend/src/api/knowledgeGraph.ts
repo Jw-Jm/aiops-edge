@@ -8,6 +8,8 @@ export const getGraphEntity = (uid: string) =>
   api.get<GraphEntity>(`/ai/kg/entities/${encodeURIComponent(uid)}`)
 export const getGraphNeighbors = (uid: string, params?: { direction?: string; depth?: number; relation_types?: string; max_vertices?: number; max_edges?: number }) =>
   api.get<GraphSubgraph>(`/ai/kg/entities/${encodeURIComponent(uid)}/neighbors`, { params })
+export const getGraphCandidate = (uid: string, params?: { depth?: number; max_vertices?: number; max_edges?: number }) =>
+  api.get<GraphSubgraph>(`/ai/kg/entities/${encodeURIComponent(uid)}/candidate`, { params })
 export const getGraphImpact = (uid: string, params?: { max_depth?: number }) =>
   api.get<GraphSubgraph>(`/ai/kg/entities/${encodeURIComponent(uid)}/impact`, { params })
 export const getGraphPath = (source_entity_uid: string, target_entity_uid: string, max_depth = 6) =>

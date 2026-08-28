@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getGraphNeighbors, getGraphPath } from './knowledgeGraph'
+import { getGraphCandidate, getGraphNeighbors, getGraphPath } from './knowledgeGraph'
 import { api } from './client'
 
 describe('knowledge graph API', () => {
@@ -13,6 +13,12 @@ describe('knowledge graph API', () => {
     const spy = vi.spyOn(api, 'post').mockResolvedValue({ data: {} } as any)
     await getGraphPath('a', 'b')
     expect(spy).toHaveBeenCalledWith('/ai/kg/path', { source_entity_uid: 'a', target_entity_uid: 'b', max_depth: 6 })
+    spy.mockRestore()
+  })
+  it('exposes the bounded RCA candidate route as a typed graph call', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValue({ data: {} } as any)
+    await getGraphCandidate('service:v1', { depth: 2, max_vertices: 300, max_edges: 1000 })
+    expect(spy).toHaveBeenCalledWith('/ai/kg/entities/service%3Av1/candidate', { params: { depth: 2, max_vertices: 300, max_edges: 1000 } })
     spy.mockRestore()
   })
 })

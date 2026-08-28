@@ -42,6 +42,10 @@ func (h *Handler) GraphPublicRouter(w http.ResponseWriter, r *http.Request) {
 		h.graphNeighbors(w, r)
 		return
 	}
+	if strings.HasSuffix(r.URL.Path, "/candidate") && r.Method == http.MethodGet {
+		h.graphCandidate(w, r)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/impact") && r.Method == http.MethodGet {
 		h.graphImpact(w, r)
 		return
@@ -128,6 +132,40 @@ func (h *Handler) graphNeighbors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.graphRepo.Neighbors(r.Context(), scope, graphpkg.NeighborQuery{CenterEntityUID: uid, MaxDepth: depth, MaxVertices: vertices, MaxEdges: edges, Direction: graphDirection(r.URL.Query().Get("direction")), RelationTypes: graphCSV(r.URL.Query().Get("relation_types"))})
+	if err != nil {
+		respondGraphErrorFromGo(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) graphCandidate(w http.ResponseWriter, r *http.Request) {
+	uid, suffix, ok := graphEntityPath(r.URL.Path)
+	if !ok || suffix != "candidate" {
+		respondGraphError(w, "GRAPH_INVALID_ARGUMENT", "invalid candidate path")
+		return
+	}
+	scope, err := h.graphScope(r)
+	if err != nil {
+		respondGraphAuthorizationError(w, err)
+		return
+	}
+	depth, err := graphIntQuery(r, "depth", graphpkg.DefaultPublicMaxDepth, 1, graphpkg.DefaultPublicMaxDepth)
+	if err != nil {
+		respondGraphParamError(w, err)
+		return
+	}
+	vertices, err := graphIntQuery(r, "max_vertices", graphpkg.DefaultPublicMaxVertices, 1, graphpkg.DefaultPublicMaxVertices)
+	if err != nil {
+		respondGraphParamError(w, err)
+		return
+	}
+	edges, err := graphIntQuery(r, "max_edges", graphpkg.DefaultPublicMaxEdges, 1, graphpkg.DefaultPublicMaxEdges)
+	if err != nil {
+		respondGraphParamError(w, err)
+		return
+	}
+	result, err := h.graphRepo.CandidateSubgraph(r.Context(), scope, graphpkg.NeighborQuery{CenterEntityUID: uid, MaxDepth: depth, MaxVertices: vertices, MaxEdges: edges})
 	if err != nil {
 		respondGraphErrorFromGo(w, err)
 		return

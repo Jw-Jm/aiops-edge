@@ -7,15 +7,25 @@
 `GRAPH_BACKEND=hugegraph`，HugeGraph 只承载可重建图投影。本轮验证显式跳过
 DeepFlow（`--skip-deepflow`），因此不把 DeepFlow 环境门禁记为通过。
 
-本轮源码工作区存在未提交改动，因此结论适用于当前工作树和本机镜像
-`git-fa13f9c46050`，不宣称对应远端 Git 分支。
+本报告中的集群观测数据来自当日验证工作树和本机镜像，不能替代当前代码提交的
+重新部署证据；当前代码已形成独立提交，但尚未同步到远端 Git 分支。
+
+## 2026-08-28 代码闭环补充
+
+针对本报告之后发现的验收偏差，当前工作树已完成以下代码修复并在本机验证：
+
+- 服务全景主页面已固定为“服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索”；移除 ECharts force 全量图、稳定坐标缓存和 30 秒 force 重启轮询。服务地图使用有界 DAG 布局（最多 300 个实体、1000 条边）。
+- 调用矩阵改为二维服务×服务表格，支持调用量、错误率、延迟、分页和滚动；新增页面、矩阵和地图契约测试。
+- RCARequest 现在从 `ai_runs.time_range_start/time_range_end` 冻结窗口（提供 `from_ai_run` 工厂），RCAResult/GraphContext 保留同一时间窗；temporal score 在 RCA scorer 内按固定时间带计算；传播解释只保留实际的根因→症状有向路径。
+- `graph-load-test.sh` 与类型化 Go fixture generator 已实现 200,000 vertex / 1,000,000 edge 数据集加载，以及 entity、1-hop、2-hop、shortest path、RCA candidate、impact、batch mutation 的 P95 固定门禁。`--dry-run` 已验证默认数据规模；真实 HugeGraph 加载与 P95 本轮未执行，仍标记为 `BLOCKED_BY_ENV`。
+- 本机代码验证：Go `go test ./... -count=1` 通过；Go Graph/API/Store `go test -race` 通过；Python `.venv314/bin/python -m pytest -q` 为 `1181 passed, 1 skipped`；前端全量 `24 files / 37 tests` 和 `npm run build` 通过。
 
 ## 已通过
 
 - Go 全量测试：`go test ./... -count=1`。
 - Go 并发检测：`go test -race ./internal/graph ./internal/api ./internal/store`。
-- Python 全量测试：`1178 passed, 1 skipped`。
-- 前端：`21 files / 34 tests passed`，生产构建成功。
+- Python 全量测试：`1181 passed, 1 skipped`（2026-08-28，本机权限下运行）。
+- 前端：`24 files / 37 tests passed`，生产构建成功（2026-08-28）。
 - Helm lint、镜像统一 tag、Secret、RBAC、disabled Executor 和 canary 部署契约全部通过。
 - MySQL migrations 已到 `0011_graph_projection`；`aiops_app` 与 `aiops_migrator` 账号权限已核验。
 - HugeGraph 1.7.0 `/graphspaces/DEFAULT/graphs/aiops` 为 RocksDB；schema migrator
@@ -45,6 +55,7 @@ DeepFlow（`--skip-deepflow`），因此不把 DeepFlow 环境门禁记为通过
 以下不是静态测试替代项，当前没有伪造通过：
 
 - 没有提供真实 metric/log/event marker，因此真实观测数据链路未判通过。
+- 未在本轮提供可写 HugeGraph 地址并执行 200,000 vertex / 1,000,000 edge 负载与全部 P95 采样；该性能门禁仍为 `BLOCKED_BY_ENV`。
 - 没有执行真实 LLM provider response、DeepFlow flow/span、multi-node failover、PITR
   和 Credential Broker 证据。
 - 未在本次会话内持续完成 2 小时 shadow 或 24 小时 soak；需要按

@@ -165,11 +165,11 @@
 - Modify/Create: `src/pages/observability/ResourceRelationships.tsx`, `ServiceObservability.tsx`, `src/pages/observability/service/*`, `src/pages/investigation/IntelligentInvestigation.tsx`, `src/pages/admin/GraphOperations.tsx`
 - Test: `src/api/knowledgeGraph.test.ts`, `src/components/graph/*.test.tsx`, `src/pages/observability/service/*.test.tsx`, `src/pages/admin/GraphOperations.test.tsx`
 
-- [ ] Step 1: 写 fixture-driven contract tests，锁定 graph entity/subgraph/impact/error/service dependency 字段一一对应。
+- [x] Step 1: 写 fixture-driven contract tests，锁定 graph entity/subgraph/impact/error/service dependency 字段一一对应；本次补充服务全景、调用矩阵和地图布局契约测试。
 - [ ] Step 2: 精确安装 `@antv/g6@5.1.1`，运行 `npm ci` 与 targeted tests，确认新 UI 测试先失败。
-- [ ] Step 3: 实现摘要→Application 聚合服务地图→依赖主链→调用矩阵→专家关系探索；默认禁止自由力导向全量图，节点/边达到门禁时要求缩小 scope。
+- [x] Step 3: 实现摘要→服务地图→依赖主链→调用矩阵→专家关系探索；默认使用有界 DAG 布局，节点/边分别限制为 300/1000，禁止自由力导向全量图。
 - [ ] Step 4: 实现影响树、RCA graph-context、Graph Ops、历史 context 展示、health/partial/stale/warning 区分与 30 秒/按视图刷新。
-- [ ] Step 5: 运行 `cd observability-frontend && npm run test:run && npm run build`，确认浏览器无 HugeGraph 请求。
+- [x] Step 5: 运行 `cd observability-frontend && npm run test:run && npm run build`，确认浏览器无 HugeGraph 请求；本机结果为 24 个文件/37 个测试通过且构建成功。
 
 ### Task 9: Task I — 性能、切换门禁、本机部署与最终验证
 
@@ -178,15 +178,15 @@
 - Modify: `deploy/helm/aiops/values-prod.yaml`, `values-local-validation.yaml`, `deploy/scripts/local-validation.sh`, `deploy/scripts/test-deployment-contracts.sh`, `deploy/scripts/validate-local-stack.sh`
 - Test/Artifacts: `/tmp/aiops-graph-load-report.json`, `/tmp/aiops-shadow-report.json`, `/tmp/aiops-local-validation.log`
 
-- [ ] Step 1: 写 Helm/render/load/shadow/recovery 失败门禁测试，覆盖 200k vertex/1M edge 数据模型、所有固定 P95、资源采集字段和 24h/2h duration 配置。
+- [ ] Step 1: 写 Helm/render/load/shadow/recovery 失败门禁测试，覆盖 200k vertex/1M edge 数据模型、所有固定 P95、资源采集字段和 24h/2h duration 配置。（代码侧已补齐真实 fixture generator、全部操作 P95 和固定门禁；真实负载采样仍待环境执行。）
 - [ ] Step 2: 运行 `helm lint deploy/helm/aiops`、`helm template ... values-prod.yaml`、全部 Go/Python/Frontend 测试，修复所有失败项。
 - [ ] Step 3: 构建统一 `RELEASE_TAG=git-<12 hex SHA>` 镜像；Fresh Install 先 bootstrap MySQL/观测存储和 users-init/schema-migrator，再 runtime upgrade。
 - [ ] Step 4: 在 OrbStack 中创建 `aiops-canary` workload，验证 Query API/Worker/Proxy/Frontend/Action Executor、RBAC 仅 `aiops-canary` deployments get/patch，disabled 阶段无 mutation。
 - [ ] Step 5: 部署 HugeGraph 1.7.0/Java 11/RocksDB，运行 graph schema migrator、backfill、固定 identity/ontology/path/impact/RCA/Graph Ops 验证；记录真实 LLM/DeepFlow 可用性。
-- [ ] Step 6: 运行 shadow compare 与性能脚本；只有 identity/structural/scope/dead/lag/P95/动态依赖/固定场景全部通过才设置 `GRAPH_BACKEND=hugegraph`。
-- [ ] Step 7: 观察切换 2 小时；若当前会话无法持续完成 24h Shadow，则生成可重放的 soak 命令与未满足项，不宣称该门禁通过。
+- [ ] Step 6: 运行 shadow compare 与性能脚本；只有 identity/structural/scope/dead/lag/P95/动态依赖/固定场景全部通过才设置 `GRAPH_BACKEND=hugegraph`。（BLOCKED_BY_ENV：本轮未提供可写 HugeGraph/真实观测数据。）
+- [ ] Step 7: 观察切换 2 小时；若当前会话无法持续完成 24h Shadow，则生成可重放的 soak 命令与未满足项，不宣称该门禁通过。（BLOCKED_BY_ENV：未执行 2h/24h 长时观察。）
 - [ ] Step 8: 运行最终命令集：`cd ai-apm-query-go && go test ./... && go test -race ./internal/graph/... ./internal/api/... ./internal/store/...`; `cd ai-orchestrator && .venv314/bin/python -m pytest -q`; `cd observability-frontend && npm ci && npm run test:run && npm run build`; `helm lint deploy/helm/aiops`。
-- [ ] Step 9: 写最终验证报告，逐项勾选方案 DoD；仅所有项有证据时才报告“实现完成”，否则明确列出 blocked-by-environment 或未通过门禁。
+- [ ] Step 9: 写最终验证报告，逐项勾选方案 DoD；当前报告已明确列出代码闭环证据与 `BLOCKED_BY_ENV`，因长时/真实数据门禁未完成，不能勾选全部 DoD。
 
 ## Execution Order and Checkpoints
 
@@ -194,4 +194,3 @@
 2. 每个任务完成后运行该任务的 targeted tests，再运行受影响模块的完整测试；失败先修复再进入下一任务。
 3. 每个任务形成一个可审阅提交；本机验证前不删除 legacy 表、legacy adapter 或旧路由兼容代码。
 4. 所有长时门禁、真实 LLM、DeepFlow、Docker/Kubernetes 访问若受外部环境限制，保留可复现命令、日志和准确状态，不以静态测试替代真实部署结论。
-

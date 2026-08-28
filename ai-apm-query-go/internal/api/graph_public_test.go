@@ -48,6 +48,15 @@ func TestGraphPublicNeighborsReturnsTypedSubgraphAndEnforcesTenantScope(t *testi
 		t.Fatalf("subgraph=%+v", body)
 	}
 
+	candidate := httptest.NewRequest(http.MethodGet, "/api/v1/ai/kg/entities/service:v1:tenant-a:service/candidate?depth=2", nil)
+	candidate = withAuthorizationContext(candidate, AuthorizationContext{UserID: "user", TenantID: "tenant-a", SessionID: "session"})
+	candidate.Header.Set("X-Cluster-ID", "cluster-a")
+	candidateRec := httptest.NewRecorder()
+	h.GraphPublicRouter(candidateRec, candidate)
+	if candidateRec.Code != http.StatusOK {
+		t.Fatalf("candidate status=%d body=%s", candidateRec.Code, candidateRec.Body.String())
+	}
+
 	crossTenant := httptest.NewRequest(http.MethodGet, "/api/v1/ai/kg/entities/service:v1:tenant-a:service", nil)
 	crossTenant = withAuthorizationContext(crossTenant, AuthorizationContext{UserID: "user", TenantID: "tenant-b", SessionID: "session"})
 	crossTenant.Header.Set("X-Cluster-ID", "cluster-b")

@@ -5,7 +5,8 @@
 1. MySQL migration `0011_graph_projection` and HugeGraph schema migrator have completed successfully.
 2. `graph_schema_state` checksum equals the embedded `schema_manifest_v2.json` checksum.
 3. `shadow-gate.sh` is PASS for identity, structural, scope, lag and P95; outbox has no dead rows.
-4. `graph-load-test.sh` meets the published P95 limit and the fixed RCA scenarios have evidence.
+4. `graph-load-test.sh` has loaded 200,000 vertices and 1,000,000 unique edges and its seven operation P95 gates are PASS; a dry-run or one-entity smoke test is insufficient.
+5. The fixed RCA scenarios have evidence, including frozen `ai_runs` time windows and actual propagation paths.
 
 ## Sequence
 
