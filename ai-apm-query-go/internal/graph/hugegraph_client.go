@@ -374,7 +374,6 @@ func (c *HugeGraphClient) KNeighbor(ctx context.Context, request KNeighborReques
 		"max_depth":   request.MaxDepth,
 		"nearest":     request.Nearest,
 		"limit":       request.Limit,
-		"capacity":    request.Capacity,
 		"with_vertex": request.WithVertex,
 		"with_path":   request.WithPath,
 		"with_edge":   request.WithEdge,
