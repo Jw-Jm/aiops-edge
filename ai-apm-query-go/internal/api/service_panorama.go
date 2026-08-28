@@ -34,13 +34,17 @@ type PanoramaService struct {
 }
 
 type PanoramaEdge struct {
-	SourceService  string  `json:"source_service"`
-	TargetService  string  `json:"target_service"`
-	Calls          int64   `json:"calls"`
-	Errors         int64   `json:"errors"`
-	ErrorRate      float64 `json:"error_rate"`
-	LatencyMS      float64 `json:"latency_ms"`
-	CrossNamespace bool    `json:"cross_namespace"`
+	SourceService     string  `json:"source_service"`
+	TargetService     string  `json:"target_service"`
+	SourceNamespace   string  `json:"source_namespace,omitempty"`
+	TargetNamespace   string  `json:"target_namespace,omitempty"`
+	SourceApplication string  `json:"source_application,omitempty"`
+	TargetApplication string  `json:"target_application,omitempty"`
+	Calls             int64   `json:"calls"`
+	Errors            int64   `json:"errors"`
+	ErrorRate         float64 `json:"error_rate"`
+	LatencyMS         float64 `json:"latency_ms"`
+	CrossNamespace    bool    `json:"cross_namespace"`
 }
 
 type PanoramaGroup struct {
@@ -91,6 +95,18 @@ func panoramaMinutes(r *http.Request) (int, error) {
 		minutes = value
 	}
 	return minutes, nil
+}
+
+func panoramaMatrixLimit(r *http.Request) (int, error) {
+	limit := 200
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 200 {
+			return 0, fmt.Errorf("matrix limit must be between 1 and 200")
+		}
+		limit = value
+	}
+	return limit, nil
 }
 
 func panoramaScope(r *http.Request) query.TopologyScope {
@@ -242,8 +258,12 @@ func (h *Handler) collectServicePanorama(ctx context.Context, r *http.Request, m
 		if calls > 0 {
 			rate = float64(errors) / float64(calls)
 		}
-		panoramaEdges = append(panoramaEdges, PanoramaEdge{SourceService: edge.Source, TargetService: edge.Target, Calls: calls, Errors: errors,
-			ErrorRate: rate, LatencyMS: edge.AvgNs / 1e6, CrossNamespace: serviceMap[edge.Source].Namespace != "" && serviceMap[edge.Target].Namespace != "" && serviceMap[edge.Source].Namespace != serviceMap[edge.Target].Namespace})
+		sourceService, targetService := serviceMap[edge.Source], serviceMap[edge.Target]
+		panoramaEdges = append(panoramaEdges, PanoramaEdge{SourceService: edge.Source, TargetService: edge.Target,
+			SourceNamespace: sourceService.Namespace, TargetNamespace: targetService.Namespace,
+			SourceApplication: sourceService.ApplicationName, TargetApplication: targetService.ApplicationName,
+			Calls: calls, Errors: errors, ErrorRate: rate, LatencyMS: edge.AvgNs / 1e6,
+			CrossNamespace: sourceService.Namespace != "" && targetService.Namespace != "" && sourceService.Namespace != targetService.Namespace})
 	}
 	sort.Slice(panoramaEdges, func(i, j int) bool {
 		if panoramaEdges[i].Calls != panoramaEdges[j].Calls {
@@ -462,15 +482,19 @@ func (h *Handler) ServicePanoramaMap(w http.ResponseWriter, r *http.Request) {
 }
 
 type PanoramaMatrixCell struct {
-	SourceUID      string  `json:"source_uid"`
-	TargetUID      string  `json:"target_uid"`
-	SourceService  string  `json:"source_service"`
-	TargetService  string  `json:"target_service"`
-	Calls          int64   `json:"calls"`
-	Errors         int64   `json:"errors"`
-	ErrorRate      float64 `json:"error_rate"`
-	LatencyMS      float64 `json:"latency_ms"`
-	CrossNamespace bool    `json:"cross_namespace"`
+	SourceUID         string  `json:"source_uid"`
+	TargetUID         string  `json:"target_uid"`
+	SourceService     string  `json:"source_service"`
+	TargetService     string  `json:"target_service"`
+	SourceNamespace   string  `json:"source_namespace,omitempty"`
+	TargetNamespace   string  `json:"target_namespace,omitempty"`
+	SourceApplication string  `json:"source_application,omitempty"`
+	TargetApplication string  `json:"target_application,omitempty"`
+	Calls             int64   `json:"calls"`
+	Errors            int64   `json:"errors"`
+	ErrorRate         float64 `json:"error_rate"`
+	LatencyMS         float64 `json:"latency_ms"`
+	CrossNamespace    bool    `json:"cross_namespace"`
 }
 
 func (h *Handler) ServiceDependencyMatrix(w http.ResponseWriter, r *http.Request) {
@@ -483,6 +507,11 @@ func (h *Handler) ServiceDependencyMatrix(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	limit, err := panoramaMatrixLimit(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	data, err := h.collectServicePanorama(ctx, r, minutes)
@@ -491,6 +520,27 @@ func (h *Handler) ServiceDependencyMatrix(w http.ResponseWriter, r *http.Request
 		return
 	}
 	data = filterPanoramaData(data, r)
+	totalServices := len(data.Services)
+	truncated := totalServices > limit
+	if truncated {
+		data.Services = append([]PanoramaService(nil), data.Services[:limit]...)
+		kept := map[string]struct{}{}
+		for _, service := range data.Services {
+			kept[service.ServiceName] = struct{}{}
+		}
+		filteredEdges := make([]PanoramaEdge, 0, len(data.Edges))
+		for _, edge := range data.Edges {
+			if _, ok := kept[edge.SourceService]; !ok {
+				continue
+			}
+			if _, ok := kept[edge.TargetService]; !ok {
+				continue
+			}
+			filteredEdges = append(filteredEdges, edge)
+		}
+		data.Edges = filteredEdges
+		data.Revision = panoramaRevision(data.Services, data.Edges)
+	}
 	uidByName := map[string]string{}
 	order := make([]string, 0, len(data.Services))
 	for _, service := range data.Services {
@@ -503,9 +553,12 @@ func (h *Handler) ServiceDependencyMatrix(w http.ResponseWriter, r *http.Request
 	}
 	cells := make([]PanoramaMatrixCell, 0, len(data.Edges))
 	for _, edge := range data.Edges {
-		cells = append(cells, PanoramaMatrixCell{SourceUID: uidByName[edge.SourceService], TargetUID: uidByName[edge.TargetService], SourceService: edge.SourceService, TargetService: edge.TargetService, Calls: edge.Calls, Errors: edge.Errors, ErrorRate: edge.ErrorRate, LatencyMS: edge.LatencyMS, CrossNamespace: edge.CrossNamespace})
+		cells = append(cells, PanoramaMatrixCell{SourceUID: uidByName[edge.SourceService], TargetUID: uidByName[edge.TargetService], SourceService: edge.SourceService, TargetService: edge.TargetService, SourceNamespace: edge.SourceNamespace, TargetNamespace: edge.TargetNamespace, SourceApplication: edge.SourceApplication, TargetApplication: edge.TargetApplication, Calls: edge.Calls, Errors: edge.Errors, ErrorRate: edge.ErrorRate, LatencyMS: edge.LatencyMS, CrossNamespace: edge.CrossNamespace})
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"services": data.Services, "row_order": order, "column_order": order, "cells": cells, "topology_revision": data.Revision, "warnings": data.Warnings})
+	if truncated {
+		data.Warnings = append(data.Warnings, "MATRIX_SERVICE_LIMIT_REACHED")
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"services": data.Services, "row_order": order, "column_order": order, "cells": cells, "topology_revision": data.Revision, "warnings": data.Warnings, "truncated": truncated, "total_services": totalServices, "limit": limit})
 }
 
 func (h *Handler) ServiceDependencies(w http.ResponseWriter, r *http.Request) {

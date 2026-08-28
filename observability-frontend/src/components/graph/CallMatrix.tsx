@@ -1,11 +1,12 @@
 import React, { useMemo } from 'react'
-import { Button, Empty, Select, Space, Table } from 'antd'
+import { Alert, Button, Empty, Select, Space, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { GraphEdge, GraphEntity } from '../../api/graphContracts'
 import type { PanoramaService, ServiceMatrixCell, ServiceMatrixResponse } from '../../api/knowledgeGraph'
 
 type MatrixRow = { key: string; source: string; [target: string]: React.ReactNode }
 type MatrixMetric = 'combined' | 'calls' | 'errors' | 'error_rate' | 'latency_ms'
+type MatrixSort = 'identity' | 'calls' | 'error_rate' | 'latency_ms'
 const SERVICE_TYPES = new Set(['service', 'application', 'middleware', 'k8s_service'])
 
 function cellMetric(cell: ServiceMatrixCell, mode: MatrixMetric): React.ReactNode {
@@ -16,6 +17,12 @@ function cellMetric(cell: ServiceMatrixCell, mode: MatrixMetric): React.ReactNod
   return <span title={`${cell.source_service} → ${cell.target_service}`}>
     <span>{cell.calls.toLocaleString()}</span> · <span>{(cell.error_rate * 100).toFixed(1)}%</span> · <span>{cell.latency_ms.toFixed(0)}ms</span>
   </span>
+}
+
+function cellStyle(cell: ServiceMatrixCell, mode: MatrixMetric): React.CSSProperties {
+  const value = mode === 'calls' ? cell.calls : mode === 'errors' ? cell.errors : mode === 'error_rate' ? cell.error_rate : mode === 'latency_ms' ? cell.latency_ms : cell.error_rate
+  const normalized = mode === 'calls' || mode === 'errors' || mode === 'latency_ms' ? Math.min(1, Number(value || 0) / (mode === 'latency_ms' ? 1000 : 10000)) : Math.min(1, Number(value || 0))
+  return { background: `rgba(22, 119, 255, ${0.04 + normalized * 0.28})`, borderRadius: 4, padding: '0 4px' }
 }
 
 function graphCell(edge: GraphEdge): ServiceMatrixCell {
@@ -30,6 +37,13 @@ function serviceKey(service: PanoramaService): string {
   return `${service.application_name ?? ''}\u0000${service.namespace ?? ''}\u0000${service.service_name}\u0000${service.entity_uid ?? ''}`
 }
 
+function serviceSortValue(service: PanoramaService, mode: MatrixSort): number {
+  if (mode === 'calls') return service.calls
+  if (mode === 'error_rate') return service.error_rate
+  if (mode === 'latency_ms') return service.avg_latency_ms
+  return 0
+}
+
 export default function CallMatrix({ matrix, vertices = [], edges = [], onCellSelect }: {
   matrix?: ServiceMatrixResponse
   vertices?: GraphEntity[]
@@ -37,13 +51,20 @@ export default function CallMatrix({ matrix, vertices = [], edges = [], onCellSe
   onCellSelect?: (cell: ServiceMatrixCell) => void
 }) {
   const [metricMode, setMetricMode] = React.useState<MatrixMetric>('combined')
+  const [sortMode, setSortMode] = React.useState<MatrixSort>('identity')
   const services = useMemo(() => {
     const source = matrix?.services ?? vertices.filter((vertex) => SERVICE_TYPES.has(vertex.entity_type)).map((vertex) => ({
       entity_uid: vertex.entity_uid, service_name: vertex.name || vertex.entity_uid, namespace: vertex.namespace,
       application_name: String(vertex.attrs?.application_name ?? vertex.attrs?.application ?? ''), health: vertex.health ?? 'unknown', calls: 0, errors: 0, error_rate: 0, avg_latency_ms: 0,
     } satisfies PanoramaService))
-    return source.slice().sort((left, right) => serviceKey(left).localeCompare(serviceKey(right))).slice(0, 200)
-  }, [matrix, vertices])
+    return source.slice().sort((left, right) => {
+      if (sortMode !== 'identity') {
+        const delta = serviceSortValue(right, sortMode) - serviceSortValue(left, sortMode)
+        if (delta !== 0) return delta
+      }
+      return serviceKey(left).localeCompare(serviceKey(right))
+    }).slice(0, 200)
+  }, [matrix, sortMode, vertices])
   const serviceIds = useMemo(() => new Set(services.map((service) => service.entity_uid || `service:name:${service.service_name}`)), [services])
   const byPair = useMemo(() => {
     const result = new Map<string, ServiceMatrixCell>()
@@ -70,18 +91,24 @@ export default function CallMatrix({ matrix, vertices = [], edges = [], onCellSe
       const cell = byPair.get(`${sourceUID}→${targetUID}`)
       if (sourceUID === targetUID) row[targetUID] = '—'
       else if (!cell) row[targetUID] = '·'
-      else row[targetUID] = <Button type="link" size="small" aria-label={`${source.service_name} 调用 ${target.service_name}`} onClick={() => onCellSelect?.(cell)}>{cellMetric(cell, metricMode)}</Button>
+      else row[targetUID] = <Button type="link" size="small" style={cellStyle(cell, metricMode)} aria-label={`${source.service_name} 调用 ${target.service_name}`} title={`${cell.source_namespace || ''}/${cell.source_service} → ${cell.target_namespace || ''}/${cell.target_service}`} onClick={() => onCellSelect?.(cell)}>{cellMetric(cell, metricMode)}</Button>
     }
     return row
   }), [byPair, metricMode, onCellSelect, services])
 
   if (!services.length) return <section aria-label="调用矩阵"><h3>调用矩阵</h3><Empty description="暂无服务调用关系" /></section>
   return <section aria-label="调用矩阵" data-testid="call-matrix">
-    <Space style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+    {matrix?.truncated ? <Alert type="info" showIcon message={`服务数量为 ${matrix.total_services ?? services.length}，矩阵按 ${matrix.limit ?? 200}×${matrix.limit ?? 200} 展示；请先用命名空间、应用或服务筛选缩小范围。`} style={{ marginBottom: 8 }} /> : null}
+    <Space style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }} wrap>
       <h3 style={{ margin: 0 }}>调用矩阵</h3>
-      <Select aria-label="矩阵指标" size="small" value={metricMode} onChange={setMetricMode} options={[
+      <Space size={8} wrap>
+        <Select aria-label="矩阵排序" size="small" value={sortMode} onChange={setSortMode} options={[
+          { value: 'identity', label: 'Application → Namespace → Service' }, { value: 'calls', label: '按调用量' }, { value: 'error_rate', label: '按错误率' }, { value: 'latency_ms', label: '按延迟' },
+        ]} />
+        <Select aria-label="矩阵指标" size="small" value={metricMode} onChange={setMetricMode} options={[
         { value: 'combined', label: '调用量 / 错误率 / 延迟' }, { value: 'calls', label: '调用量' }, { value: 'errors', label: '错误数' }, { value: 'error_rate', label: '错误率' }, { value: 'latency_ms', label: '平均延迟' },
-      ]} />
+        ]} />
+      </Space>
     </Space>
     <Table<MatrixRow> size="small" bordered pagination={{ pageSize: 30, showSizeChanger: false }} scroll={{ x: Math.max(480, 180 + services.length * 150), y: 480 }} columns={columns} dataSource={data} locale={{ emptyText: '暂无服务调用关系' }} />
   </section>

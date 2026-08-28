@@ -157,7 +157,7 @@ class InvestigationEvidenceProvider:
                 uid = str(candidates[0].get("entity_uid") or "")
             if uid:
                 item["entity_uid"] = uid
-            observed = next((item.get(key) for key in ("observed_at", "timestamp", "occurred_at", "event_time", "detected_at", "t", "T", "Timestamp", "Start", "StartTime", "LastTS") if item.get(key) is not None), None)
+            observed = next((item.get(key) for key in ("observed_at", "timestamp", "occurred_at", "event_time", "detected_at", "t", "T", "Timestamp", "Start", "StartTime", "LastTS", "last_timestamp") if item.get(key) is not None), None)
             if observed is not None:
                 item["observed_at"] = str(observed)
             if category == "metric" and "severity" not in item:
@@ -188,14 +188,14 @@ class InvestigationEvidenceProvider:
             if not name:
                 continue
             try:
-                self._append(output, "metric", self._query("query_metrics.v1", "metrics", {"service": name, "minutes": 60}), [candidate])
+                self._append(output, "metric", self._query("query_metrics.v1", "metrics", {"service": name}), [candidate])
             except Exception as exc:
                 self.failures.append(f"metrics:{name}:{str(exc)[:100]}")
         calls = [
-            ("query_traces.v1", "traces", {"services": names, "hours": 1, "limit": 100}, "trace"),
-            ("query_logs.v1", "logs", {"services": names, "minutes": 60, "limit": 100}, "log"),
+            ("query_traces.v1", "traces", {"services": names, "limit": 100}, "trace"),
+            ("query_logs.v1", "logs", {"services": names, "limit": 100}, "log"),
             ("query_alerts.v1", "alerts", {"services": names, "limit": 100}, "alert"),
-            ("query_changes.v1", "changes", {"services": names, "since": str(request.window_start)}, "change"),
+            ("query_changes.v1", "changes", {"services": names}, "change"),
         ]
         for tool_id, operation, params, category in calls:
             try:

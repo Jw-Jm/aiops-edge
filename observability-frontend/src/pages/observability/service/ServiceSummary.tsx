@@ -10,7 +10,9 @@ function ServiceItem({ service }: { service: PanoramaService }) {
 }
 
 function EdgeItem({ edge, latency }: { edge: PanoramaEdge; latency?: boolean }) {
-  return <Space size={6} wrap><Typography.Text>{edge.source_service} → {edge.target_service}</Typography.Text><Tag color={edge.error_rate > 0.03 ? 'red' : 'blue'}>{latency ? `${edge.latency_ms.toFixed(0)}ms` : rate(edge.error_rate)}</Tag><Typography.Text type="secondary">{edge.calls.toLocaleString()} calls</Typography.Text></Space>
+  const source = edge.source_namespace ? `${edge.source_namespace}/${edge.source_service}` : edge.source_service
+  const target = edge.target_namespace ? `${edge.target_namespace}/${edge.target_service}` : edge.target_service
+  return <Space size={6} wrap><Typography.Text>{source} → {target}</Typography.Text><Tag color={edge.error_rate > 0.03 ? 'red' : 'blue'}>{latency ? `${edge.latency_ms.toFixed(0)}ms` : rate(edge.error_rate)}</Tag><Typography.Text type="secondary">{edge.calls.toLocaleString()} calls</Typography.Text></Space>
 }
 
 export default function ServiceSummary({ overview, services, health, timeRange, loading }: {

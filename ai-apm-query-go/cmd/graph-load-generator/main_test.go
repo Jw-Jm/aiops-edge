@@ -9,16 +9,38 @@ import (
 
 func TestDefaultFixtureHasOneMillionUniqueEndpointPairs(t *testing.T) {
 	const vertices, edges = 200000, 1000000
-	pairs := make(map[[2]int]struct{}, edges)
+	pairs := make(map[string]struct{}, edges)
 	for index := 0; index < edges; index++ {
-		source, target := edgeEndpoints(index, vertices)
+		spec, local := fixtureEdgeSpec(index)
+		source, target := edgeEndpointsForSpec(spec, local, vertices)
 		if source == target {
 			t.Fatalf("self edge at index %d", index)
 		}
-		pairs[[2]int{source, target}] = struct{}{}
+		key := fmt.Sprintf("%s:%d:%d", spec.RelationType, source, target)
+		pairs[key] = struct{}{}
 	}
 	if len(pairs) != edges {
 		t.Fatalf("unique endpoint pairs=%d, want %d", len(pairs), edges)
+	}
+}
+
+func TestDefaultFixtureUsesRequiredOntologyMix(t *testing.T) {
+	counts := fixtureTypeCounts(200000)
+	for entityType, minimum := range map[string]int{
+		"service": 20000, "pod": 50000, "container": 50000,
+		"vm": 5000, "vmi": 5000, "k8s_node": 4000,
+		"physical_server": 3000, "dimm": 3000,
+	} {
+		if counts[entityType] < minimum {
+			t.Fatalf("fixture %s=%d, want at least %d", entityType, counts[entityType], minimum)
+		}
+	}
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+	if total != 200000 {
+		t.Fatalf("fixture vertex total=%d, want 200000", total)
 	}
 }
 

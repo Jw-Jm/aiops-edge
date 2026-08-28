@@ -20,6 +20,8 @@ def test_temporal_score_uses_frozen_symptom_time_and_fixed_bands():
     assert deterministic_temporal_score([{"observed_at": "2026-08-27T00:33:00Z", "temporal_score": 1.0}], symptom) == 0.0
     assert deterministic_temporal_score([{"observed_at": "2026-08-26T23:59:00Z"}], symptom,
                                         window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z") == 0.0
+    assert deterministic_temporal_score([{"t": 1787790300000}], symptom) == 1.0
+    assert deterministic_temporal_score([{"t": "1787790300000"}], symptom) == 1.0
 
 
 def test_request_factory_copies_ai_run_time_range_without_wall_clock_defaults():
@@ -29,6 +31,9 @@ def test_request_factory_copies_ai_run_time_range_without_wall_clock_defaults():
     assert request.window_start == "2026-08-27T00:00:00Z"
     assert request.window_end == "2026-08-27T01:00:00Z"
     assert request.symptom_time == request.window_end
+    assert request.cluster_ids == ("cluster-1",)
+    assert request.target_type == "service"
+    assert request.target_resource_id == "service:checkout"
     fallback = RCARequest.from_ai_run({"run_id": "run-1", "tenant_id": "tenant-1", "cluster_id": "cluster-1",
                                        "time_range_start": "2026-08-27T00:00:00Z", "time_range_end": "2026-08-27T01:00:00Z"})
     assert fallback.cluster_id == "cluster-1"
@@ -46,12 +51,24 @@ def test_request_factory_copies_ai_run_time_range_without_wall_clock_defaults():
                                tenant_id="other-tenant")
 
 
+def test_request_accepts_documented_canonical_constructor_fields():
+    request = RCARequest(
+        run_id="run-canonical", tenant_id="tenant-1", cluster_ids=("cluster-1",),
+        target_type="pod", target_resource_id="pod:checkout",
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z",
+    )
+    assert request.cluster_id == "cluster-1"
+    assert request.target_type == "pod"
+    assert request.resource_id == "pod:checkout"
+
+
 def test_rca_request_and_result_keep_frozen_window_and_actual_paths():
     graph = {
         "vertices": [_entity("service:db", "db"), _entity("service:checkout", "checkout"), _entity("service:noise", "noise")],
         "edges": [
-            {"edge_uid": "edge:db-checkout", "source_uid": "service:db", "target_uid": "service:checkout", "propagates_failure": True, "candidate_direction": "OUT"},
-            {"edge_uid": "edge:checkout-noise", "source_uid": "service:checkout", "target_uid": "service:noise", "propagates_failure": True, "candidate_direction": "OUT"},
+            {"edge_uid": "edge:checkout-db", "source_uid": "service:checkout", "target_uid": "service:db", "propagates_failure": True, "confidence": 1.0, "candidate_direction": "OUT"},
+            {"edge_uid": "edge:checkout-noise", "source_uid": "service:checkout", "target_uid": "service:noise", "propagates_failure": True, "confidence": 0.7, "candidate_direction": "OUT"},
             {"edge_uid": "edge:noise-db", "source_uid": "service:noise", "target_uid": "service:db", "propagates_failure": False, "candidate_direction": "OUT"},
         ],
     }
@@ -83,7 +100,7 @@ def test_rca_request_and_result_keep_frozen_window_and_actual_paths():
     assert len(result.propagation_paths) == 1
     path = result.propagation_paths[0]
     assert path["vertex_uids"] == ["service:db", "service:checkout"]
-    assert path["edge_uids"] == ["edge:db-checkout"]
+    assert path["edge_uids"] == ["edge:checkout-db"]
 
 
 def test_graph_outage_persists_local_only_context_for_replay():

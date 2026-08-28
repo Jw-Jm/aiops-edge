@@ -71,6 +71,10 @@ export interface ServiceOverviewResponse {
 export interface PanoramaEdge {
   source_service: string
   target_service: string
+  source_namespace?: string
+  target_namespace?: string
+  source_application?: string
+  target_application?: string
   calls: number
   errors: number
   error_rate: number
@@ -89,6 +93,9 @@ export interface ServiceMatrixResponse {
   column_order: string[]
   cells: ServiceMatrixCell[]
   topology_revision: string
+  truncated?: boolean
+  total_services?: number
+  limit?: number
   warnings?: string[]
 }
 
@@ -123,7 +130,7 @@ export const getServiceMap = (params?: { minutes?: number; group_by?: 'applicati
   api.get<ServiceMapResponse>('/services/map', { params })
 export const getServiceDependencies = (entityUID: string, params?: { minutes?: number; upstream_depth?: number; downstream_depth?: number; include_middleware?: boolean }) =>
   api.get<ServiceDependenciesResponse>(`/services/${encodeURIComponent(entityUID)}/dependencies`, { params })
-export const getServiceDependencyMatrix = (params?: { minutes?: number; namespace?: string; application_uid?: string }) =>
+export const getServiceDependencyMatrix = (params?: { minutes?: number; namespace?: string; application_uid?: string; limit?: number }) =>
   api.get<ServiceMatrixResponse>('/services/dependency-matrix', { params })
 export const getRunGraphContext = (runId: string) =>
   api.get<Record<string, unknown>>(`/ai/runs/${encodeURIComponent(runId)}/graph-context`)

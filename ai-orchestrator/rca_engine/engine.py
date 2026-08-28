@@ -11,40 +11,107 @@ from .explanation import explain
 from .scorer import classify, normalize_timestamp, parse_timestamp, score_candidate, timestamp_text
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class RCARequest:
+    """Canonical immutable RCA input (V9.2 §20.3).
+
+    The public constructor uses ``cluster_ids``, ``target_type`` and
+    ``target_resource_id`` exactly as the persisted Run contract specifies.
+    ``cluster_id``/``resource_id`` remain accepted as keyword-only aliases for
+    older development callers; they are projected into the canonical fields
+    and never become a second source of truth.
+    """
     run_id: str
     tenant_id: str
-    cluster_id: str
+    cluster_ids: tuple[str, ...]
+    target_type: str
+    target_resource_id: str
     window_start: str
     window_end: str
     symptom_time: str
-    resource_id: str = ""
     entity_uid: str = ""
     entity_name: str = ""
     symptoms: tuple[str, ...] = ()
     evidence: tuple[Mapping[str, Any], ...] = ()
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        tenant_id: str,
+        cluster_ids: tuple[str, ...] | list[str] | str | None = None,
+        target_type: str = "service",
+        target_resource_id: str = "",
+        window_start: Any = None,
+        window_end: Any = None,
+        symptom_time: Any = None,
+        *,
+        entity_uid: str = "",
+        entity_name: str = "",
+        symptoms: tuple[str, ...] = (),
+        evidence: tuple[Mapping[str, Any], ...] = (),
+        cluster_id: str | None = None,
+        resource_id: str | None = None,
+        target_type_hint: str | None = None,
+    ) -> None:
+        if not str(run_id or ""):
+            raise ValueError("run_id is required")
+        if not str(tenant_id or ""):
+            raise ValueError("tenant_id is required")
+        if cluster_ids is None:
+            canonical_clusters = (str(cluster_id),) if cluster_id else ()
+        elif isinstance(cluster_ids, str):
+            canonical_clusters = (cluster_ids,)
+        else:
+            canonical_clusters = tuple(str(item) for item in cluster_ids if str(item))
+        if cluster_id and canonical_clusters != (str(cluster_id),):
+            raise ValueError("cluster_id and cluster_ids disagree")
+        canonical_target = str(target_resource_id or resource_id or "")
+        if target_resource_id and resource_id and str(target_resource_id) != str(resource_id):
+            raise ValueError("resource_id and target_resource_id disagree")
+        if target_type_hint and target_type == "service":
+            target_type = target_type_hint
+        if window_start is None or window_end is None:
+            raise ValueError("window_start and window_end are required")
+        if symptom_time is None:
+            symptom_time = window_end
         # The run's persisted ai_runs range is the sole source of truth for a
         # replay. Normalize once at the boundary so providers cannot re-anchor
         # an investigation to wall-clock ``now``.
-        start = parse_timestamp(self.window_start)
-        end = parse_timestamp(self.window_end)
+        start = parse_timestamp(window_start)
+        end = parse_timestamp(window_end)
         if start is None:
             raise ValueError("window_start must be an ISO-8601 timestamp")
         if end is None:
             raise ValueError("window_end must be an ISO-8601 timestamp")
         if start > end:
             raise ValueError("window_start must not be later than window_end")
-        symptom = parse_timestamp(self.symptom_time)
+        symptom = parse_timestamp(symptom_time)
         if symptom is None:
             raise ValueError("symptom_time must be an ISO-8601 timestamp")
         if symptom < start or symptom > end:
             raise ValueError("symptom_time must fall within the frozen ai_run window")
+        object.__setattr__(self, "run_id", str(run_id))
+        object.__setattr__(self, "tenant_id", str(tenant_id))
+        object.__setattr__(self, "cluster_ids", canonical_clusters)
+        object.__setattr__(self, "target_type", str(target_type or "service"))
+        object.__setattr__(self, "target_resource_id", canonical_target)
         object.__setattr__(self, "window_start", normalize_timestamp(start, field="window_start"))
         object.__setattr__(self, "window_end", normalize_timestamp(end, field="window_end"))
         object.__setattr__(self, "symptom_time", normalize_timestamp(symptom, field="symptom_time"))
+        object.__setattr__(self, "entity_uid", str(entity_uid or ""))
+        object.__setattr__(self, "entity_name", str(entity_name or ""))
+        object.__setattr__(self, "symptoms", tuple(symptoms or ()))
+        object.__setattr__(self, "evidence", tuple(evidence or ()))
+
+    @property
+    def cluster_id(self) -> str:
+        """Legacy single-cluster view of the canonical cluster tuple."""
+        return self.cluster_ids[0] if self.cluster_ids else ""
+
+    @property
+    def resource_id(self) -> str:
+        """Legacy resource alias; canonical storage uses target_resource_id."""
+        return self.target_resource_id
 
     @classmethod
     def from_ai_run(cls, ai_run: Mapping[str, Any] | Any, **overrides: Any) -> "RCARequest":
@@ -69,11 +136,16 @@ class RCARequest:
         forbidden_overrides = set(overrides) - allowed_overrides
         if forbidden_overrides:
             raise ValueError("RCA run identity and time window are immutable and must come from ai_run")
+        persisted_clusters = read("cluster_ids")
+        if persisted_clusters is None:
+            persisted_cluster = read("primary_cluster_id", read("cluster_id", ""))
+            persisted_clusters = (persisted_cluster,) if persisted_cluster else ()
         values: dict[str, Any] = {
             "run_id": read("run_id"), "tenant_id": read("tenant_id"),
-            "cluster_id": read("primary_cluster_id", read("cluster_id", "")),
+            "cluster_ids": persisted_clusters,
+            "target_type": read("target_type", "service"),
+            "target_resource_id": read("target_resource_id", ""),
             "window_start": start, "window_end": end, "symptom_time": symptom,
-            "resource_id": read("target_resource_id", ""),
         }
         values.update(overrides)
         return cls(**values)

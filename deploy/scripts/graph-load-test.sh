@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Production graph performance gate.  The typed Go fixture generator writes
-# exactly 200k vertices/1M edges through HugeGraph's client, then this script
+# exactly 200k ontology-shaped vertices/1M typed edges through HugeGraph's client, then this script
 # measures the public query-api contract for every required operation.  The
 # generator is a validation-only binary; runtime graph access remains owned by
 # query-api and callers never submit Gremlin/Cypher.
@@ -15,6 +15,8 @@ uid="${GRAPH_TEST_ENTITY_UID:-loadtest:vertex:000000}"
 target_uid="${GRAPH_TEST_TARGET_UID:-loadtest:vertex:000001}"
 output="${GRAPH_LOAD_REPORT:-/tmp/aiops-graph-load-report.json}"
 require_resources="${GRAPH_LOAD_REQUIRE_RESOURCES:-0}"
+tenant_id="${GRAPH_API_TENANT_ID:-${GRAPH_LOAD_TENANT_ID:-}}"
+cluster_id="${GRAPH_API_CLUSTER_ID:-${GRAPH_LOAD_CLUSTER_ID:-}}"
 dry_run=0
 
 usage() {
@@ -92,6 +94,11 @@ if [[ -z "${HUGEGRAPH_URL:-}" ]]; then
   echo "BLOCKED_BY_ENV: HUGEGRAPH_URL is required to load the 200k/1M fixture" >&2
   exit 2
 fi
+if [[ -z "${tenant_id}" || -z "${cluster_id}" ]]; then
+  write_blocked_report "GRAPH_API_TENANT_ID and GRAPH_API_CLUSTER_ID must identify an authorized scope"
+  echo "BLOCKED_BY_ENV: GRAPH_API_TENANT_ID and GRAPH_API_CLUSTER_ID are required for scoped P95 queries" >&2
+  exit 2
+fi
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/aiops-graph-load.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -101,7 +108,7 @@ if [[ -n "${GRAPH_LOAD_GENERATOR_CMD:-}" ]]; then
 else
   loader_cmd=(go run ./cmd/graph-load-generator)
 fi
-if ! loader_output="$(cd "$repo_root/ai-apm-query-go" && "${loader_cmd[@]}" --vertices "$vertices" --edges "$edges" --batch-size "$batch_size" --load=true --batch-benchmark-iterations "$iterations" 2>"$tmp_dir/loader.stderr")"; then
+if ! loader_output="$(cd "$repo_root/ai-apm-query-go" && "${loader_cmd[@]}" --vertices "$vertices" --edges "$edges" --batch-size "$batch_size" --tenant-id "$tenant_id" --cluster-id "$cluster_id" --load=true --batch-benchmark-iterations "$iterations" 2>"$tmp_dir/loader.stderr")"; then
   write_blocked_report "HugeGraph fixture load did not complete"
   cat "$tmp_dir/loader.stderr" >&2 || true
   echo "BLOCKED_BY_ENV: HugeGraph fixture load did not complete" >&2
@@ -125,10 +132,26 @@ if [[ "$fixture_vertices" != "$vertices" || "$fixture_edges" != "$edges" ]]; the
   echo "BLOCKED_BY_ENV: fixture loader count mismatch" >&2
   exit 2
 fi
+if [[ "$vertices" == "200000" && "$edges" == "1000000" ]]; then
+  if ! python3 - "$loader_json" <<'PY'
+import json, sys
+loader = json.loads(sys.argv[1])
+types = loader.get("vertex_types", {})
+required = {"service": 20_000, "pod": 50_000, "container": 50_000,
+            "vm": 5_000, "vmi": 5_000, "k8s_node": 4_000,
+            "physical_server": 3_000, "dimm": 3_000}
+if any(int(types.get(name, 0)) < minimum for name, minimum in required.items()):
+    raise SystemExit("fixture ontology distribution does not meet the 200k/1M contract")
+PY
+  then
+    write_blocked_report "fixture ontology distribution does not meet the 200k/1M contract"
+    echo "BLOCKED_BY_ENV: fixture ontology distribution does not meet the 200k/1M contract" >&2
+    exit 2
+  fi
+fi
 headers=(-H "Accept: application/json")
 [[ -n "${GRAPH_API_TOKEN:-}" ]] && headers+=(-H "Authorization: Bearer ${GRAPH_API_TOKEN}")
-[[ -n "${GRAPH_API_TENANT_ID:-${GRAPH_LOAD_TENANT_ID:-load-test-tenant}}" ]] && headers+=(-H "X-Tenant-ID: ${GRAPH_API_TENANT_ID:-${GRAPH_LOAD_TENANT_ID:-load-test-tenant}}")
-[[ -n "${GRAPH_API_CLUSTER_ID:-${GRAPH_LOAD_CLUSTER_ID:-load-test-cluster}}" ]] && headers+=(-H "X-Cluster-ID: ${GRAPH_API_CLUSTER_ID:-${GRAPH_LOAD_CLUSTER_ID:-load-test-cluster}}")
+headers+=(-H "X-Tenant-ID: ${tenant_id}" -H "X-Cluster-ID: ${cluster_id}")
 encoded_uid="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$uid")"
 encoded_target="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$target_uid")"
 

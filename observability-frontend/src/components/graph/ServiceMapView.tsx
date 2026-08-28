@@ -32,8 +32,9 @@ function GroupEdge({ edge, onSelect }: { edge: PanoramaGroupEdge; onSelect?: (ed
  * application/namespace cards and aggregated cross-group routes; raw
  * service-to-service edges belong to the explicit expert explorer only.
  */
-export default function ServiceMapView({ data, onServiceSelect, onGroupEdgeSelect }: {
+export default function ServiceMapView({ data, selectedService, onServiceSelect, onGroupEdgeSelect }: {
   data?: ServiceMapResponse
+  selectedService?: string
   onServiceSelect?: (serviceName: string) => void
   onGroupEdgeSelect?: (edge: PanoramaGroupEdge) => void
 }) {
@@ -42,7 +43,7 @@ export default function ServiceMapView({ data, onServiceSelect, onGroupEdgeSelec
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Typography.Text type="secondary">按 {data.group_by === 'application' ? 'Application' : 'Namespace'} 聚合；跨组关系按 routes/calls 汇总。</Typography.Text>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-        {data.groups.map((group) => <Card key={group.group_uid} size="small" title={<Space><span>{group.name}</span><Tag>{group.service_count} services</Tag></Space>}>
+        {data.groups.map((group) => <Card key={group.group_uid} size="small" title={<Space><span>{group.name}</span><Tag>{group.service_count} services</Tag></Space>} style={{ borderColor: group.services.some((service) => service.service_name === selectedService) ? 'var(--primary)' : undefined }}>
           <Space size={4} wrap style={{ marginBottom: 8 }}>
             <Tag color="green">正常 {group.healthy}</Tag>
             <Tag color="orange">降级 {group.degraded}</Tag>
@@ -51,7 +52,7 @@ export default function ServiceMapView({ data, onServiceSelect, onGroupEdgeSelec
           </Space>
           <List size="small" dataSource={group.services} renderItem={(service) => <List.Item>
             <button type="button" onClick={() => onServiceSelect?.(service.service_name)} style={{ border: 0, background: 'transparent', padding: 0, cursor: onServiceSelect ? 'pointer' : 'default', textAlign: 'left' }}>
-              <Space size={6} wrap><Typography.Text>{service.service_name}</Typography.Text><Tag color={healthColor(service.health)}>{service.health}</Tag>{service.namespace ? <Typography.Text type="secondary">{service.namespace}</Typography.Text> : null}</Space>
+              <Space size={6} wrap><Typography.Text strong={service.service_name === selectedService}>{service.service_name}</Typography.Text><Tag color={healthColor(service.health)}>{service.health}</Tag>{service.namespace ? <Typography.Text type="secondary">{service.namespace}</Typography.Text> : null}{service.error_rate > 0 ? <Tag color={service.error_rate > 0.03 ? 'red' : 'orange'}>{formatRate(service.error_rate)}</Tag> : null}{service.avg_latency_ms > 0 ? <Tag>{service.avg_latency_ms.toFixed(0)}ms</Tag> : null}</Space>
             </button>
           </List.Item>} />
         </Card>)}

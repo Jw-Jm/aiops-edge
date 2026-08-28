@@ -26,8 +26,64 @@ type report struct {
 	AnchorUID     string             `json:"anchor_uid"`
 	TargetUID     string             `json:"target_uid"`
 	BatchMutation map[string]float64 `json:"batch_mutation,omitempty"`
+	VertexTypes   map[string]int     `json:"vertex_types"`
+	RelationTypes map[string]int     `json:"relation_types"`
 	Loaded        bool               `json:"loaded"`
 	DurationMS    int64              `json:"duration_ms"`
+}
+
+type fixtureRange struct {
+	EntityType string
+	Start      int
+	End        int
+}
+
+// The benchmark fixture deliberately mirrors the production ontology instead
+// of loading one million service-shaped vertices.  The minimum proportions
+// are part of the capacity contract: 20k services, 100k Pod/Container, 10k
+// VM/VMI and 10k Node/Server/Component entities.
+var fixtureRanges = []fixtureRange{
+	{EntityType: "service", Start: 0, End: 20_000},
+	{EntityType: "pod", Start: 20_000, End: 70_000},
+	{EntityType: "container", Start: 70_000, End: 120_000},
+	{EntityType: "vm", Start: 120_000, End: 125_000},
+	{EntityType: "vmi", Start: 125_000, End: 130_000},
+	{EntityType: "k8s_node", Start: 130_000, End: 134_000},
+	{EntityType: "physical_server", Start: 134_000, End: 137_000},
+	{EntityType: "dimm", Start: 137_000, End: 140_000},
+	{EntityType: "middleware", Start: 140_000, End: 165_900},
+	{EntityType: "application", Start: 165_900, End: 170_900},
+	{EntityType: "business", Start: 170_900, End: 171_900},
+	{EntityType: "k8s_service", Start: 171_900, End: 174_900},
+	{EntityType: "endpoint_slice", Start: 174_900, End: 177_900},
+	{EntityType: "namespace", Start: 177_900, End: 179_900},
+	{EntityType: "k8s_cluster", Start: 179_900, End: 180_000},
+	{EntityType: "deployment", Start: 180_000, End: 190_000},
+	{EntityType: "pvc", Start: 190_000, End: 200_000},
+}
+
+type edgeSpec struct {
+	RelationType string
+	SourceType   string
+	TargetType   string
+	Count        int
+}
+
+var fixtureEdgeSpecs = []edgeSpec{
+	{RelationType: "DEPENDS_ON", SourceType: "service", TargetType: "service", Count: 200_000},
+	{RelationType: "DEPENDS_ON", SourceType: "service", TargetType: "middleware", Count: 110_000},
+	{RelationType: "BELONGS_TO", SourceType: "service", TargetType: "application", Count: 100_000},
+	{RelationType: "BELONGS_TO", SourceType: "application", TargetType: "business", Count: 50_000},
+	{RelationType: "RUNS_ON", SourceType: "pod", TargetType: "k8s_node", Count: 200_000},
+	{RelationType: "RUNS_ON", SourceType: "vmi", TargetType: "k8s_node", Count: 20_000},
+	{RelationType: "HOSTS", SourceType: "physical_server", TargetType: "k8s_node", Count: 30_000},
+	{RelationType: "HAS_COMPONENT", SourceType: "physical_server", TargetType: "dimm", Count: 30_000},
+	{RelationType: "INSTANCE_OF", SourceType: "vmi", TargetType: "vm", Count: 50_000},
+	{RelationType: "BACKED_BY", SourceType: "endpoint_slice", TargetType: "pod", Count: 100_000},
+	{RelationType: "TARGETS", SourceType: "k8s_service", TargetType: "endpoint_slice", Count: 50_000},
+	{RelationType: "OWNS", SourceType: "deployment", TargetType: "pod", Count: 30_000},
+	{RelationType: "USES_VOLUME", SourceType: "pod", TargetType: "pvc", Count: 20_000},
+	{RelationType: "CONTAINS", SourceType: "k8s_cluster", TargetType: "namespace", Count: 10_000},
 }
 
 func main() {
@@ -45,7 +101,8 @@ func main() {
 	}
 
 	result := report{Vertices: *vertexCount, Edges: *edgeCount, BatchSize: *batchSize, Concurrency: *concurrency,
-		TenantID: *tenantID, ClusterID: *clusterID, AnchorUID: vertexUID(0), TargetUID: vertexUID(1), Loaded: false}
+		TenantID: *tenantID, ClusterID: *clusterID, AnchorUID: vertexUID(0), TargetUID: vertexUID(1), Loaded: false,
+		VertexTypes: fixtureTypeCounts(*vertexCount), RelationTypes: fixtureRelationCounts(*edgeCount)}
 	if !*load {
 		writeReport(result)
 		return
@@ -66,12 +123,7 @@ func main() {
 	if err := loadBatches(ctx, *vertexCount, *batchSize, *concurrency, func(start, end int) error {
 		vertices := make([]graph.Entity, 0, end-start)
 		for index := start; index < end; index++ {
-			vertices = append(vertices, graph.Entity{
-				EntityUID: vertexUID(index), EntityType: "service", TenantID: *tenantID, ClusterID: *clusterID,
-				Name: fmt.Sprintf("graph-load-service-%06d", index), NameKey: fmt.Sprintf("graph-load-service-%06d", index),
-				Source: "graph-load-test", Status: "active", Confidence: 1, FirstSeenMS: 1, LastSeenMS: 1,
-				Generation: 1, AttrsVersion: 1, Attrs: map[string]interface{}{"load_test": true},
-			})
+			vertices = append(vertices, fixtureEntity(index, *tenantID, *clusterID))
 		}
 		if err := client.PutVerticesBatch(ctx, vertices); err != nil {
 			return fmt.Errorf("load vertices [%d,%d): %w", start, end, err)
@@ -83,12 +135,13 @@ func main() {
 	if err := loadBatches(ctx, *edgeCount, *batchSize, *concurrency, func(start, end int) error {
 		edges := make([]graph.Edge, 0, end-start)
 		for index := start; index < end; index++ {
-			source, target := edgeEndpoints(index, *vertexCount)
+			spec, local := fixtureEdgeSpec(index)
+			source, target := edgeEndpointsForSpec(spec, local, *vertexCount)
 			edges = append(edges, graph.Edge{
 				EdgeUID: fmt.Sprintf("loadtest:edge:%09d", index), SourceUID: vertexUID(source), TargetUID: vertexUID(target),
-				RelationType: "DEPENDS_ON", TenantID: *tenantID, ClusterID: *clusterID, Status: "active", Source: "graph-load-test",
+				RelationType: spec.RelationType, TenantID: *tenantID, ClusterID: *clusterID, Status: "active", Source: "graph-load-test",
 				Confidence: 1, Generation: 1, FirstSeenMS: 1, LastSeenMS: 1, ValidFromMS: 1,
-				PropagatesFailure: true, CandidateDirection: "OUT", ImpactDirection: "OUT", AttrsVersion: 1,
+				PropagatesFailure: propagationFor(spec.RelationType), CandidateDirection: graph.CandidateDirection(spec.RelationType), ImpactDirection: graph.ImpactDirection(spec.RelationType), AttrsVersion: 1,
 			})
 		}
 		if err := client.PutEdgesBatch(ctx, edges); err != nil {
@@ -161,9 +214,7 @@ func benchmarkBatch(ctx context.Context, client *graph.HugeGraphClient, tenantID
 	samples := make([]int64, 0, iterations)
 	vertices := make([]graph.Entity, 0, batchSize)
 	for index := 0; index < batchSize; index++ {
-		vertices = append(vertices, graph.Entity{EntityUID: vertexUID(index), EntityType: "service", TenantID: tenantID, ClusterID: clusterID,
-			Name: fmt.Sprintf("graph-load-service-%06d", index), NameKey: fmt.Sprintf("graph-load-service-%06d", index), Source: "graph-load-test",
-			Status: "active", Confidence: 1, Generation: 1, AttrsVersion: 1})
+		vertices = append(vertices, fixtureEntity(index, tenantID, clusterID))
 	}
 	for index := 0; index < iterations; index++ {
 		started := time.Now()
@@ -200,17 +251,104 @@ func percentile(samples []int64, p float64) int64 {
 
 func vertexUID(index int) string { return fmt.Sprintf("loadtest:vertex:%06d", index) }
 
-func edgeEndpoints(index, vertexCount int) (int, int) {
-	source := index % vertexCount
-	// Keep endpoint pairs unique (HugeGraph's native edge identity is
-	// outV+label+inV); five deterministic fan-out buckets cover 1M edges
-	// without silently overwriting duplicates.
-	bucket := index / vertexCount
-	target := (source + 1 + bucket*7919) % vertexCount
-	if target == source {
-		target = (target + 1) % vertexCount
+func fixtureType(index int) string {
+	for _, item := range fixtureRanges {
+		if index >= item.Start && index < item.End {
+			return item.EntityType
+		}
 	}
-	return source, target
+	return "middleware"
+}
+
+func fixtureRangeFor(entityType string) fixtureRange {
+	for _, item := range fixtureRanges {
+		if item.EntityType == entityType {
+			return item
+		}
+	}
+	return fixtureRange{EntityType: entityType}
+}
+
+func fixtureEntity(index int, tenantID, clusterID string) graph.Entity {
+	entityType := fixtureType(index)
+	rangeDef := fixtureRangeFor(entityType)
+	ordinal := index - rangeDef.Start
+	name := fmt.Sprintf("graph-load-%s-%06d", entityType, ordinal)
+	namespace := ""
+	if entityType == "service" || entityType == "pod" || entityType == "container" || entityType == "k8s_service" {
+		namespace = fmt.Sprintf("load-ns-%03d", ordinal%200)
+	}
+	attrs := map[string]interface{}{"load_test": true, "fixture_entity_type": entityType}
+	if entityType == "service" {
+		attrs["application_uid"] = fmt.Sprintf("loadtest:application:%04d", ordinal%5000)
+		attrs["application_name"] = fmt.Sprintf("load-application-%04d", ordinal%5000)
+	}
+	return graph.Entity{EntityUID: vertexUID(index), EntityType: entityType, TenantID: tenantID, ClusterID: clusterID,
+		Namespace: namespace, Name: name, NameKey: name, Source: "graph-load-test", Status: "active", Confidence: 1,
+		FirstSeenMS: 1, LastSeenMS: 1, Generation: 1, AttrsVersion: 1, Attrs: attrs}
+}
+
+func fixtureTypeCounts(vertices int) map[string]int {
+	counts := map[string]int{}
+	for index := 0; index < vertices; index++ {
+		counts[fixtureType(index)]++
+	}
+	return counts
+}
+
+func fixtureRelationCounts(edges int) map[string]int {
+	counts := map[string]int{}
+	for index := 0; index < edges; index++ {
+		spec, _ := fixtureEdgeSpec(index)
+		counts[spec.RelationType]++
+	}
+	return counts
+}
+
+func fixtureEdgeSpec(index int) (edgeSpec, int) {
+	offset := index
+	for _, spec := range fixtureEdgeSpecs {
+		if offset < spec.Count {
+			return spec, offset
+		}
+		offset -= spec.Count
+	}
+	// The default CLI count is exactly one million. For custom larger counts,
+	// repeat the final valid relation rather than emitting an invalid edge.
+	spec := fixtureEdgeSpecs[len(fixtureEdgeSpecs)-1]
+	return spec, offset
+}
+
+func edgeEndpointsForSpec(spec edgeSpec, local, vertexCount int) (int, int) {
+	sourceRange, targetRange := fixtureRangeFor(spec.SourceType), fixtureRangeFor(spec.TargetType)
+	if vertexCount < sourceRange.End {
+		sourceRange.End = vertexCount
+	}
+	if vertexCount < targetRange.End {
+		targetRange.End = vertexCount
+	}
+	if sourceRange.End <= sourceRange.Start || targetRange.End <= targetRange.Start {
+		// Small custom dry-runs use the service range only; the default fixture
+		// remains the full ontology distribution above.
+		sourceRange, targetRange = fixtureRange{EntityType: "service", Start: 0, End: vertexCount}, fixtureRange{EntityType: "service", Start: 0, End: vertexCount}
+	}
+	sourceCount, targetCount := sourceRange.End-sourceRange.Start, targetRange.End-targetRange.Start
+	if sourceCount <= 0 || targetCount <= 0 {
+		return 0, 1
+	}
+	sourceOrdinal := local % sourceCount
+	bucket := local / sourceCount
+	targetOrdinal := (bucket + sourceOrdinal*7919) % targetCount
+	if spec.SourceType == spec.TargetType {
+		// Enumerate a per-source fan-out directly. This guarantees no self edge
+		// and no duplicate (source,target) pair for every bucket in the fixture.
+		targetOrdinal = (sourceOrdinal + bucket + 1) % targetCount
+	}
+	return sourceRange.Start + sourceOrdinal, targetRange.Start + targetOrdinal
+}
+
+func propagationFor(relation string) bool {
+	return relation == "DEPENDS_ON" || relation == "RUNS_ON" || relation == "HOSTS" || relation == "HAS_COMPONENT" || relation == "INSTANCE_OF" || relation == "BACKED_BY" || relation == "TARGETS" || relation == "OWNS" || relation == "USES_VOLUME"
 }
 
 func min(left, right int) int {

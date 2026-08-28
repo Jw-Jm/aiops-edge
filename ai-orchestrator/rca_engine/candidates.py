@@ -37,12 +37,28 @@ def propagation_paths(subgraph: dict[str, Any], root_uid: str, symptom_uid: str,
     for edge in subgraph.get("edges") or []:
         source = str(edge.get("source_uid") or "")
         target = str(edge.get("target_uid") or "")
-        if source not in vertices or target not in vertices or edge.get("propagates_failure", True) is False:
+        # A path is an explanation, not a copy of the candidate search space.
+        # Production graph edges carry this flag explicitly; missing values
+        # are excluded so an incomplete projection cannot fabricate a path.
+        if source not in vertices or target not in vertices or edge.get("propagates_failure") is not True:
             continue
-        direction = str(edge.get("candidate_direction") or "OUT").upper()
-        if direction in {"OUT", "BOTH", ""}:
+        try:
+            confidence = float(edge.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < 0.8:
+            continue
+        # candidate_direction describes the traversal from symptom to a
+        # possible cause.  The explanation must be emitted in the opposite
+        # direction (root cause -> symptom), hence OUT becomes target->source
+        # and IN becomes source->target.
+        direction = str(edge.get("candidate_direction") or "").upper()
+        if direction == "OUT":
+            adjacency[target].append((source, edge))
+        elif direction == "IN":
             adjacency[source].append((target, edge))
-        if direction in {"IN", "BOTH"}:
+        elif direction == "BOTH":
+            adjacency[source].append((target, edge))
             adjacency[target].append((source, edge))
     for values in adjacency.values():
         values.sort(key=lambda item: (item[0], str(item[1].get("edge_uid") or "")))

@@ -114,6 +114,19 @@ func TestServicePanoramaFiltersNamespaceBeforeAggregation(t *testing.T) {
 	}
 }
 
+func TestServiceDependencyMatrixBoundsLargeServiceSets(t *testing.T) {
+	h := servicePanoramaHandler(t)
+	recorder := httptest.NewRecorder()
+	h.ServiceDependencyMatrix(recorder, panoramaRequest("/api/v1/services/dependency-matrix?limit=1"))
+	body := decodePanoramaResponse(t, recorder)
+	if body["truncated"] != true || body["total_services"] != float64(2) || body["limit"] != float64(1) {
+		t.Fatalf("matrix bounds=%v", body)
+	}
+	if len(body["services"].([]interface{})) != 1 {
+		t.Fatalf("matrix services=%v", body["services"])
+	}
+}
+
 func TestServiceDependenciesReturnsLanesAndCycles(t *testing.T) {
 	h := graphTestHandler(t)
 	recorder := httptest.NewRecorder()

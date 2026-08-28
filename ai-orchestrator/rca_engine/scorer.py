@@ -1,6 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+import math
 from typing import Any, Iterable
 
 WEIGHTS = {"topology": .20, "temporal": .20, "anomaly": .15, "change": .10,
@@ -37,11 +38,40 @@ def topology_score(hops: int | None) -> float:
 def parse_timestamp(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         parsed = value
-    elif isinstance(value, str) and value.strip():
-        try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        except ValueError:
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Query backends commonly encode Unix seconds or milliseconds in
+        # fields such as ``t``/``LastTS``.  Normalize those values at the RCA
+        # boundary so providers cannot silently opt out of temporal scoring.
+        numeric = float(value)
+        if not math.isfinite(numeric):
             return None
+        if abs(numeric) >= 1e14:
+            numeric /= 1e6
+        elif abs(numeric) >= 1e11:
+            numeric /= 1e3
+        try:
+            parsed = datetime.fromtimestamp(numeric, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                numeric = float(text)
+            except ValueError:
+                return None
+            if not math.isfinite(numeric):
+                return None
+            if abs(numeric) >= 1e14:
+                numeric /= 1e6
+            elif abs(numeric) >= 1e11:
+                numeric /= 1e3
+            try:
+                parsed = datetime.fromtimestamp(numeric, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
     else:
         return None
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
@@ -75,7 +105,10 @@ def deterministic_temporal_score(evidences: Iterable[dict[str, Any]], symptom_ti
     if start is not None and end is not None and (start > end or symptom < start or symptom > end):
         return 0.0
     scores: list[float] = []
-    timestamp_keys = ("observed_at", "timestamp", "occurred_at", "event_time", "detected_at")
+    timestamp_keys = (
+        "observed_at", "timestamp", "occurred_at", "event_time", "detected_at",
+        "t", "T", "Timestamp", "Start", "StartTime", "LastTS", "last_timestamp",
+    )
     for evidence in evidences:
         observed = next((parse_timestamp(evidence.get(key)) for key in timestamp_keys if evidence.get(key) is not None), None)
         if observed is None:
