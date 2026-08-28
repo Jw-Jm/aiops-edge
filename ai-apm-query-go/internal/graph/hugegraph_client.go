@@ -23,11 +23,12 @@ type HugeGraphClient struct {
 	writeClient   *http.Client
 }
 
-// HugeGraph checks existing edge ids with a single `id in [...]` query during
-// batch upsert.  Its backend rejects that generated query above 16 KiB. Keep
-// the logical reconcile batch limit at 500, but split the physical REST batch
-// by a conservative id-query budget so long, namespaced UIDs remain valid.
-const hugeGraphEdgeIDQueryBudget = 12000
+// HugeGraph expands edge upserts into an `id in [...]` lookup and rejects
+// queries above 16 KiB. Keep the logical projector/load-test batch at 500, but
+// split the physical REST payload just below that server-side limit. The
+// previous 12 KiB budget was unnecessarily conservative and made the 1M-edge
+// gate much slower than required.
+const hugeGraphEdgeIDQueryBudget = 15000
 
 func NewHugeGraphClient(rawURL, graphspace, graph, username, password string, readTimeout, writeTimeout time.Duration) (*HugeGraphClient, error) {
 	if strings.TrimSpace(rawURL) == "" || strings.TrimSpace(graphspace) == "" || strings.TrimSpace(graph) == "" {

@@ -11,12 +11,13 @@ vi.mock('../../api/client', () => ({
 }))
 vi.mock('../../api/knowledgeGraph', () => ({
   getGraphHealth: vi.fn(),
+  getGraphImpact: vi.fn(),
   searchGraphEntities: vi.fn(),
   getGraphNeighbors: vi.fn(),
 }))
 
 import { getServices } from '../../api/client'
-import { getGraphHealth, getGraphNeighbors, searchGraphEntities } from '../../api/knowledgeGraph'
+import { getGraphHealth, getGraphImpact, getGraphNeighbors, searchGraphEntities } from '../../api/knowledgeGraph'
 
 const graph = {
   center_entity_uid: 'service:checkout',
@@ -34,6 +35,7 @@ describe('ServiceObservability service panorama', () => {
     vi.mocked(getGraphHealth).mockResolvedValue({ data: { ready: true, backend: 'hugegraph', schema_version: 2 } } as never)
     vi.mocked(searchGraphEntities).mockResolvedValue({ data: { items: [graph.vertices[0]], count: 1 } } as never)
     vi.mocked(getGraphNeighbors).mockResolvedValue({ data: graph } as never)
+    vi.mocked(getGraphImpact).mockResolvedValue({ data: graph } as never)
   })
 
   it('renders the required panorama sections instead of a force/topology toggle', async () => {

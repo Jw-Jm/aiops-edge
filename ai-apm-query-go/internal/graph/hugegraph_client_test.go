@@ -70,7 +70,7 @@ func TestHugeGraphClientQuotesStringVertexID(t *testing.T) {
 	}
 }
 
-func TestHugeGraphClientSplitsLongEdgeIDQueryBatches(t *testing.T) {
+func TestHugeGraphClientBoundsEdgeMutationBatches(t *testing.T) {
 	calls, edgesSeen := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops/graph/edges/batch" {

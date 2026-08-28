@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Col, Empty as AntEmpty, Input, Row, Select, Space, Spin, Statistic, Table, Tag } from 'antd'
 import { useUIStore } from '../../store/uiStore'
 import { getServices } from '../../api/client'
-import { getGraphHealth, getGraphNeighbors, searchGraphEntities } from '../../api/knowledgeGraph'
+import { getGraphHealth, getGraphImpact, getGraphNeighbors, searchGraphEntities } from '../../api/knowledgeGraph'
 import type { GraphEdge, GraphEntity, GraphHealth, GraphSubgraph } from '../../api/graphContracts'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
 import { normalizeErrorRate } from '../../lib/errorRate'
@@ -11,6 +11,7 @@ import GraphSummary from '../../components/graph/GraphSummary'
 import DependencyChain from '../../components/graph/DependencyChain'
 import CallMatrix from '../../components/graph/CallMatrix'
 import GraphExplorer from '../../components/graph/GraphExplorer'
+import ImpactTree from '../../components/graph/ImpactTree'
 
 type ServiceRow = {
   service: string
@@ -79,9 +80,11 @@ const ServiceObservability: React.FC = () => {
   const [selectedService, setSelectedService] = useState('')
   const [serviceFilter, setServiceFilter] = useState('')
   const [graph, setGraph] = useState<GraphSubgraph>(EMPTY_GRAPH)
+  const [impactGraph, setImpactGraph] = useState<GraphSubgraph>(EMPTY_GRAPH)
   const [health, setHealth] = useState<GraphHealth>()
   const [loading, setLoading] = useState(true)
   const [graphLoading, setGraphLoading] = useState(false)
+  const [graphRefreshToken, setGraphRefreshToken] = useState(0)
   const [error, setError] = useState('')
 
   const loadServices = useCallback(async () => {
@@ -107,10 +110,18 @@ const ServiceObservability: React.FC = () => {
 
   useEffect(() => { void loadServices() }, [currentClusterId, loadServices])
 
+  // Metrics and graph health are volatile; refresh those summaries every 30s.
+  // The relation graph has its own effect and is intentionally not re-laid out
+  // by this timer, so an operator can explore a stable topology.
+  useEffect(() => {
+    const timer = window.setInterval(() => { void loadServices() }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [loadServices])
+
   useEffect(() => {
     let cancelled = false
     async function loadGraph() {
-      if (!selectedService) { setGraph(EMPTY_GRAPH); return }
+      if (!selectedService) { setGraph(EMPTY_GRAPH); setImpactGraph(EMPTY_GRAPH); return }
       setGraphLoading(true)
       try {
         const found = await searchGraphEntities({ q: selectedService, entity_type: 'service', limit: 5 })
@@ -118,7 +129,14 @@ const ServiceObservability: React.FC = () => {
         const entity = items.find((item) => item.name === selectedService) || items[0]
         if (!entity) { if (!cancelled) setGraph(EMPTY_GRAPH); return }
         const response = await getGraphNeighbors(entity.entity_uid, { depth: 2, direction: 'BOTH', max_vertices: 300, max_edges: 1000 })
-        if (!cancelled) setGraph(serviceGraph(response.data))
+        let impact = EMPTY_GRAPH
+        try {
+          impact = (await getGraphImpact(entity.entity_uid, { max_depth: 3 })).data
+        } catch { /* impact is optional; retain the usable neighbor graph */ }
+        if (!cancelled) {
+          setGraph(serviceGraph(response.data))
+          setImpactGraph(impact)
+        }
       } catch {
         if (!cancelled) setGraph(EMPTY_GRAPH)
       } finally {
@@ -127,7 +145,7 @@ const ServiceObservability: React.FC = () => {
     }
     void loadGraph()
     return () => { cancelled = true }
-  }, [currentClusterId, selectedService])
+  }, [currentClusterId, graphRefreshToken, selectedService])
 
   const visibleServices = useMemo(() => services.filter((row) => row.service.toLowerCase().includes(serviceFilter.toLowerCase())), [serviceFilter, services])
   const center = graph.vertices.find((vertex) => vertex.entity_uid === graph.center_entity_uid) || graph.vertices[0]
@@ -150,12 +168,13 @@ const ServiceObservability: React.FC = () => {
       </Card>
     </section>
     <section aria-label="服务地图" style={{ marginTop: 16 }}>
-      <Card title="服务地图" loading={graphLoading}>
+      <Card title="服务地图" loading={graphLoading} extra={<Button size="small" onClick={() => setGraphRefreshToken((value) => value + 1)}>刷新关系</Button>}>
         {graph.vertices.length ? <GraphMap subgraph={graph} height={420} /> : <AntEmpty description="暂无服务关系数据" />}
       </Card>
       <div style={{ marginTop: 12 }}><GraphSummary subgraph={graph} health={health} /></div>
     </section>
     <section style={{ marginTop: 16 }}><DependencyChain vertices={chain.vertices} edges={chain.edges} /></section>
+    <section style={{ marginTop: 16 }}><Card><ImpactTree subgraph={impactGraph} /></Card></section>
     <section style={{ marginTop: 16 }}><Card><CallMatrix vertices={graph.vertices} edges={graph.edges} /></Card></section>
     <section aria-label="服务列表" style={{ marginTop: 16 }}>
       <Card title="服务列表" extra={<Input allowClear placeholder="筛选服务" value={serviceFilter} onChange={(event) => setServiceFilter(event.target.value)} style={{ width: 220 }} />}>

@@ -38,6 +38,17 @@ graph:
   backend: hugegraph
 hugeGraph:
   enabled: true
+  # The 200k-vertex/1M-edge local gate exercises RocksDB caches and the
+  # schema-defined edge indexes; the chart default (2Gi) exits under load on
+  # a single-node OrbStack VM. Keep the larger budget local-only so production
+  # sizing remains an explicit capacity decision.
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "4"
+      memory: "6Gi"
 # Local validation uses ephemeral storage; production backup schedules remain
 # enabled through values-prod.yaml and an explicit storage class.
 backup:

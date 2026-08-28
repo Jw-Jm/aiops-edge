@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react'
 import { Badge, Button, Card, Col, Collapse, Descriptions, Row, Space, Steps, Tag, Typography } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getRun, listRunEvidences, listRunTools, RunTool, streamRunEvents } from '../../api/client'
+import { getRunGraphContext } from '../../api/knowledgeGraph'
 import { PageHeader } from '../../components/ui/PageKit'
+import GraphContextPanel from '../../components/graph/GraphContextPanel'
 
 const { Text } = Typography
 
@@ -42,6 +44,7 @@ const InvestigationDetailView: React.FC = () => {
   const [detail, setDetail] = useState<InvestigationDetail>(EMPTY_DETAIL)
   // C2-4：真实 Tool Activity（ai_tool_runs），不用图节点推断冒充。
   const [tools, setTools] = useState<RunTool[]>([])
+  const [graphContext, setGraphContext] = useState<Record<string, unknown> | null>(null)
   const [lastEvent, setLastEvent] = useState('')
 
   useEffect(() => {
@@ -53,6 +56,9 @@ const InvestigationDetailView: React.FC = () => {
     listRunTools(runId)
       .then((resp) => { if (!cancelled && Array.isArray(resp.data?.tools)) setTools(resp.data.tools) })
       .catch(() => { if (!cancelled) setTools([]) })
+    getRunGraphContext(runId)
+      .then((resp) => { if (!cancelled) setGraphContext(resp.data ?? null) })
+      .catch(() => { if (!cancelled) setGraphContext(null) })
     getRun(runId)
       .then(async (resp) => {
         const r = resp.data?.run
@@ -149,6 +155,9 @@ const InvestigationDetailView: React.FC = () => {
             <Text strong>Intent：</Text>
             <Text>{d.intent}</Text>
           </Card>
+        </Col>
+        <Col span={24}>
+          <GraphContextPanel context={graphContext} />
         </Col>
         <Col span={12}>
           <Card title="工具活动 (真实 ToolRun)" size="small"
