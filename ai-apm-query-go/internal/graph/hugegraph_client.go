@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -351,7 +352,34 @@ type KNeighborRequest struct {
 }
 
 func (c *HugeGraphClient) KNeighbor(ctx context.Context, request KNeighborRequest) (map[string]interface{}, error) {
-	data, err := c.request(ctx, http.MethodPost, "/traversers/kneighbor", request, false)
+	// HugeGraph 1.7's advanced K-neighbor endpoint accepts the traversal
+	// policy under `steps`; sending the internal request struct directly would
+	// emit unsupported top-level fields (for example `direction`).
+	edgeSteps := make([]map[string]interface{}, 0, len(request.EdgeLabels))
+	for _, label := range request.EdgeLabels {
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		edgeSteps = append(edgeSteps, map[string]interface{}{"label": label})
+	}
+	steps := map[string]interface{}{
+		"direction":    normalizedDirection(request.Direction),
+		"edge_steps":   edgeSteps,
+		"vertex_steps": []map[string]interface{}{{"label": "Entity"}},
+		"max_degree":   request.Capacity,
+	}
+	payload := map[string]interface{}{
+		"source":      request.Source,
+		"steps":       steps,
+		"max_depth":   request.MaxDepth,
+		"nearest":     request.Nearest,
+		"limit":       request.Limit,
+		"capacity":    request.Capacity,
+		"with_vertex": request.WithVertex,
+		"with_path":   request.WithPath,
+		"with_edge":   request.WithEdge,
+	}
+	data, err := c.request(ctx, http.MethodPost, "/traversers/kneighbor", payload, false)
 	if err != nil {
 		return nil, err
 	}
@@ -363,14 +391,78 @@ func (c *HugeGraphClient) KNeighbor(ctx context.Context, request KNeighborReques
 }
 
 func (c *HugeGraphClient) ShortestPath(ctx context.Context, source, target string, maxDepth int, edgeLabels []string) (map[string]interface{}, error) {
-	payload := map[string]interface{}{"source": source, "target": target, "max_depth": maxDepth, "edge_labels": edgeLabels}
-	data, err := c.request(ctx, http.MethodPost, "/traversers/shortestpath", payload, false)
+	query := url.Values{}
+	query.Set("source", quotedHugeGraphQueryID(source))
+	query.Set("target", quotedHugeGraphQueryID(target))
+	query.Set("direction", "BOTH")
+	query.Set("max_depth", strconv.Itoa(maxDepth))
+	query.Set("max_degree", strconv.Itoa(InternalGraphQueryLimits().MaxVertices))
+	query.Set("capacity", strconv.Itoa(InternalGraphQueryLimits().Capacity))
+	if len(edgeLabels) > 0 {
+		query.Set("label", edgeLabels[0])
+	}
+	data, err := c.requestURL(ctx, c.baseURL+"/traversers/shortestpath?"+query.Encode(), http.MethodGet, nil, false)
 	if err != nil {
 		return nil, err
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, err
+	}
+	return result, nil
+}
+
+func quotedHugeGraphQueryID(entityUID string) string {
+	return `"` + entityUID + `"`
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// EdgesBetween returns only the bounded set of edges connecting source and
+// target. The shortest-path REST API returns vertex IDs only, so the
+// repository uses this indexed vertex query to reconstruct a typed subgraph
+// without scanning all graph edges.
+func (c *HugeGraphClient) EdgesBetween(ctx context.Context, source, target string, edgeLabels []string) ([]map[string]interface{}, error) {
+	query := url.Values{}
+	query.Set("vertex_id", quotedHugeGraphQueryID(source))
+	query.Set("direction", "BOTH")
+	query.Set("limit", strconv.Itoa(InternalGraphQueryLimits().MaxEdges))
+	if len(edgeLabels) == 1 {
+		query.Set("label", edgeLabels[0])
+	}
+	data, err := c.requestURL(ctx, c.baseURL+"/graph/edges?"+query.Encode(), http.MethodGet, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	var envelope map[string]interface{}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+	result := make([]map[string]interface{}, 0)
+	for _, item := range interfaceSlice(envelope["edges"]) {
+		edge, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		edgeSource := firstString(edge, "outV", "source", "source_uid")
+		edgeTarget := firstString(edge, "inV", "target", "target_uid")
+		if !((edgeSource == source && edgeTarget == target) || (edgeSource == target && edgeTarget == source)) {
+			continue
+		}
+		if len(edgeLabels) > 1 {
+			label := firstString(edge, "label", "relation_type")
+			if !containsString(edgeLabels, label) {
+				continue
+			}
+		}
+		result = append(result, edge)
 	}
 	return result, nil
 }

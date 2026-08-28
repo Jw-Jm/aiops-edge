@@ -168,3 +168,110 @@ func TestHugeGraphClientEnsuresNamedGraphBeforeSchemaMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHugeGraphClientKNeighborUsesHugeGraph17AdvancedPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops/traversers/kneighbor" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["source"] != "service:tenant-a:checkout" || body["direction"] != nil || body["edge_labels"] != nil {
+			t.Fatalf("invalid top-level payload: %#v", body)
+		}
+		steps, ok := body["steps"].(map[string]interface{})
+		if !ok || steps["direction"] != "OUT" || steps["max_degree"] != float64(500) {
+			t.Fatalf("steps = %#v", body["steps"])
+		}
+		edgeSteps := steps["edge_steps"].([]interface{})
+		if len(edgeSteps) != 2 || edgeSteps[0].(map[string]interface{})["label"] != "DEPENDS_ON" || edgeSteps[1].(map[string]interface{})["label"] != "CALLS" {
+			t.Fatalf("edge_steps = %#v", edgeSteps)
+		}
+		if body["max_depth"] != float64(3) || body["nearest"] != true || body["with_path"] != true || body["with_edge"] != true {
+			t.Fatalf("traversal options = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"vertices":[],"edges":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "", "", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.KNeighbor(context.Background(), KNeighborRequest{
+		Source: "service:tenant-a:checkout", Direction: "OUT", MaxDepth: 3, Limit: 100,
+		Capacity: 500, Nearest: true, WithVertex: true, WithPath: true, WithEdge: true,
+		EdgeLabels: []string{"DEPENDS_ON", "CALLS"},
+	})
+	if err != nil {
+		t.Fatalf("KNeighbor returned error: %v", err)
+	}
+}
+
+func TestHugeGraphClientShortestPathUsesQuotedGETQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops/traversers/shortestpath" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("source"); got != `"service:tenant-a:checkout"` {
+			t.Fatalf("source = %q", got)
+		}
+		if got := r.URL.Query().Get("target"); got != `"service:tenant-a:payments"` {
+			t.Fatalf("target = %q", got)
+		}
+		if got := r.URL.Query().Get("label"); got != "CALLS" || r.URL.Query().Get("direction") != "BOTH" || r.URL.Query().Get("max_depth") != "6" {
+			t.Fatalf("query = %v", r.URL.Query())
+		}
+		if r.Body != http.NoBody {
+			t.Fatalf("GET request unexpectedly has a body")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"path":["service:tenant-a:checkout","service:tenant-a:payments"]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "", "", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.ShortestPath(context.Background(), "service:tenant-a:checkout", "service:tenant-a:payments", 6, []string{"CALLS"})
+	if err != nil {
+		t.Fatalf("ShortestPath returned error: %v", err)
+	}
+	if len(traverserPathIDs(result)) != 2 {
+		t.Fatalf("path = %#v", result["path"])
+	}
+}
+
+func TestHugeGraphClientEdgesBetweenFiltersEndpointsAndLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops/graph/edges" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("vertex_id") != `"source:1"` || r.URL.Query().Get("direction") != "BOTH" {
+			t.Fatalf("query = %v", r.URL.Query())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"edges":[
+			{"id":"e1","label":"CALLS","outV":"source:1","inV":"target:1","properties":{"edge_uid":"e1"}},
+			{"id":"e2","label":"OWNS","outV":"source:1","inV":"target:1","properties":{"edge_uid":"e2"}},
+			{"id":"e3","label":"CALLS","outV":"source:1","inV":"other:1","properties":{"edge_uid":"e3"}}
+		]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "", "", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges, err := client.EdgesBetween(context.Background(), "source:1", "target:1", []string{"CALLS", "OWNS"})
+	if err != nil {
+		t.Fatalf("EdgesBetween returned error: %v", err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("edges = %#v", edges)
+	}
+}

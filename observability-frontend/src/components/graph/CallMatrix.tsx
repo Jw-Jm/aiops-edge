@@ -1,14 +1,30 @@
 import React, { useMemo } from 'react'
-import { Table } from 'antd'
+import { Select, Space, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { GraphEdge, GraphEntity } from '../../api/graphContracts'
 
 type MatrixRow = { key: string; source: string; [target: string]: React.ReactNode }
+type MatrixMetric = 'combined' | 'calls' | 'errors' | 'error_rate' | 'latency_ms'
 const SERVICE_TYPES = new Set(['service', 'application', 'middleware', 'k8s_service'])
 
-function metric(edge: GraphEdge) {
+function numericMetric(edge: GraphEdge, key: MatrixMetric): number {
   const attrs = edge.attrs ?? {}
-  const calls = Number(attrs.calls ?? attrs.request_count ?? attrs.call_count ?? 0)
+  if (key === 'errors') return Number(attrs.errors ?? attrs.error_count ?? 0)
+  if (key === 'error_rate') {
+    const raw = Number(attrs.error_rate ?? attrs.errorRate ?? 0)
+    return raw > 1 ? raw / 100 : raw
+  }
+  if (key === 'latency_ms') return Number(attrs.latency_ms ?? attrs.avg_latency_ms ?? attrs.avg_ms ?? 0)
+  return Number(attrs.calls ?? attrs.request_count ?? attrs.call_count ?? 0)
+}
+
+function metric(edge: GraphEdge, mode: MatrixMetric) {
+  const attrs = edge.attrs ?? {}
+  const calls = numericMetric(edge, 'calls')
+  if (mode === 'calls') return <span>{calls.toLocaleString()}</span>
+  if (mode === 'errors') return <span>{numericMetric(edge, 'errors').toLocaleString()}</span>
+  if (mode === 'error_rate') return <span>{(numericMetric(edge, 'error_rate') * 100).toFixed(1)}%</span>
+  if (mode === 'latency_ms') return <span>{numericMetric(edge, 'latency_ms').toFixed(0)}ms</span>
   const errorRate = attrs.error_rate ?? attrs.errorRate
   const latency = Number(attrs.latency_ms ?? attrs.avg_latency_ms ?? attrs.avg_ms ?? 0)
   const suffix: string[] = []
@@ -21,7 +37,12 @@ function metric(edge: GraphEdge) {
 }
 
 export default function CallMatrix({ vertices, edges }: { vertices: GraphEntity[]; edges: GraphEdge[] }) {
-  const services = useMemo(() => vertices.filter((vertex) => SERVICE_TYPES.has(vertex.entity_type)).slice(0, 300), [vertices])
+  const [metricMode, setMetricMode] = React.useState<MatrixMetric>('combined')
+  const services = useMemo(() => vertices.filter((vertex) => SERVICE_TYPES.has(vertex.entity_type)).sort((left, right) => {
+    const attrs = (vertex: GraphEntity) => vertex.attrs ?? {}
+    const key = (vertex: GraphEntity) => `${String(attrs(vertex).application ?? '')}\u0000${vertex.namespace ?? String(attrs(vertex).namespace ?? '')}\u0000${vertex.name}\u0000${vertex.entity_uid}`
+    return key(left).localeCompare(key(right))
+  }).slice(0, 300), [vertices])
   const serviceIds = useMemo(() => new Set(services.map((service) => service.entity_uid)), [services])
   const edgeByPair = useMemo(() => {
     const result = new Map<string, GraphEdge>()
@@ -64,13 +85,22 @@ export default function CallMatrix({ vertices, edges }: { vertices: GraphEntity[
     const row: MatrixRow = { key: source.entity_uid, source: source.name || source.entity_uid }
     for (const target of services) {
       const edge = edgeByPair.get(`${source.entity_uid}→${target.entity_uid}`)
-      row[target.entity_uid] = source.entity_uid === target.entity_uid ? '—' : edge ? metric(edge) : '·'
+      row[target.entity_uid] = source.entity_uid === target.entity_uid ? '—' : edge ? metric(edge, metricMode) : '·'
     }
     return row
-  }), [edgeByPair, services])
+  }), [edgeByPair, metricMode, services])
 
   return <section aria-label="调用矩阵">
-    <h3>调用矩阵</h3>
+    <Space style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+      <h3 style={{ margin: 0 }}>调用矩阵</h3>
+      <Select aria-label="矩阵指标" size="small" value={metricMode} onChange={setMetricMode} options={[
+        { value: 'combined', label: '调用量 / 错误率 / 延迟' },
+        { value: 'calls', label: '调用量' },
+        { value: 'errors', label: '错误数' },
+        { value: 'error_rate', label: '错误率' },
+        { value: 'latency_ms', label: '平均延迟' },
+      ]} />
+    </Space>
     <Table<MatrixRow> size="small" bordered pagination={{ pageSize: 30, showSizeChanger: false }} scroll={{ x: Math.max(480, 180 + services.length * 150), y: 480 }} columns={columns} dataSource={data} locale={{ emptyText: '暂无服务调用关系' }} />
   </section>
 }

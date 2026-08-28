@@ -52,6 +52,17 @@ fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
+write_blocked_report() {
+  local reason="$1"
+  python3 - "$vertices" "$edges" "$batch_size" "$output" "$reason" <<'PY'
+import json, sys
+vertices, edges, batch_size, output, reason = sys.argv[1:]
+with open(output, "w", encoding="utf-8") as handle:
+    json.dump({"vertices": int(vertices), "edges": int(edges), "batch_size": int(batch_size),
+               "loaded": False, "gate_status": "BLOCKED_BY_ENV", "reason": reason},
+              handle, indent=2)
+PY
+}
 if (( dry_run == 1 )); then
   python3 - "$vertices" "$edges" "$batch_size" "$output" <<'PY'
 import json, sys
@@ -65,25 +76,36 @@ PY
 fi
 
 if [[ -z "${HUGEGRAPH_URL:-}" ]]; then
+  write_blocked_report "HUGEGRAPH_URL is required to load the 200k/1M fixture"
   echo "BLOCKED_BY_ENV: HUGEGRAPH_URL is required to load the 200k/1M fixture" >&2
   exit 2
 fi
+
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/aiops-graph-load.XXXXXX")"
+trap 'rm -rf "$tmp_dir"' EXIT
 
 if [[ -n "${GRAPH_LOAD_GENERATOR_CMD:-}" ]]; then
   read -r -a loader_cmd <<<"${GRAPH_LOAD_GENERATOR_CMD}"
 else
   loader_cmd=(go run ./cmd/graph-load-generator)
 fi
-if ! loader_output="$(cd "$repo_root/ai-apm-query-go" && "${loader_cmd[@]}" --vertices "$vertices" --edges "$edges" --batch-size "$batch_size" --load=true --batch-benchmark-iterations "$iterations")"; then
+if ! loader_output="$(cd "$repo_root/ai-apm-query-go" && "${loader_cmd[@]}" --vertices "$vertices" --edges "$edges" --batch-size "$batch_size" --load=true --batch-benchmark-iterations "$iterations" 2>"$tmp_dir/loader.stderr")"; then
+  write_blocked_report "HugeGraph fixture load did not complete"
+  cat "$tmp_dir/loader.stderr" >&2 || true
   echo "BLOCKED_BY_ENV: HugeGraph fixture load did not complete" >&2
   exit 2
 fi
-loader_json="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.stdin.read())))' <<<"$loader_output")"
+if ! loader_json="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.stdin.read())))' <<<"$loader_output")"; then
+  write_blocked_report "fixture loader returned invalid JSON"
+  echo "BLOCKED_BY_ENV: fixture loader returned invalid JSON" >&2
+  exit 2
+fi
 loaded="$(python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("loaded") else "false")' <<<"$loader_json")"
-[[ "$loaded" == "true" ]] || { echo "graph fixture loader did not report loaded=true" >&2; exit 1; }
-
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/aiops-graph-load.XXXXXX")"
-trap 'rm -rf "$tmp_dir"' EXIT
+if [[ "$loaded" != "true" ]]; then
+  write_blocked_report "graph fixture loader did not report loaded=true"
+  echo "BLOCKED_BY_ENV: graph fixture loader did not report loaded=true" >&2
+  exit 2
+fi
 headers=(-H "Accept: application/json")
 [[ -n "${GRAPH_API_TOKEN:-}" ]] && headers+=(-H "Authorization: Bearer ${GRAPH_API_TOKEN}")
 [[ -n "${GRAPH_API_TENANT_ID:-${GRAPH_LOAD_TENANT_ID:-load-test-tenant}}" ]] && headers+=(-H "X-Tenant-ID: ${GRAPH_API_TENANT_ID:-${GRAPH_LOAD_TENANT_ID:-load-test-tenant}}")
@@ -93,7 +115,8 @@ encoded_target="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(
 
 rank=$(( (iterations * 95 + 99) / 100 ))
 measure() {
-  local operation="$1" method="$2" url="$3" body="${4:-}" samples="$tmp_dir/${operation}.samples"
+  local operation="$1" method="$2" url="$3" body="${4:-}"
+  local samples="$tmp_dir/${operation}.samples"
   : >"$samples"
   local success=0
   for ((i=0; i<iterations; i++)); do

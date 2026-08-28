@@ -68,7 +68,7 @@ func (r *HugeGraphRepository) Neighbors(ctx context.Context, scope GraphScope, q
 	}
 	raw, err := r.client.KNeighbor(ctx, KNeighborRequest{
 		Source: query.CenterEntityUID, Direction: normalizedDirection(query.Direction), MaxDepth: query.MaxDepth, Limit: query.MaxVertices,
-		Capacity: limits.Capacity, Nearest: false, WithVertex: true, WithPath: false,
+		Capacity: limits.Capacity, Nearest: true, WithVertex: true, WithPath: true,
 		WithEdge: true, EdgeLabels: normalizedRelationLabels(query.RelationTypes),
 	})
 	if err != nil {
@@ -97,12 +97,40 @@ func (r *HugeGraphRepository) ShortestPath(ctx context.Context, scope GraphScope
 	if _, err := r.GetEntity(ctx, scope, query.TargetUID); err != nil {
 		return Subgraph{}, err
 	}
-	raw, err := r.client.ShortestPath(ctx, query.SourceUID, query.TargetUID, query.MaxDepth, normalizedRelationLabels(query.RelationTypes))
-	if err != nil {
-		if strings.Contains(err.Error(), "HTTP 404") {
+	labels := normalizedRelationLabels(query.RelationTypes)
+	var raw map[string]interface{}
+	var err error
+	if len(labels) <= 1 {
+		raw, err = r.client.ShortestPath(ctx, query.SourceUID, query.TargetUID, query.MaxDepth, labels)
+		if err != nil {
+			if strings.Contains(err.Error(), "HTTP 404") {
+				return Subgraph{}, graphError(ErrGraphEmpty, "no path")
+			}
+			return Subgraph{}, graphError(ErrGraphUnavailable, err.Error())
+		}
+	} else {
+		// HugeGraph's basic shortest-path endpoint accepts one label per
+		// request. Evaluate each whitelisted relation independently and retain
+		// the shortest bounded result instead of silently broadening the query.
+		bestDepth := int(^uint(0) >> 1)
+		for _, label := range labels {
+			candidate, candidateErr := r.client.ShortestPath(ctx, query.SourceUID, query.TargetUID, query.MaxDepth, []string{label})
+			if candidateErr != nil {
+				if strings.Contains(candidateErr.Error(), "HTTP 404") {
+					continue
+				}
+				return Subgraph{}, graphError(ErrGraphUnavailable, candidateErr.Error())
+			}
+			if depth := len(traverserPathIDs(candidate)); depth > 0 && depth < bestDepth {
+				bestDepth, raw = depth, candidate
+			}
+		}
+		if raw == nil {
 			return Subgraph{}, graphError(ErrGraphEmpty, "no path")
 		}
-		return Subgraph{}, graphError(ErrGraphUnavailable, err.Error())
+	}
+	if len(labels) > 0 {
+		raw["_edge_labels"] = labels
 	}
 	result, err := r.subgraphFromTraverser(ctx, scope, query.SourceUID, raw, query.MaxVertices, query.MaxEdges)
 	if err != nil {
@@ -307,6 +335,12 @@ func edgeFromHugeGraph(raw map[string]interface{}) (Edge, error) {
 func (r *HugeGraphRepository) subgraphFromTraverser(ctx context.Context, scope GraphScope, center string, raw map[string]interface{}, maxVertices, maxEdges int) (Subgraph, error) {
 	vertices, edges := []Entity{}, []Edge{}
 	vertexIDs := map[string]struct{}{}
+	pathIDs := traverserPathIDs(raw)
+	for _, uid := range pathIDs {
+		if uid != "" {
+			vertexIDs[uid] = struct{}{}
+		}
+	}
 	for _, item := range interfaceSlice(raw["vertices"]) {
 		if vertex, ok := item.(map[string]interface{}); ok {
 			entity, err := entityFromHugeGraph(vertex, "")
@@ -364,6 +398,30 @@ func (r *HugeGraphRepository) subgraphFromTraverser(ctx context.Context, scope G
 			edges = append(edges, edge)
 		}
 	}
+	if len(edges) == 0 && len(pathIDs) > 1 {
+		labels := stringSlice(raw["_edge_labels"])
+		for index := 0; index < len(pathIDs)-1 && len(edges) < maxEdges; index++ {
+			between, err := r.client.EdgesBetween(ctx, pathIDs[index], pathIDs[index+1], labels)
+			if err != nil {
+				return Subgraph{}, graphError(ErrGraphUnavailable, err.Error())
+			}
+			for _, rawEdge := range between {
+				edge, err := edgeFromHugeGraph(rawEdge)
+				if err != nil {
+					return Subgraph{}, err
+				}
+				if source, ok := findEntity(vertices, edge.SourceUID); !ok || !scope.Allows(source) {
+					continue
+				} else if target, ok := findEntity(vertices, edge.TargetUID); !ok || !scope.Allows(target) {
+					continue
+				}
+				edges = append(edges, edge)
+				if len(edges) >= maxEdges {
+					break
+				}
+			}
+		}
+	}
 	if len(vertices) > maxVertices {
 		vertices = vertices[:maxVertices]
 	}
@@ -371,6 +429,45 @@ func (r *HugeGraphRepository) subgraphFromTraverser(ctx context.Context, scope G
 		edges = edges[:maxEdges]
 	}
 	return Subgraph{CenterEntityUID: center, Vertices: vertices, Edges: edges, Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion, GeneratedAt: nowRFC3339(), WarningCodes: []string{}}}, nil
+}
+
+func stringSlice(value interface{}) []string {
+	raw, ok := value.([]string)
+	if ok {
+		return raw
+	}
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		if value, ok := item.(string); ok && strings.TrimSpace(value) != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func traverserPathIDs(raw map[string]interface{}) []string {
+	path, ok := raw["path"].([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(path))
+	for _, item := range path {
+		switch value := item.(type) {
+		case string:
+			if strings.TrimSpace(value) != "" {
+				result = append(result, value)
+			}
+		case map[string]interface{}:
+			if uid := firstString(value, "id", "entity_uid"); uid != "" {
+				result = append(result, uid)
+			}
+		}
+	}
+	return result
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format("2006-01-02T15:04:05.999999999Z07:00") }

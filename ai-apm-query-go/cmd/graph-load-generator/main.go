@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	graph "github.com/observability-platform/ai-apm-query-go/internal/graph"
@@ -19,6 +20,7 @@ type report struct {
 	Vertices      int                `json:"vertices"`
 	Edges         int                `json:"edges"`
 	BatchSize     int                `json:"batch_size"`
+	Concurrency   int                `json:"concurrency"`
 	TenantID      string             `json:"tenant_id"`
 	ClusterID     string             `json:"cluster_id"`
 	AnchorUID     string             `json:"anchor_uid"`
@@ -36,12 +38,13 @@ func main() {
 	clusterID := flag.String("cluster-id", envString("GRAPH_LOAD_CLUSTER_ID", "load-test-cluster"), "cluster id")
 	load := flag.Bool("load", true, "write the fixture to HugeGraph")
 	benchmarkIterations := flag.Int("batch-benchmark-iterations", envInt("GRAPH_LOAD_BATCH_BENCHMARK_ITERATIONS", 20), "batch mutation latency samples")
+	concurrency := flag.Int("concurrency", envInt("GRAPH_LOAD_CONCURRENCY", 4), "parallel fixture mutation workers")
 	flag.Parse()
-	if *vertexCount < 2 || *edgeCount < 1 || *batchSize < 1 || *batchSize > 500 || *benchmarkIterations < 0 {
-		fatal("vertices >= 2, edges >= 1, batch-size 1..500 and non-negative benchmark iterations are required")
+	if *vertexCount < 2 || *edgeCount < 1 || *batchSize < 1 || *batchSize > 500 || *benchmarkIterations < 0 || *concurrency < 1 || *concurrency > 32 {
+		fatal("vertices >= 2, edges >= 1, batch-size 1..500, concurrency 1..32 and non-negative benchmark iterations are required")
 	}
 
-	result := report{Vertices: *vertexCount, Edges: *edgeCount, BatchSize: *batchSize,
+	result := report{Vertices: *vertexCount, Edges: *edgeCount, BatchSize: *batchSize, Concurrency: *concurrency,
 		TenantID: *tenantID, ClusterID: *clusterID, AnchorUID: vertexUID(0), TargetUID: vertexUID(1), Loaded: false}
 	if !*load {
 		writeReport(result)
@@ -60,8 +63,7 @@ func main() {
 	}
 	ctx := context.Background()
 	started := time.Now()
-	for start := 0; start < *vertexCount; start += *batchSize {
-		end := min(start+*batchSize, *vertexCount)
+	if err := loadBatches(ctx, *vertexCount, *batchSize, *concurrency, func(start, end int) error {
 		vertices := make([]graph.Entity, 0, end-start)
 		for index := start; index < end; index++ {
 			vertices = append(vertices, graph.Entity{
@@ -72,11 +74,13 @@ func main() {
 			})
 		}
 		if err := client.PutVerticesBatch(ctx, vertices); err != nil {
-			fatal(fmt.Sprintf("load vertices [%d,%d): %v", start, end, err))
+			return fmt.Errorf("load vertices [%d,%d): %w", start, end, err)
 		}
+		return nil
+	}); err != nil {
+		fatal(err.Error())
 	}
-	for start := 0; start < *edgeCount; start += *batchSize {
-		end := min(start+*batchSize, *edgeCount)
+	if err := loadBatches(ctx, *edgeCount, *batchSize, *concurrency, func(start, end int) error {
 		edges := make([]graph.Edge, 0, end-start)
 		for index := start; index < end; index++ {
 			source, target := edgeEndpoints(index, *vertexCount)
@@ -88,8 +92,11 @@ func main() {
 			})
 		}
 		if err := client.PutEdgesBatch(ctx, edges); err != nil {
-			fatal(fmt.Sprintf("load edges [%d,%d): %v", start, end, err))
+			return fmt.Errorf("load edges [%d,%d): %w", start, end, err)
 		}
+		return nil
+	}); err != nil {
+		fatal(err.Error())
 	}
 	result.Loaded = true
 	result.DurationMS = time.Since(started).Milliseconds()
@@ -97,6 +104,57 @@ func main() {
 		result.BatchMutation = benchmarkBatch(ctx, client, *tenantID, *clusterID, *batchSize, *benchmarkIterations)
 	}
 	writeReport(result)
+}
+
+// loadBatches parallelizes only the validation fixture writer. Runtime graph
+// projection remains serialized by its lease/worker contract; the load gate
+// needs concurrency because HugeGraph's REST edge endpoint is the bottleneck
+// on a single-node local cluster.
+func loadBatches(ctx context.Context, total, batchSize, concurrency int, load func(start, end int) error) error {
+	if total <= 0 {
+		return nil
+	}
+	workerCount := min(concurrency, (total+batchSize-1)/batchSize)
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	worker := func() {
+		defer wg.Done()
+		for start := range jobs {
+			if workCtx.Err() != nil {
+				return
+			}
+			if err := load(start, min(start+batchSize, total)); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+					cancel()
+				}
+				mu.Unlock()
+				return
+			}
+		}
+	}
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go worker()
+	}
+	for start := 0; start < total; start += batchSize {
+		select {
+		case jobs <- start:
+		case <-workCtx.Done():
+			break
+		}
+		if workCtx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return firstErr
 }
 
 func benchmarkBatch(ctx context.Context, client *graph.HugeGraphClient, tenantID, clusterID string, batchSize, iterations int) map[string]float64 {
