@@ -44,6 +44,13 @@ spec:
             - name: PASSWORD
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_PASSWORD }
+          startupProbe:
+            exec:
+              command: ["/bin/bash", "-c", "curl -fsS -u \"${HUGEGRAPH_USERNAME}:${PASSWORD}\" http://127.0.0.1:8080/graphs >/dev/null"]
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 60
           readinessProbe:
             exec:
               command: ["/bin/bash", "-c", "curl -fsS -u \"${HUGEGRAPH_USERNAME}:${PASSWORD}\" http://127.0.0.1:8080/graphs >/dev/null"]
