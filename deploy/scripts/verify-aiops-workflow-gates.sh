@@ -83,5 +83,6 @@ fi
 
 echo "[deployment-contracts] Fresh Install Helm/image/Secret/RBAC contracts"
 bash "${repo_root}/deploy/scripts/test-deployment-contracts.sh"
+bash "${repo_root}/deploy/scripts/test-graph-load-contract.sh"
 
 echo "AIOps workflow gates passed (mutation remains disabled)."

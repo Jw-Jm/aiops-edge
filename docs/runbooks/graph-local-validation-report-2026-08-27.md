@@ -15,11 +15,13 @@ DeepFlow（`--skip-deepflow`），因此不把 DeepFlow 环境门禁记为通过
 
 针对本报告之后发现的验收偏差，当前工作树已完成以下代码修复并在本机验证：
 
-- 服务全景主页面已固定为“服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索”；移除 ECharts force 全量图、稳定坐标缓存和 30 秒 force 重启轮询。服务地图使用有界 DAG 布局（最多 300 个实体、1000 条边）。
+- 服务全景主页面已固定为“服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索”；移除 ECharts force 全量图、稳定坐标缓存和 30 秒 force 重启轮询。专家关系探索使用有界 G6/Dagre（最多 300 个实体、1000 条边）。
+- 后续契约收敛已落地：服务页面通过 `/api/v1/services/overview`、`/api/v1/services/map`、`/api/v1/services/{entity_uid}/dependencies` 和 `/api/v1/services/dependency-matrix` 读取专用 DTO；默认地图只渲染 Application/Namespace 分组与聚合跨组边，原始服务边只在专家关系探索中出现。`topology_revision` 仅由结构身份组成，30 秒摘要刷新不会重建地图。
 - 调用矩阵改为二维服务×服务表格，支持调用量、错误率、延迟、分页和滚动；新增页面、矩阵和地图契约测试。
 - RCARequest 现在从 `ai_runs.time_range_start/time_range_end` 冻结窗口（提供 `from_ai_run` 工厂），RCAResult/GraphContext 保留同一时间窗；temporal score 在 RCA scorer 内按固定时间带计算；传播解释只保留实际的根因→症状有向路径。
 - `graph-load-test.sh` 与类型化 Go fixture generator 已实现 200,000 vertex / 1,000,000 edge 数据集加载，以及 entity、1-hop、2-hop、shortest path、RCA candidate、impact、batch mutation 的 P95 固定门禁。真实环境已实际尝试：默认 2Gi HugeGraph 在约 50.5k vertex 写入时 EOF；本机验证 profile 已调整为 10Gi，并增加启动探针避免大数据启动阶段被 liveness 重启。统一镜像部署后完整门禁报告 `/tmp/aiops-graph-load-report-final-9f2123adc95b.json` 为 `loaded=true`、`gate_status=PASS`：entity/1-hop/2-hop/shortest-path/RCA-candidate/impact/batch-mutation 的 P95 分别为 `10/185/594/92/690/921/94.581ms`，全部低于 `500/1000/2000/3000/3000/3000/1000ms`；已将同一证据归档至 `docs/testdata/graph-load-report-2026-08-28.json`。
 - HugeGraph edge batching 已修正为在服务端 16KiB `id in [...]` 限制下使用 15KB 预算，避免旧 12KB 拆分造成不必要的请求放大；对应客户端单测已通过。
+- 图压测报告现在校验 fixture loader 实际返回的 vertex/edge 计数，并写入 `fixture_loader` 与 `resource_gate`（HugeGraph JVM、RocksDB、query-api、orchestrator、frontend bundle、browser long tasks）字段；设置 `GRAPH_LOAD_REQUIRE_RESOURCES=1` 时，未采齐资源证据会明确阻断，不会把延迟结果伪装成完整资源门禁。
 - 本机代码验证：Go `go test ./... -count=1` 通过；Go Graph/API/Store `go test -race` 通过；Python `.venv314/bin/python -m pytest -q` 为 `1181 passed, 1 skipped`；前端全量 `25 files / 39 tests` 和 `npm run build` 通过。
 - 最终提交已按 `git-9f2123adc95b` 重建全部自研镜像，并完成一次破坏性 Fresh Install + runtime upgrade；Helm revision 5、MySQL 0011、HugeGraph schema migrator、核心工作负载 Ready、Executor disabled/canary RBAC 与本地结构验证均通过。统一版本运行期间 HugeGraph `restartCount=0`；重复加载既有 fixture 时内存峰值约 9.6Gi，未发生 OOM。
 

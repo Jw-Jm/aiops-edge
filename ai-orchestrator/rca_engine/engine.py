@@ -37,9 +37,14 @@ class RCARequest:
             raise ValueError("window_end must be an ISO-8601 timestamp")
         if start > end:
             raise ValueError("window_start must not be later than window_end")
+        symptom = parse_timestamp(self.symptom_time)
+        if symptom is None:
+            raise ValueError("symptom_time must be an ISO-8601 timestamp")
+        if symptom < start or symptom > end:
+            raise ValueError("symptom_time must fall within the frozen ai_run window")
         object.__setattr__(self, "window_start", normalize_timestamp(start, field="window_start"))
         object.__setattr__(self, "window_end", normalize_timestamp(end, field="window_end"))
-        object.__setattr__(self, "symptom_time", normalize_timestamp(self.symptom_time, field="symptom_time"))
+        object.__setattr__(self, "symptom_time", normalize_timestamp(symptom, field="symptom_time"))
 
     @classmethod
     def from_ai_run(cls, ai_run: Mapping[str, Any] | Any, **overrides: Any) -> "RCARequest":
@@ -66,7 +71,7 @@ class RCARequest:
             raise ValueError("RCA run identity and time window are immutable and must come from ai_run")
         values: dict[str, Any] = {
             "run_id": read("run_id"), "tenant_id": read("tenant_id"),
-            "cluster_id": read("primary_cluster_id", ""),
+            "cluster_id": read("primary_cluster_id", read("cluster_id", "")),
             "window_start": start, "window_end": end, "symptom_time": symptom,
             "resource_id": read("target_resource_id", ""),
         }
@@ -157,7 +162,8 @@ class RCAEngineV2:
             uid = str(candidate.get("entity_uid") or "")
             candidate_evidence = evidence_for_candidate(evidence, uid)
             breakdown = score_candidate(candidate, candidate_evidence, hops=candidate.get("hops", 1),
-                                        symptom_time=request.symptom_time)
+                                        symptom_time=request.symptom_time, window_start=request.window_start,
+                                        window_end=request.window_end)
             ranked.append({"entity_uid": uid, "name": candidate.get("name", uid), "entity_type": candidate.get("entity_type", ""),
                            "score": breakdown.score, "score_breakdown": breakdown.to_dict(),
                            "evidence_categories": independent_categories(candidate_evidence),

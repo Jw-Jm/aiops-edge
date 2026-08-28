@@ -265,8 +265,13 @@ func main() {
 	mux.HandleFunc("/api/v1/resources/resolve", handler.ResolveResource)
 
 	// Services
+	// Service panorama has dedicated contracts so the browser never joins the
+	// legacy /services + /topology/global responses or renders raw global edges.
+	mux.HandleFunc("/api/v1/services/overview", handler.ServicePanoramaOverview)
+	mux.HandleFunc("/api/v1/services/map", handler.ServicePanoramaMap)
+	mux.HandleFunc("/api/v1/services/dependency-matrix", handler.ServiceDependencyMatrix)
+	mux.HandleFunc("/api/v1/services/", handler.ServiceDependenciesOrDetail)
 	mux.HandleFunc("/api/v1/services", handler.ListServices)
-	mux.HandleFunc("/api/v1/services/", handler.ServiceDetail)
 	// Traces
 	mux.HandleFunc("/api/v1/traces", handler.ListTraces)
 	mux.HandleFunc("/api/v1/traces/", handler.TraceRouter)

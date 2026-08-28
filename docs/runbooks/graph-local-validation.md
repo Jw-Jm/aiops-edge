@@ -43,7 +43,32 @@ bash deploy/scripts/graph-load-test.sh --output /tmp/aiops-graph-load-report.jso
 pass. Missing HugeGraph access, authentication, or real observations must be
 reported as `BLOCKED_BY_ENV`.
 
+The report validates that the fixture loader returned the exact requested
+counts and stores a `fixture_loader` record. It also stores explicit resource
+evidence for HugeGraph JVM RSS/heap, RocksDB disk/WAL, query-api CPU/RSS,
+orchestrator CPU/RSS, frontend bundle size, and browser long tasks. Use
+`GRAPH_LOAD_REQUIRE_RESOURCES=1` in a release environment to make incomplete
+resource collection a blocking result; local runs remain transparent when
+cluster metrics or a browser trace are unavailable.
+
 The fixture writer is idempotent by UID but repeated full loads in the same
 RocksDB process can grow the server cache. Run the full gate once per fresh
 validation install, archive its JSON report, and do not treat a second load of
 the same fixture as a new independent performance sample.
+
+## Service panorama contracts
+
+The service panorama does not join legacy `/services` and `/topology/global`
+responses in the browser. Query API owns the dedicated contracts:
+
+```text
+GET /api/v1/services/overview
+GET /api/v1/services/map?group_by=application|namespace
+GET /api/v1/services/{entity_uid}/dependencies
+GET /api/v1/services/dependency-matrix
+```
+
+The map is grouped by Application when identity is available and falls back to
+Namespace. Cross-group edges are aggregated with route/call/error/latency
+metrics. The matrix is sparse and capped at 200 services; expert G6/Dagre
+exploration is the only raw relationship view.

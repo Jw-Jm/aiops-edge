@@ -18,6 +18,8 @@ def test_temporal_score_uses_frozen_symptom_time_and_fixed_bands():
     assert deterministic_temporal_score([{"observed_at": "2026-08-26T23:30:00Z"}], symptom) == 0.5
     assert deterministic_temporal_score([{"observed_at": "2026-08-27T00:31:00Z"}], symptom) == 0.4
     assert deterministic_temporal_score([{"observed_at": "2026-08-27T00:33:00Z", "temporal_score": 1.0}], symptom) == 0.0
+    assert deterministic_temporal_score([{"observed_at": "2026-08-26T23:59:00Z"}], symptom,
+                                        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z") == 0.0
 
 
 def test_request_factory_copies_ai_run_time_range_without_wall_clock_defaults():
@@ -27,6 +29,13 @@ def test_request_factory_copies_ai_run_time_range_without_wall_clock_defaults():
     assert request.window_start == "2026-08-27T00:00:00Z"
     assert request.window_end == "2026-08-27T01:00:00Z"
     assert request.symptom_time == request.window_end
+    fallback = RCARequest.from_ai_run({"run_id": "run-1", "tenant_id": "tenant-1", "cluster_id": "cluster-1",
+                                       "time_range_start": "2026-08-27T00:00:00Z", "time_range_end": "2026-08-27T01:00:00Z"})
+    assert fallback.cluster_id == "cluster-1"
+    with pytest.raises(ValueError, match="within"):
+        RCARequest(run_id="run-1", tenant_id="tenant-1", cluster_id="cluster-1",
+                   window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+                   symptom_time="2026-08-27T01:01:00Z")
     with pytest.raises(ValueError, match="immutable"):
         RCARequest.from_ai_run({"run_id": "run-1", "tenant_id": "tenant-1", "primary_cluster_id": "cluster-1",
                                 "time_range_start": "2026-08-27T00:00:00Z", "time_range_end": "2026-08-27T01:00:00Z"},

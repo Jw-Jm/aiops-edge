@@ -220,6 +220,10 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		}
 	}
 	for _, p := range []string{
+		"/api/v1/services/overview",
+		"/api/v1/services/map",
+		"/api/v1/services/dependency-matrix",
+		"/api/v1/services/service:v1:tenant-a:service/dependencies",
 		"/api/v1/services/orders",
 		"/api/v1/services/0.250.250.2",
 	} {
@@ -229,6 +233,7 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 	}
 	for _, p := range []string{
 		"/api/v1/services/orders/extra",
+		"/api/v1/services/orders/dependencies/extra",
 		"/api/v1/services/",
 	} {
 		if isCanonicalProtectedRoute(p) {

@@ -654,6 +654,9 @@ func isCanonicalProtectedRoute(path string) bool {
 	case "/api/v1/resources/resolve":
 		return true
 	case "/api/v1/services",
+		"/api/v1/services/overview",
+		"/api/v1/services/map",
+		"/api/v1/services/dependency-matrix",
 		"/api/v1/clusters", // 只读集群列表：前端集群选择器数据源（JWT+canonical tenant+成员）
 		"/api/v1/traces",
 		"/api/v1/topology/global",
@@ -688,6 +691,9 @@ func isCanonicalProtectedRoute(path string) bool {
 	// JWT+tenant boundary without opening arbitrary nested paths.
 	if strings.HasPrefix(path, "/api/v1/services/") {
 		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/services/"), "/"), "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] == "dependencies" {
+			return true
+		}
 		return len(parts) == 1 && parts[0] != ""
 	}
 	// Trace list/detail/context are all browser-facing read routes. Keep the

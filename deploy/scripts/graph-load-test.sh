@@ -14,6 +14,7 @@ base_url="${GRAPH_API_BASE_URL:-http://127.0.0.1:8080/api/v1/ai/kg}"
 uid="${GRAPH_TEST_ENTITY_UID:-loadtest:vertex:000000}"
 target_uid="${GRAPH_TEST_TARGET_UID:-loadtest:vertex:000001}"
 output="${GRAPH_LOAD_REPORT:-/tmp/aiops-graph-load-report.json}"
+require_resources="${GRAPH_LOAD_REQUIRE_RESOURCES:-0}"
 dry_run=0
 
 usage() {
@@ -45,6 +46,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 2; 
 for value in "$vertices" "$edges" "$iterations" "$batch_size"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "numeric options must be positive" >&2; exit 2; }
 done
+[[ "$require_resources" == "0" || "$require_resources" == "1" ]] || { echo "GRAPH_LOAD_REQUIRE_RESOURCES must be 0 or 1" >&2; exit 2; }
 if (( vertices < 2 || edges < 1 || batch_size > 500 )); then
   echo "vertices >= 2, edges >= 1 and batch-size <= 500 are required" >&2
   exit 2
@@ -59,7 +61,16 @@ import json, sys
 vertices, edges, batch_size, output, reason = sys.argv[1:]
 with open(output, "w", encoding="utf-8") as handle:
     json.dump({"vertices": int(vertices), "edges": int(edges), "batch_size": int(batch_size),
-               "loaded": False, "gate_status": "BLOCKED_BY_ENV", "reason": reason},
+               "loaded": False, "gate_status": "BLOCKED_BY_ENV", "reason": reason,
+               "fixture_loader": None,
+               "resource_gate": {
+                   "hugegraph_jvm_rss_heap": {"status": "not_collected"},
+                   "rocksdb_disk_wal": {"status": "not_collected"},
+                   "query_api_cpu_rss": {"status": "not_collected"},
+                   "orchestrator_cpu_rss": {"status": "not_collected"},
+                   "frontend_bundle_bytes": {"status": "not_collected"},
+                   "browser_long_tasks": {"status": "not_collected"},
+               }},
               handle, indent=2)
 PY
 }
@@ -69,7 +80,8 @@ import json, sys
 vertices, edges, batch_size = map(int, sys.argv[1:4])
 with open(sys.argv[4], "w", encoding="utf-8") as handle:
     json.dump({"vertices": vertices, "edges": edges, "batch_size": batch_size, "loaded": False,
-               "gate_status": "DRY_RUN"}, handle, indent=2)
+               "gate_status": "DRY_RUN", "fixture_loader": None,
+               "resource_gate": {"status": "not_collected", "reason": "dry-run does not touch runtime"}}, handle, indent=2)
 PY
   cat "$output"
   exit 0
@@ -104,6 +116,13 @@ loaded="$(python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get(
 if [[ "$loaded" != "true" ]]; then
   write_blocked_report "graph fixture loader did not report loaded=true"
   echo "BLOCKED_BY_ENV: graph fixture loader did not report loaded=true" >&2
+  exit 2
+fi
+fixture_vertices="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("vertices", 0))' <<<"$loader_json")"
+fixture_edges="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("edges", 0))' <<<"$loader_json")"
+if [[ "$fixture_vertices" != "$vertices" || "$fixture_edges" != "$edges" ]]; then
+  write_blocked_report "fixture loader count mismatch: requested ${vertices}/${edges}, loaded ${fixture_vertices}/${fixture_edges}"
+  echo "BLOCKED_BY_ENV: fixture loader count mismatch" >&2
   exit 2
 fi
 headers=(-H "Accept: application/json")
@@ -152,12 +171,34 @@ measure rca_candidate GET "${base_url}/entities/${encoded_uid}/candidate?depth=2
 measure impact GET "${base_url}/entities/${encoded_uid}/impact?max_depth=3"
 
 batch_mutation="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("batch_mutation", {})))' <<<"$loader_json")"
-python3 - "$vertices" "$edges" "$batch_size" "$uid" "$target_uid" "$loader_json" "$output" "$tmp_dir/operations.jsonl" "$batch_mutation" <<'PY'
+# Resource evidence is part of the gate report.  Cluster metrics are optional
+# in local mode, but the report keeps an explicit status for every required
+# dimension instead of silently presenting latency as a complete benchmark.
+frontend_bundle_bytes="$(du -sk "$repo_root/observability-frontend/dist" 2>/dev/null | awk '{print $1 * 1024}' || true)"
+[[ "$frontend_bundle_bytes" =~ ^[0-9]+$ ]] || frontend_bundle_bytes=0
+resource_json="$(python3 - "$frontend_bundle_bytes" <<'PY'
+import json, sys
+bundle = int(sys.argv[1])
+print(json.dumps({
+    "hugegraph_jvm_rss_heap": {"status": "not_collected", "reason": "requires cluster metrics"},
+    "rocksdb_disk_wal": {"status": "not_collected", "reason": "requires cluster metrics"},
+    "query_api_cpu_rss": {"status": "not_collected", "reason": "requires cluster metrics"},
+    "orchestrator_cpu_rss": {"status": "not_collected", "reason": "requires cluster metrics"},
+    "frontend_bundle_bytes": {"status": "collected", "value": bundle},
+    "browser_long_tasks": {"status": "not_collected", "reason": "requires browser trace"},
+}))
+PY
+)"
+python3 - "$vertices" "$edges" "$batch_size" "$uid" "$target_uid" "$loader_json" "$output" "$tmp_dir/operations.jsonl" "$batch_mutation" "$resource_json" "$require_resources" <<'PY'
 import json, sys
 vertices, edges, batch_size = map(int, sys.argv[1:4])
-uid, target_uid, loader_json, output, operations_file, batch = sys.argv[4:]
+uid, target_uid, loader_json, output, operations_file, batch, resource_json, require_resources = sys.argv[4:]
 operations = [json.loads(line) for line in open(operations_file, encoding="utf-8") if line.strip()]
 batch_data = json.loads(batch)
+loader = json.loads(loader_json)
+resources = json.loads(resource_json)
+resource_items = resources.values() if isinstance(resources, dict) else []
+resource_complete = all(item.get("status") == "collected" for item in resource_items)
 operations.append({"operation": "batch_mutation", **batch_data})
 gates = {"entity": 500, "one_hop": 1000, "two_hop": 2000, "shortest_path": 3000,
          "rca_candidate": 3000, "impact": 3000, "batch_mutation": 1000}
@@ -165,10 +206,12 @@ for item in operations:
     item["gate_ms"] = gates[item["operation"]]
     item["passed"] = item.get("success_rate", 1) == 1 and item["p95_ms"] <= item["gate_ms"]
 all_unavailable = all(item.get("success", 0) == 0 for item in operations if item["operation"] != "batch_mutation")
-gate_status = "BLOCKED_BY_ENV" if all_unavailable else "PASS" if all(item["passed"] for item in operations) else "FAIL"
+resource_required = require_resources == "1"
+gate_status = "BLOCKED_BY_ENV" if all_unavailable or (resource_required and not resource_complete) else "PASS" if all(item["passed"] for item in operations) else "FAIL"
 result = {"vertices": vertices, "edges": edges, "batch_size": batch_size, "loaded": True,
           "anchor_uid": uid, "target_uid": target_uid, "operations": {item["operation"]: item for item in operations},
-          "gate_status": gate_status,
+          "fixture_loader": loader, "resource_gate": resources, "resource_gate_status": "PASS" if resource_complete else "PARTIAL",
+          "resource_gate_required": resource_required, "gate_status": gate_status,
           "gate_definition": gates}
 with open(output, "w", encoding="utf-8") as handle:
     json.dump(result, handle, indent=2)

@@ -14,10 +14,14 @@ vi.mock('../../api/knowledgeGraph', () => ({
   getGraphImpact: vi.fn(),
   searchGraphEntities: vi.fn(),
   getGraphNeighbors: vi.fn(),
+  getServiceOverview: vi.fn(),
+  getServiceMap: vi.fn(),
+  getServiceDependencies: vi.fn(),
+  getServiceDependencyMatrix: vi.fn(),
 }))
 
 import { getServices } from '../../api/client'
-import { getGraphHealth, getGraphImpact, getGraphNeighbors, searchGraphEntities } from '../../api/knowledgeGraph'
+import { getGraphHealth, getGraphImpact, getGraphNeighbors, getServiceDependencies, getServiceDependencyMatrix, getServiceMap, getServiceOverview, searchGraphEntities } from '../../api/knowledgeGraph'
 
 const graph = {
   center_entity_uid: 'service:checkout',
@@ -36,6 +40,10 @@ describe('ServiceObservability service panorama', () => {
     vi.mocked(searchGraphEntities).mockResolvedValue({ data: { items: [graph.vertices[0]], count: 1 } } as never)
     vi.mocked(getGraphNeighbors).mockResolvedValue({ data: graph } as never)
     vi.mocked(getGraphImpact).mockResolvedValue({ data: graph } as never)
+    vi.mocked(getServiceOverview).mockResolvedValue({ data: { total: 1, healthy: 1, degraded: 0, critical: 0, calls: 10, errors: 1, error_rate: 0.1, avg_latency_ms: 42, p95_latency_ms: 50, cross_namespace_edges: 0, cycle_count: 0, top_abnormal_services: [], top_error_edges: [], top_latency_edges: [], topology_revision: 'r1' } } as never)
+    vi.mocked(getServiceMap).mockResolvedValue({ data: { group_by: 'application', groups: [{ group_uid: 'namespace:default', name: 'default', group_by: 'namespace', service_count: 1, healthy: 1, degraded: 0, critical: 0, calls: 10, errors: 1, error_rate: 0.1, services: [{ ...graph.vertices[0], service_name: 'checkout', health: 'healthy', calls: 10, errors: 1, error_rate: 0.1, avg_latency_ms: 42 }] }], services: [{ ...graph.vertices[0], service_name: 'checkout', health: 'healthy', calls: 10, errors: 1, error_rate: 0.1, avg_latency_ms: 42 }], aggregated_edges: [], topology_revision: 'r1' } } as never)
+    vi.mocked(getServiceDependencyMatrix).mockResolvedValue({ data: { services: [], row_order: [], column_order: [], cells: [], topology_revision: 'r1' } } as never)
+    vi.mocked(getServiceDependencies).mockResolvedValue({ data: { center: graph.vertices[0], upstream: [], downstream: [graph.vertices[1]], middleware: [], edges: graph.edges, cycles: [], topology_revision: 'r1', meta: graph.meta } } as never)
   })
 
   it('renders the required panorama sections instead of a force/topology toggle', async () => {
@@ -47,6 +55,6 @@ describe('ServiceObservability service panorama', () => {
     expect(screen.getByText('调用矩阵')).toBeInTheDocument()
     expect(screen.getByText('专家关系探索')).toBeInTheDocument()
     expect(screen.queryByText('拓扑视图')).not.toBeInTheDocument()
-    expect(getGraphNeighbors).toHaveBeenCalledWith('service:checkout', expect.objectContaining({ depth: 2 }))
+    expect(getServiceDependencies).toHaveBeenCalledWith('service:checkout', expect.objectContaining({ upstream_depth: 1, downstream_depth: 1 }))
   })
 })

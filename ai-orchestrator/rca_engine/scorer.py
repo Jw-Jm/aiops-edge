@@ -59,7 +59,8 @@ def timestamp_text(value: Any) -> str:
     return parsed.isoformat().replace("+00:00", "Z") if parsed is not None else ""
 
 
-def deterministic_temporal_score(evidences: Iterable[dict[str, Any]], symptom_time: Any) -> float:
+def deterministic_temporal_score(evidences: Iterable[dict[str, Any]], symptom_time: Any, *,
+                                 window_start: Any = None, window_end: Any = None) -> float:
     """Score evidence timing against the frozen symptom timestamp.
 
     Evidence providers may expose different timestamp names, but they cannot
@@ -69,11 +70,19 @@ def deterministic_temporal_score(evidences: Iterable[dict[str, Any]], symptom_ti
     symptom = parse_timestamp(symptom_time)
     if symptom is None:
         return 0.0
+    start = parse_timestamp(window_start) if window_start is not None else None
+    end = parse_timestamp(window_end) if window_end is not None else None
+    if start is not None and end is not None and (start > end or symptom < start or symptom > end):
+        return 0.0
     scores: list[float] = []
     timestamp_keys = ("observed_at", "timestamp", "occurred_at", "event_time", "detected_at")
     for evidence in evidences:
         observed = next((parse_timestamp(evidence.get(key)) for key in timestamp_keys if evidence.get(key) is not None), None)
         if observed is None:
+            continue
+        if start is not None and observed < start:
+            continue
+        if end is not None and observed > end:
             continue
         delta_minutes = (symptom - observed).total_seconds() / 60.0
         if delta_minutes >= 0:
@@ -84,7 +93,8 @@ def deterministic_temporal_score(evidences: Iterable[dict[str, Any]], symptom_ti
 
 
 def score_candidate(candidate: dict[str, Any], evidences: list[dict[str, Any]], *, hops: int | None = None,
-                    symptom_time: Any = None) -> ScoreBreakdown:
+                    symptom_time: Any = None, window_start: Any = None,
+                    window_end: Any = None) -> ScoreBreakdown:
     categories = {str(e.get("category")) for e in evidences}
     anomaly = max((float(e.get("severity", e.get("score", 0.0)) or 0.0) for e in evidences
                   if e.get("category") in {"metric", "alert", "kubernetes_event", "hardware_sensor", "hardware_sel"}), default=0.0)
@@ -94,7 +104,7 @@ def score_candidate(candidate: dict[str, Any], evidences: list[dict[str, Any]], 
     change = max((1.0 if e.get("same_entity") else .6 if e.get("same_scope") else .3
                   for e in evidences if e.get("category") == "change"), default=0.0)
     trace = max((1.0 if e.get("degraded") else .5 for e in evidences if e.get("category") == "trace"), default=0.0)
-    temporal = deterministic_temporal_score(evidences, symptom_time)
+    temporal = deterministic_temporal_score(evidences, symptom_time, window_start=window_start, window_end=window_end)
     co_failure = max((float(e.get("co_failure_score", 0.0) or 0.0) for e in evidences), default=0.0)
     return ScoreBreakdown(topology=topology_score(hops), temporal=min(1.0, temporal), anomaly=anomaly,
                           change=change, trace=trace, hardware_severity=min(1.0, hardware),
