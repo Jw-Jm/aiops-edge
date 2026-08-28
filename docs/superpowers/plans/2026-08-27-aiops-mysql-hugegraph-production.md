@@ -180,10 +180,10 @@
 
 - [x] Step 1: 写 Helm/render/load/shadow/recovery 门禁测试，覆盖 200k vertex/1M edge 数据模型、固定 P95、资源采集字段和长时配置；真实负载结果仍由环境门禁单独判定。
 - [x] Step 2: `helm lint`、`helm template ... values-prod.yaml`、Go/Python/Frontend 回归均已执行并修复当前失败项。
-- [x] Step 3: Fresh Install 按 bootstrap → runtime upgrade 执行；验证镜像使用统一 `git-39f4e7e8e0eb` 标签，后续源码增量在本次提交中重新构建 query-api。
+- [x] Step 3: Fresh Install 按 bootstrap → runtime upgrade 执行；最终提交已构建全部自研镜像并使用统一 `git-d3da28c9ad06` 标签。
 - [x] Step 4: OrbStack `aiops-canary` workload、Query API/Worker/Proxy/Frontend/Executor、canary-only RBAC 与 disabled mutation 均已核验。
 - [x] Step 5: HugeGraph 1.7.0/Java 11/RocksDB、schema migrator、backfill/identity/ontology/path/impact/RCA/Graph Ops 代码与本机结构验证通过；真实 LLM/DeepFlow 仍为环境阻断。
-- [ ] Step 6: 运行 shadow compare 与完整性能脚本；200k/1k、200k/10k 小样本通过，但完整 200k/1M 在单节点审计/REST 吞吐下未完成，固定 P95 门禁为 `BLOCKED_BY_ENV`。
+- [ ] Step 6: 运行 shadow compare 与完整性能脚本；最终提交 Fresh Install 后 200k/1k（`loaded=true`，batch P95 47.394ms）及此前 200k/10k 小样本通过，但完整 200k/1M 在单节点审计/REST 吞吐下未完成，固定 P95 门禁为 `BLOCKED_BY_ENV`。
 - [ ] Step 7: 2 小时切换观察与 24 小时 Shadow/soak 尚未完成，保留 `docs/runbooks/graph-cutover.md` 可重放命令。
 - [x] Step 8: 最终 Go 全量/竞态、Python 全量、Frontend 全量测试与构建、Helm lint 已通过。
 - [x] Step 9: 已写最终验证报告并逐项记录 DoD；由于真实数据、长时和完整性能门禁未完成，未宣称全部 DoD 通过。
