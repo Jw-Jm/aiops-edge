@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -358,7 +359,21 @@ WHERE ut.user_uuid = ? AND t.id = ? AND t.enabled = 1 AND ut.status = 'active' L
 	if err != nil || memberTenantID != tenantID {
 		return zero, authorizationFailure("permission_denied")
 	}
-	return AuthorizationContext{UserID: userID, SessionID: sessionID, TenantID: tenantID, MustChangePassword: mustChange == 1}, nil
+	return AuthorizationContext{UserID: userID, SessionID: sessionID, TenantID: tenantID,
+		MustChangePassword: mustChange == 1 && requireFirstLoginPasswordChange()}, nil
+}
+
+// requireFirstLoginPasswordChange keeps the first-login policy fail-closed by
+// default. The temporary local validation profile can explicitly disable the
+// interactive gate without mutating the authoritative MySQL flag, so it can be
+// re-enabled by removing the override.
+func requireFirstLoginPasswordChange() bool {
+	raw := strings.TrimSpace(os.Getenv("AUTH_REQUIRE_FIRST_LOGIN_PASSWORD_CHANGE"))
+	if raw == "" {
+		return true
+	}
+	enabled, err := strconv.ParseBool(raw)
+	return err != nil || enabled
 }
 
 func requestAuthorizationContext(r *http.Request) (AuthorizationContext, bool) {
@@ -462,7 +477,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 				}
 				respondJSON(w, 200, map[string]interface{}{
 					"token": token, "username": u.Username, "role": u.Role, "display_name": u.DisplayName, "scope": u.Scope,
-					"must_change_password": u.MustChangePassword,
+					"must_change_password": u.MustChangePassword && requireFirstLoginPasswordChange(),
 				})
 				return
 			}
@@ -761,6 +776,7 @@ func isCanonicalProtectedRoute(path string) bool {
 	// this function only establishes the canonical JWT + tenant boundary.
 	for _, base := range []string{
 		"/api/v1/users",
+		"/api/v1/admin/data-cleanups",
 		"/api/v1/catalog/services",
 		"/api/v1/devices",
 		"/api/v1/slo",

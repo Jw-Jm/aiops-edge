@@ -351,6 +351,10 @@ app.include_router(_ai_runs_router)
 # P11 只读接线：结构化动作提案/确认（执行冻结）
 import ops_action_api as _ops_action_api
 app.include_router(_ops_action_api.router)
+# Internal query-api-owned historical session cleanup; browser callers never
+# reach this router because auth_middleware requires the directional token.
+from data_cleanup_api import router as _data_cleanup_router
+app.include_router(_data_cleanup_router)
 
 
 async def _scheduled_anomaly_scan():
@@ -1147,7 +1151,8 @@ async def internal_chat(request: Request):
                 streamed_events.append(event)
                 if event.get("type") == "done":
                     _persist_streamed_chat_session(
-                        thread_id, intent, service or "", message, streamed_events)
+                        thread_id, intent, service or "", message, streamed_events,
+                        tenant_id=str(scope.tenant_id), cluster_id=str(scope.cluster_id))
                 event_queue.put(event)
         try:
             _asyncio.run(_astream())
@@ -1275,7 +1280,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                     streamed_events.append(event)
                     if event.get("type") == "done":
                         _persist_streamed_chat_session(
-                            thread_id, req.intent, req.service or "", req.message, streamed_events)
+                            thread_id, req.intent, req.service or "", req.message, streamed_events,
+                            tenant_id=str(request_context.tenant_id), cluster_id=str(request_context.cluster_id))
                     event_queue.put(event)
             try:
                 asyncio.run(_astream())
@@ -1602,14 +1608,16 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
         raise HTTPException(400, "script is required")
     if not req.approved:
         exec_result = "已驳回，未执行"
-        _persist_execution_result(req, exec_result)
+        _persist_execution_result(req, exec_result,
+                                  tenant_id=request.headers.get("X-Tenant-ID", ""))
         return {"thread_id": req.thread_id, "approved": False, "exec_result": exec_result}
     try:
         exec_result = _get_brain().execute_suggestion(
             req.service or "", script, req.context or "", task_id=req.thread_id or "manual")
     except Exception as e:
         exec_result = f"执行失败: {e}"
-        _persist_execution_result(req, exec_result)
+        _persist_execution_result(req, exec_result,
+                                  tenant_id=request.headers.get("X-Tenant-ID", ""))
         return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result, "error": True}
     # 审计 (P1-2): task_id=真实会话ID(无则 "manual"), operator=当前用户/角色, target=服务名
     try:
@@ -1619,7 +1627,8 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
                    {"source": "ai_chat"})
     except Exception:
         pass
-    _persist_execution_result(req, exec_result)
+    _persist_execution_result(req, exec_result,
+                              tenant_id=request.headers.get("X-Tenant-ID", ""))
     return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result}
 
 
@@ -1814,7 +1823,8 @@ def _load_persisted_session(session_id: str) -> dict | None:
 
 
 def _persist_streamed_chat_session(thread_id: str, intent: str, service: str,
-                                   user_message: str, events: list[dict]) -> None:
+                                   user_message: str, events: list[dict],
+                                   tenant_id: str = "", cluster_id: str = "") -> None:
     """Persist the same message cards emitted through the chat SSE stream."""
     try:
         from session_store import session_store
@@ -1838,12 +1848,15 @@ def _persist_streamed_chat_session(thread_id: str, intent: str, service: str,
                 messages.append({"role": "assistant", "content": event["text"]})
         messages.extend(suggestions)
         session_store.save(thread_id, intent or existing.get("intent", ""),
-                           service or existing.get("service", ""), messages)
+                           service or existing.get("service", ""), messages,
+                           tenant_id=tenant_id or existing.get("tenant_id", ""),
+                           cluster_id=cluster_id or existing.get("cluster_id", ""))
     except Exception as exc:
         print(f"[chat] session transcript persistence failed: {exc}")
 
 
-def _persist_execution_result(req: SuggestionRequest, exec_result: str) -> None:
+def _persist_execution_result(req: SuggestionRequest, exec_result: str,
+                              tenant_id: str = "", cluster_id: str = "") -> None:
     """Replace the persisted suggestion card with its execution-result state."""
     if not req.thread_id:
         return
@@ -1870,7 +1883,9 @@ def _persist_execution_result(req: SuggestionRequest, exec_result: str) -> None:
                 "threadId": req.thread_id, "service": req.service or "",
             })
         session_store.save(req.thread_id, session.get("intent", ""),
-                           req.service or session.get("service", ""), messages)
+                           req.service or session.get("service", ""), messages,
+                           tenant_id=tenant_id or session.get("tenant_id", ""),
+                           cluster_id=cluster_id or session.get("cluster_id", ""))
     except Exception as exc:
         print(f"[chat] execution transcript persistence failed: {exc}")
 

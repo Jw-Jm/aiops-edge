@@ -17,6 +17,11 @@ No fake provider key is generated. If the local cluster or a real provider is
 not reachable, the result is explicitly `BLOCKED_BY_ENV` rather than an empty
 success state.
 
+The local validation profile uses the temporary local administrator bootstrap
+credential and disables the first-login password-change gate so authenticated
+graph measurements can run. Production keeps the gate enabled and requires an
+injected administrator secret.
+
 Read-only follow-ups:
 
 ```bash
@@ -31,8 +36,9 @@ uses the typed `ai-apm-query-go/cmd/graph-load-generator` to write exactly
 200,000 ontology-shaped vertices and 1,000,000 unique typed edges (including
 `DEPENDS_ON`, `RUNS_ON`, `BELONGS_TO`, `OWNS`, `BACKED_BY` and other required
 relations), then measures P95 for entity, 1-hop, 2-hop, shortest path, RCA
-candidate, impact and batch mutation. The fixed limits are
-500/1000/2000/3000/3000/3000/1000 ms in that order.
+alias search (limit 20), 1-hop, 2-hop, shortest path (depth <= 6), RCA
+candidate, impact and batch mutation. The fixed strict limits are
+100/200/200/500/1000/1500/1500/2000 ms in that order; equality fails.
 
 ```bash
 HUGEGRAPH_URL=http://127.0.0.1:8080 \
@@ -54,7 +60,7 @@ reported as `BLOCKED_BY_ENV`.
 The report validates that the fixture loader returned the exact requested
 counts and stores a `fixture_loader` record. It also stores explicit resource
 evidence for HugeGraph JVM RSS/heap, RocksDB disk/WAL, query-api CPU/RSS,
-orchestrator CPU/RSS, frontend bundle size, and browser long tasks. Use
+ai-investigation-worker CPU/RSS, frontend bundle size, and browser long tasks. Use
 `GRAPH_LOAD_REQUIRE_RESOURCES=1` in a release environment to make incomplete
 resource collection a blocking result; local runs remain transparent when
 cluster metrics or a browser trace are unavailable.
@@ -63,6 +69,11 @@ The fixture writer is idempotent by UID but repeated full loads in the same
 RocksDB process can grow the server cache. Run the full gate once per fresh
 validation install, archive its JSON report, and do not treat a second load of
 the same fixture as a new independent performance sample.
+
+The measurement phase performs ten explicit request warmups per operation;
+warmup requests are not counted in the reported 20 samples. This keeps cold
+startup/cache effects separate from the strict P95 gate without changing any
+threshold.
 
 ## Service panorama contracts
 

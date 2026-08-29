@@ -45,6 +45,22 @@ func TestGraphProjectionMigrationContainsRequiredObjects(t *testing.T) {
 	}
 }
 
+func TestDataCleanupMigrationContainsRequiredObjects(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0012-data-cleanup.sql")
+	if err != nil {
+		t.Fatalf("read 0012 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{
+		"data_cleanup_operations", "uq_data_cleanup_preview", "uq_data_cleanup_idempotency",
+		"confirmation_hash", "request_digest", "chk_data_cleanup_status",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0012 migration missing %q", required)
+		}
+	}
+}
+
 // TestAIRuntimeSchemaManifest 在可用 MySQL 上跑 schema-migrator 后，逐表核对
 // V9.2 冻结 AI Runtime 表的列 / nullability / PK / unique（P1-1：字段来源
 // docs/AIOPS_DATA_MODEL_REDESIGN.md）。无 MySQL 时跳过。

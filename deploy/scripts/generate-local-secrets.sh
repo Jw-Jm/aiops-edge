@@ -106,9 +106,9 @@ func main() {
 		"MYSQL_APP_PASSWORD":          mustRandomURLBase64(24),
 		"MYSQL_MIGRATOR_PASSWORD":     mustRandomURLBase64(24),
 		"HUGEGRAPH_PASSWORD":           mustRandomURLBase64(24),
-		// Local bootstrap uses the documented first-login credential. The query-api
-		// forces an immediate password change after this one-time seed.
-		"ADMIN_INITIAL_PASSWORD":      "admin123",
+		// Local validation uses the documented deterministic credential. The
+		// validation Helm profile temporarily disables first-login enforcement.
+		"ADMIN_INITIAL_PASSWORD":      "admin1234",
 		"LLM_PROXY_TOKEN":             mustRandomURLBase64(24),
 		"EXECUTOR_TOKEN":              mustRandomURLBase64(24),
 		"ORCHESTRATOR_TO_QUERY_TOKEN": mustRandomURLBase64(24),

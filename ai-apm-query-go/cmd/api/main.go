@@ -210,8 +210,12 @@ func main() {
 	}
 	if db != nil {
 		// admin 初始密码只在 admin 用户不存在时由 SeedAdmin 使用；显式环境变量
-		// 优先，未注入时使用本地验收约定 admin123。SeedAdmin 幂等，不覆盖已有账号。
-		adminPW := firstNonEmpty(os.Getenv("ADMIN_INITIAL_PASSWORD"), os.Getenv("ADMIN_PASSWORD"), "admin123")
+		// 优先。SeedAdmin 幂等，不覆盖已有账号；未注入时拒绝启动，避免生产
+		// 意外落入任何内置弱口令。
+		adminPW := firstNonEmpty(os.Getenv("ADMIN_INITIAL_PASSWORD"), os.Getenv("ADMIN_PASSWORD"))
+		if adminPW == "" {
+			log.Fatalf("admin bootstrap: ADMIN_INITIAL_PASSWORD is required")
+		}
 		if adminHash, err := bcrypt.GenerateFromPassword([]byte(adminPW), bcrypt.DefaultCost); err == nil {
 			if err := (&store.UserDAO{}).SeedAdmin(string(adminHash)); err != nil {
 				log.Fatalf("admin bootstrap: %v", err)
@@ -241,6 +245,12 @@ func main() {
 	mux.HandleFunc("/api/v1/users", handler.RequireRole("admin", handler.UserRouter))
 	mux.HandleFunc("/api/v1/users/", handler.RequireRole("admin", handler.UserRouter))
 	mux.HandleFunc("/api/v1/me", handler.Me)
+
+	// Administrator-only historical data cleanup: preview and one-time confirmed
+	// async execution are separate endpoints; operation status is tenant-scoped.
+	mux.HandleFunc("/api/v1/admin/data-cleanups/preview", handler.RequireRole("admin", handler.DataCleanupPreview))
+	mux.HandleFunc("/api/v1/admin/data-cleanups/execute", handler.RequireRole("admin", handler.DataCleanupExecute))
+	mux.HandleFunc("/api/v1/admin/data-cleanups/", handler.RequireRole("admin", handler.DataCleanupStatus))
 
 	// Service catalog (read any, write admin)
 	mux.HandleFunc("/api/v1/catalog/services", handler.RequireRoleForWrite("admin", handler.CatalogRouter))

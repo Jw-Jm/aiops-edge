@@ -9,10 +9,12 @@ set -euo pipefail
 vertices="${GRAPH_LOAD_VERTICES:-200000}"
 edges="${GRAPH_LOAD_EDGES:-1000000}"
 iterations="${GRAPH_LOAD_ITERATIONS:-20}"
+warmup_iterations="${GRAPH_LOAD_WARMUP_ITERATIONS:-10}"
 batch_size="${GRAPH_LOAD_BATCH_SIZE:-500}"
 base_url="${GRAPH_API_BASE_URL:-http://127.0.0.1:8080/api/v1/ai/kg}"
 uid="${GRAPH_TEST_ENTITY_UID:-loadtest:vertex:000000}"
 target_uid="${GRAPH_TEST_TARGET_UID:-loadtest:vertex:000001}"
+alias="${GRAPH_TEST_ENTITY_ALIAS:-graph-load-service-000000}"
 output="${GRAPH_LOAD_REPORT:-/tmp/aiops-graph-load-report.json}"
 require_resources="${GRAPH_LOAD_REQUIRE_RESOURCES:-0}"
 tenant_id="${GRAPH_API_TENANT_ID:-${GRAPH_LOAD_TENANT_ID:-}}"
@@ -45,7 +47,7 @@ while [[ $# -gt 0 ]]; do
 done
 command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 2; }
-for value in "$vertices" "$edges" "$iterations" "$batch_size"; do
+for value in "$vertices" "$edges" "$iterations" "$warmup_iterations" "$batch_size"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "numeric options must be positive" >&2; exit 2; }
 done
 [[ "$require_resources" == "0" || "$require_resources" == "1" ]] || { echo "GRAPH_LOAD_REQUIRE_RESOURCES must be 0 or 1" >&2; exit 2; }
@@ -69,7 +71,7 @@ with open(output, "w", encoding="utf-8") as handle:
                    "hugegraph_jvm_rss_heap": {"status": "not_collected"},
                    "rocksdb_disk_wal": {"status": "not_collected"},
                    "query_api_cpu_rss": {"status": "not_collected"},
-                   "orchestrator_cpu_rss": {"status": "not_collected"},
+                   "ai_investigation_worker_cpu_rss": {"status": "not_collected"},
                    "frontend_bundle_bytes": {"status": "not_collected"},
                    "browser_long_tasks": {"status": "not_collected"},
                }},
@@ -154,6 +156,7 @@ headers=(-H "Accept: application/json")
 headers+=(-H "X-Tenant-ID: ${tenant_id}" -H "X-Cluster-ID: ${cluster_id}")
 encoded_uid="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$uid")"
 encoded_target="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$target_uid")"
+encoded_alias="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$alias")"
 
 rank=$(( (iterations * 95 + 99) / 100 ))
 measure() {
@@ -161,6 +164,13 @@ measure() {
   local samples="$tmp_dir/${operation}.samples"
   : >"$samples"
   local success=0
+  for ((warmup=0; warmup<warmup_iterations; warmup++)); do
+    if [[ "$method" == "POST" ]]; then
+      curl -sS -o /dev/null --max-time 30 "${headers[@]}" -H 'Content-Type: application/json' -X POST --data-raw "$body" "$url" || true
+    else
+      curl -sS -o /dev/null --max-time 30 "${headers[@]}" "$url" || true
+    fi
+  done
   for ((i=0; i<iterations; i++)); do
     local response status seconds millis
     if [[ "$method" == "POST" ]]; then
@@ -187,6 +197,7 @@ PY
 }
 
 measure entity GET "${base_url}/entities/${encoded_uid}"
+measure alias_search GET "${base_url}/entities/search?q=${encoded_alias}&limit=20"
 measure one_hop GET "${base_url}/entities/${encoded_uid}/neighbors?depth=1&max_vertices=300&max_edges=1000"
 measure two_hop GET "${base_url}/entities/${encoded_uid}/neighbors?depth=2&max_vertices=300&max_edges=1000"
 measure shortest_path POST "${base_url}/path" "{\"source_entity_uid\":\"${uid}\",\"target_entity_uid\":\"${target_uid}\",\"max_depth\":6}"
@@ -194,48 +205,71 @@ measure rca_candidate GET "${base_url}/entities/${encoded_uid}/candidate?depth=2
 measure impact GET "${base_url}/entities/${encoded_uid}/impact?max_depth=3"
 
 batch_mutation="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("batch_mutation", {})))' <<<"$loader_json")"
-# Resource evidence is part of the gate report.  Cluster metrics are optional
-# in local mode, but the report keeps an explicit status for every required
-# dimension instead of silently presenting latency as a complete benchmark.
-frontend_bundle_bytes="$(du -sk "$repo_root/observability-frontend/dist" 2>/dev/null | awk '{print $1 * 1024}' || true)"
-[[ "$frontend_bundle_bytes" =~ ^[0-9]+$ ]] || frontend_bundle_bytes=0
-resource_json="$(python3 - "$frontend_bundle_bytes" <<'PY'
-import json, sys
-bundle = int(sys.argv[1])
-print(json.dumps({
-    "hugegraph_jvm_rss_heap": {"status": "not_collected", "reason": "requires cluster metrics"},
-    "rocksdb_disk_wal": {"status": "not_collected", "reason": "requires cluster metrics"},
-    "query_api_cpu_rss": {"status": "not_collected", "reason": "requires cluster metrics"},
-    "orchestrator_cpu_rss": {"status": "not_collected", "reason": "requires cluster metrics"},
-    "frontend_bundle_bytes": {"status": "collected", "value": bundle},
-    "browser_long_tasks": {"status": "not_collected", "reason": "requires browser trace"},
-}))
-PY
-)"
-python3 - "$vertices" "$edges" "$batch_size" "$uid" "$target_uid" "$loader_json" "$output" "$tmp_dir/operations.jsonl" "$batch_mutation" "$resource_json" "$require_resources" <<'PY'
-import json, sys
+# Resource evidence is part of the gate report. The collector records
+# not_collected for unavailable external dimensions; the final mode rejects
+# those statuses instead of silently presenting latency as a complete gate.
+resource_report="${GRAPH_RESOURCE_REPORT:-${tmp_dir}/resource.json}"
+if [[ -z "${GRAPH_RESOURCE_REPORT:-}" ]]; then
+  bash "${script_dir}/graph-resource-snapshot.sh" \
+    --namespace "${GRAPH_RESOURCE_NAMESPACE:-${GRAPH_NAMESPACE:-observability}}" \
+    --frontend-dist "${GRAPH_FRONTEND_DIST:-${repo_root}/observability-frontend/dist}" \
+    --browser-url "${GRAPH_BROWSER_URL:-http://127.0.0.1:30253}" \
+    --output "${resource_report}" >/dev/null
+fi
+if [[ ! -f "${resource_report}" ]]; then
+  write_blocked_report "graph resource snapshot was not produced"
+  echo "BLOCKED_BY_ENV: graph resource snapshot was not produced" >&2
+  exit 2
+fi
+resource_json="$(cat "${resource_report}")"
+python3 - "$vertices" "$edges" "$batch_size" "$uid" "$target_uid" "$alias" "$loader_json" "$output" "$tmp_dir/operations.jsonl" "$batch_mutation" "$resource_json" "$require_resources" <<'PY'
+import json, os, sys
 vertices, edges, batch_size = map(int, sys.argv[1:4])
-uid, target_uid, loader_json, output, operations_file, batch, resource_json, require_resources = sys.argv[4:]
+uid, target_uid, alias, loader_json, output, operations_file, batch, resource_json, require_resources = sys.argv[4:]
 operations = [json.loads(line) for line in open(operations_file, encoding="utf-8") if line.strip()]
 batch_data = json.loads(batch)
 loader = json.loads(loader_json)
 resources = json.loads(resource_json)
-resource_items = resources.values() if isinstance(resources, dict) else []
-resource_complete = all(item.get("status") == "collected" for item in resource_items)
+if "success_rate" not in batch_data:
+    completed = batch_data.get("iterations", 0) > 0 and isinstance(batch_data.get("p95_ms"), (int, float))
+    batch_data["success"] = batch_data.get("iterations", 0) if completed else 0
+    batch_data["success_rate"] = 1 if completed else 0
+required_resources = {
+    "hugegraph_jvm_rss_heap", "rocksdb_disk_wal", "query_api_cpu_rss",
+    "ai_investigation_worker_cpu_rss", "frontend_bundle_bytes", "browser_long_tasks",
+}
+resource_items = resources if isinstance(resources, dict) else {}
+resource_complete = set(resource_items) == required_resources and all(
+    isinstance(item, dict) and item.get("status") == "collected"
+    for item in resource_items.values()
+)
 operations.append({"operation": "batch_mutation", **batch_data})
-gates = {"entity": 500, "one_hop": 1000, "two_hop": 2000, "shortest_path": 3000,
-         "rca_candidate": 3000, "impact": 3000, "batch_mutation": 1000}
+gates = {"entity": 100, "alias_search": 200, "one_hop": 200, "two_hop": 500,
+         "shortest_path": 1000, "rca_candidate": 1500, "impact": 1500,
+         "batch_mutation": 2000}
+required_operations = set(gates)
+operation_names = [item.get("operation") for item in operations]
+operations_complete = len(operations) == len(required_operations) and set(operation_names) == required_operations
 for item in operations:
-    item["gate_ms"] = gates[item["operation"]]
-    item["passed"] = item.get("success_rate", 1) == 1 and item["p95_ms"] <= item["gate_ms"]
+    operation = item.get("operation")
+    if operation not in gates:
+        item["passed"] = False
+        continue
+    item["gate_ms"] = gates[operation]
+    p95 = item.get("p95_ms")
+    item["passed"] = (item.get("success_rate", 0) == 1
+                      and isinstance(p95, (int, float))
+                      and p95 < item["gate_ms"])
 all_unavailable = all(item.get("success", 0) == 0 for item in operations if item["operation"] != "batch_mutation")
 resource_required = require_resources == "1"
-gate_status = "BLOCKED_BY_ENV" if all_unavailable or (resource_required and not resource_complete) else "PASS" if all(item["passed"] for item in operations) else "FAIL"
+gate_status = "BLOCKED_BY_ENV" if all_unavailable else "PASS" if operations_complete and all(item["passed"] for item in operations) and (not resource_required or resource_complete) else "FAIL"
 result = {"vertices": vertices, "edges": edges, "batch_size": batch_size, "loaded": True,
-          "anchor_uid": uid, "target_uid": target_uid, "operations": {item["operation"]: item for item in operations},
+          "anchor_uid": uid, "target_uid": target_uid, "alias": alias,
+          "warmup_iterations": int(os.environ.get("GRAPH_LOAD_WARMUP_ITERATIONS", "10")),
+          "operations": {item["operation"]: item for item in operations},
           "fixture_loader": loader, "resource_gate": resources, "resource_gate_status": "PASS" if resource_complete else "PARTIAL",
           "resource_gate_required": resource_required, "gate_status": gate_status,
-          "gate_definition": gates}
+          "gate_definition": gates, "operations_complete": operations_complete}
 with open(output, "w", encoding="utf-8") as handle:
     json.dump(result, handle, indent=2)
 PY

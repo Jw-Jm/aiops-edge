@@ -127,6 +127,8 @@ require_contains 'curl -fsS -u' "${tmp_dir}/validation.yaml" 'HugeGraph probes d
 require_contains 'AUTH="$(printf' "${tmp_dir}/validation.yaml" 'graph schema migrator wait init container does not build a HugeGraph Basic Auth header'
 require_contains 'wget -q --header="Authorization: Basic ${AUTH}"' "${tmp_dir}/validation.yaml" 'graph schema migrator wait init container does not authenticate against HugeGraph'
 require_contains 'GRAPH_BACKEND' "${tmp_dir}/validation.yaml" 'query-api graph backend is not configured'
+require_contains 'name: AUTH_REQUIRE_FIRST_LOGIN_PASSWORD_CHANGE' "${tmp_dir}/validation.yaml" 'first-login password policy is not wired'
+require_contains 'value: "false"' "${tmp_dir}/validation.yaml" 'local validation must temporarily disable first-login password change'
 require_contains 'HUGEGRAPH_URL' "${tmp_dir}/validation.yaml" 'query-api HugeGraph URL is not configured'
 require_contains 'MYSQL_DATABASE' "${tmp_dir}/validation.yaml" 'MySQL database name is not configured for a fresh data directory'
 require_contains 'CREATE DATABASE IF NOT EXISTS aiops' "${tmp_dir}/validation.yaml" 'users-init does not create the application database'

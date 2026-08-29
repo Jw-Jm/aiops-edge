@@ -59,12 +59,12 @@ resolve_required_secret() {
   return 1
 }
 
-# Local first bootstrap has a deterministic credential and the application
-# forces a password change after login. An explicit ADMIN_PASSWORD or an
+# Local first bootstrap has a deterministic credential. An explicit
+# ADMIN_PASSWORD or an
 # existing Secret still wins and is never overwritten by an upgrade.
 ADMIN_PASSWORD_VAL="${ADMIN_PASSWORD:-$(secret_value ADMIN_INITIAL_PASSWORD)}"
 if [ -z "$ADMIN_PASSWORD_VAL" ]; then
-  ADMIN_PASSWORD_VAL="admin123"
+  ADMIN_PASSWORD_VAL="admin1234"
 fi
 CLICKHOUSE_PASSWORD_VAL="$(resolve_required_secret CLICKHOUSE_PASSWORD CLICKHOUSE_PASSWORD)"
 MYSQL_ROOT_PASSWORD_VAL="$(resolve_required_secret MYSQL_ROOT_PASSWORD MYSQL_ROOT_PASSWORD)"
@@ -101,6 +101,7 @@ LLM_KEY_VAL="${LLM_ENCRYPTION_KEY:-$(get_or_gen aiops-secrets LLM_ENCRYPTION_KEY
 helm upgrade --install aiops "$CHART_DIR" \
   --namespace observability --create-namespace \
   --set deepflow.enabled=false \
+  --set queryApi.authRequireFirstLoginPasswordChange=false \
   --set global.imageTag="${IMAGE_TAG_VAL}" \
   --set secrets.jwtSecret="${JWT_SECRET_VAL}" \
   --set secrets.llmEncryptionKey="${LLM_KEY_VAL}" \

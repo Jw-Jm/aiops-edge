@@ -15,10 +15,30 @@ for required in \
   'hugegraph_jvm_rss_heap' \
   'rocksdb_disk_wal' \
   'query_api_cpu_rss' \
-  'orchestrator_cpu_rss' \
+  'ai_investigation_worker_cpu_rss' \
   'frontend_bundle_bytes' \
   'browser_long_tasks' \
   'GRAPH_LOAD_REQUIRE_RESOURCES'; do
+  rg -n --fixed-strings -- "${required}" "${script}" >/dev/null || {
+    echo "graph load contract failed: missing ${required}" >&2
+    exit 1
+  }
+done
+for required in \
+  'measure alias_search GET' \
+  'entities/search?q=' \
+  'graph-resource-snapshot.sh' \
+  'GRAPH_RESOURCE_REPORT' \
+  'warmup_iterations' \
+  'p95 < item["gate_ms"]' \
+  '"entity": 100' \
+  '"alias_search": 200' \
+  '"one_hop": 200' \
+  '"two_hop": 500' \
+  '"shortest_path": 1000' \
+  '"rca_candidate": 1500' \
+  '"impact": 1500' \
+  '"batch_mutation": 2000'; do
   rg -n --fixed-strings -- "${required}" "${script}" >/dev/null || {
     echo "graph load contract failed: missing ${required}" >&2
     exit 1

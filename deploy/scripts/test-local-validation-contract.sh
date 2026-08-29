@@ -6,8 +6,23 @@ set -euo pipefail
 # this gate ensures future edits cannot silently remove a mandatory matrix row.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 validator="${repo_root}/deploy/scripts/validate-local-stack.sh"
+values="${repo_root}/deploy/helm/aiops/values.yaml"
+local_values="${repo_root}/deploy/helm/aiops/values-local-validation.yaml"
 dry_run="${TMPDIR:-/tmp}/aiops-local-validation-dry-run.$$.out"
 trap 'rm -f "${dry_run}"' EXIT
+
+for required in \
+  'authRequireFirstLoginPasswordChange: true' \
+  'adminInitialPassword: "admin1234"'; do
+  rg -n --fixed-strings "${required}" "${values}" >/dev/null || {
+    echo "local validation contract failed: missing ${required}" >&2
+    exit 1
+  }
+done
+rg -n --fixed-strings 'authRequireFirstLoginPasswordChange: false' "${local_values}" >/dev/null || {
+  echo "local validation contract failed: local first-login bypass is missing" >&2
+  exit 1
+}
 
 required_strings=(
   "aiops_schema_migrations"
@@ -21,6 +36,7 @@ required_strings=(
   "LEGACY_DIRECT_MUTATIONS_ENABLED"
   "kubectl auth can-i get deployments"
   "kubectl auth can-i patch deployments"
+  "validate-observability-evidence.sh"
   "BLOCKED_BY_ENV"
 )
 for required in "${required_strings[@]}"; do

@@ -86,6 +86,42 @@ func (r *ClickHouseRepo) Query(ctx context.Context, sql string) ([]byte, error) 
 	return body, nil
 }
 
+// Exec submits a mutating ClickHouse statement. Unlike Query, an empty 200
+// response is success because ALTER TABLE ... DELETE normally acknowledges the
+// mutation without a response body. queryID is attached as the ClickHouse
+// query id so callers can correlate the submitted mutation in system tables.
+func (r *ClickHouseRepo) Exec(ctx context.Context, sql, queryID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/", strings.NewReader(sql))
+	if err != nil {
+		return Unavailable("clickhouse: build request: " + err.Error())
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	if queryID != "" {
+		req.Header.Set("X-ClickHouse-Query-Id", queryID)
+	}
+	r.applyAuth(req)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Timeout("clickhouse exec: " + ctx.Err().Error())
+		}
+		return Unavailable("clickhouse: " + err.Error())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return Unavailable(fmt.Sprintf("clickhouse: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		if ctx.Err() != nil {
+			return Timeout("clickhouse exec: " + ctx.Err().Error())
+		}
+		return Unavailable("clickhouse exec read: " + err.Error())
+	}
+	return nil
+}
+
 // QueryJSON 执行 ClickHouse 查询并以 JSONEachRow 格式返回解析后的行数组。
 // 复用 Query 的统一错误语义（no_data/unavailable/timeout）。SQL ownership 在调用方 repository。
 func (r *ClickHouseRepo) QueryJSON(ctx context.Context, sql string) ([]map[string]interface{}, error) {

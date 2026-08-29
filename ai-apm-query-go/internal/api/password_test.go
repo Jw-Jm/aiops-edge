@@ -14,6 +14,37 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+func TestAuthorizationContextHonorsDisabledFirstLoginPasswordChange(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(previous) })
+	t.Setenv("AUTH_REQUIRE_FIRST_LOGIN_PASSWORD_CHANGE", "false")
+
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
+		WithArgs(authzUserID, authzSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, 1, "active", time.Now().Add(time.Hour), nil, int64(0)))
+	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
+		WithArgs(authzUserID, authzTenantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
+
+	authorization, err := resolveMySQLAuthorizationContext(authzUserID, authzSessionID, authzTenantID, 0)
+	if err != nil {
+		t.Fatalf("resolveMySQLAuthorizationContext() error = %v", err)
+	}
+	if authorization.MustChangePassword {
+		t.Fatal("disabled first-login password change must not block authorization")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestChangePasswordRejectsShortPassword(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", strings.NewReader(`{"current_password":"admin123","new_password":"short","confirm_password":"short"}`))
 	req = withAuthorizationContext(req, AuthorizationContext{UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", TenantID: authzTenantID})

@@ -42,6 +42,8 @@ spec:
               value: {{ .Values.queryApi.systemClusterCredentialRef | quote }}
             - name: AIOPS_SYSTEM_CLUSTER_IDENTITY_UID
               value: {{ .Values.queryApi.systemClusterIdentityUID | quote }}
+            - name: AUTH_REQUIRE_FIRST_LOGIN_PASSWORD_CHANGE
+              value: {{ .Values.queryApi.authRequireFirstLoginPasswordChange | quote }}
             - name: CLICKHOUSE_HOST
               value: {{ .Values.queryApi.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT

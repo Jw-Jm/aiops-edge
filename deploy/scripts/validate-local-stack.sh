@@ -164,9 +164,18 @@ kubectl -n aiops-canary rollout status deployment/aiops-mutation-canary --timeou
 kubectl -n aiops-canary get deployment aiops-mutation-canary -o jsonpath='{.metadata.uid}{" "}{.metadata.resourceVersion}{"\n"}'
 
 if [[ -z "${AIOPS_VALIDATION_DATA_MARKER:-}" ]]; then
-  echo "BLOCKED_BY_ENV: real metric/log/event markers were not supplied (set AIOPS_VALIDATION_DATA_MARKER after creating them)"
-else
-  echo "BLOCKED_BY_ENV: marker ${AIOPS_VALIDATION_DATA_MARKER} requires Query API/Frontend evidence capture"
+  bash "${ROOT}/deploy/scripts/validate-observability-evidence.sh" \
+    --namespace "${AIOPS_VALIDATION_NAMESPACE:-aiops-canary}" \
+    --output "${AIOPS_EVIDENCE_REPORT_OUTPUT:-/tmp/aiops-real-evidence-report.json}" \
+    || :
+  echo "BLOCKED_BY_ENV: real metric/log/event markers were not supplied (set AIOPS_VALIDATION_DATA_MARKER after creating them)" >&2
+  exit 2
 fi
-echo "BLOCKED_BY_ENV: real provider response, DeepFlow flow/span, multi-node failover, PITR and Credential Broker gates require environment evidence"
-echo "local stack structural/readiness validation passed; environment-gated evidence remains blocked"
+if ! bash "${ROOT}/deploy/scripts/validate-observability-evidence.sh" \
+  --marker "${AIOPS_VALIDATION_DATA_MARKER}" \
+  --namespace "${AIOPS_VALIDATION_NAMESPACE:-aiops-canary}" \
+  --output "${AIOPS_EVIDENCE_REPORT_OUTPUT:-/tmp/aiops-real-evidence-report.json}"; then
+  echo "observability evidence gate did not pass" >&2
+  exit 2
+fi
+echo "local stack and observability evidence validation passed"

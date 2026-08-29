@@ -155,6 +155,7 @@ type Handler struct {
 	// C-03：Alert 单 Leader + cooldown/dampening MySQL 持久化。
 	alertLeaderDAO    *store.AlertEvalLeaderDAO
 	alertRuleStateDAO *store.AlertRuleRuntimeStateDAO
+	cleanupService    *DataCleanupService
 }
 
 // NewHandler creates a new Handler.
@@ -223,6 +224,7 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.alertRuleStateDAO = &store.AlertRuleRuntimeStateDAO{}
 	h.evidenceDAO = &store.EvidenceDAO{}
 	h.runControl = &RunControlService{runDAO: h.runDAO, cmdDAO: h.cmdDAO, eventDAO: h.eventDAO}
+	h.cleanupService = newDataCleanupService(&h.repo, &h.repo, newDataCleanupSessionClient())
 	return h
 }
 

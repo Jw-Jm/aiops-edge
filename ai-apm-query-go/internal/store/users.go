@@ -247,7 +247,8 @@ func (d *UserDAO) Delete(id int64) error {
 	return err
 }
 
-// SeedAdmin 种子 admin 用户（若不存在）。密码默认 admin123。
+// SeedAdmin seeds the admin user only when it does not already exist. The
+// caller supplies the password hash from an explicit deployment secret.
 func (d *UserDAO) SeedAdmin(hash string) error {
 	conn := GetDB()
 	if conn == nil {

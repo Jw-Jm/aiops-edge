@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -107,5 +108,26 @@ func TestClickHouseRepoWithoutAuthNoBasicAuth(t *testing.T) {
 	repo := NewClickHouseRepo(srv.URL, nil)
 	if _, err := repo.Query(context.Background(), "SELECT 1"); err != nil {
 		t.Fatalf("Query: %v", err)
+	}
+}
+
+func TestClickHouseRepoExecAcceptsEmptyMutationResponseAndSetsQueryID(t *testing.T) {
+	var gotQueryID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQueryID = r.Header.Get("X-ClickHouse-Query-Id")
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "ALTER TABLE observability.log_records DELETE WHERE x=1" {
+			t.Fatalf("body = %q", body)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	repo := NewClickHouseRepo(srv.URL, nil)
+	if err := repo.Exec(context.Background(), "ALTER TABLE observability.log_records DELETE WHERE x=1", "cleanup-op-log_records"); err != nil {
+		t.Fatalf("Exec() error = %v", err)
+	}
+	if gotQueryID != "cleanup-op-log_records" {
+		t.Fatalf("query id = %q", gotQueryID)
 	}
 }
