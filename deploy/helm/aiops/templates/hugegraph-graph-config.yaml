@@ -1,0 +1,23 @@
+{{- if .Values.hugeGraph.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hugegraph-graph-config
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: hugegraph
+data:
+  {{ printf "%s.properties" .Values.hugeGraph.graph | quote }}: |
+    gremlin.graph=org.apache.hugegraph.auth.HugeFactoryAuthProxy
+    backend=rocksdb
+    serializer=binary
+    store={{ .Values.hugeGraph.graph }}
+    task.scheduler_type=local
+    task.schedule_period=10
+    task.retry=0
+    task.wait_timeout=10
+    search.text_analyzer=jieba
+    search.text_analyzer_mode=INDEX
+    rocksdb.data_path=/var/lib/hugegraph/data/{{ .Values.hugeGraph.graph }}
+    rocksdb.wal_path=/var/lib/hugegraph/wal/{{ .Values.hugeGraph.graph }}
+{{- end }}

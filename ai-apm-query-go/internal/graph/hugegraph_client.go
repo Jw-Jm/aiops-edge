@@ -117,18 +117,7 @@ func (c *HugeGraphClient) EnsureGraph(ctx context.Context) error {
 		if name != c.graphName {
 			continue
 		}
-		data, getErr := c.request(ctx, http.MethodGet, "", nil, false)
-		if getErr != nil {
-			return getErr
-		}
-		var graph map[string]interface{}
-		if decodeErr := json.Unmarshal(data, &graph); decodeErr != nil {
-			return decodeErr
-		}
-		if backend, ok := graph["backend"].(string); ok && backend != "rocksdb" {
-			return graphError(ErrGraphSchemaMismatch, "graph backend must be rocksdb")
-		}
-		return nil
+		return c.VerifyGraph(ctx)
 	}
 	payload := map[string]interface{}{
 		"gremlin.graph": "org.apache.hugegraph.auth.HugeFactoryAuthProxy",
@@ -138,12 +127,29 @@ func (c *HugeGraphClient) EnsureGraph(ctx context.Context) error {
 		// The default standalone graph owns /data and /wal. Keep the named
 		// aiops graph below the same PVC root so the two RocksDB instances do
 		// not open the same column-family files.
-		"rocksdb.data_path": "/var/lib/hugegraph/data/aiops",
-		"rocksdb.wal_path":  "/var/lib/hugegraph/wal/aiops",
+		"rocksdb.data_path": "/var/lib/hugegraph/data/" + c.graphName,
+		"rocksdb.wal_path":  "/var/lib/hugegraph/wal/" + c.graphName,
 	}
 	_, err = c.requestURL(ctx, c.graphspaceURL+"/graphs/"+escapeHugeGraphPathComponent(c.graphName), http.MethodPost, payload, true)
 	if err != nil && !strings.Contains(err.Error(), "HTTP 409") {
 		return err
+	}
+	return c.VerifyGraph(ctx)
+}
+
+// VerifyGraph confirms that the configured named graph is readable and uses
+// the required RocksDB backend before schema or projection writes proceed.
+func (c *HugeGraphClient) VerifyGraph(ctx context.Context) error {
+	data, err := c.request(ctx, http.MethodGet, "", nil, false)
+	if err != nil {
+		return err
+	}
+	var graph map[string]interface{}
+	if err := json.Unmarshal(data, &graph); err != nil {
+		return err
+	}
+	if backend, ok := graph["backend"].(string); ok && backend != "rocksdb" {
+		return graphError(ErrGraphSchemaMismatch, "graph backend must be rocksdb")
 	}
 	return nil
 }

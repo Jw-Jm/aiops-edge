@@ -28,6 +28,9 @@ func main() {
 	if err := client.EnsureGraph(ctx); err != nil {
 		log.Fatal(err)
 	}
+	if err := client.VerifyGraph(ctx); err != nil {
+		log.Fatal(err)
+	}
 	if err := client.EnsureSchema(ctx); err != nil {
 		log.Fatal(err)
 	}

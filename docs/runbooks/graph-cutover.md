@@ -17,3 +17,17 @@
 5. If any gate fails, return to `legacy_mysql`. The MySQL control plane and outbox remain authoritative; do not manually edit HugeGraph.
 
 `legacy_mysql` is a rollback adapter, not a second source of truth. `CAUSED_BY` is written only after confirmed RCA evidence is persisted.
+
+## Local Kubernetes graph verification
+
+本机测试环境不执行生产容量与资源门禁；只确认 graph 创建、schema 可读、Kubernetes
+source reconcile 成功，以及一个当前 Node 已投影到 `DEFAULT/aiops`。部署后执行：
+
+```bash
+helm upgrade aiops deploy/helm/aiops -n observability --reuse-values --wait --timeout 15m
+kubectl -n observability rollout restart deployment/ai-investigation-worker
+kubectl -n observability rollout status deployment/ai-investigation-worker --timeout=10m
+deploy/scripts/verify-kubernetes-graph.sh --namespace observability --since 15m
+```
+
+验证脚本只读访问 HugeGraph 与 Kubernetes；不会删除 PVC、修改集群对象或写入测试数据。

@@ -169,6 +169,54 @@ func TestHugeGraphClientEnsuresNamedGraphBeforeSchemaMigration(t *testing.T) {
 	}
 }
 
+func TestHugeGraphClientVerifiesCreatedGraph(t *testing.T) {
+	var createCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/graphspaces/DEFAULT/graphs":
+			_, _ = w.Write([]byte(`{"graphs":["hugegraph"]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/graphspaces/DEFAULT/graphs/aiops":
+			createCalls++
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/graphspaces/DEFAULT/graphs/aiops":
+			http.Error(w, "named graph is not loaded", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "admin", "secret", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.EnsureGraph(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("EnsureGraph() error = %v, want named graph verification failure", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", createCalls)
+	}
+}
+
+func TestHugeGraphClientVerifiesConfiguredGraph(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"name":"aiops","backend":"rocksdb"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "admin", "secret", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.VerifyGraph(context.Background()); err != nil {
+		t.Fatalf("VerifyGraph() error = %v", err)
+	}
+}
+
 func TestHugeGraphClientKNeighborUsesHugeGraph17AdvancedPayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops/traversers/kneighbor" {

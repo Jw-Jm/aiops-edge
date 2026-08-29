@@ -16,6 +16,8 @@ spec:
     metadata:
       labels:
         app: hugegraph
+      annotations:
+        checksum/graph-config: {{ include (print $.Template.BasePath "/hugegraph-graph-config.yaml") . | sha256sum }}
     spec:
       containers:
         - name: hugegraph
@@ -25,7 +27,7 @@ spec:
           args:
             - >-
               set -euo pipefail;
-              mkdir -p /var/lib/hugegraph/data /var/lib/hugegraph/wal;
+              mkdir -p /var/lib/hugegraph/data /var/lib/hugegraph/wal /var/lib/hugegraph/data/{{ .Values.hugeGraph.graph }} /var/lib/hugegraph/wal/{{ .Values.hugeGraph.graph }};
               sed -ri 's|^[#[:space:]]*rocksdb\.data_path=.*|rocksdb.data_path=/var/lib/hugegraph/data|; s|^[#[:space:]]*rocksdb\.wal_path=.*|rocksdb.wal_path=/var/lib/hugegraph/wal|' /hugegraph-server/conf/graphs/hugegraph.properties;
               grep -q '^rocksdb.data_path=' /hugegraph-server/conf/graphs/hugegraph.properties || echo 'rocksdb.data_path=/var/lib/hugegraph/data' >> /hugegraph-server/conf/graphs/hugegraph.properties;
               grep -q '^rocksdb.wal_path=' /hugegraph-server/conf/graphs/hugegraph.properties || echo 'rocksdb.wal_path=/var/lib/hugegraph/wal' >> /hugegraph-server/conf/graphs/hugegraph.properties;
@@ -70,8 +72,15 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/hugegraph
+            - name: graph-config
+              mountPath: /hugegraph-server/conf/graphs/{{ .Values.hugeGraph.graph }}.properties
+              subPath: {{ printf "%s.properties" .Values.hugeGraph.graph }}
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: hugegraph-data
+        - name: graph-config
+          configMap:
+            name: hugegraph-graph-config
 {{- end }}

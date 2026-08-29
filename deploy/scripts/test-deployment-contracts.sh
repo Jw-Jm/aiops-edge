@@ -116,6 +116,12 @@ require_contains 'mountPath: /var/lib/hugegraph' "${tmp_dir}/validation.yaml" 'H
 fail_if_contains 'mountPath: /var/lib/hugegraph/data' "${tmp_dir}/validation.yaml" 'HugeGraph PVC is mounted below the documented data root'
 require_contains 'rocksdb.data_path=/var/lib/hugegraph/data' "${tmp_dir}/validation.yaml" 'HugeGraph RocksDB data path is not redirected to the PVC'
 require_contains 'rocksdb.wal_path=/var/lib/hugegraph/wal' "${tmp_dir}/validation.yaml" 'HugeGraph RocksDB WAL path is not redirected to the PVC'
+require_contains 'name: hugegraph-graph-config' "${tmp_dir}/validation.yaml" 'named HugeGraph graph ConfigMap is not rendered'
+require_contains 'aiops.properties' "${tmp_dir}/validation.yaml" 'named HugeGraph graph configuration is not rendered'
+require_contains 'store=aiops' "${tmp_dir}/validation.yaml" 'named HugeGraph graph store is not isolated'
+require_contains 'rocksdb.data_path=/var/lib/hugegraph/data/aiops' "${tmp_dir}/validation.yaml" 'named HugeGraph graph data path is not isolated'
+require_contains 'rocksdb.wal_path=/var/lib/hugegraph/wal/aiops' "${tmp_dir}/validation.yaml" 'named HugeGraph graph WAL path is not isolated'
+require_contains 'mountPath: /hugegraph-server/conf/graphs/aiops.properties' "${tmp_dir}/validation.yaml" 'named HugeGraph graph configuration is not mounted into the server'
 require_contains 'name: PASSWORD' "${tmp_dir}/validation.yaml" 'HugeGraph auth password is not wired into the server'
 require_contains 'curl -fsS -u' "${tmp_dir}/validation.yaml" 'HugeGraph probes do not authenticate against the server'
 require_contains 'AUTH="$(printf' "${tmp_dir}/validation.yaml" 'graph schema migrator wait init container does not build a HugeGraph Basic Auth header'
@@ -146,6 +152,14 @@ require_contains 'uniqExactState' "${tmp_dir}/validation.yaml" 'Trace Summary do
 require_contains 'span_dedup_key' "${tmp_dir}/validation.yaml" 'Trace Summary does not have a stable span identity'
 require_contains 'name: trace-summary-backfill-' "${tmp_dir}/validation.yaml" 'Trace Summary history backfill Job is not rendered'
 require_contains 'name: trace-summary-backfill-' "${tmp_dir}/validation.yaml" 'Trace Summary backfill ConfigMap is not rendered'
+verify_graph_script="${repo_root}/deploy/scripts/verify-kubernetes-graph.sh"
+if [[ ! -x "${verify_graph_script}" ]]; then
+  echo "contract failed: Kubernetes graph verification script is missing or not executable" >&2
+  exit 1
+fi
+require_contains 'graphspaces/${graphspace}/graphs/${graph}' "${verify_graph_script}" 'Kubernetes graph verification does not inspect the configured named graph'
+require_contains 'source=kubernetes status=success' "${verify_graph_script}" 'Kubernetes graph verification does not require a successful source reconcile'
+require_contains 'graph/vertices' "${verify_graph_script}" 'Kubernetes graph verification does not inspect a projected entity'
 if ! rg -n --fixed-strings 'finalizeAggregation' "${repo_root}/ai-apm-query-go/internal/query/traces.go" >/dev/null; then
   echo "contract failed: Trace list query does not finalize Summary aggregate states" >&2
   exit 1
