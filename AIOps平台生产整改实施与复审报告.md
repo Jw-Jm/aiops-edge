@@ -213,7 +213,7 @@ flowchart LR
 
 ### 5.1 是否真实可用
 
-结论：**本机只读对话功能真实可用，生产真实模型能力尚未验证。**
+结论：**源码调用链与上一轮本机只读 canary 证明 AICHAT 边界真实可用；本轮 revision 7 已验证新的持久化失败/队列行为，但生产真实模型能力仍未验证。**
 
 真实调用链如下：
 
@@ -223,7 +223,7 @@ flowchart LR
 4. Orchestrator internal ingress 校验服务 token、JWS、audience、capability、scope、replay 后调用 `brain.stream_sync`，只读对话不会创建 Investigation Run（`main.py:1064-1132`）。
 5. Query 不缓冲 SSE，逐帧写入浏览器并只把 assistant done/suggestion 持久化到 MySQL（`settings.go:1080-1109,1131-1160`）。前端随后刷新会话列表并可调用 Query-owned final report。
 
-本机证据是完成真实登录/scope 后 HTTP 200、24 个 SSE event（含 1 个 done、0 个 error）和 Query-owned 会话接口 200；伪造 `X-Tenant-ID` 不改变服务端 active scope，因此不是“只有接口定义”。但当前 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用。
+上一轮本机证据是完成真实登录/scope 后 HTTP 200、24 个 SSE event（含 1 个 done、0 个 error）和 Query-owned 会话接口 200；伪造 `X-Tenant-ID` 不改变服务端 active scope，因此不是“只有接口定义”。本轮当前 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；新 revision 7 的 Query persistence failure 和 Orchestrator queue helper 已分别通过 Go 与镜像内源码断言。
 
 ### 5.2 真实缺口和可执行改进
 
