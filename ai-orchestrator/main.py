@@ -124,6 +124,11 @@ def _investigation_runtime_enabled() -> bool:
 
 def _direct_mutation_enabled() -> bool:
     """Direct shell/Kubernetes/SQL mutation paths are retired by default."""
+    # Production mutation ownership is Query API → Broker → Executor. Never
+    # allow a stale compatibility flag to resurrect the old in-process writer,
+    # even if a deployment accidentally retains the environment variable.
+    if _legacy_public_api_retired():
+        return False
     return os.environ.get("LEGACY_DIRECT_MUTATIONS_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
 
 
@@ -136,13 +141,15 @@ def _execution_after_approval_enabled() -> bool:
     的 ApprovalService/AuthorizationMatrix。在完成真实接线前，默认只记录审批状态、
     不触发任何真实执行；仅当显式设置 EXECUTION_AFTER_APPROVAL=1 才恢复执行。
     """
+    if _legacy_public_api_retired():
+        return False
     return os.environ.get("EXECUTION_AFTER_APPROVAL", "0").lower() in ("1", "true", "yes")
 
 
 def _legacy_approval_compat_enabled() -> bool:
     """Legacy in-memory approval is development-only during Action cutover."""
-    if _DEPLOYMENT_MODE == "production":
-        return os.environ.get("LEGACY_APPROVAL_COMPAT", "0").lower() in ("1", "true", "yes")
+    if _legacy_public_api_retired():
+        return False
     return True
 
 

@@ -110,6 +110,11 @@ required 'job/clickhouse-migrator' "$repo_root/deploy/scripts/validate-local-sta
 required 'event_identity_counts' "$repo_root/deploy/scripts/validate-local-stack.sh" 'ARCH-325 event identity gate is missing';
 required '0009_k8s_events_require_identity.sql' "$tmp" 'ARCH-326 event identity default removal migration missing';
 required 'event_id_default_kind' "$repo_root/deploy/scripts/validate-local-stack.sh" 'ARCH-327 event_id default removal gate is missing';
+required 'tests/' "$repo_root/ai-orchestrator/.dockerignore" 'ARCH-328 production orchestrator image includes test fixtures';
+required 'rca_engine_legacy.py' "$repo_root/ai-orchestrator/.dockerignore" 'ARCH-329 production image includes retired RCA implementation';
+required 'def _legacy_compat_enabled' "$repo_root/ai-orchestrator/rca_engine/__init__.py" 'ARCH-330 RCA legacy bridge is not explicitly isolated';
+required 'def _legacy_graph_snapshot_enabled' "$repo_root/ai-orchestrator/tools.py" 'ARCH-331 production graph snapshot fallback is not explicitly isolated';
+required 'if _legacy_public_api_retired():' "$repo_root/ai-orchestrator/main.py" 'ARCH-332 production legacy mutation flags are not fail-closed';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi

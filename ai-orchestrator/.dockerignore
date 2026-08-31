@@ -8,3 +8,13 @@ venv
 .venv312
 node_modules
 *.log
+# Production images must not contain test fixtures, demo data, or the retired
+# RCA implementation. They remain available in the source tree for local
+# tests only and are never importable from a production image layer.
+tests/
+**/tests/
+.pytest_cache/
+.ruff_cache/
+multicluster_demo.py
+rca_engine_legacy.py
+*.ses

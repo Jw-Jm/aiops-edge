@@ -59,6 +59,18 @@ def _is_production() -> bool:
     ).strip().lower() == "production"
 
 
+def _legacy_graph_snapshot_enabled() -> bool:
+    """Allow the retired MySQL graph snapshot only in an explicit local mode.
+
+    The old snapshot is a compatibility reader, not a production data owner.
+    An unset ``GRAPH_BACKEND`` must therefore never silently select it in a
+    production Gateway; production graph facts come from Query API/HugeGraph.
+    """
+    if _is_production():
+        return False
+    return os.environ.get("GRAPH_BACKEND", "").strip().lower() == "legacy_mysql"
+
+
 def _fetch_llm_config_for_k8sgpt() -> dict | None:
     """Return an ephemeral K8sGPT configuration.
 
@@ -331,9 +343,10 @@ def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_conte
             return "服务数 " + str(len(services)) + "：\n" + "\n".join(services[:50])
         except Exception as exc:
             return f"查询失败: {str(exc)[:200]}"
-    # The legacy MySQL graph snapshot is compatibility-only.  Once shadow or
-    # HugeGraph is selected, all graph reads must remain behind query-api.
-    if os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower() == "legacy_mysql":
+    # The legacy MySQL graph snapshot is compatibility-only.  It must be
+    # explicitly selected in a non-production process; an unset backend never
+    # silently becomes a second production data owner.
+    if _legacy_graph_snapshot_enabled():
         try:
             from kg_graph import _load_graph, _json_loads
             node_rows, _ = _load_graph()
