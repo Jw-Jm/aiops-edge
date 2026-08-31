@@ -196,6 +196,8 @@ clickhouse:
     host: ""
     port: "8123"
   image: "clickhouse/clickhouse-server:24.8-alpine"
+  # 独立的 ClickHouse 版本迁移器；迁移 Job 仅在部署侧运行，运行时服务不执行 DDL。
+  migratorImage: "clickhouse-migrator:{{ .Values.global.imageTag }}"
   storageClass: ""
   storage: 20Gi
   # G5 加固：default 用户允许的客户端网络（原为 ::/0 全开放）。

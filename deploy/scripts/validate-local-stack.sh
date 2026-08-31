@@ -55,6 +55,7 @@ do
 done
 kubectl -n observability wait --for=condition=ready pod -l app=hugegraph --timeout=300s
 kubectl -n observability wait --for=condition=complete job/graph-schema-migrator --timeout=300s
+kubectl -n observability wait --for=condition=complete job/clickhouse-migrator --timeout=300s
 kubectl -n observability wait --for=condition=ready pod -l app=mysql --timeout=300s
 
 echo "[validator] Query API readiness endpoint"
@@ -98,6 +99,31 @@ fi
 printf '%s\n' "${schema_rows}"
 kubectl -n observability exec statefulset/mysql -- env MYSQL_PWD="${root_password}" mysql -uroot -N -e \
   "SHOW GRANTS FOR 'aiops_app'@'%'; SHOW GRANTS FOR 'aiops_migrator'@'%';"
+
+echo "[validator] ClickHouse schema migrations and event identity gate"
+clickhouse_migrations="$(kubectl -n observability exec statefulset/clickhouse -- sh -c \
+  'clickhouse-client --password "$CH_PROBE_PASSWORD" --query "SELECT migration_id FROM observability.aiops_schema_migrations ORDER BY migration_id"')"
+for version in 0001 0002 0003 0004 0005 0006 0007 0008 0009; do
+  if ! rg -n --fixed-strings "${version}_" <<<"${clickhouse_migrations}" >/dev/null; then
+    echo "ClickHouse schema migration ${version} is missing" >&2
+    exit 1
+  fi
+done
+event_identity_counts="$(kubectl -n observability exec statefulset/clickhouse -- sh -c \
+  'clickhouse-client --password "$CH_PROBE_PASSWORD" --query "SELECT countIf(length(event_id) = 0), countIf(NOT match(event_id, '\''^[0-9a-f]{64}$'\'')) FROM observability.k8s_events"')"
+if [[ "${event_identity_counts}" != $'0\t0' && "${event_identity_counts}" != "0 0" ]]; then
+  echo "ClickHouse k8s_events contains missing or invalid event_id: ${event_identity_counts}" >&2
+  exit 1
+fi
+event_default_kind="$(kubectl -n observability exec statefulset/clickhouse -- sh -c \
+  'clickhouse-client --password "$CH_PROBE_PASSWORD" --query "SELECT default_kind FROM system.columns WHERE database = '\''observability'\'' AND table = '\''k8s_events'\'' AND name = '\''event_id'\''"')"
+if [[ -n "${event_default_kind}" ]]; then
+  echo "ClickHouse k8s_events.event_id still has a default expression: ${event_default_kind}" >&2
+  exit 1
+fi
+echo "${clickhouse_migrations}"
+echo "event_identity_counts=${event_identity_counts}"
+echo "event_id_default_kind=<none>"
 
 echo "[validator] Executor disabled safety boundary"
 executor_env="$(kubectl -n observability get deployment ai-action-executor -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' 2>/dev/null || true)"

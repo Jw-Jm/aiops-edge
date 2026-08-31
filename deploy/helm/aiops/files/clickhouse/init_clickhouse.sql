@@ -283,8 +283,47 @@ CREATE TABLE IF NOT EXISTS observability.k8s_events
     `source` String,
     `node` String DEFAULT '',
     `time_bucket` DateTime,
-    `event_id` String DEFAULT ''
+    `event_id` String
 )
 ENGINE = ReplacingMergeTree
 ORDER BY (tenant_id, cluster_id, event_id)
 TTL time_bucket + INTERVAL 30 DAY;
+
+-- Historical rows that cannot prove their event identity are quarantined by
+-- migration 0008 rather than assigned a guessed key.
+CREATE TABLE IF NOT EXISTS observability.k8s_events_quarantine
+(
+    quarantine_id UUID DEFAULT generateUUIDv4(),
+    quarantined_at DateTime64(3) DEFAULT now64(3),
+    reason String,
+    tenant_id String,
+    cluster_id String,
+    ts DateTime64(9),
+    namespace String,
+    kind String,
+    name String,
+    event_reason String,
+    type String,
+    message String,
+    involved_object String,
+    source_component String,
+    source String,
+    node String,
+    time_bucket DateTime,
+    event_id String
+)
+ENGINE = MergeTree
+PARTITION BY toDate(quarantined_at)
+ORDER BY (quarantined_at, quarantine_id)
+TTL toDateTime(quarantined_at) + INTERVAL 365 DAY;
+
+CREATE TABLE IF NOT EXISTS observability.k8s_events_identity_audit
+(
+    migration_id String,
+    audited_at DateTime64(3) DEFAULT now64(3),
+    scanned UInt64,
+    quarantined UInt64,
+    remaining_invalid UInt64
+)
+ENGINE = MergeTree
+ORDER BY (audited_at, migration_id);

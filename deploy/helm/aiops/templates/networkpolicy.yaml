@@ -555,7 +555,7 @@ spec:
       ports:
 {{ toYaml $dnsPorts | indent 8 }}
 {{- end }}
-{{- if or $denyAll (has "mysql-backup" $canary) (has "clickhouse-backup" $canary) (has "mysql-init" $canary) (has "clickhouse-init" $canary) }}
+{{- if or $denyAll (has "mysql-backup" $canary) (has "clickhouse-backup" $canary) (has "mysql-init" $canary) (has "clickhouse-init" $canary) (has "clickhouse-migrator" $canary) }}
 ---
 # 1i) 备份/初始化 Job 出站白名单：mysql:3306（mysqldump）+
 #     clickhouse:9000（clickhouse-client 原生端口）+ DNS。
@@ -574,6 +574,7 @@ spec:
           - mysql-init
           - clickhouse-backup
           - clickhouse-init
+          - clickhouse-migrator
   policyTypes: ["Egress"]
   egress:
     - to:
@@ -590,6 +591,8 @@ spec:
       ports:
         - protocol: TCP
           port: 9000
+        - protocol: TCP
+          port: 8123
     - to:
 {{ toYaml $dnsTo | indent 8 }}
       ports:
@@ -990,6 +993,9 @@ spec:
         - podSelector:
             matchLabels:
               app: clickhouse-init
+        - podSelector:
+            matchLabels:
+              app: clickhouse-migrator
 {{- if .Values.vmalert.enabled }}
 ---
 # 19) vmalert → victoria-metrics（告警查询，vmalert 默认关闭）

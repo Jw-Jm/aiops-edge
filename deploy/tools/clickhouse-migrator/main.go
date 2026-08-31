@@ -8,10 +8,10 @@
 //   - 每个迁移文件 = 一个 migration。migration_id = 文件名（不带 .sql）。
 //   - checksum = 迁移文件【原始字节】的 SHA256(hex, lowercase)。
 //   - 查询 observability.aiops_schema_migrations：
-//       * 0 行          → 未应用 → 执行 SQL → 成功后记录真实 SHA256
-//       * 1 行、checksum 一致 → SKIP
-//       * 1 行、checksum 不一致 → FAIL CLOSED（先比较 checksum，绝不先执行 SQL）
-//       * >1 行         → metadata 损坏 → FAIL CLOSED
+//   - 0 行          → 未应用 → 执行 SQL → 成功后记录真实 SHA256
+//   - 1 行、checksum 一致 → SKIP
+//   - 1 行、checksum 不一致 → FAIL CLOSED（先比较 checksum，绝不先执行 SQL）
+//   - >1 行         → metadata 损坏 → FAIL CLOSED
 //
 // 运行时服务（event-collector / query-api / orchestrator）不得执行迁移，只能做
 // 只读 schema compatibility check。
@@ -33,6 +33,8 @@ import (
 )
 
 const metaTable = "observability.aiops_schema_migrations"
+
+const identityDefaultMigrationID = "0009_k8s_events_require_identity"
 
 var (
 	httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -70,14 +72,26 @@ func main() {
 		}
 		switch {
 		case applied == nil:
-			// 未应用：执行 SQL（先拆语句，逐条 HTTP 执行），成功后才记录。
-			if err := executeSQL(endpoint, user, pass, id, string(data)); err != nil {
-				fatalf("apply %s: %v (not recorded)", id, err)
+			// 某些兼容迁移的目标状态可能已由初始化脚本或人工修复达到。
+			// 先确认目标状态，再决定是否执行 SQL；无论哪条路径，都只有成功后才记录。
+			alreadySatisfied, err := migrationTargetAlreadySatisfied(endpoint, user, pass, id)
+			if err != nil {
+				fatalf("inspect target state %s: %v (not recorded)", id, err)
+			}
+			if !alreadySatisfied {
+				// 未应用：执行 SQL（先拆语句，逐条 HTTP 执行）。
+				if err := executeSQL(endpoint, user, pass, id, string(data)); err != nil {
+					fatalf("apply %s: %v (not recorded)", id, err)
+				}
 			}
 			if err := recordApplied(endpoint, user, pass, id, checksum); err != nil {
 				fatalf("record %s: %v", id, err)
 			}
-			fmt.Printf("APPLIED   %s\n", id)
+			if alreadySatisfied {
+				fmt.Printf("APPLIED   %s (target state already satisfied)\n", id)
+			} else {
+				fmt.Printf("APPLIED   %s\n", id)
+			}
 		case applied.Checksum == checksum:
 			fmt.Printf("SKIPPED   %s (already applied, checksum matches)\n", id)
 		default:
@@ -87,6 +101,40 @@ func main() {
 		}
 	}
 	fmt.Println("clickhouse-migrator: all migrations applied/skipped successfully")
+}
+
+// migrationTargetAlreadySatisfied handles migrations whose SQL is not accepted
+// when the desired state is already present.  Fresh ClickHouse schemas omit the
+// event_id DEFAULT, while legacy schemas need 0009 to remove it.  Asking
+// system.columns first makes the migration idempotent across both states and
+// still fails closed if the expected column is missing or ambiguous.
+func migrationTargetAlreadySatisfied(endpoint, user, pass, id string) (bool, error) {
+	if id != identityDefaultMigrationID {
+		return false, nil
+	}
+	q := "SELECT if(default_kind = '', '__none__', default_kind) FROM system.columns " +
+		"WHERE database = 'observability' AND table = 'k8s_events' AND name = 'event_id' FORMAT TabSeparated"
+	resp, err := clickhouseQuery(endpoint, user, pass, q)
+	if err != nil {
+		return false, err
+	}
+	var rows []string
+	for _, row := range strings.Split(strings.TrimSpace(resp), "\n") {
+		if value := strings.TrimSpace(row); value != "" {
+			rows = append(rows, value)
+		}
+	}
+	if len(rows) == 0 {
+		return false, fmt.Errorf("observability.k8s_events.event_id not found")
+	}
+	if len(rows) != 1 {
+		return false, fmt.Errorf("observability.k8s_events.event_id returned %d metadata rows", len(rows))
+	}
+	return identityDefaultTargetSatisfied(rows[0]), nil
+}
+
+func identityDefaultTargetSatisfied(defaultKind string) bool {
+	return strings.TrimSpace(defaultKind) == "__none__"
 }
 
 type appliedMeta struct {
@@ -170,29 +218,84 @@ func executeSQL(endpoint, user, pass, id, sql string) error {
 	return nil
 }
 
-// splitStatements 按分号拆分（跳过 -- 注释行与字符串里的分号）。
+// splitStatements 按分号拆分，正确处理 SQL 字符串、标识符和行/块注释。
+// ClickHouse 迁移包含正则表达式与字符串字面量，不能用“是否包含 ')”之类
+// 的启发式判断语句边界，否则迁移会把后续 DDL 拼接进同一条请求。
 func splitStatements(sql string) []string {
 	var out []string
 	var cur strings.Builder
-	lines := strings.Split(sql, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") {
-			continue // 注释行
+	var inSingle, inDouble, inBacktick, inLineComment, inBlockComment bool
+	flush := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			out = append(out, s)
 		}
-		cur.WriteString(line)
-		cur.WriteByte('\n')
-		if strings.Contains(line, ";") && !strings.Contains(line, "')") {
-			// 语句结束（行内含分号且非字符串内——ClickHouse DDL 简单场景足够）
-			if s := strings.TrimSpace(cur.String()); s != "" {
-				out = append(out, s)
+		cur.Reset()
+	}
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		var next byte
+		if i+1 < len(sql) {
+			next = sql[i+1]
+		}
+		if inLineComment {
+			if c == '\n' {
+				inLineComment = false
+				cur.WriteByte(c)
 			}
-			cur.Reset()
+			continue
+		}
+		if inBlockComment {
+			if c == '*' && next == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if !inSingle && !inDouble && !inBacktick {
+			switch {
+			case c == '-' && next == '-':
+				inLineComment = true
+				i++
+				continue
+			case c == '/' && next == '*':
+				inBlockComment = true
+				i++
+				continue
+			case c == ';':
+				flush()
+				continue
+			case c == '\'':
+				inSingle = true
+			case c == '"':
+				inDouble = true
+			case c == '`':
+				inBacktick = true
+			}
+			cur.WriteByte(c)
+			continue
+		}
+
+		cur.WriteByte(c)
+		if c == '\\' && (inSingle || inDouble) && i+1 < len(sql) {
+			cur.WriteByte(sql[i+1])
+			i++
+			continue
+		}
+		switch {
+		case inSingle && c == '\'':
+			if next == '\'' { // SQL 中的转义单引号 ''
+				cur.WriteByte(next)
+				i++
+			} else {
+				inSingle = false
+			}
+		case inDouble && c == '"':
+			inDouble = false
+		case inBacktick && c == '`':
+			inBacktick = false
 		}
 	}
-	if s := strings.TrimSpace(cur.String()); s != "" {
-		out = append(out, s)
-	}
+	flush()
 	return out
 }
 

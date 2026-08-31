@@ -58,6 +58,27 @@ build() {
   echo ">>> built $full"
 }
 
+build_clickhouse_migrator() {
+  local full
+  full="$(prefix clickhouse-migrator):${TAG}"
+  echo ">>> building ${full} from deploy/tools/clickhouse-migrator"
+  if [[ "${BUILD_IMAGES_DRY_RUN:-0}" == "1" ]]; then
+    echo "docker build ${PLATFORM:+--platform ${PLATFORM}} -t ${full} ${ROOT}/deploy/tools/clickhouse-migrator"
+    return 0
+  fi
+  if [[ "${TAG}" == "latest" ]]; then
+    echo "refusing mutable latest image tag" >&2
+    exit 1
+  fi
+  if [ -n "${PLATFORM}" ]; then
+    docker build --platform "${PLATFORM}" -t "${full}" "${ROOT}/deploy/tools/clickhouse-migrator"
+  else
+    docker build -t "${full}" "${ROOT}/deploy/tools/clickhouse-migrator"
+  fi
+  docker image inspect "${full}" >/dev/null
+  echo ">>> built ${full}"
+}
+
 # 指定服务则只构建该服务
 TARGET="${1:-all}"
 case "$TARGET" in
@@ -72,6 +93,7 @@ case "$TARGET" in
     build ai-llm-egress-proxy ai-llm-egress-proxy
     build ai-apm-query-go schema-migrator Dockerfile.schema-migrator
     build ai-apm-query-go graph-schema-migrator Dockerfile.graph-schema-migrator
+    build_clickhouse_migrator
     build ipmi-exporter ipmi-exporter
     ;;
   frontend)  build observability-frontend observability-frontend ;;
@@ -84,9 +106,10 @@ case "$TARGET" in
   llm-proxy) build ai-llm-egress-proxy ai-llm-egress-proxy ;;
   schema-migrator) build ai-apm-query-go schema-migrator Dockerfile.schema-migrator ;;
   graph-schema-migrator) build ai-apm-query-go graph-schema-migrator Dockerfile.graph-schema-migrator ;;
+  clickhouse-migrator) build_clickhouse_migrator ;;
   ipmi)      build ipmi-exporter ipmi-exporter ;;
   *)
-    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/event-collector/executor/credential-broker/llm-proxy/schema-migrator/graph-schema-migrator/ipmi)"
+    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/event-collector/executor/credential-broker/llm-proxy/schema-migrator/graph-schema-migrator/clickhouse-migrator/ipmi)"
     exit 1
     ;;
 esac

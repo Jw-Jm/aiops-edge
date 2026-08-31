@@ -103,6 +103,13 @@ required '_apply_production_route_surface()' "$repo_root/ai-orchestrator/main.py
 required 'filter_production_routes' "$repo_root/ai-orchestrator/main.py" 'ARCH-318 production route inventory filter missing';
 required 'def _default_session_store' "$repo_root/ai-orchestrator/data_cleanup_api.py" 'ARCH-319 cleanup SQLite adapter is not lazy';
 forbidden 'from session_store import SessionStore, session_store' "$repo_root/ai-orchestrator/data_cleanup_api.py" 'ARCH-320 cleanup module opens legacy SQLite at import';
+required 'name: clickhouse-migrator' "$tmp" 'ARCH-321 ClickHouse migration Job missing';
+required '0008_k8s_events_identity_cutover.sql' "$tmp" 'ARCH-322 event identity cutover migration missing';
+forbidden 'event_id` String DEFAULT '\''\''' "$repo_root/deploy/helm/aiops/files/clickhouse/init_clickhouse.sql" 'ARCH-323 event_id implicit empty default';
+required 'job/clickhouse-migrator' "$repo_root/deploy/scripts/validate-local-stack.sh" 'ARCH-324 ClickHouse migration Job is not part of validation';
+required 'event_identity_counts' "$repo_root/deploy/scripts/validate-local-stack.sh" 'ARCH-325 event identity gate is missing';
+required '0009_k8s_events_require_identity.sql' "$tmp" 'ARCH-326 event identity default removal migration missing';
+required 'event_id_default_kind' "$repo_root/deploy/scripts/validate-local-stack.sh" 'ARCH-327 event_id default removal gate is missing';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi

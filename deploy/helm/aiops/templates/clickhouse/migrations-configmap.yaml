@@ -1,0 +1,9 @@
+{{- if .Values.clickhouse.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-migrations
+  namespace: {{ .Values.namespace.observability }}
+data:
+{{ (.Files.Glob "files/clickhouse/migrations/*.sql").AsConfig | indent 2 }}
+{{- end }}

@@ -19,6 +19,7 @@ IMAGES=(
   "ai-orchestrator"
   "observability-frontend"
   "schema-migrator"
+  "clickhouse-migrator"
 )
 
 OUT="${SBOM_OUT:-docs/AIOPS_IMAGE_SBOM.md}"

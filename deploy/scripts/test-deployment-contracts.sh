@@ -98,7 +98,7 @@ echo "[contract] unified image tag"
 render "${tmp_dir}/validation.yaml"
 for image in \
   observability-frontend query-api ingest-pipeline ai-orchestrator \
-  event-collector ai-action-executor ai-llm-egress-proxy schema-migrator graph-schema-migrator ipmi-exporter
+  event-collector ai-action-executor ai-llm-egress-proxy schema-migrator graph-schema-migrator clickhouse-migrator ipmi-exporter
 do
   if ! rg -n "image:.*${image}:${tag}" "${tmp_dir}/validation.yaml" >/dev/null; then
     echo "contract failed: ${image} is not rendered with ${tag}" >&2
@@ -138,6 +138,10 @@ require_contains 'CREATE TABLE IF NOT EXISTS observability.k8s_events' "${tmp_di
 require_contains 'name: CLICKHOUSE_HTTP_URL' "${tmp_dir}/validation.yaml" 'ingest does not configure the ClickHouse Trace SoT HTTP endpoint'
 require_contains 'name: TRACE_SOT_MODE' "${tmp_dir}/validation.yaml" 'ingest does not enforce fail-closed Trace SoT mode'
 require_contains 'CREATE TABLE IF NOT EXISTS observability.trace_summary_state' "${tmp_dir}/validation.yaml" 'ClickHouse bootstrap omits the Trace Summary table'
+require_contains 'name: clickhouse-migrator' "${tmp_dir}/validation.yaml" 'ClickHouse migration Job is not rendered'
+require_contains '0008_k8s_events_identity_cutover.sql' "${tmp_dir}/validation.yaml" 'ClickHouse identity cutover migration is not mounted'
+require_contains '0009_k8s_events_require_identity.sql' "${tmp_dir}/validation.yaml" 'ClickHouse event identity enforcement migration is not mounted'
+require_contains 'event_id` String' "${tmp_dir}/validation.yaml" 'ClickHouse event_id must be required without a default'
 require_contains 'ENGINE = AggregatingMergeTree' "${tmp_dir}/validation.yaml" 'Trace Summary table is not a pre-aggregated ClickHouse table'
 require_contains 'CREATE MATERIALIZED VIEW IF NOT EXISTS observability.trace_spans_to_summary_state' "${tmp_dir}/validation.yaml" 'Trace Summary incremental builder is missing'
 require_contains 'CREATE TABLE IF NOT EXISTS observability.trace_summary_index' "${tmp_dir}/validation.yaml" 'Trace Summary candidate index is missing'
