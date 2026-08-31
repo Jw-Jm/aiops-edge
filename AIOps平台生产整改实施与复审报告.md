@@ -3,7 +3,7 @@
 **复审日期：** 2026-08-31（Asia/Shanghai）
 **代码构建基线：** `main` / `f35ef7dad3d9`（RED 指标保留 cluster_id、Graph 资源快照入口、AICHAT transcript 持久化失败语义、Orchestrator 有界断线感知队列、DeepFlow OTLP 渲染/切换合同修复提交及本轮证据修订）
 **本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 7（2026-08-31 22:07 +0800），12 个自研镜像统一标签 `git-f35ef7dad3d9`；运行 Pod 均使用该标签，Helm upgrade 状态为 `deployed`。
-**报告文档提交：** `82ee337d6500`；该提交只更新审查报告，不改变服务源码，因此运行镜像仍正确绑定服务代码提交 `f35ef7dad3d9`。
+**报告文档提交：** 当前 HEAD 的 docs-only 提交；该提交只更新审查报告，不改变服务源码，因此运行镜像仍正确绑定服务代码提交 `f35ef7dad3d9`。
 **工作区：** 代码修复已提交；本报告和部署指南为本轮证据更新，用户既有未跟踪文件 `ai-orchestrator/:memory:.ses` 保留不动。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
