@@ -45,7 +45,7 @@ spec:
           image: {{ tpl .Values.aiOrchestrator.image . }}
           imagePullPolicy: IfNotPresent
           {{- if .Values.internalTLS.enabled }}
-          command: ["uvicorn"]
+          command: ["python", "-m", "mtls_server"]
           args: ["main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20", "--ssl-keyfile", "{{ .Values.internalTLS.keyFile }}", "--ssl-certfile", "{{ .Values.internalTLS.certFile }}", "--ssl-ca-certs", "{{ .Values.internalTLS.clientCAFile }}", "--ssl-cert-reqs", "1"]
           {{- end }}
           ports:

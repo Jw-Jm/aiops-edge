@@ -95,6 +95,9 @@ required 'name: allow-frontend-egress-to-query-api' "$tmp" 'ARCH-308 frontend eg
 required 'name: allow-query-api-to-hugegraph-egress' "$tmp" 'ARCH-309 HugeGraph egress allowlist missing';
 required 'name: allow-graph-schema-migrator-egress' "$tmp" 'ARCH-310 graph migrator egress allowlist missing';
 required 'name: wait-for-query-api' "$tmp" 'ARCH-312 orchestrator/query-api startup dependency gate missing';
+required 'command: ["python", "-m", "mtls_server"]' "$tmp" 'ARCH-313 orchestrator TLS server does not enforce client SAN';
+required 'args: ["main:app"' "$tmp" 'ARCH-314 orchestrator TLS server app import is not wired';
+required 'args: ["investigation_app:app"' "$tmp" 'ARCH-315 worker TLS server app import is not wired';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi
