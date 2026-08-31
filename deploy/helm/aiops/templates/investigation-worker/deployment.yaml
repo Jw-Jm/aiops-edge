@@ -21,6 +21,24 @@ spec:
       # must not inherit the orchestrator's Kubernetes read credentials.
       serviceAccountName: ai-investigation-worker
       automountServiceAccountToken: false
+      # Importing the worker composition root also performs the production
+      # control-plane reachability check. Gate startup on query-api /readyz
+      # to avoid rollout-time crash loops while preserving fail-closed startup.
+      initContainers:
+        - name: wait-for-query-api
+          image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ tpl .Values.investigationWorker.image.tag . }}
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - >-
+              until curl --fail --silent --show-error --connect-timeout 2 --max-time 5
+              {{- if .Values.internalTLS.enabled }} --cacert {{ .Values.internalTLS.clientCAFile }}{{- end }}
+              {{ trimSuffix "/api/v1" .Values.aiOrchestrator.queryApiUrl }}/readyz;
+              do echo "waiting for query-api readiness"; sleep 2; done
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
       containers:
         - name: investigation-worker
           image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ tpl .Values.investigationWorker.image.tag . }}

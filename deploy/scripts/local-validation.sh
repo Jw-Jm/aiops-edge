@@ -14,6 +14,7 @@ SKIP_BUILD="${SKIP_IMAGE_BUILD:-0}"
 SKIP_DEEPFLOW="${SKIP_DEEPFLOW:-0}"
 SECRET_FILE="${AIOPS_SECRET_FILE:-}"
 REUSE_K8S_SECRET="${AIOPS_REUSE_K8S_SECRET:-}"
+REUSE_TLS_SECRET="${AIOPS_REUSE_K8S_TLS_SECRET:-}"
 SECRET_FILE_OWNED=0
 
 usage() {
@@ -25,6 +26,7 @@ Usage: local-validation.sh [options]
   --confirm-destroy  Required together with --destroy.
   --secret-file PATH Source generated shell secret file instead of generating one.
   --reuse-k8s-secret NAME Import an existing Secret from the observability namespace.
+  AIOPS_REUSE_K8S_TLS_SECRET=NAME Reuse an existing internal TLS Secret instead of rotating it.
   --skip-build       Skip Docker image builds.
   --skip-deepflow    Skip DeepFlow and report BLOCKED_BY_ENV.
 EOF
@@ -77,6 +79,10 @@ for command in git helm kubectl openssl; do
   command -v "${command}" >/dev/null 2>&1 || { echo "missing command: ${command}" >&2; exit 2; }
 done
 
+if [[ "${SKIP_BUILD}" == "1" && -z "${RELEASE_TAG:-}" ]]; then
+  echo "SKIP_IMAGE_BUILD=1 requires RELEASE_TAG to reference an image already loaded in the local runtime" >&2
+  exit 2
+fi
 RELEASE_SHA="$(git -C "${ROOT}" rev-parse HEAD)"
 RELEASE_TAG="${RELEASE_TAG:-git-${RELEASE_SHA:0:12}}"
 if [[ ! "${RELEASE_TAG}" =~ ^git-[0-9a-f]{12}$ ]]; then
@@ -292,6 +298,20 @@ run kubectl apply -f "${LOCAL_GRAPH_SECRET_MANIFEST}"
 } >>"${SECRET_VALUES}"
 unset GRAPH_TOKEN GRAPH_CA GRAPH_TOKEN_B64 GRAPH_CA_B64 KUBE_SYSTEM_UID
 
+if [[ -n "${REUSE_TLS_SECRET}" ]]; then
+  step 1.6 "reuse existing local mTLS Secret"
+  run kubectl -n "${NAMESPACE}" get secret "${REUSE_TLS_SECRET}" >/dev/null
+  for key in tls.crt tls.key ca.crt; do
+    if ! kubectl -n "${NAMESPACE}" get secret "${REUSE_TLS_SECRET}" -o "jsonpath={.data.${key//./\\.}}" 2>/dev/null | grep -q .; then
+      echo "mTLS Secret ${REUSE_TLS_SECRET} is missing ${key}" >&2
+      exit 1
+    fi
+  done
+  {
+    echo "internalTLS:"
+    printf '  secretName: %s\n' "$(yaml_quote "${REUSE_TLS_SECRET}")"
+  } >>"${SECRET_VALUES}"
+else
 step 1.6 "generate ephemeral local mTLS CA and service certificate"
 mkdir -p "${LOCAL_TLS_DIR}"
 cat >"${LOCAL_TLS_DIR}/openssl.cnf" <<'EOF'
@@ -343,6 +363,7 @@ kubectl -n "${NAMESPACE}" create secret generic aiops-internal-tls \
   --from-file=tls.key="${LOCAL_TLS_DIR}/tls.key" \
   --from-file=ca.crt="${LOCAL_TLS_DIR}/ca.crt" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+fi
 
 step 2 "build all images and run preflight gates"
 if [[ "${SKIP_BUILD}" != "1" ]]; then

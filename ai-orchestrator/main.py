@@ -37,7 +37,15 @@ import agent_tool  # B4: 后台 persona worker 终态通知队列 (drain_notific
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
 # 注意：mock 模式下 NL2SQL/RCA 深度/AI 诊断返回的是模拟内容，生产环境必须关闭。
 os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
-if os.environ.get("LLM_MOCK", "").lower() in ("true", "1", "yes"):
+_llm_mock_enabled = os.environ.get("LLM_MOCK", "").lower() in ("true", "1", "yes")
+_runtime_env = os.environ.get("AIOPS_ENV", "").strip().lower()
+_deployment_mode = os.environ.get("AIOPS_DEPLOYMENT_MODE", "").strip().lower()
+_explicit_production = _runtime_env == "production" or (
+    _deployment_mode == "production" and _runtime_env not in {"local", "development", "test"}
+)
+if _llm_mock_enabled and _explicit_production:
+    raise SystemExit("[FATAL] LLM_MOCK=true is forbidden when AIOPS_ENV/AIOPS_DEPLOYMENT_MODE is production")
+if _llm_mock_enabled:
     print("[WARN] LLM_MOCK=true：AI 诊断/RCA/NL2SQL 将返回模拟内容，仅适用于本地演示；生产必须设 LLM_MOCK=false", flush=True)
 
 def _legacy_public_api_retired() -> bool:

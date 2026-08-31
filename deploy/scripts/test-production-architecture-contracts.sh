@@ -94,6 +94,7 @@ required 'name: allow-query-alert-eval-egress' "$tmp" 'ARCH-307 evaluator egress
 required 'name: allow-frontend-egress-to-query-api' "$tmp" 'ARCH-308 frontend egress allowlist missing';
 required 'name: allow-query-api-to-hugegraph-egress' "$tmp" 'ARCH-309 HugeGraph egress allowlist missing';
 required 'name: allow-graph-schema-migrator-egress' "$tmp" 'ARCH-310 graph migrator egress allowlist missing';
+required 'name: wait-for-query-api' "$tmp" 'ARCH-312 orchestrator/query-api startup dependency gate missing';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi
@@ -102,6 +103,9 @@ fi
 forbidden 'CHANGE_ME' "$tmp" 'ARCH-401 production placeholder secret';
 forbidden 'base_url' "$repo_root/observability-frontend/src/pages" 'ARCH-402 browser provider URL';
 required 'AI_LLM_EGRESS_PROXY_URL' "$tmp" 'ARCH-403 LLM egress proxy is not wired';
+if ! rg -Uq 'name: LLM_MOCK[[:space:]]+value: "false"' "$tmp"; then
+  fail 'ARCH-404 production LLM_MOCK must be explicitly disabled'
+fi
 
 # Schema/data contract.
 required '`tenant_id` String' "$repo_root/deploy/helm/aiops/files/clickhouse/init_clickhouse.sql" 'ARCH-501 alert tenant column missing';

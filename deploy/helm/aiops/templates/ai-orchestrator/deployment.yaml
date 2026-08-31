@@ -21,6 +21,25 @@ spec:
     spec:
       {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
       serviceAccountName: ai-orchestrator
+      # The gateway performs a production fail-fast persistence probe while
+      # importing the application. Wait for query-api readiness first so a
+      # normal rollout does not create avoidable CrashLoopBackOff restarts;
+      # query-api remains the availability authority and the wait is fail-closed.
+      initContainers:
+        - name: wait-for-query-api
+          image: {{ tpl .Values.aiOrchestrator.image . }}
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - >-
+              until curl --fail --silent --show-error --connect-timeout 2 --max-time 5
+              {{- if .Values.internalTLS.enabled }} --cacert {{ .Values.internalTLS.clientCAFile }}{{- end }}
+              {{ trimSuffix "/api/v1" .Values.aiOrchestrator.queryApiUrl }}/readyz;
+              do echo "waiting for query-api readiness"; sleep 2; done
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
       containers:
         - name: ai-orchestrator
           image: {{ tpl .Values.aiOrchestrator.image . }}

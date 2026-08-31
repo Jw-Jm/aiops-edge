@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import pytest
 from llm_mock import is_mock_enabled, mock_llm_response, should_skip_llm
 from llm_mock import mock_llm_decision, mock_coordinator_plan, mock_reviewer_result
@@ -6,6 +10,24 @@ from llm_mock import mock_llm_decision, mock_coordinator_plan, mock_reviewer_res
 def test_mock_disabled_by_default(monkeypatch):
     monkeypatch.delenv("LLM_MOCK", raising=False)
     assert is_mock_enabled() is False
+
+
+def test_production_rejects_mock_before_startup():
+    """Production must not boot with deterministic/mock LLM output enabled."""
+    env = os.environ.copy()
+    env.pop("AIOPS_DEPLOYMENT_MODE", None)
+    env["AIOPS_ENV"] = "production"
+    env["LLM_MOCK"] = "true"
+    result = subprocess.run(
+        [sys.executable, "-c", "import main"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "LLM_MOCK=true is forbidden" in (result.stdout + result.stderr)
 
 
 def test_mock_enabled_when_true(monkeypatch):
