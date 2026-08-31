@@ -79,7 +79,7 @@
 | 源码与镜像 | 12 个自研镜像均为 `git-acc3606e102c`；本地镜像 manifest digest 与对应 Deployment/Job `imageID` 逐项一致。 |
 | ClickHouse 迁移 | migrator 日志显示 0001–0009 全部 applied/skipped 且 checksum 一致；`event_id`/tenant/cluster 身份非法计数为 `0/0/0/0`，`event_id.default_kind` 为空。 |
 | 运行态 | Helm revision 2；Query、Orchestrator、2 个 Worker、Ingest、Collector、Proxy、Frontend、HugeGraph、MySQL、ClickHouse 及迁移 Job 就绪；核心容器重启数为 0。 |
-| 本机残留清理 | 按 Asia/Shanghai `2026-08-31` 为保留边界，删除旧自研镜像标签后 `old_image_tags_remaining=0`，仅保留当前 12 个 `git-acc3606e102c` 标签；清理前检查的 ClickHouse/MySQL 动态表均无 `created_at < today` 行，清理后今天数据计数未下降。第三方镜像、生产数据、外部系统未触碰。 |
+| 本机残留清理 | 按 Asia/Shanghai `2026-08-31` 为保留边界，删除旧自研镜像标签后 `old_image_tags_remaining=0`，仅保留当前 12 个 `git-acc3606e102c` 标签；定向清理前检查的 ClickHouse/MySQL 动态表均无 `created_at < today` 行，清理后今天数据计数未下降。随后为 fresh install 按授权重建本机 observability/deepflow/aiops-canary 命名空间/PVC，当前环境不保留之前 canary 数据；第三方镜像、生产数据、外部系统未触碰。 |
 | 发布门禁 | 基础安全/部署/迁移门禁通过；未提供真实观测 marker、DeepFlow、多节点、PITR、生产 Secret/证书/registry 签名，validator 按设计保留 `BLOCKED_BY_ENV`，生产仍不可发布。 |
 
 ### 2.4 OrbStack 实际运行证据
