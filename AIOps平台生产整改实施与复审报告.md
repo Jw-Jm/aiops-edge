@@ -77,7 +77,7 @@
 | 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-f35ef7dad3d9`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
 | 生产 Mock 启动拒绝 | `cd ai-orchestrator && .venv314/bin/python -m pytest tests/test_llm_mock.py -q` | **11 passed**；`AIOPS_ENV=production,LLM_MOCK=true` 子进程在应用初始化前非零退出。 |
 | Query 作用域回归 | `go test ./...`；`go test -race ./...`；`test-production-architecture-contracts.sh` | **全部通过**；伪造 `X-Tenant-ID` 的本机请求仍返回 MySQL active scope，架构契约 ARCH-105/106/107/108 通过。 |
-| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-rev7-final.json` | 当前文档提交后的 `git_commit=c3a7de35fa7e4e96d2714e9ec9e212986a56070f`；deployment/architecture/Helm lint/diff check 均为 `pass`，但 `working_tree_dirty=true,publishable=false`（唯一未跟踪项是用户既有 `ai-orchestrator/:memory:.ses`）；服务镜像仍绑定代码 tag `git-f35ef7dad3d9`，尚无 registry immutable digest/signature。 |
+| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-rev7-final.json` | 脚本记录当前 HEAD，并返回 deployment/architecture/Helm lint/diff check 均为 `pass`；`working_tree_dirty=true,publishable=false`（唯一未跟踪项是用户既有 `ai-orchestrator/:memory:.ses`）；服务镜像仍绑定代码 tag `git-f35ef7dad3d9`，尚无 registry immutable digest/signature。提交哈希以每次脚本输出为准，避免文档提交后失效。 |
 | 生产镜像边界 | `docker run --rm ai-orchestrator:git-f35ef7dad3d9 ...` | **通过**；生产镜像不含测试/演示/会话文件，`import rca_engine` 成功且仅导出 V2 API。 |
 
 ### 2.3.2 本轮 revision 7 / commit `f35ef7dad3d9` 实际证据
