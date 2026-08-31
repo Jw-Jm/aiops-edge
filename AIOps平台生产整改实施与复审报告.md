@@ -2,7 +2,7 @@
 
 **复审日期：** 2026-08-31（Asia/Shanghai）
 **代码构建基线：** `main` / `f35ef7dad3d9`（RED 指标保留 cluster_id、Graph 资源快照入口、AICHAT transcript 持久化失败语义、Orchestrator 有界断线感知队列、DeepFlow OTLP 渲染/切换合同修复提交及本轮证据修订）
-**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 7（2026-08-31 22:07 +0800），12 个自研镜像统一标签 `git-f35ef7dad3d9`；运行 Pod 均使用该标签，Helm upgrade 状态为 `deployed`。
+**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 7（2026-08-31 22:07 +0800），DeepFlow official chart `7.1.002` revision 2（本机专用 `deepflow` namespace）；12 个自研镜像统一标签 `git-f35ef7dad3d9`；运行 Pod 均使用该标签，Helm upgrade 状态为 `deployed`。
 **报告文档提交：** 当前 HEAD 的 docs-only 提交；该提交只更新审查报告，不改变服务源码，因此运行镜像仍正确绑定服务代码提交 `f35ef7dad3d9`。
 **工作区：** 代码修复已提交；本报告和部署指南为本轮证据更新，用户既有未跟踪文件 `ai-orchestrator/:memory:.ses` 保留不动。
 
@@ -13,7 +13,7 @@
 | 维度 | 结论 | 结论依据 |
 |---|---|---|
 | 设计符合性 | **有限通过** | MySQL IAM/session/scope、HttpOnly Cookie、canonical UUID、签名 `TrustedRequestContext`、Query/Dispatcher/Alert/Worker 拆分、统一 Ingest、RCA V2、LLM Proxy 边界和生产 egress default-deny 清单已接入真实调用链；生产 Secret、证书身份/SAN、API Server CIDR、真实数据源和多副本演练仍缺证据。 |
-| 功能完整性 | **有限通过** | AICHAT（Query `ProxyChat` → Orchestrator `/internal/v1/chat` → MySQL transcript）具备 canonical `turn_id`、原子 session upsert、断线后的完成 turn 重放和 SSE 序号；RCA 图增强可运行但本机证据不足时返回 `partial/insufficient_evidence`；ClickHouse 0001–0009、MySQL 0001–0016 迁移和身份门禁已在本机运行；真实 Provider、真实 TokenRequest mutation 仍未验证。 |
+| 功能完整性 | **有限通过** | AICHAT（Query `ProxyChat` → Orchestrator `/internal/v1/chat` → MySQL transcript）具备 canonical `turn_id`、原子 session upsert、断线后的完成 turn 重放和 SSE 序号；RCA 图增强可运行但本机证据不足时返回 `partial/insufficient_evidence`；ClickHouse 0001–0009、MySQL 0001–0016 迁移和身份门禁已在本机运行；DeepFlow 官方 7.1.002 → OTLP → Ingest → 平台 Trace 真实切换已通过；真实 Provider、真实 TokenRequest mutation 仍未验证。 |
 | 架构合理性 | **有限通过** | 服务边界和数据 owner 已明显收敛；AICHAT 的重试身份已由 Query/MySQL 统一，Python `main.py` 仍保留重复 Chat/legacy 路由和兼容代码，细粒度 TLS SAN 配置与旧 scope 兼容路径仍有治理成本。 |
 | 生产就绪度 | **不通过** | `collect-release-evidence.sh` 当前输出 `working_tree_dirty=true,publishable=false`；生产 Secret 尚未注入，真实 Provider、Graph 容量/恢复、Broker mutation、HA/备份/回滚仍无候选环境证据。 |
 
@@ -58,16 +58,16 @@
 |---|---|---|
 | Query API Go | `cd ai-apm-query-go && go test ./...`；`go test -race ./...` | **全部通过**；新增 `NO_DATA` 和 SAN ToolRun/证书语义测试通过。 |
 | 其他 Go 服务 | Action Executor、Ingest、Event Collector、LLM Proxy、Credential Broker 各执行 `go test ./...` 与 `go test -race ./...` | **全部通过**。 |
-| Python 全量（上一轮基线） | `AIOPS_DATA_DIR=/tmp/aiops-test-cf5cef1-rerun ai-orchestrator/.venv314/bin/python -m pytest -q` | 上一轮 **1219 passed, 1 skipped, 2 warnings**；本轮宿主 Python 因 `langgraph` 依赖不兼容、运行镜像因未打包 `pytest`，均未重新执行，状态为**未验证**。 |
+| Python 全量（本轮） | `AIOPS_DATA_DIR=/tmp/aiops-test-current PYTHONDONTWRITEBYTECODE=1 ai-orchestrator/.venv314/bin/python -m pytest -q -p no:cacheprovider` | **1220 passed, 1 skipped, 2 warnings in 14.06s**；依赖使用仓库现有 `.venv314`，未安装/升级依赖。两个 warning 为 chromadb asyncio 弃用提示及 `tests/test_node_collect_logs.py` 的既有 `PytestUnraisableExceptionWarning`，不改变测试退出码。 |
 | Python mTLS 定向 | `AIOPS_DATA_DIR=/tmp/aiops-test-mtls-san .venv314/bin/python -m pytest tests/test_mtls_server.py tests/test_llm_mock.py -q` | **18 passed**；覆盖 DNS/URI SAN 精确匹配、缺证书 fail-closed、请求头不可伪造、CLI `--ssl-cert-reqs 2`、错误 SAN 真实 TLS 回环 403/正确 SAN 200，以及生产 Mock 门禁。 |
 | 前端（上一轮基线） | `cd observability-frontend && npm run test:run && npm run build` | 上一轮 **25 files / 39 tests passed**；本轮未修改前端，结果沿用为历史代码证据。 |
-| 工作流门禁 | `bash deploy/scripts/verify-aiops-workflow-gates.sh`（由 local-validation 重跑） | 首次受限沙箱运行因 Go `httptest` 回环监听被拒（`operation not permitted`）而中止；按授权在本机环境重试后 **通过**：Go、跨服务 workflow 4 tests、Python 1219、Executor、前端 39/build、Helm lint、生产安全开关、部署契约和 Graph load contract 均通过。 |
+| 工作流门禁 | `bash deploy/scripts/verify-aiops-workflow-gates.sh`（由 local-validation 重跑） | 首次受限沙箱运行因 Go `httptest` 回环监听被拒（`operation not permitted`）而中止；按授权在本机环境重试后基础门禁 **通过**；本轮仓库现有 Python 全量为 1220 passed，Executor、前端 39/build、Helm lint、生产安全开关、部署契约和 Graph load contract 均通过。 |
 | 架构/部署契约 | `AIOPS_CONTRACT_ALLOW_TEST_SECRETS=true bash deploy/scripts/test-production-architecture-contracts.sh`；`bash deploy/scripts/test-deployment-contracts.sh` | **均通过**；此前 SAN 列表逗号解析失败已修正为 Helm 转义参数并重跑通过。 |
 | 生产 egress 清单 | `helm template ... -f deploy/helm/aiops/values-prod.yaml --set networkPolicy.kubernetesApiCIDRs={10.0.0.0/8}`；无 CIDR 同命令 | 注入测试 CIDR 时渲染 **37 个 NetworkPolicy**，default-deny、角色白名单、HugeGraph/schema migrator 规则均存在且无旧 `app: query-api` selector；未注入时明确 Helm 失败（`kubernetesApiCIDRs must be injected`）。 |
 | revision 7 运行态选择器、TLS 命令与启动依赖 | `kubectl -n observability get networkpolicy -o custom-columns=NAME:.metadata.name,PODS:.spec.podSelector.matchLabels`；`kubectl -n observability get deploy ai-orchestrator ai-investigation-worker -o jsonpath=...`；Pod 重启计数 | **通过**；Query 相关 NetworkPolicy 均指向 `app=query-api-http`，Gateway/Worker 命令为 `python -m mtls_server` 且 `--ssl-cert-reqs 2`，均有 `wait-for-query-api` initContainer，2 个 Worker 与 Gateway 业务容器重启数为 0。 |
 | 本机发布门禁 | `LLM_PROVIDER_KEYS=deepseek:sk-local-validation RELEASE_TAG=git-f35ef7dad3d9 bash deploy/scripts/local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow` | 工作负载、MySQL 16 个迁移（含 0016 turn_id/唯一键）、ClickHouse 0001–0009、事件身份/默认值门禁、最小权限、Executor disabled、Worker 开关、HTTPS readiness、canary 全部通过；未提供真实观测 marker/DeepFlow，validator 按设计输出 `BLOCKED_BY_ENV`，不能视为生产发布通过。 |
 | ClickHouse 事件身份迁移 | `kubectl -n observability logs job/clickhouse-migrator`；ClickHouse `aiops_schema_migrations`、`k8s_events_identity_audit`、`system.columns`、身份计数查询 | **通过（本机）**；0001–0009 均 applied/skipped 且 checksum 一致；`event_identity_counts=0/0/0/0`，`event_id`、`tenant_id`、`cluster_id` 均为 `String` 且无 `default_kind`；0008 审计为 `scanned=0, quarantined=0, remaining_invalid=0`（本次 fresh install 未保留历史事件）。 |
-| DeepFlow 真实观测安装尝试 | `helm upgrade --install deepflow deepflow/deepflow --version 7.1.002 -n deepflow --create-namespace -f deploy/helm/aiops/values-deepflow.yaml --wait --timeout 15m` | **BLOCKED_BY_ENV**；`deepflow-clickhouse` 可启动，但 `deepflow-app`、`deepflow-agent`、DeepFlow MySQL 从香港仓库拉取时 EOF，server/Grafana 因 MySQL 未就绪失败；已卸载 release 并删除 `deepflow` namespace，未使用 fixture 冒充真实 flow/span。 |
+| DeepFlow 官方运行态安装与真实数据 | `helm upgrade --install deepflow deepflow/deepflow --version 7.1.002 -n deepflow --create-namespace -f deploy/helm/aiops/values-deepflow.yaml --set global.image.repository=registry.cn-beijing.aliyuncs.com/deepflow-ce --wait --timeout 15m`；官方镜像 digest 核对；ClickHouse/Server/Agent 实际查询 | **本机通过**；北京官方 registry 镜像已就绪，DeepFlow chart revision 2 全部组件 Ready；首次启动由官方 Server 创建 `flow_log`/`flow_tag` 等业务库；本机 ClickHouse 显式随机密码认证成功，`flow_log.l7_flow_log_local` 有真实行；未修改 DeepFlow 源码。 |
 | Graph 真实写入、授权隔离与恢复 | `go run ./cmd/graph-load-generator --vertices 2000 --edges 5000 --batch-size 200 --tenant-id <canonical UUID> --cluster-id <canonical UUID> --load=true`；管理员登录/scope 后调用 Graph health/entity/neighbors/path/candidate/impact；缩容 `statefulset/hugegraph` 后删除 PVC、重跑 schema migrator、恢复 `query-api-http` | **本机通过**；恢复前后均成功写入 2,000 顶点/5,000 边；Graph health/entity/neighbors/path/candidate/impact HTTP 200；错误集群 403 `GRAPH_SCOPE_DENIED`、原始 Gremlin 参数 400、未授权 403；schema migrator Complete、恢复后认证探针 200。该结果只证明本机 bounded recovery，不替代 200k/1M 候选容量证据。 |
 | Graph recovery 工具契约修复 | `bash -n deploy/scripts/graph-recovery-test.sh`；`bash deploy/scripts/test-graph-recovery-contract.sh`；`bash deploy/scripts/graph-recovery-test.sh`（只读） | **通过**；默认使用实际资源名 `query-api-http`，恢复前缩容 HugeGraph 再删 PVC，恢复后使用 HTTPS `/readyz` 和 Basic-authenticated HugeGraph probe；只读观察返回 `recovery_test=observed`。 |
 | 最终 validator（绑定当前运行镜像） | `RELEASE_TAG=git-f35ef7dad3d9 AIOPS_EVIDENCE_REPORT_OUTPUT=/tmp/aiops-evidence-f35ef7.json bash deploy/scripts/validate-local-stack.sh` | **exit 2 / BLOCKED_BY_ENV**；revision 7 核心工作负载、MySQL 0016、ClickHouse 0001–0009、Executor disabled、RBAC 和 HTTPS readiness 均通过；因未提供 `AIOPS_VALIDATION_DATA_MARKER`，真实 metrics/logs/events 证据门禁明确阻断。该结果不是代码失败，也没有用 fixture 代替生产观测。 |
@@ -88,10 +88,10 @@
 | Ingest RED cluster 归属修复 | `go test ./... -count=1`、`go test -race ./...`（`ai-apm-ingest-go`） | **通过**；生产入口改用 `SetOnServiceMetricWithCluster`，回归测试确认 callback 保留 canonical `cluster_id`。 |
 | Graph 资源快照入口修复 | `bash deploy/scripts/test-graph-resource-snapshot-contract.sh` | **通过**；脚本固定从 `query-api-http` 读取资源预算，不再查询不暴露浏览器预算的 dispatcher/evaluator。 |
 | Query AICHAT transcript 持久化错误 | `go test ./... -count=1`、`go test -race ./...`（`ai-apm-query-go`） | **通过**；`AppendMessageForTurn` 错误不再被吞掉，失败时发送 `CHAT_TRANSCRIPT_PERSIST_FAILED` 并不转发伪造 `done`。 |
-| Orchestrator 有界断线感知队列 | `kubectl -n observability exec deploy/ai-orchestrator -- python -c 'compile(...); queue helper assertions'` | **通过**；运行镜像源码编译成功，`CHAT_STREAM_QUEUE_MAXSIZE=64`，disconnect 后不再入队。完整 pytest **未验证**：镜像没有 `pytest`，宿主 Python 的 `langgraph` 依赖不兼容；未安装/升级依赖。 |
+| Orchestrator 有界断线感知队列 | `kubectl -n observability exec deploy/ai-orchestrator -- python -c 'compile(...); queue helper assertions'`；Python 全量 pytest | **通过**；运行镜像源码编译成功，`CHAT_STREAM_QUEUE_MAXSIZE=64`，disconnect 后不再入队；宿主仓库现有环境全量 `1220 passed, 1 skipped, 2 warnings`。 |
 | DeepFlow OTLP 配置合同 | `bash deploy/scripts/test-deepflow-otlp-render.sh`；`bash deploy/scripts/test-deepflow-runtime-boundary.sh` | **通过（静态/缓存官方 chart）**；渲染结果为 `opentelemetry`、`ingest.observability.svc.cluster.local:4317`、`flow_log.l7_flow_log`、canonical `x-tenant-id`，边界扫描通过。 |
-| DeepFlow 真实切换 | `CUTOVER_OBSERVE_SECONDS=0 bash deploy/scripts/verify-deepflow-otlp-cutover.sh` | **exit 2 / BLOCKED_BY_ENV**；ingest readiness、4317 endpoint、无 legacy CH 配置和 metrics 可读；OTLP counters=0、平台 trace rows=0、DeepFlow namespace/exporter 不存在、无 observation window。没有使用 fixture。 |
-| 当前真实观测发布验证 | `RELEASE_TAG=git-f35ef7dad3d9 AIOPS_EVIDENCE_REPORT_OUTPUT=/tmp/aiops-evidence-f35ef7.json bash deploy/scripts/validate-local-stack.sh` | **exit 2 / BLOCKED_BY_ENV**；核心 workload、MySQL 0016、ClickHouse 0001–0009、RBAC、Executor disabled、HTTPS readiness 全通过；未提供 `AIOPS_VALIDATION_DATA_MARKER`，validator 明确阻断而非推测通过。 |
+| DeepFlow 真实切换 | `CUTOVER_OBSERVE_SECONDS=20 CUTOVER_DEEPFLOW_CH_POD=deepflow-clickhouse-0 CUTOVER_DEEPFLOW_CH_SECRET=deepflow-clickhouse-evidence bash deploy/scripts/verify-deepflow-otlp-cutover.sh --baseline /tmp/aiops-deepflow-real-baseline.json` | **exit 0 / PASS**；真实计数从基线增长，最终 `otlp_batches_received=3287`、`otlp_spans_accepted=103807`，平台 `trace_spans=103807`、DeepFlow raw `l7_flow_log=97145`；exporter、无 legacy CH 路径和 20 秒观察均通过。密码仅存在本机 Secret，未写入报告。 |
+| 当前真实观测发布验证 | `RELEASE_TAG=git-f35ef7dad3d9 AIOPS_EVIDENCE_REPORT_OUTPUT=/tmp/aiops-evidence-f35ef7.json bash deploy/scripts/validate-local-stack.sh` | **exit 2 / BLOCKED_BY_ENV**；核心 workload、MySQL 0016、ClickHouse 0001–0009、RBAC、Executor disabled、HTTPS readiness 全通过；完整 DeepFlow OTLP 切换已有独立 PASS，但全域 metrics/logs/events/dependency/RCA 仍未提供同一 marker，validator 按设计阻断而非推测通过。 |
 | Helm/部署合同 | `bash deploy/scripts/test-graph-resource-snapshot-contract.sh`、`bash deploy/scripts/test-deepflow-otlp-render.sh`、`bash deploy/scripts/test-deepflow-runtime-boundary.sh`、`bash deploy/scripts/test-deployment-contracts.sh`、`helm lint --strict deploy/helm/aiops` | **全部通过**（Helm 仅有 icon recommendation）。 |
 
 ### 2.3.3 本轮最终运行证据（覆盖早期记录）
@@ -103,7 +103,7 @@
 | ClickHouse 迁移 | migrator 日志显示 0001–0009 全部 applied/skipped 且 checksum 一致；`event_id`/tenant/cluster 身份非法计数为 `0/0/0/0`，`event_id.default_kind` 为空。 |
 | 运行态 | Helm revision 7；Query、Orchestrator、2 个 Worker、Ingest、Collector、Proxy、Frontend、HugeGraph、MySQL、ClickHouse 及迁移 Job 就绪；核心容器重启数为 0。 |
 | 本机残留清理 | 按 Asia/Shanghai `2026-08-31` 为保留边界，旧自研镜像标签和 dangling layers 已清理；revision 7 仅使用当前 `git-f35ef7dad3d9` 标签；Fresh Install 后 MySQL 运行历史表（Chat/Run/Evidence/Tool/Audit/Reports）和 ClickHouse `alert_events`/`log_records`/`trace_spans` 今天之前行数均为 0；用户/角色/租户/集群配置未删除。第三方镜像、生产数据、外部系统未触碰。 |
-| 发布门禁 | 基础安全/部署/迁移门禁通过；当前 validator 对无 marker 返回 `BLOCKED_BY_ENV`；DeepFlow 本机安装因第三方镜像仓库 EOF 未就绪，多节点、PITR、生产 Secret/证书/registry 签名仍未验证，生产仍不可发布。 |
+| 发布门禁 | 基础安全/部署/迁移门禁通过；DeepFlow 官方 7.1.002 本机真实 OTLP 切换已 PASS；全域 validator 对无统一 marker 仍返回 `BLOCKED_BY_ENV`，多节点、PITR、生产 Secret/证书/registry 签名仍未验证，生产仍不可发布。 |
 
 ### 2.4 OrbStack 实际运行证据
 
@@ -195,8 +195,8 @@ flowchart LR
 | 内部服务身份认证、短签名、防重放、审计 | 服务证书、方向 token、唯一 nonce、TTL、审计 ID 可关联 | `bootstrap/mtls.go:13-88`；各 Go 服务 `mtls.go`；`ai-orchestrator/mtls.py:8-84`、`mtls_server.py:1-99`；`mysql_replay_cache.go` | TLS Secret、`AIOPS_TLS_CLIENT_SAN`、nonce/replay、audit tables | Go/Python replay tests、`tests/test_mtls_server.py` 真实 TLS、Helm render、revision 7 实际 env、无证书 HTTP 401、Gateway→Worker mTLS 200 | **部分实现** | Go 与 Python listener 均执行 SAN allowlist；Python 拒绝分支记录脱敏 peer SAN 审计字段；生产逐服务证书、跨副本 replay、轮换和撤销未验证。 |
 | 授权落实到 tenant/cluster/namespace/resource/action | Internal tools 固定 capability；Action/Broker 重新校验 target、namespace、operation、credential_ref | `internal_query_envelope.go:27-43`；`ai-action-executor/main.go:289-337`；Broker `main.go:164-177` | `tool_runs`、`ai_actions`、Broker profiles | action/boundary tests | **部分实现** | 只读 Query 已闭环；真实 mutation 因本机/生产 disabled 或未提供 K8s evidence。 |
 | Query/领域代理/Run/Chat 数据所有权一致 | 浏览器只通过 Query；Run/Chat/Action 落 MySQL；Worker 不做 owner | `ai_chat_sessions.go:18-216`；`store/ai_chat_sessions.go:10-255`；`runs_public.go` | `ai_chat_sessions/messages`、`ai_runs/outbox/events`、migration 0016 | Go chat/run tests、Python full | **完整实现（canonical 路径）** | Gateway 仍保留仅迁移用途的 SQLite helper，未被 canonical browser path 使用；turn 重放由 Query/MySQL 完成。 |
-| AICHAT 两个自研模块真实可用 | 前端登录/scope/SSE/会话/报告与 Query→Orchestrator 真实链路闭环；turn 重试不重复调用；持久化失败不得伪造 done；生产队列有界且响应断开可停止 | `observability-frontend/src/pages/ai/AiChat.tsx:163-193`；`settings.go:920-1215`；`main.py:1138-1260`、`_put_chat_stream_event` | MySQL chat tables + 0016 `turn_id` 唯一键；`ai.chat` signed context；`CHAT_STREAM_QUEUE_MAXSIZE=64` | Query Go full/race、`TestPersistChatSSEFramesReturnsPersistenceError`、orchestrator queue helper/source compile；镜像无 pytest，Python 集成测试未验证 | **部分实现** | canonical 边界、幂等和失败语义已闭环；本机使用 mock/deterministic backend，真实 Provider、双副本 resume、并发矩阵和 Python pytest 仍未完成候选环境验收。 |
-| RCA V2、实体、证据、矛盾与 policy digest | Graph candidate + typed evidence + provenance + contradiction；数据不足返回 partial | `rca_engine/candidates.py:7-33`；`entity_resolver.py`；`runtime.py:54-154`；`contradictions.py` | `ai_run_graph_contexts`、`ai_evidence`、`ai_hypotheses`、policy JSON | 20 个 RCA targeted tests、Python 1219 全量、本机 partial Run | **部分实现** | 图增强成功；多类观测数据在本机 unavailable，不能声称根因完整。 |
+| AICHAT 两个自研模块真实可用 | 前端登录/scope/SSE/会话/报告与 Query→Orchestrator 真实链路闭环；turn 重试不重复调用；持久化失败不得伪造 done；生产队列有界且响应断开可停止 | `observability-frontend/src/pages/ai/AiChat.tsx:163-193`；`settings.go:920-1215`；`main.py:1138-1260`、`_put_chat_stream_event` | MySQL chat tables + 0016 `turn_id` 唯一键；`ai.chat` signed context；`CHAT_STREAM_QUEUE_MAXSIZE=64` | Query Go full/race、`TestPersistChatSSEFramesReturnsPersistenceError`、Python 全量 `1220 passed, 1 skipped, 2 warnings`、orchestrator queue helper/source compile | **部分实现** | canonical 边界、幂等、显式持久化失败和有界队列已由真实代码/测试闭环；本机使用 mock/deterministic backend，真实 Provider、双副本 resume、并发矩阵仍需候选环境验收。 |
+| RCA V2、实体、证据、矛盾与 policy digest | Graph candidate + typed evidence + provenance + contradiction；数据不足返回 partial | `rca_engine/candidates.py:7-33`；`entity_resolver.py`；`runtime.py:54-154`；`contradictions.py` | `ai_run_graph_contexts`、`ai_evidence`、`ai_hypotheses`、policy JSON | 20 个 RCA targeted tests、Python 1220 全量、本机 partial Run | **部分实现** | 图增强成功；全域统一 marker、alerts/changes/依赖闭环在本机仍 unavailable，不能声称根因完整。 |
 | 固定 Run 时间窗口和 target_type | 创建时冻结 `[start,end]`，最长 24h；worker 不以自身时钟重锚 | `runs_public.go:76-138`；`run_dispatch.go:113-141`；Worker `apps/investigation.py:91-108` | `ai_runs.time_range_start/end,target_type` | Go run/dispatch tests；本机 Run persisted node/window | **完整实现** | 明确窗口错误返回 422；默认窗口可用 `AI_RUN_DEFAULT_WINDOW_MINUTES` 调整。 |
 | Collector 不建表、不直写 ClickHouse | Collector→Ingest，WAL fsync 后 receipt；Ingest 是唯一事件写入口 | `ai-event-collector/clickhouse.go`、`wal.go`；`ai-apm-ingest-go/cmd/ingest/event_wal.go` | ClickHouse `k8s_events.event_id`、migration 0006/0007 | Go race/WAL tests、contract scripts | **完整实现** | 历史旧 writer/空 event_id 行仍需受控迁移。 |
 | RED 指标保留 cluster_id | 多集群同名 service 的 RED 指标必须写入真实 cluster label，不得退化为无集群回调 | `ai-apm-ingest-go/internal/pipeline/ingest.go`；`cmd/ingest/main.go` | `AddServiceREDForCluster`、cluster-aware callback | `TestProcessSpansServiceMetricCallbackPreservesCluster`；Go full/race | **完整实现** | 生产入口已使用 `SetOnServiceMetricWithCluster`；旧 callback 仅作兼容 fallback，不再是生产 wiring。 |
@@ -206,7 +206,7 @@ flowchart LR
 | Graph 资源快照读取真实 Query 入口 | 资源预算快照必须读取暴露浏览器资源预算的 Query HTTP Pod | `deploy/scripts/graph-resource-snapshot.sh` | `pod_for_app query-api-http` | `test-graph-resource-snapshot-contract.sh` | **完整实现（脚本合同）** | 已移除 dispatcher/evaluator 作为快照入口；候选环境仍需实际资源曲线和容量证据。 |
 | 生产 egress 默认拒绝且按角色白名单 | `values-prod` 必须打开 default-deny；Query/Dispatcher/Alert/Frontend/Worker/Graph/Executor/Broker 只能到声明的内部目标；Kubernetes API 通过注入 CIDR 放行 | `deploy/helm/aiops/values-prod.yaml:86-88`；`templates/networkpolicy.yaml:1-1195`；`templates/graph-networkpolicy.yaml:1-97` | `networkPolicy.kubernetesApiCIDRs`、NetworkPolicy selectors/ports | production architecture contract、Helm render/PyYAML parse、workflow gate | **部分实现** | 代码/清单已修复并通过静态门禁；本机运行的是 local-validation（egress 未全局开启），生产 CNI、CIDR、NetworkPolicy 实际连通性尚未验证。 |
 | LLM 出站唯一经 Proxy | Orchestrator 只拿 provider metadata/Proxy token，不接 key/任意 URL；生产 Mock 必须 fail-closed；Provider 卡住必须有上游 deadline | `tools.py`；`orchestrator.py`；Proxy `main.go:92-163`；`main.py` 生产启动 guard | Proxy Secret/provider allowlist、60s upstream timeout | `test_llm_proxy_boundary.py`、`test_llm_mock.py`、Proxy `TestHandleProxyHonorsUpstreamTimeout`、Go race | **部分实现** | 代理 deadline 已修复并在本机验证；真实 Provider、限流、熔断和 key rotation 仍未验证。 |
-| DeepFlow OTLP 统一采集 | DeepFlow 只经 OTLP exporter 写入 Ingest 4317；固定 source/queue/tenant metadata；禁止 legacy CH 直写 | `deploy/helm/aiops/values-deepflow.yaml`；`test-deepflow-otlp-render.sh`；`verify-deepflow-otlp-cutover.sh` | DeepFlow chart 7.1.002 cache；Ingest Service 4317；`x-tenant-id` | rendered-chart contract PASS；runtime boundary PASS；真实切换 exit 2 BLOCKED_BY_ENV（无 DeepFlow namespace/exporter/流量） | **部分实现** | 配置合同和边界已接线，但本机无真实 DeepFlow 运行态、OTLP counters 或平台 trace rows，生产数据路径未验证。 |
+| DeepFlow OTLP 统一采集 | DeepFlow 只经 OTLP exporter 写入 Ingest 4317；固定 source/queue/tenant metadata；禁止 legacy CH 直写 | `deploy/helm/aiops/values-deepflow.yaml`；`test-deepflow-otlp-render.sh`；`verify-deepflow-otlp-cutover.sh` | DeepFlow chart 7.1.002；Ingest Service 4317；`x-tenant-id`；本机 `deepflow-clickhouse-evidence` Secret | rendered-chart/runtime boundary PASS；真实切换 PASS（`received=3287, accepted=103807`，平台 Trace `103807`，DeepFlow raw L7 `97145`，前后计数增长、20s observation PASS） | **本机完整实现/生产未验证** | 配置合同、官方运行态、原始数据与平台 OTLP 链路已在 OrbStack 真实验证；生产镜像/Secret/CNI/多节点与长窗口仍未验证。 |
 | 生产部署、回滚、观测达标 | Secret/render/image digest、PDB、health/SLO、故障和回滚 evidence 完整 | Helm templates、`runtime-slo.md`、`collect-release-evidence.sh` | Secret refs、PDB、WAL PVC、release JSON | Helm/contracts/evidence script；revision 7 Ready；validator 基础设施/迁移/安全通过，真实观测和 HA 仍 BLOCKED | **未验证** | 本机 readiness 和合同通过不等于生产 HA、PITR、证书轮换、完整观测或 rollback 通过。 |
 
 ## 5. AICHAT 两个自研模块复审与改进方案
@@ -249,8 +249,8 @@ flowchart LR
 - **多集群 RED 指标归属：** `ai-apm-ingest-go/internal/pipeline/ingest.go` 新增 cluster-aware service metric callback，`cmd/ingest/main.go` 生产 wiring 使用 `SetOnServiceMetricWithCluster`；`TestProcessSpansServiceMetricCallbackPreservesCluster` 与 Go full/race 通过，避免同名服务跨集群指标串写。
 - **Graph 资源快照入口：** `deploy/scripts/graph-resource-snapshot.sh` 固定调用 `pod_for_app query-api-http`，`test-graph-resource-snapshot-contract.sh` 已通过；不再把 dispatcher/evaluator 当作浏览器资源预算入口。
 - **AICHAT transcript 持久化失败：** `settings.go` 不再吞掉 `AppendMessageForTurn` 错误；Query SSE 在持久化失败时发出明确 `CHAT_TRANSCRIPT_PERSIST_FAILED`，不再转发伪造 `done`；`TestPersistChatSSEFramesReturnsPersistenceError`、Query full/race 通过。
-- **AICHAT 流队列背压：** `ai-orchestrator/main.py` 使用 `CHAT_STREAM_QUEUE_MAXSIZE=64` 的有界队列，入队在 `queue.Full` 时等待并响应断开事件；新镜像 compile/helper assertion 通过。镜像未包含 pytest，完整 Python 集成测试本轮未验证，未安装依赖补跑。
-- **DeepFlow OTLP 合同与真实切换门禁：** `test-deepflow-otlp-render.sh`（缓存官方 7.1.002 chart）和 runtime boundary 扫描通过；`verify-deepflow-otlp-cutover.sh` 对当前环境返回 exit 2 `BLOCKED_BY_ENV`（无 namespace/exporter/OTLP 真实流量），不以 fixture 或零计数冒充通过。
+- **AICHAT 流队列背压：** `ai-orchestrator/main.py` 使用 `CHAT_STREAM_QUEUE_MAXSIZE=64` 的有界队列，入队在 `queue.Full` 时等待并响应断开事件；新镜像 compile/helper assertion 通过，仓库现有 Python 环境全量 `1220 passed, 1 skipped, 2 warnings`。
+- **DeepFlow OTLP 合同与真实切换门禁：** `test-deepflow-otlp-render.sh`（官方 7.1.002 chart）和 runtime boundary 扫描通过；本机官方 DeepFlow chart revision 2 已运行并创建业务库，显式密码认证成功；`verify-deepflow-otlp-cutover.sh` 带真实基线和显式 Secret 返回 exit 0 `PASS`（OTLP counters、平台 Trace 行、DeepFlow raw L7 行、20s observation 全部通过），未使用 fixture 或零计数。
 - **Query 作用域与硬编码租户回退：** `auth.go:317-366` 现在只读取 `auth_sessions` 的 MySQL active scope；`handler.go:300-312` 的后台指标租户未配置时返回空并跳过 ETT，不再使用固定 UUID；`main.py:1580-1625` 的 legacy mutation 也只接受签名 context。`TestRequestAuthorizationContextIgnoresClientTenantHeader`、`TestMetricsTenantIDFailsClosedWithoutConfiguredSystemTenant`、Query full/race 和 ARCH-105/106/107/108 均通过。
 - **生产 NetworkPolicy 默认拒绝与选择器：** `values-prod.yaml:86-88` 已将 `egressDefaultDeny` 设为 `true`；`templates/networkpolicy.yaml:177-357,603-630,1104-1195` 补齐 Dispatcher/Alert/Frontend/Executor/Broker 出站白名单，并将 Query 部署选择器统一为 `app=query-api-http`；`graph-networkpolicy.yaml:30-97` 补齐 HugeGraph/schema migrator 出站链路。Kubernetes API 不再伪装成 `kube-system` Pod，改为发布时注入 `kubernetesApiCIDRs`，缺失时 Helm fail-closed。架构契约、Helm 渲染 YAML 解析、部署契约和完整 workflow gate 均通过；生产 CNI 连通性仍未验证。
 
@@ -279,10 +279,10 @@ flowchart LR
 ### P1-03：RCA 观测数据源未达到可用证据门槛
 
 - **类型/要求：** 配置/数据可靠性阻断；RCA 必须读取真实 metrics/logs/traces/alerts/changes，数据源不可用要显式失败而不是空成功。
-- **证据：** Fresh Install 已按授权重建持久化存储，当前运行态没有此前 canary 的历史数据；本机本轮没有提供真实 marker，因此 validator 对真实观测和 DeepFlow 按 `BLOCKED_BY_ENV` 处理。此前 canary 曾通过 Ingest mTLS/API key 写入并查询日志/Trace/Events，但不能把该历史记录或 ClickHouse `SELECT 1` 当作当前完整 RCA 数据质量证明；完整根因门禁仍要求跨域 alerts/changes/DeepFlow/依赖证据。
+- **证据：** Fresh Install 已按授权重建持久化存储，当前运行态没有此前 canary 的历史数据；本轮 DeepFlow 官方 7.1.002 已真实运行，独立切换门禁记录了前后增长的 OTLP counters、平台 Trace 行和 DeepFlow raw L7 行。全域 validator 仍没有同一 marker 下的 metrics/logs/events/dependency/RCA 汇总，因此不能把 DeepFlow 独立 PASS 或此前 canary 当作完整 RCA 数据质量证明；完整根因门禁仍要求跨域 alerts/changes/DeepFlow/依赖证据。
 - **触发/影响：** 生产数据源认证或租户映射错误时，根因结果只能 partial；若 UI 忽略 quality，可能误导处置。
-- **根因：** Fresh Install 后本机没有保留历史 canary；本轮没有提供真实 marker，DeepFlow 也未运行，因此不能把零行/零计数推断为数据源健康。代码层 no-data envelope 已修复，候选环境仍未提供全域 datasource evidence。
-- **整改实现：** 已通过只读合同验证 Ingest→VM/VLogs→Query 的配置边界，并保留 `NO_DATA` 与 `BACKEND_UNAVAILABLE` 的不同语义；本轮 `validate-local-stack.sh` 和 `verify-deepflow-otlp-cutover.sh` 均对缺 marker/无真实流量返回 `BLOCKED_BY_ENV`。候选环境必须补 DeepFlow flow/span、alerts/changes、service dependency 和 RCA evidence URL，核对 `tenant_id/cluster_id`、migration checksum、reader mode，并以 `internal_query.go:288-299,337-346` 的 complete envelope 语义作为回归基线。
+- **根因：** Fresh Install 后本机没有保留历史 canary；本轮 DeepFlow 已真实运行并通过独立 OTLP 切换门禁，但全域 validator 仍没有同一 marker 下的 metrics/logs/events/dependency/RCA evidence。不能把 DeepFlow PASS 外推为完整 RCA 数据源健康。
+- **整改实现：** 已通过只读合同验证 Ingest→VM/VLogs/DeepFlow OTLP→Query 的配置边界，并保留 `NO_DATA` 与 `BACKEND_UNAVAILABLE` 的不同语义；本轮 `verify-deepflow-otlp-cutover.sh` 在真实基线、显式本机 Secret 和真实请求下 PASS，`validate-local-stack.sh` 仍因缺全域 marker 按设计 `BLOCKED_BY_ENV`。候选环境必须补 DeepFlow flow/span、alerts/changes、service dependency 和 RCA evidence URL，核对 `tenant_id/cluster_id`、migration checksum、reader mode，并以 `internal_query.go:288-299,337-346` 的 complete envelope 语义作为回归基线。
 - **验收标准：** 固定 tenant/cluster/time window 的 metrics/logs/traces/alerts/changes canary 全部返回 200 + 正确 quality；数据源故障返回明确 503/partial 且 UI 显示原因；RCA evidence count、provenance digest、tool error count 可在 MySQL/运行事件中关联；授权空数据必须是 `complete` 空结果，认证/连接故障必须保持 `BACKEND_UNAVAILABLE`，二者不可混淆。
 
 ### P1-04：真实 Graph 数据、负载和恢复未绑定候选版本
@@ -310,7 +310,7 @@ flowchart LR
 - **触发/影响：** 新功能若误接 legacy handler，会恢复 SQLite、shell 或旧 scope 依赖，造成行为分叉和安全回归。
 - **根因：** 迁移采用环境开关和路由退休，尚未完成包级删除/编译隔离；FastAPI 新版路由采用懒加载 wrapper，简单遍历 `app.router.routes` 会误删合法内部路由。
 - **整改实现：** 已新增 `production_surface.py` 精确 allowlist，递归裁剪懒加载 router wrapper；生产生命周期不启动 scheduler、Investigation recovery 或 legacy worker；清理适配器改为懒加载 SQLite，生产启动不创建 `ai-sessions.db`；`.dockerignore` 不把旧实现/fixture 带入镜像；`rca_engine`、图快照和 legacy mutation/approval 开关在生产 fail-closed；`test-production-architecture-contracts.sh` 增加 ARCH-316–320、328–332 静态门禁。
-- **验收标准：** 生产导入日志 `kept=8`，有效内部清理路由可达且受鉴权，legacy public route 不出现在生产 OpenAPI/路由树；生产导入不创建 SQLite 文件；Worker import graph 不含 `main`/scheduler/SQLite；镜像边界检查确认旧文件不存在且 V2 导入成功；上一轮 Python 1219 passed/定向 18 passed 仅为历史基线，本轮因 pytest 环境限制标为未验证，Helm/架构合同仍通过。包级删除仍是后续 P2 清理，不作为本修复的虚假完成项。
+- **验收标准：** 生产导入日志 `kept=8`，有效内部清理路由可达且受鉴权，legacy public route 不出现在生产 OpenAPI/路由树；生产导入不创建 SQLite 文件；Worker import graph 不含 `main`/scheduler/SQLite；镜像边界检查确认旧文件不存在且 V2 导入成功；本轮 Python 全量 `1220 passed, 1 skipped, 2 warnings`，Helm/架构合同仍通过。包级删除仍是后续 P2 清理，不作为本修复的虚假完成项。
 
 ### P2-02：遗留 fixture/采集协议仍出现 scope 字符串（核心授权路径已关闭）
 
@@ -333,11 +333,11 @@ flowchart LR
 ### P2-04：AICHAT 的真实 Provider、跨副本 resume、并发首轮和 Python 集成测试仍缺证据（代码闭环已增强）
 
 - **类型/要求：** 功能/测试缺口；两个自研模块应在真实 Provider、断线、并发和降级下保持一致。
-- **证据：** 本机 AICHAT 使用 `LLM_MOCK=true`；`ai_chat_sessions.go` 已以 MySQL 原子 upsert 消除首轮 SELECT→INSERT 竞争，`0016_ai_chat_turn_id.sql` 为每个 canonical turn 建立唯一约束，`ProxyChat` 在下游调用前检查完成 turn 并重放持久化 suggestion/done，且本轮增加 transcript 持久化失败的显式 SSE 错误；Query store/API、Orchestrator ingress/队列 helper 和前端既有契约测试通过，Query Go full/race 通过。宿主 Python 全量测试因 `langgraph` 依赖不兼容未运行，运行镜像因未打包 `pytest` 也未能执行；因此 Python 集成测试、真实 Provider canary、跨 Worker/Query 副本恢复和真实流量并发仍未验证。
+- **证据：** 本机 AICHAT 使用 `LLM_MOCK=true`；`ai_chat_sessions.go` 已以 MySQL 原子 upsert 消除首轮 SELECT→INSERT 竞争，`0016_ai_chat_turn_id.sql` 为每个 canonical turn 建立唯一约束，`ProxyChat` 在下游调用前检查完成 turn 并重放持久化 suggestion/done，且本轮增加 transcript 持久化失败的显式 SSE 错误；Query store/API、Orchestrator ingress/队列 helper、前端既有契约测试和仓库现有 Python 全量测试（`1220 passed, 1 skipped, 2 warnings`）通过，Query Go full/race 通过。真实 Provider canary、跨 Worker/Query 副本恢复和真实流量并发仍未验证。
 - **触发/影响：** Provider 429/超时、网络断开或同一 session 并发请求时，可能出现重复消息、悬挂 SSE 或错误降级。
 - **根因：** 真实 key/外部网络不在本次授权范围；Chat transcript 已迁移 MySQL，但候选环境 Provider、跨副本和故障证据尚未补齐。
 - **整改实现：** 已落地 Proxy `turn_id`、heartbeat/deadline、原子 session upsert、完成 turn replay、transcript 持久化失败 fail-closed、有界断线感知队列、脱敏边界和 LLM Proxy 上游 deadline；见 `settings.go`、`ai_chat_sessions.go`、`main.py`、`ai-llm-egress-proxy/main.go`、迁移 0016。候选环境仍需执行真实 Provider canary、跨副本 resume、并发矩阵和 Python 集成测试。
-- **验收标准：** 真实候选环境 200/SSE/done、Provider failure 状态、断线重连（重试不重复调用）、并发 20 首轮（session/turn 唯一）、token/key rotation 全部有机器可读 evidence；任何失败均显示明确原因，不伪造 assistant success。
+- **验收标准：** 真实候选环境 200/SSE/done、Provider failure 状态、断线重连（重试不重复调用）、并发 20 首轮（session/turn 唯一）、token/key rotation 全部有机器可读 evidence；任何失败均显示明确原因，不伪造 assistant success。Python 全量测试已满足本机门槛，但不替代真实 Provider/多副本证据。
 
 ### P2-05：状态组件与多副本 HA/备份恢复未验证
 
@@ -390,14 +390,14 @@ flowchart LR
 - `NO_DATA` ToolRun 持久化语义已修复并有 Go 回归测试；本机历史 RCA Run 的 8/8 工具为 `success/complete`、6 条证据，但 Fresh Install 后不作为当前观测证据。
 - mTLS required/SAN 配置已进入 Helm revision 7；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401；Python Gateway/Worker 以 `python -m mtls_server` 启动，错误 SAN 在 ASGI 前返回 403，真实 Gateway→Worker mTLS health 返回 200；默认非 TLS Worker profile 显式使用 `uvicorn investigation_app:app`。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations 0001–0009、quarantine/audit/identity gate；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
-- Helm 和合同脚本均通过；本轮 Ingest/Query Go full/race 通过，Orchestrator 源码编译和队列 helper 通过；Python pytest 本轮未验证（镜像无 pytest、宿主依赖不兼容），前端既有 39 tests/build 结果为历史代码证据。
+- Helm 和合同脚本均通过；本轮 Ingest/Query Go full/race 通过，Orchestrator 源码编译和队列 helper 通过，Python 全量 `1220 passed, 1 skipped, 2 warnings`；前端既有 39 tests/build 结果为历史代码证据。
 - 本机 Helm revision 7 所有核心服务 Ready；12 个自研镜像实际使用 `git-f35ef7dad3d9`，9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
 
 ### 未通过（明确阻断）
 
 - P1-01：release evidence 已绑定提交但仍 `publishable=false`（未跟踪运行时文件 + 尚无 registry immutable digest/signature）；
 - P1-02：生产 Secret、逐服务证书身份/SAN、错误证书拒绝、轮换和撤销材料未在候选环境验收；
-- P1-03：本轮 revision 7 validator 因无 `AIOPS_VALIDATION_DATA_MARKER` 返回 exit 2 `BLOCKED_BY_ENV`；DeepFlow 切换验证同样因 namespace/exporter/真实 OTLP counters/平台 trace rows 缺失而 exit 2；不得把历史 canary、零计数或 fixture 当作当前真实数据证据；
+- P1-03：全域 validator 因无 `AIOPS_VALIDATION_DATA_MARKER` 返回 exit 2 `BLOCKED_BY_ENV`；DeepFlow 独立切换门禁已用真实基线和显式本机 Secret 返回 PASS，但同一 marker 下的 metrics/logs/events/dependency/RCA 汇总仍缺失；不得把独立 DeepFlow PASS、历史 canary、零计数或 fixture 外推为完整 RCA 证据；
 - P1-04：Graph 真实 dataset、容量和 recovery evidence 未绑定候选 digest；
 - P1-05：真实 mutation 若属于发布范围，Broker/TokenRequest/审计尚未验收；
 - P2-03：本机 0008/0009 迁移和身份门禁已通过；候选生产的历史数据扫描/quarantine、ReplacingMergeTree merge、备份恢复和 checksum evidence 尚未执行，若发布包含历史数据必须纳入门禁。
@@ -437,6 +437,6 @@ flowchart LR
 - mTLS/部署：各服务 `mtls.go`、`ai-apm-query-go/internal/bootstrap/mtls_test.go`、`ai-orchestrator/mtls.py`、`deploy/helm/aiops/templates/`、`values-prod.yaml`、`values-local-validation.yaml`；
 - 验证脚本：`deploy/scripts/collect-release-evidence.sh`、`test-production-architecture-contracts.sh`、local/deployment/Graph/Observability contract scripts。
 
-本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机 revision 7 不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。新增本轮 RED cluster 归属、Graph 快照入口、AICHAT 持久化错误、流队列背压及 DeepFlow 合同证据，并明确 Python pytest 与真实观测仍未验证。
+本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机 revision 7 不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。新增本轮 RED cluster 归属、Graph 快照入口、AICHAT 持久化错误、流队列背压、Python 全量测试及 DeepFlow 官方运行态/真实 OTLP 切换证据，并明确全域 marker、真实 Provider、HA、容量和生产凭据仍未验证。
 
 本轮修订覆盖上一轮 revision 19/早期 revision 2 的运行态描述：当前运行态以 revision 7、`git-f35ef7dad3d9`、Helm `STATUS=deployed`、Pod 镜像标签和 MySQL 0001–0016/ClickHouse 0001–0009 证据为准；历史 canary、fixture 和零计数不再作为当前真实观测证据。
