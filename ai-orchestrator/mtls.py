@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import os
+import logging
 import ssl
 import urllib.request
 from collections.abc import Awaitable, Callable
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def client_certificate_san_allowed(certificate: dict | None, allowed_sans: str) -> bool:
@@ -43,9 +46,21 @@ def guard_app_with_client_san(
     """
 
     async def guarded(scope, receive, send):
-        if scope.get("type") == "http" and not client_certificate_san_allowed(
-            peer_certificate(), allowed_sans
-        ):
+        if scope.get("type") == "http":
+            certificate = peer_certificate()
+            if client_certificate_san_allowed(certificate, allowed_sans):
+                await app(scope, receive, send)
+                return
+            peer_sans = tuple(
+                f"{kind}:{value}"
+                for kind, value in (certificate or {}).get("subjectAltName", ())
+                if kind in {"DNS", "URI"}
+            )
+            _LOGGER.warning(
+                "mTLS client SAN rejected peer_certificate_present=%s peer_sans=%s",
+                bool(certificate),
+                peer_sans,
+            )
             await send(
                 {
                     "type": "http.response.start",
