@@ -83,7 +83,7 @@
 
 | 检查 | 命令与结果 | 结论 |
 |---|---|---|
-| 新镜像构建与部署一致性 | `docker buildx build ... --tag *:git-f35ef7dad3d9 --load`；`helm upgrade aiops ... --reuse-values --set global.imageTag=git-f35ef7dad3d9 --wait --timeout 10m`；`helm status aiops -n observability`；`kubectl -n observability get pods ...` | **通过**；Helm revision 7 `STATUS=deployed`，所有自研运行 Pod/迁移 Job 使用 `git-f35ef7dad3d9`，核心 Pod Ready，迁移 Job Complete。 |
+| 新镜像构建与部署一致性 | `docker buildx build ... --tag *:git-f35ef7dad3d9 --load`；`helm upgrade aiops ... --reuse-values --set global.imageTag=git-f35ef7dad3d9 --wait --timeout 10m`；`helm status aiops -n observability`；`kubectl -n observability get pods ...`；`docker image inspect ...` | **通过**；Helm revision 7 `STATUS=deployed`，所有自研运行 Pod/迁移 Job 使用 `git-f35ef7dad3d9`，核心 Pod Ready，迁移 Job Complete；Pod imageID 与对应本地 Docker manifest digest 逐项一致（10 个自研镜像仓库、12 个运行 Pod/Job 实例）。 |
 | Ingest RED cluster 归属修复 | `go test ./... -count=1`、`go test -race ./...`（`ai-apm-ingest-go`） | **通过**；生产入口改用 `SetOnServiceMetricWithCluster`，回归测试确认 callback 保留 canonical `cluster_id`。 |
 | Graph 资源快照入口修复 | `bash deploy/scripts/test-graph-resource-snapshot-contract.sh` | **通过**；脚本固定从 `query-api-http` 读取资源预算，不再查询不暴露浏览器预算的 dispatcher/evaluator。 |
 | Query AICHAT transcript 持久化错误 | `go test ./... -count=1`、`go test -race ./...`（`ai-apm-query-go`） | **通过**；`AppendMessageForTurn` 错误不再被吞掉，失败时发送 `CHAT_TRANSCRIPT_PERSIST_FAILED` 并不转发伪造 `done`。 |
