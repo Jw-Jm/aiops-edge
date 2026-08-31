@@ -3,6 +3,7 @@
 **复审日期：** 2026-08-31（Asia/Shanghai）
 **代码构建基线：** `main` / `f35ef7dad3d9`（RED 指标保留 cluster_id、Graph 资源快照入口、AICHAT transcript 持久化失败语义、Orchestrator 有界断线感知队列、DeepFlow OTLP 渲染/切换合同修复提交及本轮证据修订）
 **本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 7（2026-08-31 22:07 +0800），12 个自研镜像统一标签 `git-f35ef7dad3d9`；运行 Pod 均使用该标签，Helm upgrade 状态为 `deployed`。
+**报告文档提交：** `82ee337d6500`；该提交只更新审查报告，不改变服务源码，因此运行镜像仍正确绑定服务代码提交 `f35ef7dad3d9`。
 **工作区：** 代码修复已提交；本报告和部署指南为本轮证据更新，用户既有未跟踪文件 `ai-orchestrator/:memory:.ses` 保留不动。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
@@ -76,7 +77,7 @@
 | 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-f35ef7dad3d9`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
 | 生产 Mock 启动拒绝 | `cd ai-orchestrator && .venv314/bin/python -m pytest tests/test_llm_mock.py -q` | **11 passed**；`AIOPS_ENV=production,LLM_MOCK=true` 子进程在应用初始化前非零退出。 |
 | Query 作用域回归 | `go test ./...`；`go test -race ./...`；`test-production-architecture-contracts.sh` | **全部通过**；伪造 `X-Tenant-ID` 的本机请求仍返回 MySQL active scope，架构契约 ARCH-105/106/107/108 通过。 |
-| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-postcommit.json` | 本轮代码 commit 为 `f35ef7dad3d96afb9c328f29be24eceb6e57e230`；deployment/architecture/Helm lint/diff check 均为 `pass`，但 `working_tree_dirty=true,publishable=false`（唯一未跟踪项是用户既有 `ai-orchestrator/:memory:.ses`）；尚无 registry immutable digest/signature。 |
+| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-rev7-final.json` | 文档提交后的 `git_commit=82ee337d65004339fe69ebb1a721ca2845006c15`；deployment/architecture/Helm lint/diff check 均为 `pass`，但 `working_tree_dirty=true,publishable=false`（唯一未跟踪项是用户既有 `ai-orchestrator/:memory:.ses`）；服务镜像仍绑定代码 tag `git-f35ef7dad3d9`，尚无 registry immutable digest/signature。 |
 | 生产镜像边界 | `docker run --rm ai-orchestrator:git-f35ef7dad3d9 ...` | **通过**；生产镜像不含测试/演示/会话文件，`import rca_engine` 成功且仅导出 V2 API。 |
 
 ### 2.3.2 本轮 revision 7 / commit `f35ef7dad3d9` 实际证据
