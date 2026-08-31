@@ -12,7 +12,8 @@
 | 域 | 组件 | 职责 / 权威 |
 |---|---|---|
 | Runtime/Trust/Persistence | `ai-apm-query-go` (query-api) | Run/Lease/Commit/Outbox/Recovery/ToolRun/Evidence/Alert 唯一权威；**action 执行唯一入口** |
-| Schema | `schema-migrator` | MySQL migration（0001-0007），`aiops_migrator` 账号 DDL |
+| Schema | `schema-migrator` | MySQL migration（0001-0015），`aiops_migrator` 账号 DDL |
+| Schema/observability | `clickhouse-migrator` | ClickHouse migration（0001-0009），事件身份/quarantine 由部署侧专用 Job 执行；运行时服务只读校验 |
 | Semantic reasoning | `ai-orchestrator` | 诊断/调查/动作 propose；**不触发真实 mutation**（无 execute 端点） |
 | Ingestion | `ai-apm-ingest-go` | Metrics/Logs/Trace（ClickHouse SoT，span_dedup_key 幂等） |
 | Write boundary | `ai-action-executor` | 平台唯一真实 mutation 执行者（Stage D，`disabled` 默认） |
@@ -60,7 +61,7 @@ export LLM_PROVIDER_KEYS='deepseek:<真实 provider key>'
 ./deploy/scripts/validate-local-stack.sh --offline
 ```
 
-本地密钥生成器不会伪造 provider 凭据：必须由调用方显式提供 `LLM_PROVIDER_KEYS`，生成的文件权限为 `0600`。在线校验还会核对迁移 `0001`～`0009`、`aiops_app`/`aiops_migrator` 权限、Worker 开关、Proxy `/readyz`、Executor disabled 边界和 canary RBAC；真实指标/日志/事件、真实 provider、DeepFlow、多节点、PITR 和 Credential Broker 若未提供证据，只输出 `BLOCKED_BY_ENV`。
+本地密钥生成器不会伪造 provider 凭据：必须由调用方显式提供 `LLM_PROVIDER_KEYS`，生成的文件权限为 `0600`。在线校验还会核对 MySQL 迁移 `0001`～`0015`、ClickHouse 迁移 `0001`～`0009`、`aiops_app`/`aiops_migrator` 权限、Worker 开关、Proxy `/readyz`、Executor disabled 边界和 canary RBAC；真实指标/日志/事件、真实 provider、DeepFlow、多节点、PITR 和 Credential Broker 若未提供证据，只输出 `BLOCKED_BY_ENV`。
 
 首次部署必须注入 G5 强随机 secret（空值/占位符会渲染失败，fail-closed）。后续升级自动复用已有 `aiops-secrets`。
 
