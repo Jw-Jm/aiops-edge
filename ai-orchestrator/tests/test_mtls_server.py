@@ -4,10 +4,12 @@ import asyncio
 import datetime as dt
 import importlib.util
 import ssl
+import sys
 import tempfile
 from pathlib import Path
 
 import mtls
+import mtls_server
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -69,6 +71,27 @@ async def test_san_guard_rejects_wrong_peer_before_entering_asgi_app():
 
 def test_uvicorn_san_protocol_adapter_is_available():
     assert importlib.util.find_spec("mtls_server") is not None
+
+
+def test_cli_accepts_uvicorn_cert_reqs_flag_and_keeps_required_mode(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "mtls_server.py",
+            "main:app",
+            "--ssl-keyfile",
+            "server.key",
+            "--ssl-certfile",
+            "server.crt",
+            "--ssl-ca-certs",
+            "ca.crt",
+            "--ssl-cert-reqs",
+            "2",
+        ],
+    )
+    args = mtls_server._parse_args()
+    assert args.ssl_cert_reqs == ssl.CERT_REQUIRED
 
 
 @pytest.mark.asyncio

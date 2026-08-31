@@ -48,6 +48,7 @@ def run(
     ssl_keyfile: str | None,
     ssl_certfile: str | None,
     ssl_ca_certs: str | None,
+    ssl_cert_reqs: int = ssl.CERT_REQUIRED,
 ) -> None:
     """Run an ASGI app with the SAN-validating protocol.
 
@@ -56,6 +57,8 @@ def run(
     """
     if not ssl_keyfile or not ssl_certfile or not ssl_ca_certs:
         raise SystemExit("mTLS server requires --ssl-keyfile, --ssl-certfile and --ssl-ca-certs")
+    if ssl_cert_reqs != ssl.CERT_REQUIRED:
+        raise SystemExit("mTLS server requires --ssl-cert-reqs 2 (CERT_REQUIRED)")
     config = Config(
         app,
         host=host,
@@ -81,6 +84,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--ssl-keyfile", required=True)
     parser.add_argument("--ssl-certfile", required=True)
     parser.add_argument("--ssl-ca-certs", required=True)
+    parser.add_argument("--ssl-cert-reqs", type=int, default=ssl.CERT_REQUIRED)
     return parser.parse_args()
 
 
@@ -95,4 +99,5 @@ if __name__ == "__main__":
         ssl_keyfile=args.ssl_keyfile,
         ssl_certfile=args.ssl_certfile,
         ssl_ca_certs=args.ssl_ca_certs,
+        ssl_cert_reqs=args.ssl_cert_reqs,
     )

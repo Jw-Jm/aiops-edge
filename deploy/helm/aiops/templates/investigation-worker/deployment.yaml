@@ -44,7 +44,7 @@ spec:
           image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ tpl .Values.investigationWorker.image.tag . }}
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "mtls_server"]
-          args: ["investigation_app:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"{{- if .Values.internalTLS.enabled }}, "--ssl-keyfile", "{{ .Values.internalTLS.keyFile }}", "--ssl-certfile", "{{ .Values.internalTLS.certFile }}", "--ssl-ca-certs", "{{ .Values.internalTLS.clientCAFile }}", "--ssl-cert-reqs", "1"{{- end }}]
+          args: ["investigation_app:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"{{- if .Values.internalTLS.enabled }}, "--ssl-keyfile", "{{ .Values.internalTLS.keyFile }}", "--ssl-certfile", "{{ .Values.internalTLS.certFile }}", "--ssl-ca-certs", "{{ .Values.internalTLS.clientCAFile }}", "--ssl-cert-reqs", "2"{{- end }}]
           ports:
             - containerPort: 8080
           env:
