@@ -21,6 +21,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -32,11 +33,12 @@ import (
 )
 
 type proxyConfig struct {
-	providerKeys map[string]string   // provider -> api key
-	baseURLs     map[string]string   // provider -> base https URL
-	allowlist    map[string]struct{} // allowed provider names or provider hostnames
-	proxyToken   string
-	client       *http.Client
+	providerKeys    map[string]string   // provider -> api key
+	baseURLs        map[string]string   // provider -> base https URL
+	allowlist       map[string]struct{} // allowed provider names or provider hostnames
+	proxyToken      string
+	client          *http.Client
+	upstreamTimeout time.Duration
 }
 
 func main() {
@@ -45,11 +47,12 @@ func main() {
 		"openai":   "https://api.openai.com",
 	}
 	cfg := &proxyConfig{
-		providerKeys: map[string]string{},
-		baseURLs:     baseURLs,
-		allowlist:    parseAllowlist(os.Getenv("LLM_ALLOWLIST"), baseURLs),
-		proxyToken:   os.Getenv("PROXY_TOKEN"),
-		client:       &http.Client{Timeout: 60 * time.Second},
+		providerKeys:    map[string]string{},
+		baseURLs:        baseURLs,
+		allowlist:       parseAllowlist(os.Getenv("LLM_ALLOWLIST"), baseURLs),
+		proxyToken:      os.Getenv("PROXY_TOKEN"),
+		client:          &http.Client{Timeout: 60 * time.Second},
+		upstreamTimeout: 60 * time.Second,
 	}
 	// LLM_PROVIDER_KEYS = "deepseek:sk-...,openai:sk-..."
 	for _, kv := range strings.Split(os.Getenv("LLM_PROVIDER_KEYS"), ",") {
@@ -131,6 +134,17 @@ func (c *proxyConfig) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// path. Keep the proxy target host-only and put the fully constructed API path
 	// on the request; otherwise the /v1 prefix would be duplicated.
 	proxy := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: target.Scheme, Host: target.Host})
+	// ReverseProxy does not use proxyConfig.client. Bind an explicit deadline
+	// to the request context so a stalled provider cannot pin a worker forever.
+	// The timeout is process-local configuration and never changes the provider
+	// allowlist or credential boundary.
+	timeout := c.upstreamTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	r = r.WithContext(ctx)
 	// 注入 provider API key（只在本 proxy 内持有）。
 	originalAuth := r.Header.Get("Authorization")
 	originalURL := *r.URL

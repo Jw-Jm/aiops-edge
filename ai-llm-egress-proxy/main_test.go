@@ -3,7 +3,9 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 )
 
 func TestProviderTargetPathStripsProviderSegment(t *testing.T) {
@@ -70,5 +72,29 @@ func TestHandleProxyUnknownProvider(t *testing.T) {
 	cfg.handleProxy(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown provider, got %d", rec.Code)
+	}
+}
+
+func TestHandleProxyHonorsUpstreamTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	parsed, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	cfg := &proxyConfig{
+		providerKeys:    map[string]string{"deepseek": "sk-test"},
+		baseURLs:        map[string]string{"deepseek": upstream.URL},
+		allowlist:       map[string]struct{}{parsed.Hostname(): {}},
+		upstreamTimeout: 10 * time.Millisecond,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/deepseek/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	cfg.handleProxy(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("stalled provider should time out as 502, got %d", rec.Code)
 	}
 }
