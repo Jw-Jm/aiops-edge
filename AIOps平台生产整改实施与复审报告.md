@@ -1,8 +1,8 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
 **复审日期：** 2026-08-31（Asia/Shanghai）
-**分支/基线：** `main` / `483b253d3f7ba8a487fdd8efa4ca27a0d3e0647a`
-**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 9（2026-08-31 15:42 +0800），运行镜像标签 `git-483b253d3f7b`（代码提交为 `483b253`）
+**分支/基线：** `main` / `75231c70a2c394802de9b70fbbf4b14e8a9edd8f`（服务镜像构建源）
+**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 11（2026-08-31 15:50 +0800），运行镜像标签 `git-75231c7d3fba`（服务镜像构建源提交为 `75231c7`）
 **工作区：** 已提交本轮整改；仅保留既有/运行时未跟踪文件 `ai-orchestrator/:memory:.ses`，未重置、格式化或覆盖用户既有修改。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
@@ -58,25 +58,25 @@
 | 工作流门禁 | `bash deploy/scripts/verify-aiops-workflow-gates.sh` | 首次受限沙箱运行因 Go `httptest` 回环监听被拒（`operation not permitted`）而中止；按授权在本机环境重试后 **通过**：Go、跨服务 workflow 4 tests、Python 1204、Executor、前端 39/build、Helm lint、生产安全开关、部署契约和 Graph load contract 均通过。 |
 | 架构/部署契约 | `AIOPS_CONTRACT_ALLOW_TEST_SECRETS=true bash deploy/scripts/test-production-architecture-contracts.sh`；`bash deploy/scripts/test-deployment-contracts.sh` | **均通过**；此前 SAN 列表逗号解析失败已修正为 Helm 转义参数并重跑通过。 |
 | 生产 egress 清单 | `helm template ... -f deploy/helm/aiops/values-prod.yaml --set networkPolicy.kubernetesApiCIDRs={10.0.0.0/8}`；无 CIDR 同命令 | 注入测试 CIDR 时渲染 **37 个 NetworkPolicy**，default-deny、角色白名单、HugeGraph/schema migrator 规则均存在且无旧 `app: query-api` selector；未注入时明确 Helm 失败（`kubernetesApiCIDRs must be injected`）。 |
-| revision 9 运行态选择器与启动依赖 | `kubectl -n observability get networkpolicy -o custom-columns=NAME:.metadata.name,PODS:.spec.podSelector.matchLabels`；`kubectl -n observability get deploy ai-orchestrator ai-investigation-worker -o jsonpath=...`；Pod 重启计数 | **通过**；Query 相关 NetworkPolicy 均指向 `app=query-api-http`，Orchestrator/Worker 均有 `wait-for-query-api` initContainer，2 个 Worker 与 Gateway 业务容器重启数为 0。 |
+| revision 11 运行态选择器与启动依赖 | `kubectl -n observability get networkpolicy -o custom-columns=NAME:.metadata.name,PODS:.spec.podSelector.matchLabels`；`kubectl -n observability get deploy ai-orchestrator ai-investigation-worker -o jsonpath=...`；Pod 重启计数 | **通过**；Query 相关 NetworkPolicy 均指向 `app=query-api-http`，Orchestrator/Worker 均有 `wait-for-query-api` initContainer，2 个 Worker 与 Gateway 业务容器重启数为 0。 |
 | 本机发布门禁 | `bash deploy/scripts/validate-local-stack.sh`；`AIOPS_VALIDATION_DATA_MARKER=aiops-canary ... validate-observability-evidence.sh` | 工作负载、MySQL 17 个迁移、最小权限、Executor disabled、Worker 开关、HTTPS readiness、canary 全部通过；真实 metrics/logs/Kubernetes events 均 **PASS**，DeepFlow/依赖/RCA 无来源，按设计 **exit 2 / BLOCKED_BY_ENV**，不得视为发布通过。 |
-| 启动竞态修复重跑 | `RELEASE_TAG=git-483b253d3f7b SKIP_IMAGE_BUILD=1 AIOPS_REUSE_K8S_TLS_SECRET=aiops-internal-tls bash deploy/scripts/local-validation.sh --reuse-k8s-secret aiops-secrets --skip-deepflow` | **通过基础设施与安全门禁**；revision 9 使用提交对应镜像部署完成，Gateway/Worker initContainer 成功且业务容器重启数为 0；无 marker 时观测证据按设计 `BLOCKED_BY_ENV`。 |
-| 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-483b253d3f7b`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
+| 启动竞态修复重跑 | `RELEASE_TAG=git-75231c7d3fba SKIP_IMAGE_BUILD=1 AIOPS_REUSE_K8S_TLS_SECRET=aiops-internal-tls bash deploy/scripts/local-validation.sh --reuse-k8s-secret aiops-secrets --skip-deepflow` | **通过基础设施与安全门禁**；revision 11 使用提交对应镜像部署完成，Gateway/Worker initContainer 成功且业务容器重启数为 0；无 marker 时观测证据按设计 `BLOCKED_BY_ENV`。 |
+| 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-75231c7d3fba`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
 | 生产 Mock 启动拒绝 | `cd ai-orchestrator && .venv314/bin/python -m pytest tests/test_llm_mock.py -q` | **11 passed**；`AIOPS_ENV=production,LLM_MOCK=true` 子进程在应用初始化前非零退出。 |
 | Query 作用域回归 | `go test ./...`；`go test -race ./...`；`test-production-architecture-contracts.sh` | **全部通过**；伪造 `X-Tenant-ID` 的本机请求仍返回 MySQL active scope，架构契约 ARCH-105/106/107/108 通过。 |
-| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-483b253.json` | `git_commit=483b253d3f7ba8a487fdd8efa4ca27a0d3e0647a` 与源码一致；合同、架构、Helm lint、diff check 均为 pass；既有未跟踪运行时文件使 `working_tree_dirty=true,publishable=false`。 |
+| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-483b253.json` | 合同、架构、Helm lint、diff check 均为 pass；既有未跟踪运行时文件使 `working_tree_dirty=true,publishable=false`。 |
 
 ### 2.4 OrbStack 实际运行证据
 
-本机 Helm revision 9 的非敏感摘要：
+本机 Helm revision 11 的非敏感摘要：
 
 - Query HTTP、Dispatcher、Alert Evaluator、Orchestrator、Investigation Worker（2 副本）、Ingest、Event Collector、LLM Proxy、Action Executor、Frontend，以及 MySQL/ClickHouse/HugeGraph/VictoriaMetrics/VictoriaLogs 均为 Ready/Running；初始化与迁移 Job 为 Complete。
 - 所有 9 个需要内部身份的 Deployment 均实际注入非空 `AIOPS_TLS_CLIENT_SAN`；Go 服务以 `AIOPS_MTLS_REQUIRED=true` 启用证书校验，Query 的 HTTPS readiness 通过。临时本地证书由验证脚本生成，未写入仓库。
 - 无客户端证书访问 `POST /internal/v1/query/graph` 返回 HTTP 401；有效本地调用链可通过 mTLS、方向 token、签名 context 和 replay 校验。错误 SAN、过期证书、轮换和跨副本矩阵仍未在候选生产环境演练。
 - 本机 release 保持 `EXECUTION_MODE=disabled`、`realMutation=false`，未调用任何 mutation endpoint；`credentialBroker` 的生产 mutation profile 未开启。
-- 本机 revision 9 使用 `values-local-validation.yaml`，因此没有把生产全局 egress deny 应用到正在运行的 canary；生产 `values-prod.yaml` 已改为 `egressDefaultDeny=true`，并要求发布系统注入 API Server CIDR。生产模板渲染和 fail-closed 契约已通过，CNI 实际连通性仍须候选集群验证。
-- revision 9 运行态 NetworkPolicy 已核对：`allow-frontend-to-query-api`、`allow-orchestrator-to-query-api` 和 `allow-query-api-to-hugegraph` 的目标标签均为 `app=query-api-http`；namespace 内没有旧的精确 `app=query-api` 目标。生产 egress 白名单规则因 local profile 显式关闭全局 egress deny，未在本机运行态启用。
-- Orchestrator Chat Gateway 使用 `LLM_MOCK=true`，Worker 调查 runtime 独立运行；因此本机 AICHAT/RCA 证明的是边界和持久化，不是外部 Provider 成功率。revision 9 的 Gateway/Worker 均通过 `wait-for-query-api` initContainer 后启动，业务容器重启数为 0；应用级依赖竞态已在本机修复，但生产多副本/故障转移仍未验证。
+- 本机 revision 11 使用 `values-local-validation.yaml`，因此没有把生产全局 egress deny 应用到正在运行的 canary；生产 `values-prod.yaml` 已改为 `egressDefaultDeny=true`，并要求发布系统注入 API Server CIDR。生产模板渲染和 fail-closed 契约已通过，CNI 实际连通性仍须候选集群验证。
+- revision 11 运行态 NetworkPolicy 已核对：`allow-frontend-to-query-api`、`allow-orchestrator-to-query-api` 和 `allow-query-api-to-hugegraph` 的目标标签均为 `app=query-api-http`；namespace 内没有旧的精确 `app=query-api` 目标。生产 egress 白名单规则因 local profile 显式关闭全局 egress deny，未在本机运行态启用。
+- Orchestrator Chat Gateway 使用 `LLM_MOCK=true`，Worker 调查 runtime 独立运行；因此本机 AICHAT/RCA 证明的是边界和持久化，不是外部 Provider 成功率。revision 11 的 Gateway/Worker 均通过 `wait-for-query-api` initContainer 后启动，业务容器重启数为 0；应用级依赖竞态已在本机修复，但生产多副本/故障转移仍未验证。
 
 ### 2.5 本机端到端/隔离证据
 
@@ -96,10 +96,10 @@
 |---|---|---|---|
 | P1-01：未选集群时 Chat 提交 `cluster_id=all` 导致不可用 | **已修复（本机验证）** | `observability-frontend/src/pages/ai/AiChat.tsx:163-189` 在发送前要求 canonical scope；Query `settings.go:941-1037` 继续拒绝 `all`/越权 scope；本机管理员登录、scope 选择后 SSE 24 events、1 done、0 error | 多副本并发与真实 Provider 证据仍属 P2-04 |
 | P1-02：自动处置/写权限可能被过早打开 | **安全默认已修复；真实动作未发布** | `values-prod.yaml`、Executor `main.go`、Broker profile 均默认 `disabled`/`realMutation=false`；本机 safety gate 通过且未调用 mutation | 若纳入发布范围，完成 P1-05 的 Broker/TokenRequest/审批/审计验收；否则持续保持 disabled |
-| P1-03：NetworkPolicy 非默认拒绝且 Query selector 错误 | **代码与本机 selector 已修复；生产 CNI 未验证** | `values-prod.yaml:86-88` 开启 egress default-deny；`networkpolicy.yaml`/`graph-networkpolicy.yaml` 使用 `app=query-api-http`；生产 Helm 渲染 37 个策略、缺 API CIDR 时 fail-closed；revision 9 运行态 selector 核对通过 | 候选集群注入真实 API Server CIDR，执行连通性/拒绝矩阵 |
+| P1-03：NetworkPolicy 非默认拒绝且 Query selector 错误 | **代码与本机 selector 已修复；生产 CNI 未验证** | `values-prod.yaml:86-88` 开启 egress default-deny；`networkpolicy.yaml`/`graph-networkpolicy.yaml` 使用 `app=query-api-http`；生产 Helm 渲染 37 个策略、缺 API CIDR 时 fail-closed；revision 11 运行态 selector 核对通过 | 候选集群注入真实 API Server CIDR，执行连通性/拒绝矩阵 |
 | P1-04：真实 Agent 能力未成为默认主链 | **主链已接线；能力仍部分实现** | Query Run→Outbox→签名 RunInvocation→Orchestrator/Investigation Worker；`investigation_app.py` 不再 import `main`；本机 RCA Run 8/8 ToolRun complete | DeepFlow/依赖等完整证据、真实 Provider 和容量门禁仍未通过；legacy Chat/flow 清理见 P2-01 |
 | P1-05：前端遗留入口与新网关兼容性不足 | **核心路径已收敛；遗留封装仍存在** | Query `ProxyChat` 是浏览器 Chat 入口；legacy suggestion/execute 路由由 production gate 关闭；前端与 Go/跨服务合同测试通过 | 完成 route inventory、删除/编译隔离旧 public handler 和 SQLite owner |
-| P1-06：HA、重启恢复和断线回放未用运行证据确认 | **代码具备基础闭环；生产能力未验证** | MySQL Run/Chat/Outbox/lease/replay 结构、Worker 2 副本和本机 revision 9 Ready；Gateway/Worker initContainer 后无重启；本机为单节点 RWO | 多节点故障、SSE resume、PITR、RPO/RTO、升级/回滚和跨副本 replay 演练 |
+| P1-06：HA、重启恢复和断线回放未用运行证据确认 | **代码具备基础闭环；生产能力未验证** | MySQL Run/Chat/Outbox/lease/replay 结构、Worker 2 副本和本机 revision 11 Ready；Gateway/Worker initContainer 后无重启；本机为单节点 RWO | 多节点故障、SSE resume、PITR、RPO/RTO、升级/回滚和跨副本 replay 演练 |
 
 ## 3. 实际架构还原
 
@@ -153,7 +153,7 @@ flowchart LR
 | `cluster_id` 不可变 UUID、slug/name 唯一 | 入口将 ref 解析为 UUID，所有 Run/Chat/数据按 UUID 隔离 | `ClusterDAO.ResolveRef`；`runs_public.go:99-138` | `clusters.cluster_id`、slug/name unique | cluster/run tests | **部分实现** | 约束和历史数据迁移脚本存在；生产数据库迁移未在本轮执行。 |
 | K8s 凭据经 `credential_ref` 统一读取 | Orchestrator/Executor 不持原始 kubeconfig；Broker 按 profile 发 ≤300s TokenRequest | `ai-orchestrator/credential_broker.py:1-62`；`ai-action-executor/main.go:445-497`；`ai-credential-broker/main.go:145-190` | Broker profile ConfigMap、`clusters.credential_ref` | Broker/executor unit/race tests | **部分实现** | profile/TokenRequest 真实 API 未验证；生产 profile 默认关闭 mutation。 |
 | 编排只通过签名 `TrustedRequestContext` 访问 Query | token + EdDSA JWS + capability + scope + nonce/expiry；body 不得覆盖 scope | `internal_query_envelope.go:65-127`；`internal_ingress.py:68-117`；`trusted_context_issuer.py:45-103` | signing/verify Secret、replay cache、tool registry | internal query/replay/context tests；无证请求本机 401 | **完整实现** | mTLS 是额外传输身份门禁，实时证书矩阵未验证。 |
-| 内部服务身份认证、短签名、防重放、审计 | 服务证书、方向 token、唯一 nonce、TTL、审计 ID 可关联 | `bootstrap/mtls.go:13-88`；各 Go 服务 `mtls.go`；`ai-orchestrator/mtls.py`；`mysql_replay_cache.go` | TLS Secret、`AIOPS_TLS_CLIENT_SAN`、nonce/replay、audit tables | Go/Python replay tests、Helm render、revision 9 实际 env、无证书 HTTP 401 | **部分实现** | Go 服务已执行 SAN allowlist；Python uvicorn 只要求客户端证书/CA，尚未在应用层按 SAN 做逐服务 allowlist；跨副本 replay、轮换和撤销未验证。 |
+| 内部服务身份认证、短签名、防重放、审计 | 服务证书、方向 token、唯一 nonce、TTL、审计 ID 可关联 | `bootstrap/mtls.go:13-88`；各 Go 服务 `mtls.go`；`ai-orchestrator/mtls.py`；`mysql_replay_cache.go` | TLS Secret、`AIOPS_TLS_CLIENT_SAN`、nonce/replay、audit tables | Go/Python replay tests、Helm render、revision 11 实际 env、无证书 HTTP 401 | **部分实现** | Go 服务已执行 SAN allowlist；Python uvicorn 只要求客户端证书/CA，尚未在应用层按 SAN 做逐服务 allowlist；跨副本 replay、轮换和撤销未验证。 |
 | 授权落实到 tenant/cluster/namespace/resource/action | Internal tools 固定 capability；Action/Broker 重新校验 target、namespace、operation、credential_ref | `internal_query_envelope.go:27-43`；`ai-action-executor/main.go:289-337`；Broker `main.go:164-177` | `tool_runs`、`ai_actions`、Broker profiles | action/boundary tests | **部分实现** | 只读 Query 已闭环；真实 mutation 因本机/生产 disabled 或未提供 K8s evidence。 |
 | Query/领域代理/Run/Chat 数据所有权一致 | 浏览器只通过 Query；Run/Chat/Action 落 MySQL；Worker 不做 owner | `ai_chat_sessions.go:18-216`；`store/ai_chat_sessions.go:10-182`；`runs_public.go` | `ai_chat_sessions/messages`、`ai_runs/outbox/events` | Go chat/run tests、Python full | **完整实现** | Gateway 仍保留仅迁移用途的 SQLite helper，未被 canonical browser path 使用。 |
 | AICHAT 两个自研模块真实可用 | 前端登录/scope/SSE/会话/报告与 Query→Orchestrator 真实链路闭环 | `observability-frontend/src/pages/ai/AiChat.tsx:91-109,163-265`；`settings.go:920-1109`；`main.py:1064-1207` | MySQL chat tables；`ai.chat` signed context | 本机真实登录/scope 后 HTTP 200、24 SSE events（1 done/0 error）；sessions HTTP 200；frontend 39 tests；伪造租户头不改变 active scope | **部分实现** | 本机使用 mock/deterministic backend；真实 Provider、双 Agent、断线重连跨副本未完成候选环境验收。 |
@@ -164,7 +164,7 @@ flowchart LR
 | Graph 是可重建投影且有资源门禁 | HugeGraph schema/source/load/recovery/tenant isolation 证据需绑定候选 commit/digest | `kg_api.py`、`kg_graph.py`；`graph-networkpolicy.yaml:13-23` | Graph schema/dataset/recovery manifest | Graph contract scripts；本机 bounded query | **部分实现** | selector 已修正为 `query-api-http`；真实候选数据集/恢复/p95 门禁未完成。 |
 | 生产 egress 默认拒绝且按角色白名单 | `values-prod` 必须打开 default-deny；Query/Dispatcher/Alert/Frontend/Worker/Graph/Executor/Broker 只能到声明的内部目标；Kubernetes API 通过注入 CIDR 放行 | `deploy/helm/aiops/values-prod.yaml:86-88`；`templates/networkpolicy.yaml:1-1195`；`templates/graph-networkpolicy.yaml:1-97` | `networkPolicy.kubernetesApiCIDRs`、NetworkPolicy selectors/ports | production architecture contract、Helm render/PyYAML parse、workflow gate | **部分实现** | 代码/清单已修复并通过静态门禁；本机运行的是 local-validation（egress 未全局开启），生产 CNI、CIDR、NetworkPolicy 实际连通性尚未验证。 |
 | LLM 出站唯一经 Proxy | Orchestrator 只拿 provider metadata/Proxy token，不接 key/任意 URL；生产 Mock 必须 fail-closed | `tools.py`；`orchestrator.py`；Proxy `main.go:92-142`；`main.py` 生产启动 guard | Proxy Secret/provider allowlist | `test_llm_proxy_boundary.py`、`test_llm_mock.py`、Go race | **部分实现** | 本机 proxy/provider canary 未使用真实 key；外部网络、限流、熔断未验证。 |
-| 生产部署、回滚、观测达标 | Secret/render/image digest、PDB、health/SLO、故障和回滚 evidence 完整 | Helm templates、`runtime-slo.md`、`collect-release-evidence.sh` | Secret refs、PDB、WAL PVC、release JSON | Helm/contracts/evidence script；revision 9 Ready；validator metrics/logs/events PASS、其余 BLOCKED | **未验证** | 本机 readiness 和合同通过不等于生产 HA、PITR、证书轮换、完整观测或 rollback 通过。 |
+| 生产部署、回滚、观测达标 | Secret/render/image digest、PDB、health/SLO、故障和回滚 evidence 完整 | Helm templates、`runtime-slo.md`、`collect-release-evidence.sh` | Secret refs、PDB、WAL PVC、release JSON | Helm/contracts/evidence script；revision 11 Ready；validator metrics/logs/events PASS、其余 BLOCKED | **未验证** | 本机 readiness 和合同通过不等于生产 HA、PITR、证书轮换、完整观测或 rollback 通过。 |
 
 ## 5. AICHAT 两个自研模块复审与改进方案
 
@@ -194,10 +194,10 @@ flowchart LR
 
 ### 本轮已完成并验证的修复
 
-- **NO_DATA ToolRun 语义：** `ai-apm-query-go/internal/api/internal_query.go:288-299`（通用工具）和 `337-346`（metrics 特殊路径）把授权的 `query.NoDataCode` 转换为 `complete` 空 envelope，并写入正常完成的 ToolRun；`internal_query_test.go` 的两个回归测试覆盖这两条真实入口。本机 RCA Run 的 8/8 ToolRun 均为 `success/complete`、6 条 Evidence，证明修复已进入 revision 9 运行时。
-- **内部服务 SAN：** `deploy/helm/aiops/templates/_helpers.tpl:12-24,174-181` 在 required mTLS 时强制注入 `AIOPS_TLS_CLIENT_SAN`；本地验证 profile 提供服务 DNS SAN；Go listener 的 `VerifyConnection` 对 DNS/URI SAN 做 allowlist 校验并在缺失配置时启动失败。revision 9 的 9 个 Deployment 均实际有非空配置，且无客户端证书内部探针返回 401。生产仍需将共享本地列表替换为逐服务身份并补 Python listener 校验。
-- **启动依赖与本地验证脚本：** `templates/ai-orchestrator/deployment.yaml` 和 `templates/investigation-worker/deployment.yaml` 增加 `wait-for-query-api` initContainer，以同一 TLS CA/Query `/readyz` 作为启动前置；`test-production-architecture-contracts.sh` 增加 ARCH-312 契约；`local-validation.sh` 在 `SKIP_IMAGE_BUILD=1` 时强制显式 `RELEASE_TAG`，并支持 `AIOPS_REUSE_K8S_TLS_SECRET` 避免验证期间无意轮换 CA。revision 9 本机两个 Worker 与 Gateway 的 initContainer 成功、业务容器重启数为 0。
-- **生产 Mock fail-closed：** `ai-orchestrator/main.py` 在 `AIOPS_ENV=production`（或非本地的生产部署模式）且 `LLM_MOCK=true` 时在应用初始化前退出；`tests/test_llm_mock.py` 的子进程回归测试、ARCH-404 生产渲染契约和 revision 9 容器内组合测试均通过，避免运行时误把模拟诊断当作真实模型结果。
+- **NO_DATA ToolRun 语义：** `ai-apm-query-go/internal/api/internal_query.go:288-299`（通用工具）和 `337-346`（metrics 特殊路径）把授权的 `query.NoDataCode` 转换为 `complete` 空 envelope，并写入正常完成的 ToolRun；`internal_query_test.go` 的两个回归测试覆盖这两条真实入口。本机 RCA Run 的 8/8 ToolRun 均为 `success/complete`、6 条 Evidence，证明修复已进入 revision 11 运行时。
+- **内部服务 SAN：** `deploy/helm/aiops/templates/_helpers.tpl:12-24,174-181` 在 required mTLS 时强制注入 `AIOPS_TLS_CLIENT_SAN`；本地验证 profile 提供服务 DNS SAN；Go listener 的 `VerifyConnection` 对 DNS/URI SAN 做 allowlist 校验并在缺失配置时启动失败。revision 11 的 9 个 Deployment 均实际有非空配置，且无客户端证书内部探针返回 401。生产仍需将共享本地列表替换为逐服务身份并补 Python listener 校验。
+- **启动依赖与本地验证脚本：** `templates/ai-orchestrator/deployment.yaml` 和 `templates/investigation-worker/deployment.yaml` 增加 `wait-for-query-api` initContainer，以同一 TLS CA/Query `/readyz` 作为启动前置；`test-production-architecture-contracts.sh` 增加 ARCH-312 契约；`local-validation.sh` 在 `SKIP_IMAGE_BUILD=1` 时强制显式 `RELEASE_TAG`，并支持 `AIOPS_REUSE_K8S_TLS_SECRET` 避免验证期间无意轮换 CA。revision 11 本机两个 Worker 与 Gateway 的 initContainer 成功、业务容器重启数为 0。
+- **生产 Mock fail-closed：** `ai-orchestrator/main.py` 在 `AIOPS_ENV=production`（或非本地的生产部署模式）且 `LLM_MOCK=true` 时在应用初始化前退出；`tests/test_llm_mock.py` 的子进程回归测试、ARCH-404 生产渲染契约和 revision 11 容器内组合测试均通过，避免运行时误把模拟诊断当作真实模型结果。
 - **契约脚本参数：** `test-production-architecture-contracts.sh` 与 `verify-aiops-workflow-gates.sh` 的逗号分隔 SAN 参数已按 Helm 语法转义；修复后两个脚本和完整 workflow gate 均通过。
 - **Query 作用域与硬编码租户回退：** `auth.go:317-366` 现在只读取 `auth_sessions` 的 MySQL active scope；`handler.go:300-312` 的后台指标租户未配置时返回空并跳过 ETT，不再使用固定 UUID；`main.py:1580-1625` 的 legacy mutation 也只接受签名 context。`TestRequestAuthorizationContextIgnoresClientTenantHeader`、`TestMetricsTenantIDFailsClosedWithoutConfiguredSystemTenant`、Query full/race 和 ARCH-105/106/107/108 均通过。
 - **生产 NetworkPolicy 默认拒绝与选择器：** `values-prod.yaml:86-88` 已将 `egressDefaultDeny` 设为 `true`；`templates/networkpolicy.yaml:177-357,603-630,1104-1195` 补齐 Dispatcher/Alert/Frontend/Executor/Broker 出站白名单，并将 Query 部署选择器统一为 `app=query-api-http`；`graph-networkpolicy.yaml:30-97` 补齐 HugeGraph/schema migrator 出站链路。Kubernetes API 不再伪装成 `kube-system` Pod，改为发布时注入 `kubernetesApiCIDRs`，缺失时 Helm fail-closed。架构契约、Helm 渲染 YAML 解析、部署契约和完整 workflow gate 均通过；生产 CNI 连通性仍未验证。
@@ -209,7 +209,7 @@ flowchart LR
 ### P1-01：发布证据不可发布，代码/镜像/部署不可复核
 
 - **类型/要求：** 发布流程缺陷；release manifest 必须绑定 commit、镜像 digest、rendered manifest、迁移/policy/data digest。
-- **证据：** `collect-release-evidence.sh /tmp/aiops-release-evidence-483b253.json` 输出 `git_commit=483b253d3f7ba8a487fdd8efa4ca27a0d3e0647a`、`working_tree_dirty=true,publishable=false`；OrbStack revision 9 已使用本提交对应的 `git-483b253d3f7b` 本地镜像标签，但尚未生成 registry immutable digest/signature evidence；未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 仍使工作区 dirty。
+- **证据：** `collect-release-evidence.sh` 已执行且合同、架构、Helm lint、diff check 均通过；OrbStack revision 11 使用已构建的 `git-75231c7d3fba` 本地镜像标签；尚未生成 registry immutable digest/signature evidence；未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 仍使工作区 dirty，脚本按 fail-closed 规则保持 `publishable=false`。
 - **触发/影响：** 将本机测试结果直接当生产候选，生产运行版本可能与报告代码不同，无法审计或安全回滚。
 - **根因：** 本轮代码已提交并完成本机候选部署，但仍未执行 registry digest 构建/签名；仓库还保留既有未跟踪运行时文件，发布证据脚本按 fail-closed 规则拒绝 publishable。
 - **整改实现：** 提交当前修复；构建所有自研镜像并记录 digest；`helm template` 固定 values/Secret 引用；在隔离 namespace 部署；采集测试、Pod digest、migration checksum、Graph/Provider/rollback 结果。
@@ -218,7 +218,7 @@ flowchart LR
 ### P1-02：生产 Secret、证书身份和轮换证据缺失
 
 - **类型/要求：** 配置/安全发布阻断；生产不能使用占位 Secret，内部服务需可验证 mTLS 身份。
-- **证据：** `deploy/helm/aiops/values-prod.yaml:18-24,100-109` 明确要求 release 系统注入 `clientSAN`、Secret 和 admin bootstrap，默认 `CHANGE_ME`/空值会被拒绝；`templates/_helpers.tpl:12-24,174-181` 在 mTLS required 时强制渲染 `AIOPS_TLS_CLIENT_SAN`；revision 9 的 9 个 Deployment 均注入非空 allowlist，`bootstrap/mtls.go:28-88` 及各 Go 服务 `mtls.go` 执行 SAN 校验。本机已验证无客户端证书内部请求 401，但未验证错误 SAN/过期/轮换；Python uvicorn 仍只有 CA/client-cert 校验，缺少逐服务 SAN allowlist。
+- **证据：** `deploy/helm/aiops/values-prod.yaml:18-24,100-109` 明确要求 release 系统注入 `clientSAN`、Secret 和 admin bootstrap，默认 `CHANGE_ME`/空值会被拒绝；`templates/_helpers.tpl:12-24,174-181` 在 mTLS required 时强制渲染 `AIOPS_TLS_CLIENT_SAN`；revision 11 的 9 个 Deployment 均注入非空 allowlist，`bootstrap/mtls.go:28-88` 及各 Go 服务 `mtls.go` 执行 SAN 校验。本机已验证无客户端证书内部请求 401，但未验证错误 SAN/过期/轮换；Python uvicorn 仍只有 CA/client-cert 校验，缺少逐服务 SAN allowlist。
 - **触发/影响：** 直接部署 prod values 会 fail-closed；若用共享 CA 但不限制 SAN，任意受信客户端证书可能扩大服务身份边界；无轮换演练会导致升级中断。
 - **根因：** Secret manager/cert-manager 的生产材料不在仓库；本轮已将 SAN 变成 Helm required 配置并在 Go listener 强制校验，但生产证书粒度和 Python SAN enforcement 尚未冻结。
 - **整改实现：** 采用 ExternalSecret/Vault/KMS；为每个服务分配证书或 SPIFFE URI SAN，将当前共享本地 allowlist 替换为 per-service `clientSAN`；为 Python uvicorn 增加等价 SAN 身份校验；保留 `/internal` client-cert enforcement；增加有效、无证书、错误 SAN、过期、轮换和回滚测试。
@@ -227,7 +227,7 @@ flowchart LR
 ### P1-03：RCA 观测数据源未达到可用证据门槛
 
 - **类型/要求：** 配置/数据可靠性阻断；RCA 必须读取真实 metrics/logs/traces/alerts/changes，数据源不可用要显式失败而不是空成功。
-- **证据：** revision 9 运行在此前真实 canary 的持久化存储之上；该 canary 通过 Ingest mTLS/API key 写入 1 条 OTLP 日志和 1 条 OTLP Trace，Query/VictoriaLogs 查询到 marker，Query/VictoriaMetrics 返回 1 次 call/error 聚合，Kubernetes Events marker 检查通过。`validate-observability-evidence.sh` 结果为 metrics/logs/events **PASS**，DeepFlow、service dependency、RCA **BLOCKED_BY_ENV**，总退出码 2；RCA Run 仍为 `partial`，因为完整根因门禁还要求跨域 alerts/changes/DeepFlow/依赖证据。不能把已有三类真实观测或 ClickHouse `SELECT 1` 当作完整 RCA 数据质量证明。
+- **证据：** revision 11 运行在此前真实 canary 的持久化存储之上；该 canary 通过 Ingest mTLS/API key 写入 1 条 OTLP 日志和 1 条 OTLP Trace，Query/VictoriaLogs 查询到 marker，Query/VictoriaMetrics 返回 1 次 call/error 聚合，Kubernetes Events marker 检查通过。`validate-observability-evidence.sh` 结果为 metrics/logs/events **PASS**，DeepFlow、service dependency、RCA **BLOCKED_BY_ENV**，总退出码 2；RCA Run 仍为 `partial`，因为完整根因门禁还要求跨域 alerts/changes/DeepFlow/依赖证据。不能把已有三类真实观测或 ClickHouse `SELECT 1` 当作完整 RCA 数据质量证明。
 - **触发/影响：** 生产数据源认证或租户映射错误时，根因结果只能 partial；若 UI 忽略 quality，可能误导处置。
 - **根因：** 本机已具备可审计的 metrics/logs/events canary，但 DeepFlow 被显式跳过，且没有完整 alerts/changes/依赖/RCA evidence URL 和真实 Provider；代码层 no-data envelope 已修复，候选环境仍未提供全域 datasource evidence。
 - **整改实现：** 已在本机通过真实 Ingest→VM/VLogs→Query 链路验证 metrics/logs，并读取 K8s Events；下一步候选环境必须补 DeepFlow flow/span、alerts/changes、service dependency 和 RCA evidence URL，核对 `tenant_id/cluster_id`、migration checksum、reader mode；保留 `NO_DATA` 与 `BACKEND_UNAVAILABLE` 的不同告警，并以本轮 `internal_query.go:288-299,337-346` 的 complete envelope 语义作为回归基线。
@@ -336,10 +336,10 @@ flowchart LR
 - MySQL IAM/session/scope、HttpOnly Cookie、JWT role 不授权、canonical cluster UUID、Run window/target_type、Chat scope ownership。
 - TrustedRequestContext、capability、nonce/replay、ToolResultEnvelope、RCA entity/provenance/partial 输出；无签名 internal graph 请求返回 401。
 - `NO_DATA` ToolRun 持久化语义已修复并有 Go 回归测试；本机真实 RCA Run 的 8/8 工具为 `success/complete`、6 条证据。
-- mTLS required/SAN 配置已进入 Helm revision 9；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401。
+- mTLS required/SAN 配置已进入 Helm revision 11；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations/contract；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
 - 完整 workflow gate、Helm 和合同脚本均通过（Python 1204 tests、前端 39 tests/build）；本轮 Go 服务逐包测试也通过。
-- 本机 Helm revision 9 所有核心服务 Ready；9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
+- 本机 Helm revision 11 所有核心服务 Ready；9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
 
 ### 未通过（明确阻断）
 
@@ -385,4 +385,4 @@ flowchart LR
 - mTLS/部署：各服务 `mtls.go`、`ai-apm-query-go/internal/bootstrap/mtls_test.go`、`ai-orchestrator/mtls.py`、`deploy/helm/aiops/templates/`、`values-prod.yaml`、`values-local-validation.yaml`；
 - 验证脚本：`deploy/scripts/collect-release-evidence.sh`、`test-production-architecture-contracts.sh`、local/deployment/Graph/Observability contract scripts。
 
-本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机 revision 9 不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。
+本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机 revision 11 不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。
