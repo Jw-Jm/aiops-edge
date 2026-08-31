@@ -15,6 +15,10 @@ from pathlib import Path
 
 def _load_legacy():
     path = Path(__file__).resolve().parent.parent / "rca_engine_legacy.py"
+    # Production images intentionally exclude the retired module. Absence is
+    # therefore a valid V2-only layout, not an import error.
+    if not path.is_file():
+        return None
     spec = importlib.util.spec_from_file_location("_aiops_rca_engine_legacy", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"legacy RCA module unavailable: {path}")
