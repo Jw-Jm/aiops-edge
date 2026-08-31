@@ -197,6 +197,42 @@ func TestReplayChatTurnEmitsDurableCardsOnly(t *testing.T) {
 	}
 }
 
+func TestPersistChatSSEFramesReturnsPersistenceError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	prev := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(prev) })
+
+	const (
+		sessionID = "11111111-1111-4111-8111-111111111111"
+		turnID    = "22222222-2222-4222-8222-222222222222"
+	)
+	mock.ExpectQuery(`(?s)SELECT user_uuid FROM ai_chat_sessions.*WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
+		WithArgs(sessionID, authzUserID, authzTenantID, proxyClusterID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid"}).AddRow(authzUserID))
+	mock.ExpectExec(`INSERT INTO ai_chat_messages\(session_id,turn_id,role,kind,content,metadata_json\)[\s\S]*ON DUPLICATE KEY UPDATE id = id`).
+		WithArgs(sessionID, turnID, "assistant", "", "answer", nil).
+		WillReturnError(sql.ErrConnDone)
+
+	remaining, err := persistChatSSEFrames(
+		&store.AIChatSessionDAO{}, sessionID, turnID,
+		AuthorizationContext{UserID: authzUserID, TenantID: authzTenantID, ActiveClusterID: proxyClusterID},
+		"event: done\ndata: {\"text\":\"answer\"}\n\n")
+	if err == nil {
+		t.Fatal("persistChatSSEFrames() error = nil, want persistence failure")
+	}
+	if remaining != "" {
+		t.Fatalf("persistChatSSEFrames() remaining = %q, want empty after failed frame", remaining)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReplayChatTurnDoesNotReplayIncompleteTurn(t *testing.T) {
 	rec := httptest.NewRecorder()
 	if replayChatTurn(rec, "11111111-1111-4111-8111-111111111111", "55555555-5555-4555-8555-555555555555", []store.ChatMessage{{Role: "user", Content: "diag"}}) {

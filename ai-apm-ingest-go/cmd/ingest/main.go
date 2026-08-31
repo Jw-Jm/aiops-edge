@@ -131,7 +131,7 @@ func main() {
 	// DeepFlow 只通过官方 OTLP/gRPC exporter 输入，不读取或修改 DeepFlow 自有 ClickHouse。
 	pl := pipeline.New(spanSink, nil)
 	pl.SetClusterID(clusterID)               // 多集群纳管：数据打 cluster_id 标
-	pl.SetOnServiceMetric(met.AddServiceRED) // 服务 RED 指标暴露到 /metrics
+	pl.SetOnServiceMetricWithCluster(met.AddServiceREDForCluster) // 服务 RED 指标保留不可变 cluster 维度
 	// P6.5 new 链双写：聚合的 RED 服务指标在 flush 时写 VictoriaMetrics（ModeNew 真实发送）。
 	// 失败仅记日志（可观测），不回退 ClickHouse，也不伪装成功。
 	if telRT.Enabled() {

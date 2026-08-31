@@ -12,6 +12,7 @@ for required in \
   'hugegraph_jvm_rss_heap' \
   'rocksdb_disk_wal' \
   'query_api_cpu_rss' \
+  'pod_for_app query-api-http' \
   'ai_investigation_worker_cpu_rss' \
   'frontend_bundle_bytes' \
   'browser_long_tasks' \

@@ -106,7 +106,10 @@ pod_top() {
 
 if command -v kubectl >/dev/null 2>&1; then
   hugegraph_pod="$(pod_for_app hugegraph)"
-  query_pod="$(pod_for_app query-api)"
+  # The HTTP-facing Query deployment is intentionally named query-api-http;
+  # the dispatcher/evaluator replicas share the query-api image but do not
+  # expose the browser-facing resource budget measured by this gate.
+  query_pod="$(pod_for_app query-api-http)"
   worker_pod="$(pod_for_app ai-investigation-worker)"
 
   if [[ -n "${hugegraph_pod}" ]]; then

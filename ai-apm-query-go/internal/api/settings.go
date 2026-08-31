@@ -1125,7 +1125,13 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
 				streamBuffer += string(buf[:n])
-				streamBuffer = persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, streamBuffer)
+				var persistErr error
+				streamBuffer, persistErr = persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, streamBuffer)
+				if persistErr != nil {
+					log.Printf("chat transcript persistence failed session=%s turn=%s: %v", sessionID, turnID, persistErr)
+					writeChatPersistenceError(w, flusher)
+					return
+				}
 				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 					return
 				}
@@ -1138,7 +1144,11 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// 不支持 Flusher 的响应容器：退化为一次性复制，同时保留 transcript。
 	data, _ := io.ReadAll(resp.Body)
-	_ = persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, string(data))
+	if _, persistErr := persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, string(data)); persistErr != nil {
+		log.Printf("chat transcript persistence failed session=%s turn=%s: %v", sessionID, turnID, persistErr)
+		writeChatPersistenceError(w, nil)
+		return
+	}
 	_, _ = w.Write(data)
 }
 
@@ -1164,11 +1174,11 @@ func minStringLen(length, max int) int {
 // persistChatSSEFrames records only durable transcript cards (assistant done
 // text and actionable suggestions).  Progress/tool telemetry remains ephemeral
 // and is still streamed to the browser without inflating the MySQL transcript.
-func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string, authCtx AuthorizationContext, input string) string {
+func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string, authCtx AuthorizationContext, input string) (string, error) {
 	for {
 		idx := strings.Index(input, "\n\n")
 		if idx < 0 {
-			return input
+			return input, nil
 		}
 		frame := input[:idx]
 		input = input[idx+2:]
@@ -1192,7 +1202,9 @@ func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string,
 		switch name {
 		case "done":
 			if text, _ := event["text"].(string); strings.TrimSpace(text) != "" {
-				_ = dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "", text, nil)
+				if err := dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "", text, nil); err != nil {
+					return input, fmt.Errorf("persist assistant response: %w", err)
+				}
 			}
 		case "suggestion":
 			metadata := map[string]any{}
@@ -1201,8 +1213,17 @@ func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string,
 					metadata[key] = value
 				}
 			}
-			_ = dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "suggestion", "", metadata)
+			if err := dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "suggestion", "", metadata); err != nil {
+				return input, fmt.Errorf("persist assistant suggestion: %w", err)
+			}
 		}
+	}
+}
+
+func writeChatPersistenceError(w http.ResponseWriter, flusher http.Flusher) {
+	_, _ = io.WriteString(w, "event: error\ndata: {\"error\":\"CHAT_TRANSCRIPT_PERSIST_FAILED\"}\n\n")
+	if flusher != nil {
+		flusher.Flush()
 	}
 }
 

@@ -9,6 +9,7 @@ import time
 import re
 import uuid
 import asyncio
+import queue
 import secrets
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -53,6 +54,26 @@ def _legacy_public_api_retired() -> bool:
     return os.getenv("AIOPS_ENV", "").strip().lower() == "production" or os.getenv("AIOPS_DEPLOYMENT_MODE", "").strip().lower() == "production"
 
 _CANONICAL_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+
+# A disconnected/slow browser must not turn the background LLM producer into
+# an unbounded memory sink.  The producer blocks in short intervals while the
+# queue is full and exits as soon as the streaming request marks disconnect.
+CHAT_STREAM_QUEUE_MAXSIZE = 64
+
+
+def _put_chat_stream_event(event_queue, stop_event, event) -> bool:
+    """Bound chat SSE buffering and honour browser cancellation.
+
+    Returns ``False`` when the request has disconnected while the consumer is
+    back-pressured.  Callers must stop producing in that case.
+    """
+    while not stop_event.is_set():
+        try:
+            event_queue.put(event, timeout=0.25)
+            return True
+        except queue.Full:
+            continue
+    return False
 
 # ═══════════════════════════════════════════════════════════════
 #  APScheduler — 定时异常扫描（每 5 分钟，只检测+持久化，不触发 LLM）
@@ -1159,11 +1180,10 @@ async def internal_chat(request: Request):
     _parse_llm_config(request)
 
     # SSE 流式：thread + queue 模型，主协程逐帧 flush（复用旧 ai_chat 的断线检测）。
-    import queue
     import threading
     import asyncio as _asyncio
 
-    event_queue = queue.Queue()
+    event_queue = queue.Queue(maxsize=CHAT_STREAM_QUEUE_MAXSIZE)
     stop_event = threading.Event()
 
     def _run_stream():
@@ -1183,13 +1203,14 @@ async def internal_chat(request: Request):
                     _persist_streamed_chat_session(
                         thread_id, intent, service or "", message, streamed_events,
                         tenant_id=str(scope.tenant_id), cluster_id=str(scope.cluster_id))
-                event_queue.put(event)
+                if not _put_chat_stream_event(event_queue, stop_event, event):
+                    return
         try:
             _asyncio.run(_astream())
-            event_queue.put(None)
+            _put_chat_stream_event(event_queue, stop_event, None)
         except Exception as e:  # noqa: BLE001
-            event_queue.put({"type": "error", "text": str(e)[:200]})
-            event_queue.put(None)
+            _put_chat_stream_event(event_queue, stop_event, {"type": "error", "text": str(e)[:200]})
+            _put_chat_stream_event(event_queue, stop_event, None)
         finally:
             stop_event.set()
 

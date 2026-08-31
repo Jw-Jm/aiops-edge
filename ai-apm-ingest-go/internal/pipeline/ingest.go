@@ -60,6 +60,10 @@ type Pipeline struct {
 	doneCh        chan struct{}
 	// onServiceMetric 可选回调：每累加一次服务调用时通知外部（用于喂 Prometheus 服务 RED）。
 	onServiceMetric func(service string, isError bool, durationNs uint64)
+	// onServiceMetricWithCluster is the canonical callback for multi-cluster
+	// deployments. It preserves the immutable cluster identity assigned to the
+	// ingest instance instead of falling back to a shared "default" label.
+	onServiceMetricWithCluster func(cluster, service string, isError bool, durationNs uint64)
 	// redSink 可选回调：flush 时把聚合的 RED 服务指标推给外部（P6.5 用于双写 VictoriaMetrics）。
 	// 为空时跳过，不改变既有 Prometheus 行为。
 	redSink func(m *model.ServiceMetric)
@@ -68,6 +72,13 @@ type Pipeline struct {
 // SetOnServiceMetric 注册服务 RED 回调（可选，用于暴露服务指标到 /metrics）。
 func (p *Pipeline) SetOnServiceMetric(fn func(service string, isError bool, durationNs uint64)) {
 	p.onServiceMetric = fn
+}
+
+// SetOnServiceMetricWithCluster registers the production RED callback. The
+// cluster argument is taken from Pipeline.SetClusterID and is never supplied
+// by the caller payload.
+func (p *Pipeline) SetOnServiceMetricWithCluster(fn func(cluster, service string, isError bool, durationNs uint64)) {
+	p.onServiceMetricWithCluster = fn
 }
 
 // SetREDSink 注册 RED 服务指标聚合的写回调（可选；P6.5 new 链双写 VictoriaMetrics）。
@@ -320,7 +331,9 @@ func (p *Pipeline) extractMetrics(tenantID string, ctx *traceContext) {
 		mv.durationCount++
 
 		// 服务 RED 注入：按 service 累计（喂 Prometheus /metrics 服务指标）
-		if p.onServiceMetric != nil {
+		if p.onServiceMetricWithCluster != nil {
+			p.onServiceMetricWithCluster(p.clusterID, info.serviceName, info.isError == 1, info.durationNs)
+		} else if p.onServiceMetric != nil {
 			p.onServiceMetric(info.serviceName, info.isError == 1, info.durationNs)
 		}
 

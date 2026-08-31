@@ -12,6 +12,8 @@
 import base64
 import hashlib
 import json
+import queue
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -246,3 +248,15 @@ def test_chat_expired_rejected(monkeypatch, client):
     resp = _post_chat(client, private_key, claims)
     assert resp.status_code == 401
     assert client._stub_brain.calls == 0
+
+
+def test_chat_stream_queue_is_bounded_and_honors_disconnect():
+    import main
+
+    assert main.CHAT_STREAM_QUEUE_MAXSIZE == 64
+    event_queue = queue.Queue(maxsize=1)
+    stop_event = threading.Event()
+    assert main._put_chat_stream_event(event_queue, stop_event, {"type": "progress"})
+    stop_event.set()
+    assert not main._put_chat_stream_event(event_queue, stop_event, {"type": "done"})
+    assert event_queue.qsize() == 1

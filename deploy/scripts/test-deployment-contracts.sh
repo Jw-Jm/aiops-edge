@@ -155,6 +155,20 @@ deepflow_values="${chart_dir}/values-deepflow.yaml"
 require_contains 'trigger_threshold: 0' "${deepflow_values}" 'DeepFlow Agent system breaker is not explicitly disabled'
 require_contains 'recovery_threshold: 0' "${deepflow_values}" 'DeepFlow Agent breaker recovery threshold is not explicitly disabled'
 require_contains 'percentage_trigger_threshold: 0' "${deepflow_values}" 'DeepFlow Agent disk breaker is not explicitly disabled'
+deepflow_render_contract="${repo_root}/deploy/scripts/test-deepflow-otlp-render.sh"
+deepflow_cutover_harness="${repo_root}/deploy/scripts/verify-deepflow-otlp-cutover.sh"
+if [[ ! -x "${deepflow_render_contract}" ]]; then
+  echo "contract failed: DeepFlow OTLP render contract is missing or not executable" >&2
+  exit 1
+fi
+if [[ ! -x "${deepflow_cutover_harness}" ]]; then
+  echo "contract failed: DeepFlow OTLP cutover evidence harness is missing or not executable" >&2
+  exit 1
+fi
+require_contains 'protocol: opentelemetry' "${deepflow_values}" 'DeepFlow OTLP exporter protocol is not configured'
+require_contains 'flow_log.l7_flow_log' "${deepflow_values}" 'DeepFlow OTLP exporter source is not configured'
+require_contains 'ingest.observability.svc.cluster.local:4317' "${deepflow_values}" 'DeepFlow OTLP exporter endpoint is not canonical'
+require_contains 'BLOCKED_BY_ENV' "${deepflow_cutover_harness}" 'DeepFlow cutover harness does not fail closed on missing live evidence'
 require_contains 'uniqExactState' "${tmp_dir}/validation.yaml" 'Trace Summary does not deduplicate spans by stable identity'
 require_contains 'span_dedup_key' "${tmp_dir}/validation.yaml" 'Trace Summary does not have a stable span identity'
 require_contains 'name: trace-summary-backfill-' "${tmp_dir}/validation.yaml" 'Trace Summary history backfill Job is not rendered'
