@@ -6,6 +6,24 @@ script="${repo_root}/deploy/scripts/graph-recovery-test.sh"
 tmp_output="${TMPDIR:-/tmp}/aiops-recovery-contract.$$.json"
 trap 'rm -f "${tmp_output}"' EXIT
 
+if ! rg -n 'GRAPH_RECOVERY_QUERY_API_DEPLOYMENT:-query-api-http' "${script}" >/dev/null; then
+  echo "recovery contract failed: default Query API deployment name is not query-api-http" >&2
+  exit 1
+fi
+if ! rg -n 'scale "deployment/\$\{query_api_deployment\}"|rollout status "deployment/\$\{query_api_deployment\}"|exec "deploy/\$\{query_api_deployment\}"' "${script}" >/dev/null; then
+  echo "recovery contract failed: recovery script does not use configurable Query API deployment" >&2
+  exit 1
+fi
+if ! rg -n 'scale statefulset/hugegraph --replicas=0|wait --for=delete pod -l app=hugegraph' "${script}" >/dev/null; then
+  echo "recovery contract failed: HugeGraph StatefulSet is not stopped before PVC deletion" >&2
+  exit 1
+fi
+if ! rg -n 'wget --no-check-certificate -q -O - https://127\.0\.0\.1:8080/readyz' "${script}" >/dev/null || \
+   ! rg -n 'Authorization: Basic \$\{AUTH\}' "${script}" >/dev/null; then
+  echo "recovery contract failed: post-recovery readiness probes are not authenticated" >&2
+  exit 1
+fi
+
 if GRAPH_RECOVERY_ENV=production GRAPH_RECOVERY_CONFIRM=I_UNDERSTAND_LOCAL_GRAPH_RECOVERY bash "${script}" --inject --output "${tmp_output}" >/dev/null 2>&1; then
   echo "recovery contract failed: production injection was accepted" >&2
   exit 1

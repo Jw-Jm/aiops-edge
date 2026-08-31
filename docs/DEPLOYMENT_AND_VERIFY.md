@@ -68,7 +68,7 @@ export LLM_PROVIDER_KEYS='deepseek:<真实 provider key>'
 单独重建某个镜像并更新（发布标签应与 Helm 的 `global.imageTag` 完全一致）：
 ```bash
 IMAGE_TAG=git-<12位源码SHA> ./build-images.sh query-api
-kubectl set image deployment/query-api query-api=query-api:git-<12位源码SHA> -n observability
+kubectl set image deployment/query-api-http query-api-http=query-api:git-<12位源码SHA> -n observability
 ```
 
 ### 2.1 Stage D 接线（executor）密钥
@@ -91,7 +91,7 @@ query-api → executor 的 signed context 用**独立** Ed25519 私钥（不复�
 ```bash
 kubectl get deploy -n observability   # 全部 1/1
 kubectl get pod -n observability | grep -v Running | grep -v Terminating
-kubectl logs -n observability -l app=query-api --tail=20   # 无 executor 配置错误 / FATAL
+kubectl logs -n observability -l app=query-api-http --tail=20   # 无 executor 配置错误 / FATAL
 ```
 
 ### 3.2 单元/集成测试（本机真实依赖）

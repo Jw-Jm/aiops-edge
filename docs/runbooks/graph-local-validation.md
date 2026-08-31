@@ -42,7 +42,7 @@ candidate, impact and batch mutation. The fixed strict limits are
 
 ```bash
 HUGEGRAPH_URL=http://127.0.0.1:8080 \
-GRAPH_API_BASE_URL=http://127.0.0.1:8080/api/v1/ai/kg \
+GRAPH_API_BASE_URL=https://127.0.0.1:18081/api/v1/ai/kg \
 GRAPH_API_TOKEN='<jwt>' \
 GRAPH_API_TENANT_ID='<authorized-tenant-uuid>' \
 GRAPH_API_CLUSTER_ID='<authorized-cluster-uuid>' \
@@ -56,6 +56,11 @@ placeholder scope such as `load-test-tenant` against a real Query API.
 `--dry-run` only validates the requested 200k/1M shape. It is not a performance
 pass. Missing HugeGraph access, authentication, or real observations must be
 reported as `BLOCKED_BY_ENV`.
+
+The chart names the HTTP deployment `query-api-http`; set
+`GRAPH_RECOVERY_QUERY_API_DEPLOYMENT` only when a deployment uses a different
+name. The default recovery command therefore works against the rendered local
+profile without relying on the retired `query-api` name.
 
 The report validates that the fixture loader returned the exact requested
 counts and stores a `fixture_loader` record. It also stores explicit resource

@@ -5,6 +5,7 @@ namespace="${GRAPH_NAMESPACE:-observability}"
 output="${GRAPH_RECOVERY_OUTPUT:-/tmp/aiops-graph-recovery-report.json}"
 pre_report="${GRAPH_RECOVERY_PRE_REPORT:-}"
 verify_report="${GRAPH_RECOVERY_VERIFY_REPORT:-}"
+query_api_deployment="${GRAPH_RECOVERY_QUERY_API_DEPLOYMENT:-query-api-http}"
 inject=0
 offline=0
 dry_run="${GRAPH_RECOVERY_DRY_RUN:-0}"
@@ -34,6 +35,11 @@ while [[ $# -gt 0 ]]; do
     *) usage >&2; exit 2 ;;
   esac
 done
+
+[[ "${query_api_deployment}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || {
+  echo "invalid GRAPH_RECOVERY_QUERY_API_DEPLOYMENT" >&2
+  exit 2
+}
 
 mkdir -p "$(dirname "${output}")"
 if [[ "${offline}" == "1" ]]; then
@@ -114,17 +120,20 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 pre_state="$(kubectl -n "${namespace}" get statefulset/hugegraph,pvc/hugegraph-data -o json 2>/dev/null || true)"
 [[ -n "${pre_state}" ]] || { echo "recovery target HugeGraph StatefulSet/PVC was not found" >&2; exit 1; }
-kubectl -n "${namespace}" scale deployment/query-api --replicas=0
+kubectl -n "${namespace}" scale "deployment/${query_api_deployment}" --replicas=0
+kubectl -n "${namespace}" scale statefulset/hugegraph --replicas=0
+kubectl -n "${namespace}" wait --for=delete pod -l app=hugegraph --timeout="${GRAPH_RECOVERY_WAIT_TIMEOUT:-15m}"
 kubectl -n "${namespace}" delete pvc/hugegraph-data --wait=true
 kubectl -n "${namespace}" delete job/graph-schema-migrator --ignore-not-found=true
 helm upgrade aiops "${repo_root}/deploy/helm/aiops" -n "${namespace}" --reuse-values --wait --timeout "${GRAPH_RECOVERY_HELM_TIMEOUT:-15m}"
 kubectl -n "${namespace}" wait --for=condition=ready pod -l app=hugegraph --timeout="${GRAPH_RECOVERY_WAIT_TIMEOUT:-15m}"
 kubectl -n "${namespace}" wait --for=condition=complete job/graph-schema-migrator --timeout="${GRAPH_RECOVERY_WAIT_TIMEOUT:-15m}"
-kubectl -n "${namespace}" scale deployment/query-api --replicas="${GRAPH_RECOVERY_QUERY_API_REPLICAS:-1}"
-kubectl -n "${namespace}" rollout status deployment/query-api --timeout="${GRAPH_RECOVERY_WAIT_TIMEOUT:-15m}"
+kubectl -n "${namespace}" scale "deployment/${query_api_deployment}" --replicas="${GRAPH_RECOVERY_QUERY_API_REPLICAS:-1}"
+kubectl -n "${namespace}" rollout status "deployment/${query_api_deployment}" --timeout="${GRAPH_RECOVERY_WAIT_TIMEOUT:-15m}"
 
 graph_ready="false"
-if kubectl -n "${namespace}" exec deploy/query-api -- wget -q -O - http://127.0.0.1:8080/api/v1/ai/kg/health 2>/dev/null | grep -q '"ready":true'; then
+if kubectl -n "${namespace}" exec "deploy/${query_api_deployment}" -- wget --no-check-certificate -q -O - https://127.0.0.1:8080/readyz >/dev/null 2>&1 \
+  && kubectl -n "${namespace}" exec "deploy/${query_api_deployment}" -- sh -c 'AUTH="$(printf "%s:%s" "$HUGEGRAPH_USERNAME" "$HUGEGRAPH_PASSWORD" | base64 | tr -d "\\n")"; wget -q --header="Authorization: Basic ${AUTH}" -O- http://hugegraph:8080/graphs >/dev/null' 2>/dev/null; then
   graph_ready="true"
 fi
 reconcile_status="not_configured"
