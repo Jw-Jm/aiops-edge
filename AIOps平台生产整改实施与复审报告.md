@@ -70,7 +70,7 @@
 | 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-1fbb13e6e200`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
 | 生产 Mock 启动拒绝 | `cd ai-orchestrator && .venv314/bin/python -m pytest tests/test_llm_mock.py -q` | **11 passed**；`AIOPS_ENV=production,LLM_MOCK=true` 子进程在应用初始化前非零退出。 |
 | Query 作用域回归 | `go test ./...`；`go test -race ./...`；`test-production-architecture-contracts.sh` | **全部通过**；伪造 `X-Tenant-ID` 的本机请求仍返回 MySQL active scope，架构契约 ARCH-105/106/107/108 通过。 |
-| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-1fbb13.json` | `git_commit=1fbb13e6e2000eaab0a1667ecb5ff5fe803abd88`；deployment/architecture/Helm lint/diff check 均为 `pass`，但 `working_tree_dirty=true,publishable=false`（用户既有 `ai-orchestrator/:memory:.ses` 与本报告待提交）；仍没有 registry immutable digest/signature。 |
+| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-1fbb13.json` | `git_commit=1fbb13e6e2000eaab0a1667ecb5ff5fe803abd88`；deployment/architecture/Helm lint/diff check 均为 `pass`，但 `working_tree_dirty=true,publishable=false`（唯一未跟踪项是用户既有 `ai-orchestrator/:memory:.ses`）；仍没有 registry immutable digest/signature。 |
 | 生产镜像边界 | `docker run --rm ai-orchestrator:git-1fbb13e6e200 ...` | 通过；`/app/tests`、`multicluster_demo.py`、`rca_engine_legacy.py`、`*.ses` 均不存在，`import rca_engine` 成功且仅导出 `RCARequest,RCAResult,diagnose_root_cause_v2`。 |
 
 ### 2.3.1 本轮最终运行证据（覆盖早期记录）
@@ -232,7 +232,7 @@ flowchart LR
 ### P1-01：发布证据不可发布，代码/镜像/部署不可复核
 
 - **类型/要求：** 发布流程缺陷；release manifest 必须绑定 commit、镜像 digest、rendered manifest、迁移/policy/data digest。
-- **证据：** `collect-release-evidence.sh` 已执行且合同、架构、Helm lint、diff check 均通过；运行时代码基线与 OrbStack revision 2 使用已构建的 `git-1fbb13e6e200` 本地镜像标签；尚未生成 registry immutable digest/signature evidence；用户既有未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 使工作区保持 dirty，脚本按 fail-closed 规则保持 `publishable=false`。
+- **证据：** `collect-release-evidence.sh` 已执行且合同、架构、Helm lint、diff check 均通过；运行时代码基线与 OrbStack revision 2 使用已构建的 `git-1fbb13e6e200` 本地镜像标签；尚未生成 registry immutable digest/signature evidence；用户既有未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 使工作区保持 dirty，脚本按 fail-closed 规则保持 `publishable=false`。本报告本身已提交，不是 dirty 来源。
 - **触发/影响：** 将本机测试结果直接当生产候选，生产运行版本可能与报告代码不同，无法审计或安全回滚。
 - **根因：** 本轮代码已提交并完成本机候选部署，但仍未执行 registry digest 构建/签名；仓库还保留既有未跟踪运行时文件，发布证据脚本按 fail-closed 规则拒绝 publishable。
 - **整改实现：** 提交当前修复；构建所有自研镜像并记录 digest；`helm template` 固定 values/Secret 引用；在隔离 namespace 部署；采集测试、Pod digest、migration checksum、Graph/Provider/rollback 结果。
