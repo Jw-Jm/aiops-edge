@@ -1,8 +1,8 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
 **复审日期：** 2026-08-31（Asia/Shanghai）
-**代码构建基线：** `main` / `c3bf0ee878c2`（AICHAT turn 幂等/完成重放、MySQL 0016、完整迁移验证门禁、前端弃用 API 和 bundle 拆分修复提交）
-**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 2（2026-08-31 20:01–20:02 +0800），12 个自研镜像统一标签 `git-c3bf0ee878c2`；镜像 manifest digest 与运行 Pod `imageID` 逐项一致。
+**代码构建基线：** `main` / `d21d95761f78`（AICHAT turn 幂等/完成重放、MySQL 0016、完整迁移验证门禁、前端弃用 API 和 bundle 拆分修复提交及本轮证据修订）
+**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 2（2026-08-31 20:13–20:14 +0800），12 个自研镜像统一标签 `git-d21d95761f78`；镜像 manifest digest 与运行 Pod `imageID` 逐项一致。
 **工作区：** 代码修复已提交；本报告和部署指南为本轮证据更新，用户既有未跟踪文件 `ai-orchestrator/:memory:.ses` 保留不动。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
@@ -49,7 +49,7 @@
 
 ### 2.3 实际执行的命令与结果
 
-> **本轮证据勘误：** 下表中早期 revision 19 / `git-340286515c49` / `git-acc3606e102c` 记录来自上一轮复审；本轮最终以 revision 2、源码提交 `c3bf0ee878c2`、镜像标签 `git-c3bf0ee878c2` 和下方 MySQL 0001–0016、ClickHouse 0001–0009 运行态取证为准。
+> **本轮证据勘误：** 下表中早期 revision 19 / `git-340286515c49` / `git-acc3606e102c` 记录来自上一轮复审；本轮最终以 revision 2、源码提交 `d21d95761f78`、镜像标签 `git-d21d95761f78` 和下方 MySQL 0001–0016、ClickHouse 0001–0009 运行态取证为准。
 
 | 类别 | 命令 | 实际结果 |
 |---|---|---|
@@ -62,12 +62,12 @@
 | 架构/部署契约 | `AIOPS_CONTRACT_ALLOW_TEST_SECRETS=true bash deploy/scripts/test-production-architecture-contracts.sh`；`bash deploy/scripts/test-deployment-contracts.sh` | **均通过**；此前 SAN 列表逗号解析失败已修正为 Helm 转义参数并重跑通过。 |
 | 生产 egress 清单 | `helm template ... -f deploy/helm/aiops/values-prod.yaml --set networkPolicy.kubernetesApiCIDRs={10.0.0.0/8}`；无 CIDR 同命令 | 注入测试 CIDR 时渲染 **37 个 NetworkPolicy**，default-deny、角色白名单、HugeGraph/schema migrator 规则均存在且无旧 `app: query-api` selector；未注入时明确 Helm 失败（`kubernetesApiCIDRs must be injected`）。 |
 | revision 2 运行态选择器、TLS 命令与启动依赖 | `kubectl -n observability get networkpolicy -o custom-columns=NAME:.metadata.name,PODS:.spec.podSelector.matchLabels`；`kubectl -n observability get deploy ai-orchestrator ai-investigation-worker -o jsonpath=...`；Pod 重启计数 | **通过**；Query 相关 NetworkPolicy 均指向 `app=query-api-http`，Gateway/Worker 命令为 `python -m mtls_server` 且 `--ssl-cert-reqs 2`，均有 `wait-for-query-api` initContainer，2 个 Worker 与 Gateway 业务容器重启数为 0。 |
-| 本机发布门禁 | `LLM_PROVIDER_KEYS=deepseek:sk-local-validation RELEASE_TAG=git-c3bf0ee878c2 bash deploy/scripts/local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow` | 工作负载、MySQL 16 个迁移（含 0016 turn_id/唯一键）、ClickHouse 0001–0009、事件身份/默认值门禁、最小权限、Executor disabled、Worker 开关、HTTPS readiness、canary 全部通过；未提供真实观测 marker/DeepFlow，validator 按设计输出 `BLOCKED_BY_ENV`，不能视为生产发布通过。 |
+| 本机发布门禁 | `LLM_PROVIDER_KEYS=deepseek:sk-local-validation RELEASE_TAG=git-d21d95761f78 bash deploy/scripts/local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow` | 工作负载、MySQL 16 个迁移（含 0016 turn_id/唯一键）、ClickHouse 0001–0009、事件身份/默认值门禁、最小权限、Executor disabled、Worker 开关、HTTPS readiness、canary 全部通过；未提供真实观测 marker/DeepFlow，validator 按设计输出 `BLOCKED_BY_ENV`，不能视为生产发布通过。 |
 | ClickHouse 事件身份迁移 | `kubectl -n observability logs job/clickhouse-migrator`；ClickHouse `aiops_schema_migrations`、`k8s_events_identity_audit`、`system.columns`、身份计数查询 | **通过（本机）**；0001–0009 均 applied/skipped 且 checksum 一致；`event_identity_counts=0/0/0/0`，`event_id`、`tenant_id`、`cluster_id` 均为 `String` 且无 `default_kind`；0008 审计为 `scanned=0, quarantined=0, remaining_invalid=0`（本次 fresh install 未保留历史事件）。 |
-| 启动竞态与 mTLS SAN 修复重跑 | `RELEASE_TAG=git-c3bf0ee878c2 ... local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow` | **通过基础设施与安全门禁**；revision 2 使用提交对应镜像部署完成，Gateway/Worker `python -m mtls_server` 启动、initContainer 成功且业务容器重启数为 0；无 marker 时观测证据按设计 `BLOCKED_BY_ENV`。 |
+| 启动竞态与 mTLS SAN 修复重跑 | `RELEASE_TAG=git-d21d95761f78 ... local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow` | **通过基础设施与安全门禁**；revision 2 使用提交对应镜像部署完成，Gateway/Worker `python -m mtls_server` 启动、initContainer 成功且业务容器重启数为 0；无 marker 时观测证据按设计 `BLOCKED_BY_ENV`。 |
 | Worker 双 profile Helm 渲染 | `helm template ... -f deploy/helm/aiops/values.yaml --set investigationWorker.enabled=true ...`；`helm template ... -f deploy/helm/aiops/values-prod.yaml ...`（均使用临时非生产 Secret 覆盖） | **通过**；默认/非 TLS 输出 `command: ["uvicorn"]`、`args: ["investigation_app:app", ...]`；生产/TLS 输出 `command: ["python", "-m", "mtls_server"]`、`investigation_app:app` 与 `--ssl-cert-reqs 2`。 |
-| revision 2 部署后清单与镜像 digest | `kubectl -n observability get deploy ...`；`kubectl -n observability get pods ... imageID`；`docker image inspect ...:git-c3bf0ee878c2` | **通过**；全部自研 Deployment/Job 使用 `git-c3bf0ee878c2`，12 个本地镜像 manifest digest 与对应 Pod `imageID` 逐项一致；Gateway/2 Worker 均 Ready、重启 0。 |
-| 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-c3bf0ee878c2`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
+| revision 2 部署后清单与镜像 digest | `kubectl -n observability get deploy ...`；`kubectl -n observability get pods ... imageID`；`docker image inspect ...:git-d21d95761f78` | **通过**；全部自研 Deployment/Job 使用 `git-d21d95761f78`，12 个本地镜像 manifest digest 与对应 Pod `imageID` 逐项一致；Gateway/2 Worker 均 Ready、重启 0。 |
+| 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-d21d95761f78`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
 | 生产 Mock 启动拒绝 | `cd ai-orchestrator && .venv314/bin/python -m pytest tests/test_llm_mock.py -q` | **11 passed**；`AIOPS_ENV=production,LLM_MOCK=true` 子进程在应用初始化前非零退出。 |
 | Query 作用域回归 | `go test ./...`；`go test -race ./...`；`test-production-architecture-contracts.sh` | **全部通过**；伪造 `X-Tenant-ID` 的本机请求仍返回 MySQL active scope，架构契约 ARCH-105/106/107/108 通过。 |
 | 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-c3bf0ee.json` | 代码构建源为 `c3bf0ee878c2`；deployment/architecture/Helm lint/diff check 可通过；用户既有未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 和本报告未提交修改仍使 `working_tree_dirty=true,publishable=false`，且没有 registry immutable digest/signature。 |
@@ -76,11 +76,11 @@
 
 | 检查 | 结果 |
 |---|---|
-| 源码与镜像 | 12 个自研镜像均为 `git-c3bf0ee878c2`；本地镜像 manifest digest 与对应 Deployment/Job `imageID` 逐项一致；旧 `git-acc3606e102c` 和误用的短标签 `git-c3bf0ee` 已删除。 |
+| 源码与镜像 | 12 个自研镜像均为 `git-d21d95761f78`；本地镜像 manifest digest 与对应 Deployment/Job `imageID` 逐项一致；旧 `git-acc3606e102c`、`git-c3bf0ee878c2` 和误用的短标签 `git-c3bf0ee` 已删除。 |
 | AICHAT turn 幂等 | Query `EnsureSession` 使用 MySQL 原子 upsert；`ai_chat_messages.turn_id` 由 0016 迁移和 `(session_id,turn_id,role,kind)` 唯一键约束；完成 turn 在 Query 重试时只重放持久化 suggestion/done，不再次调用 Orchestrator；Query store/API 及 Orchestrator ingress/重放测试通过。 |
 | ClickHouse 迁移 | migrator 日志显示 0001–0009 全部 applied/skipped 且 checksum 一致；`event_id`/tenant/cluster 身份非法计数为 `0/0/0/0`，`event_id.default_kind` 为空。 |
 | 运行态 | Helm revision 2；Query、Orchestrator、2 个 Worker、Ingest、Collector、Proxy、Frontend、HugeGraph、MySQL、ClickHouse 及迁移 Job 就绪；核心容器重启数为 0。 |
-| 本机残留清理 | 按 Asia/Shanghai `2026-08-31` 为保留边界，删除旧自研镜像标签和短标签后 `old_image_tags_remaining=0`、dangling layers=0，仅保留当前 12 个 `git-c3bf0ee878c2` 标签；Fresh Install 后 MySQL 运行历史表（Chat/Run/Evidence/Tool/Audit/Reports）和 ClickHouse `alert_events`/`log_records`/`trace_spans` 均无今天之前行；用户/角色/租户/集群配置未删除。随后按授权重建本机 observability/deepflow/aiops-canary 命名空间/PVC，第三方镜像、生产数据、外部系统未触碰。 |
+| 本机残留清理 | 按 Asia/Shanghai `2026-08-31` 为保留边界，删除旧自研镜像标签和短标签后 `old_image_tags_remaining=0`、dangling layers=0，仅保留当前 12 个 `git-d21d95761f78` 标签；Fresh Install 后 MySQL 运行历史表（Chat/Run/Evidence/Tool/Audit/Reports）和 ClickHouse `alert_events`/`log_records`/`trace_spans` 均无今天之前行；用户/角色/租户/集群配置未删除。随后按授权重建本机 observability/deepflow/aiops-canary 命名空间/PVC，第三方镜像、生产数据、外部系统未触碰。 |
 | 发布门禁 | 基础安全/部署/迁移门禁通过；未提供真实观测 marker、DeepFlow、多节点、PITR、生产 Secret/证书/registry 签名，validator 按设计保留 `BLOCKED_BY_ENV`，生产仍不可发布。 |
 
 ### 2.4 OrbStack 实际运行证据
@@ -229,7 +229,7 @@ flowchart LR
 ### P1-01：发布证据不可发布，代码/镜像/部署不可复核
 
 - **类型/要求：** 发布流程缺陷；release manifest 必须绑定 commit、镜像 digest、rendered manifest、迁移/policy/data digest。
-- **证据：** `collect-release-evidence.sh` 已执行且合同、架构、Helm lint、diff check 均通过；OrbStack revision 2 使用已构建的 `git-c3bf0ee878c2` 本地镜像标签；尚未生成 registry immutable digest/signature evidence；用户既有未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 与本轮报告修改仍使工作区 dirty，脚本按 fail-closed 规则保持 `publishable=false`。
+- **证据：** `collect-release-evidence.sh` 已执行且合同、架构、Helm lint、diff check 均通过；运行时代码基线与 OrbStack revision 2 使用已构建的 `git-d21d95761f78` 本地镜像标签；尚未生成 registry immutable digest/signature evidence；用户既有未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 使工作区保持 dirty，脚本按 fail-closed 规则保持 `publishable=false`。
 - **触发/影响：** 将本机测试结果直接当生产候选，生产运行版本可能与报告代码不同，无法审计或安全回滚。
 - **根因：** 本轮代码已提交并完成本机候选部署，但仍未执行 registry digest 构建/签名；仓库还保留既有未跟踪运行时文件，发布证据脚本按 fail-closed 规则拒绝 publishable。
 - **整改实现：** 提交当前修复；构建所有自研镜像并记录 digest；`helm template` 固定 values/Secret 引用；在隔离 namespace 部署；采集测试、Pod digest、migration checksum、Graph/Provider/rollback 结果。
@@ -359,7 +359,7 @@ flowchart LR
 - mTLS required/SAN 配置已进入 Helm revision 2；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401；Python Gateway/Worker 以 `python -m mtls_server` 启动，错误 SAN 在 ASGI 前返回 403，真实 Gateway→Worker mTLS health 返回 200；默认非 TLS Worker profile 显式使用 `uvicorn investigation_app:app`。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations 0001–0009、quarantine/audit/identity gate；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
 - 完整 workflow gate、Helm 和合同脚本均通过（Python 1212 tests/1 skipped、前端 39 tests/build、Query Go 全量及 race 定向测试）；本轮 Go 服务逐包测试也通过。
-- 本机 Helm revision 2 所有核心服务 Ready；12 个自研镜像实际使用 `git-c3bf0ee878c2`，9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
+- 本机 Helm revision 2 所有核心服务 Ready；12 个自研镜像实际使用 `git-d21d95761f78`，9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
 
 ### 未通过（明确阻断）
 
@@ -407,4 +407,4 @@ flowchart LR
 
 本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机 revision 2 不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。
 
-本轮修订覆盖上一轮 revision 19 的运行态描述：凡第 2.3 节早期表格仍出现 revision 19、`git-340286515c49` 或 `git-acc3606e102c`，均以第 2.3.1 节的 revision 2、`git-c3bf0ee878c2`、逐项 digest 对照及 MySQL 0001–0016/ClickHouse 0001–0009 证据为准；这些历史记录不再作为当前发布证据。
+本轮修订覆盖上一轮 revision 19 的运行态描述：凡第 2.3 节早期表格仍出现 revision 19、`git-340286515c49` 或 `git-acc3606e102c`，均以第 2.3.1 节的 revision 2、`git-d21d95761f78`、逐项 digest 对照及 MySQL 0001–0016/ClickHouse 0001–0009 证据为准；这些历史记录不再作为当前发布证据。
