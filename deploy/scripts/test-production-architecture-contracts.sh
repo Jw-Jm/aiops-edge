@@ -98,6 +98,11 @@ required 'name: wait-for-query-api' "$tmp" 'ARCH-312 orchestrator/query-api star
 required 'command: ["python", "-m", "mtls_server"]' "$tmp" 'ARCH-313 orchestrator TLS server does not enforce client SAN';
 required 'args: ["main:app"' "$tmp" 'ARCH-314 orchestrator TLS server app import is not wired';
 required 'args: ["investigation_app:app"' "$tmp" 'ARCH-315 worker TLS server app import is not wired';
+required 'PRODUCTION_ROUTE_ALLOWLIST' "$repo_root/ai-orchestrator/production_surface.py" 'ARCH-316 production route allowlist missing';
+required '_apply_production_route_surface()' "$repo_root/ai-orchestrator/main.py" 'ARCH-317 production route filter is not wired';
+required 'filter_production_routes' "$repo_root/ai-orchestrator/main.py" 'ARCH-318 production route inventory filter missing';
+required 'def _default_session_store' "$repo_root/ai-orchestrator/data_cleanup_api.py" 'ARCH-319 cleanup SQLite adapter is not lazy';
+forbidden 'from session_store import SessionStore, session_store' "$repo_root/ai-orchestrator/data_cleanup_api.py" 'ARCH-320 cleanup module opens legacy SQLite at import';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi

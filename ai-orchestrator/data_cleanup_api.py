@@ -4,19 +4,34 @@ from __future__ import annotations
 import datetime as _datetime
 import hmac
 import os
-from typing import Callable
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 
-from session_store import SessionStore, session_store
-
-
 router = APIRouter(prefix="/internal/v1/data-cleanups", tags=["data-cleanups"])
-_session_store_factory: Callable[[], SessionStore] = lambda: session_store
+
+
+def _default_session_store() -> Any:
+    """Load the legacy SQLite adapter only when an internal cleanup is invoked.
+
+    Production Gateway imports this module while publishing its route table.  A
+    top-level ``SessionStore()`` would create/open the legacy SQLite file for
+    every Gateway pod, even though normal production traffic never uses this
+    migration endpoint.  Keeping the import behind the explicit internal
+    operation preserves the cleanup contract without making SQLite a startup
+    dependency or a second Chat owner.
+    """
+
+    from session_store import session_store
+
+    return session_store
+
+
+_session_store_factory: Callable[[], Any] = _default_session_store
 
 
 def configure_data_cleanup_runtime(
-    brain_getter=None, session_store_factory: Callable[[], SessionStore] | None = None
+    brain_getter=None, session_store_factory: Callable[[], Any] | None = None
 ):
     """Inject test/runtime dependencies without exposing SQLite to query-api."""
     del brain_getter  # reserved for future checkpointer-specific health reporting

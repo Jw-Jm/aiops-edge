@@ -157,7 +157,12 @@ async def lifespan(app: FastAPI):
     # Durable Run recovery is best-effort at startup; the queue/lease boundary
     # remains fail-closed if query-api is unavailable.
     global _investigation_recovery_task, _investigation_dispatcher, _graph_sync_runtime
-    if os.environ.get("QUERY_API_URL") and _investigation_runtime_enabled():
+    _worker_mode = os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {
+        "1", "true", "yes", "on"
+    }
+    if os.environ.get("QUERY_API_URL") and _investigation_runtime_enabled() and (
+        _worker_mode or _DEPLOYMENT_MODE != "production"
+    ):
         _investigation_recovery_task = asyncio.create_task(_investigation_recovery_loop())
     # Canonical graph source reconcile is part of the production graph runtime,
     # not the retired 60s kg_graph.build_all compatibility job.  Start it in
@@ -176,7 +181,26 @@ async def lifespan(app: FastAPI):
     # The dedicated Investigation Worker has no Chat/legacy scheduler or local
     # persistence ownership. It serves the signed Run ingress, durable recovery
     # queue, and the canonical graph source reconcile runtime above.
-    if os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {"1", "true", "yes", "on"}:
+    if _worker_mode:
+        yield
+        if _graph_sync_runtime is not None:
+            await _graph_sync_runtime.stop()
+            _graph_sync_runtime = None
+        if _investigation_recovery_task is not None:
+            _investigation_recovery_task.cancel()
+            await asyncio.gather(_investigation_recovery_task, return_exceptions=True)
+            _investigation_recovery_task = None
+        if _investigation_dispatcher is not None:
+            try:
+                await _investigation_dispatcher.stop()
+            finally:
+                _investigation_dispatcher = None
+        return
+    # Production Gateway owns only the signed Chat/Run control boundary.  The
+    # historical browser, scheduler, shell and flow handlers stay importable
+    # for development/migration compatibility but must not start background
+    # jobs or acquire their SQLite/legacy data ownership in production.
+    if _DEPLOYMENT_MODE == "production":
         yield
         if _graph_sync_runtime is not None:
             await _graph_sync_runtime.stop()
@@ -4243,6 +4267,31 @@ async def aggregate_node_health(body: dict = None):
 
 # WebShell WebSocket 端点
 app.add_api_websocket_route("/api/v1/shell/ws", shell_ws)
+
+
+def _apply_production_route_surface() -> None:
+    """Remove legacy handlers from the production Gateway route table.
+
+    Route decorators above are retained for local migration compatibility, but
+    a production import must not publish those handlers in OpenAPI or dispatch
+    traffic to them.  This is deliberately performed once, after all router
+    registrations, and leaves the source-level legacy modules available only
+    to non-production profiles.
+    """
+
+    if _DEPLOYMENT_MODE != "production":
+        return
+    from production_surface import filter_production_routes
+
+    kept, retired = filter_production_routes(app.router.routes)
+    app.router.routes[:] = kept
+    # FastAPI caches generated OpenAPI after the first request; invalidate it so
+    # a production schema can never retain a removed legacy operation.
+    app.openapi_schema = None
+    print(f"[startup] production route surface: kept={len(kept)} retired={len(retired)}", flush=True)
+
+
+_apply_production_route_surface()
 
 
 if __name__ == "__main__":
