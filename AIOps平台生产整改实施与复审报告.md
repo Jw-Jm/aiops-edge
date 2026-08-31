@@ -65,7 +65,7 @@
 | 运行镜像与生产 Mock 保护 | `kubectl -n observability get pods ...`；`kubectl -n observability exec deploy/ai-orchestrator -- sh -c 'AIOPS_ENV=production LLM_MOCK=true python -c "import main"'` | **通过**；所有自研 Pod 使用 `git-68937682533a`，核心容器重启数为 0；容器内生产 Mock 组合以非零码退出并输出 fail-closed 错误。 |
 | 生产 Mock 启动拒绝 | `cd ai-orchestrator && .venv314/bin/python -m pytest tests/test_llm_mock.py -q` | **11 passed**；`AIOPS_ENV=production,LLM_MOCK=true` 子进程在应用初始化前非零退出。 |
 | Query 作用域回归 | `go test ./...`；`go test -race ./...`；`test-production-architecture-contracts.sh` | **全部通过**；伪造 `X-Tenant-ID` 的本机请求仍返回 MySQL active scope，架构契约 ARCH-105/106/107/108 通过。 |
-| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-483b253.json` | 合同、架构、Helm lint、diff check 均为 pass；既有未跟踪运行时文件使 `working_tree_dirty=true,publishable=false`。 |
+| 发布证据 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-final-7dbd4cb.json` | `git_commit=7dbd4cb66bc22278fc78fe0555d01b2c0573e838`；合同、架构、Helm lint、diff check 均为 pass；既有未跟踪运行时文件使 `working_tree_dirty=true,publishable=false`。 |
 
 ### 2.4 OrbStack 实际运行证据
 
