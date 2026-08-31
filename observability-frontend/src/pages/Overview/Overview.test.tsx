@@ -20,7 +20,7 @@ describe('Overview authentic failure states', () => {
   })
 
   it('shows an error state instead of claiming empty healthy data when alerts fail', async () => {
-    render(<MemoryRouter><Overview /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Overview /></MemoryRouter>)
     expect(await screen.findByText('alerts unavailable')).toBeInTheDocument()
     expect(screen.queryByText(/当前无活跃告警，系统健康/)).not.toBeInTheDocument()
   })

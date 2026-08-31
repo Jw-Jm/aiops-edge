@@ -61,6 +61,23 @@ func TestDataCleanupMigrationContainsRequiredObjects(t *testing.T) {
 	}
 }
 
+func TestAIChatTurnMigrationContainsIdempotencyConstraint(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0016_ai_chat_turn_id.sql")
+	if err != nil {
+		t.Fatalf("read 0016 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{
+		"ADD COLUMN turn_id CHAR(36) NULL",
+		"uq_ai_chat_message_turn",
+		"(session_id, turn_id, role, kind)",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0016 migration missing %q", required)
+		}
+	}
+}
+
 // TestAIRuntimeSchemaManifest 在可用 MySQL 上跑 schema-migrator 后，逐表核对
 // V9.2 冻结 AI Runtime 表的列 / nullability / PK / unique（P1-1：字段来源
 // docs/AIOPS_DATA_MODEL_REDESIGN.md）。无 MySQL 时跳过。

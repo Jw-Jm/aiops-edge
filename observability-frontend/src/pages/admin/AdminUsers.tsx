@@ -91,7 +91,7 @@ const AdminUsers: React.FC = () => {
           pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: <Empty text="暂无用户" /> }} />
       </div>
 
-      <Modal title={editing ? '编辑用户' : '新增用户'} open={open} onOk={submit} confirmLoading={submitting} onCancel={() => setOpen(false)} destroyOnClose>
+      <Modal title={editing ? '编辑用户' : '新增用户'} open={open} onOk={submit} confirmLoading={submitting} onCancel={() => setOpen(false)} destroyOnHidden>
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input disabled={!!editing} /></Form.Item>
           {!editing && <Form.Item name="password" label="密码" rules={[{ required: true }]}><Input.Password /></Form.Item>}

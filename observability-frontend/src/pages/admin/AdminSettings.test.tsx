@@ -36,7 +36,7 @@ describe('AdminSettings LLM configuration', () => {
   })
 
   it('tests the saved configuration without sending the masked key as a credential', async () => {
-    render(<MemoryRouter><AdminSettings /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AdminSettings /></MemoryRouter>)
 
     await waitFor(() => expect(screen.getByText('deepseek-chat')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '测试当前配置' }))
@@ -50,7 +50,7 @@ describe('AdminSettings LLM configuration', () => {
 
   it('does not save or report success when the connection endpoint returns success false', async () => {
     vi.mocked(testLLMConnection).mockResolvedValue({ data: { success: false, message: 'API key invalid' } } as never)
-    render(<MemoryRouter><AdminSettings /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AdminSettings /></MemoryRouter>)
 
     await waitFor(() => expect(screen.getByText('deepseek-chat')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '测试当前配置' }))

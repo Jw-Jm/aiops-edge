@@ -27,6 +27,9 @@ rg -n --fixed-strings 'authRequireFirstLoginPasswordChange: false' "${local_valu
 required_strings=(
   "aiops_schema_migrations"
   "0009_action_workflow_closure"
+  "0016_ai_chat_turn_id"
+  "ai_chat_messages.turn_id"
+  "uq_ai_chat_message_turn"
   "MYSQL_APP_PASSWORD"
   "MYSQL_MIGRATOR_PASSWORD"
   "app=ai-investigation-worker"

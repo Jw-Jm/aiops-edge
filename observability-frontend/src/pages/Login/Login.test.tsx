@@ -6,7 +6,7 @@ import Login from './index'
 describe('production login page', () => {
   it('does not expose demo environment or demo credentials', () => {
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Login />
       </MemoryRouter>,
     )

@@ -22,7 +22,7 @@ describe('AlertRules service projection', () => {
   })
 
   it('renders the persisted service field returned by the alert-rule API', async () => {
-    render(<MemoryRouter><AlertRules /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AlertRules /></MemoryRouter>)
 
     await waitFor(() => expect(screen.getByText('aiops-mutation-canary')).toBeInTheDocument())
     expect(screen.queryByText('所有服务')).not.toBeInTheDocument()

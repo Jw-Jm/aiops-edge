@@ -6,7 +6,7 @@ import ChangePassword from './index'
 describe('change password page', () => {
   it('requires the current and replacement passwords', () => {
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <ChangePassword />
       </MemoryRouter>,
     )

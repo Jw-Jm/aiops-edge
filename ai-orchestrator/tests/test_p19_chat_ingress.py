@@ -126,12 +126,15 @@ def test_valid_ai_chat_returns_sse_stream(monkeypatch, client):
     _configure(monkeypatch, private_key)
     resp = _post_chat(client, private_key, _claims(),
                       body={"message": "分析 order-svc", "service": "checkout",
-                            "tenant_id": TENANT, "cluster_id": CLUSTER})
+                            "tenant_id": TENANT, "cluster_id": CLUSTER,
+                            "turn_id": "77777777-7777-4777-8777-777777777777"})
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("text/event-stream")
     # SSE 帧包含 progress 与 done
     assert "event: progress" in resp.text
     assert "event: done" in resp.text
+    assert "id: 1" in resp.text and "id: 2" in resp.text
+    assert resp.headers["x-chat-turn-id"] == "77777777-7777-4777-8777-777777777777"
     assert client._stub_brain.calls == 1
     assert client._stub_brain.mode == "chat"
     # 对话不触发 ManualBoundary 建 Run（AI Chat 建 Run 边界）
@@ -217,10 +220,20 @@ def test_chat_nonce_replay_rejected(monkeypatch, client):
     claims = _claims(nonce=nonce)
     jws = _sign(claims, private_key)
     headers = {"X-Internal-Token": "svc-token", "X-Trusted-Request-Context": jws}
-    resp1 = client.post("/internal/v1/chat", headers=headers, json={})
-    resp2 = client.post("/internal/v1/chat", headers=headers, json={})
+    body = {"turn_id": "88888888-8888-4888-8888-888888888888"}
+    resp1 = client.post("/internal/v1/chat", headers=headers, json=body)
+    resp2 = client.post("/internal/v1/chat", headers=headers, json=body)
     assert resp1.status_code == 200
     assert resp2.status_code == 409
+
+
+def test_chat_invalid_turn_id_rejected(monkeypatch, client):
+    private_key = _keypair()
+    _configure(monkeypatch, private_key)
+    resp = _post_chat(client, private_key, _claims(), body={"turn_id": "not-a-uuid"})
+    assert resp.status_code == 400
+    assert "INVALID_TURN_ID" in resp.text
+    assert client._stub_brain.calls == 0
 
 
 def test_chat_expired_rejected(monkeypatch, client):

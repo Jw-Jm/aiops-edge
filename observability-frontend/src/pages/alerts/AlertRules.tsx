@@ -109,7 +109,7 @@ const AlertRules: React.FC = () => {
           pagination={false} locale={{ emptyText: <Empty text="暂无告警规则" /> }} />
       </div>
 
-      <Modal title={editing ? '编辑告警规则' : '新建告警规则'} open={open} onOk={submit} onCancel={() => { setOpen(false); setEditing(null) }} destroyOnClose>
+      <Modal title={editing ? '编辑告警规则' : '新建告警规则'} open={open} onOk={submit} onCancel={() => { setOpen(false); setEditing(null) }} destroyOnHidden>
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item name="name" label="规则名称" rules={[{ required: true }]}><Input placeholder="如：order-svc 错误率过高" /></Form.Item>
           <Form.Item name="service" label="服务名称" rules={[{ required: true, message: '服务名称必填' }]}><Input placeholder="如：order-svc" /></Form.Item>

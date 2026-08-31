@@ -1001,8 +1001,24 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid_session_id"})
 		return
 	}
+	// A turn id is the idempotency identity for one user submission.  The
+	// browser generates it for retries; the server generates one for older
+	// clients so every canonical request still gets a durable identity.
+	turnID, _ := body["turn_id"].(string)
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		turnID = newCanonicalSessionUUID()
+		if turnID == "" {
+			respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "CHAT_TURN_ID_UNAVAILABLE"})
+			return
+		}
+	} else if !canonicalUUID.MatchString(turnID) {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid_turn_id"})
+		return
+	}
 	body["session_id"] = sessionID
 	body["thread_id"] = sessionID
+	body["turn_id"] = turnID
 	intent, _ := body["intent"].(string)
 	service, _ := body["service"].(string)
 	chatSessions := &store.AIChatSessionDAO{}
@@ -1031,10 +1047,26 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message, _ := body["message"].(string); strings.TrimSpace(message) != "" {
-		if err := chatSessions.AppendMessage(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, "user", "", message, nil); err != nil {
+		if err := chatSessions.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, turnID, "user", "", message, nil); err != nil {
+			if strings.Contains(err.Error(), "idempotency mismatch") {
+				respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "CHAT_TURN_IDEMPOTENCY_MISMATCH"})
+				return
+			}
 			respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "CHAT_SESSION_BACKEND_UNAVAILABLE"})
 			return
 		}
+	}
+	// A completed turn is durable in Query/MySQL.  Replay it before signing or
+	// invoking the Orchestrator so a browser reconnect cannot execute the same
+	// provider request twice.  A turn containing only the user card is treated
+	// as incomplete and follows the normal downstream path.
+	turnMessages, turnErr := chatSessions.GetTurn(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, turnID)
+	if turnErr != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "CHAT_SESSION_BACKEND_UNAVAILABLE"})
+		return
+	}
+	if replayChatTurn(w, sessionID, turnID, turnMessages) {
+		return
 	}
 
 	// 5. Sign RunInvocationContext with capability=ai.chat (对话型，非 ai.investigate)。
@@ -1083,6 +1115,7 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set(header, v)
 		}
 	}
+	w.Header().Set("X-Chat-Turn-Id", turnID)
 	w.WriteHeader(resp.StatusCode)
 	// 逐块 Flush 透传，不缓冲（对齐 P10 公共 SSE proxy WriteTimeout=0 的长连接语义）。
 	if flusher, ok := w.(http.Flusher); ok {
@@ -1092,7 +1125,7 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
 				streamBuffer += string(buf[:n])
-				streamBuffer = persistChatSSEFrames(chatSessions, sessionID, authCtx, streamBuffer)
+				streamBuffer = persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, streamBuffer)
 				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 					return
 				}
@@ -1105,7 +1138,7 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// 不支持 Flusher 的响应容器：退化为一次性复制，同时保留 transcript。
 	data, _ := io.ReadAll(resp.Body)
-	_ = persistChatSSEFrames(chatSessions, sessionID, authCtx, string(data))
+	_ = persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, string(data))
 	_, _ = w.Write(data)
 }
 
@@ -1131,7 +1164,7 @@ func minStringLen(length, max int) int {
 // persistChatSSEFrames records only durable transcript cards (assistant done
 // text and actionable suggestions).  Progress/tool telemetry remains ephemeral
 // and is still streamed to the browser without inflating the MySQL transcript.
-func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID string, authCtx AuthorizationContext, input string) string {
+func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string, authCtx AuthorizationContext, input string) string {
 	for {
 		idx := strings.Index(input, "\n\n")
 		if idx < 0 {
@@ -1159,7 +1192,7 @@ func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID string, authCtx
 		switch name {
 		case "done":
 			if text, _ := event["text"].(string); strings.TrimSpace(text) != "" {
-				_ = dao.AppendMessage(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, "assistant", "", text, nil)
+				_ = dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "", text, nil)
 			}
 		case "suggestion":
 			metadata := map[string]any{}
@@ -1168,9 +1201,55 @@ func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID string, authCtx
 					metadata[key] = value
 				}
 			}
-			_ = dao.AppendMessage(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, "assistant", "suggestion", "", metadata)
+			_ = dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "suggestion", "", metadata)
 		}
 	}
+}
+
+// replayChatTurn emits only durable response cards for a completed turn.  It
+// deliberately omits progress/tool telemetry, which is ephemeral by design;
+// a caller that reconnects before the done card was stored is allowed to
+// resume by invoking the same turn again.
+func replayChatTurn(w http.ResponseWriter, sessionID, turnID string, messages []store.ChatMessage) bool {
+	completed := false
+	for _, message := range messages {
+		if message.Role == "assistant" && message.Kind == "" && strings.TrimSpace(message.Content) != "" {
+			completed = true
+			break
+		}
+	}
+	if !completed {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Session-Id", sessionID)
+	w.Header().Set("X-Chat-Turn-Id", turnID)
+	w.WriteHeader(http.StatusOK)
+	sequence := int64(0)
+	for _, message := range messages {
+		var eventType string
+		payload := map[string]any{}
+		switch {
+		case message.Role == "assistant" && message.Kind == "suggestion":
+			eventType = "suggestion"
+			for key, value := range message.Metadata {
+				payload[key] = value
+			}
+		case message.Role == "assistant" && message.Kind == "":
+			eventType = "done"
+			payload["text"] = message.Content
+		default:
+			continue
+		}
+		sequence++
+		raw, _ := json.Marshal(payload)
+		_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", sequence, eventType, raw)
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return true
 }
 
 // roleGrantsAIChat：服务端权威角色 → ai.chat（对话只读）授权映射。

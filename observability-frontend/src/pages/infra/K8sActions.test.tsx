@@ -41,7 +41,7 @@ describe('K8sActions canonical workflow', () => {
 
   it('submits the selected target as a canonical proposal and waits for approval', async () => {
     const user = userEvent.setup()
-    render(<MemoryRouter><K8sActions /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><K8sActions /></MemoryRouter>)
 
     await user.type(screen.getByPlaceholderText('命名空间'), 'prod')
     await user.type(screen.getByPlaceholderText('资源名称'), 'orders')

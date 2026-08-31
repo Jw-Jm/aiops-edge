@@ -1138,6 +1138,12 @@ async def internal_chat(request: Request):
     thread_id = str(body.get("thread_id") or body.get("session_id") or uuid.uuid4())
     if not _CANONICAL_UUID_RE.fullmatch(thread_id):
         raise HTTPException(status_code=400, detail="INVALID_SESSION_ID")
+    # Query API binds one user submission to a stable turn id.  Requiring the
+    # same canonical UUID at the trusted ingress prevents an internal caller
+    # from replaying/merging two transcript turns by accident.
+    turn_id = str(body.get("turn_id") or "")
+    if not _CANONICAL_UUID_RE.fullmatch(turn_id):
+        raise HTTPException(status_code=400, detail="INVALID_TURN_ID")
     exec_context = body.get("exec_result", "")
     history_context = str(body.get("history_context", "") or "")[:4000]
 
@@ -1183,17 +1189,23 @@ async def internal_chat(request: Request):
     thread = threading.Thread(target=_run_stream, daemon=True)
     thread.start()
 
-    def _format_sse(ev: dict) -> str:
-        etype = ev.get("type", "message")
-        data = json.dumps(ev, ensure_ascii=False)
-        return f"event: {etype}\ndata: {data}\n\n"
-
     async def generate():
         _is_disconnected = getattr(request, "is_disconnected", None)
+        last_heartbeat = _asyncio.get_event_loop().time()
+        sequence = 0
+
+        def format_sse(ev: dict) -> str:
+            nonlocal sequence
+            sequence += 1
+            etype = ev.get("type", "message")
+            data = json.dumps(ev, ensure_ascii=False)
+            return f"id: {sequence}\nevent: {etype}\ndata: {data}\n\n"
+
         while True:
             if _is_disconnected is not None:
                 try:
                     if await _is_disconnected():
+                        stop_event.set()
                         break
                 except Exception:  # noqa: BLE001
                     pass
@@ -1202,6 +1214,13 @@ async def internal_chat(request: Request):
             except queue.Empty:
                 if stop_event.is_set():
                     break
+                now = _asyncio.get_event_loop().time()
+                if now - last_heartbeat >= 12:
+                    # SSE comment frames keep proxies and browsers alive while
+                    # a provider/tool call is still running; they carry no
+                    # transcript data and are ignored by the event parser.
+                    yield ": ping\n\n"
+                    last_heartbeat = now
                 await _asyncio.sleep(0.1)
                 continue
             if event is None:
@@ -1216,7 +1235,7 @@ async def internal_chat(request: Request):
                         _upload_report(thread_id, done_text, service=svc, question=message or "")
                     except Exception as _e:  # noqa: BLE001
                         print(f"[internal/chat] 报告持久化失败: {_e}")
-                yield _format_sse({
+                yield format_sse({
                     "type": "done",
                     "text": done_text,
                     "assistant_message": {
@@ -1228,15 +1247,16 @@ async def internal_chat(request: Request):
                 break
             elif event.get("type") == "approval_pending":
                 event["thread_id"] = thread_id
-                yield _format_sse(event)
+                yield format_sse(event)
             elif event.get("type") == "error":
-                yield _format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
+                yield format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
                 break
             else:
-                yield _format_sse(event)
+                yield format_sse(event)
 
     return StreamingResponse(generate(), media_type="text/event-stream",
-                             headers={"X-Session-Id": thread_id, "Cache-Control": "no-cache"})
+                             headers={"X-Session-Id": thread_id, "X-Chat-Turn-Id": turn_id,
+                                      "Cache-Control": "no-cache"})
 
 
 @app.post("/internal/v1/run-controls/{operation}")

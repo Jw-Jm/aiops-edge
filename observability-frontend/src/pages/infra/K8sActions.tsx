@@ -348,7 +348,7 @@ const K8sActions: React.FC = () => {
         okText="确认执行"
         cancelText="取消"
         okButtonProps={{ danger: true, loading: execLoading }}
-        destroyOnClose
+        destroyOnHidden
       >
         <div style={{ marginBottom: 10, color: 'var(--danger)', fontWeight: 600 }}>
           预检已通过，确认要在 {namespace || '集群'} 上执行“{ACTION_LABEL[action] || action}”吗？

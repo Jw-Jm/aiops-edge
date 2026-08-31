@@ -57,23 +57,43 @@ func expectNewChatSessionPersistence(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`(?s)SELECT session_id,intent,service,created_at,updated_at.*FROM ai_chat_sessions WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
 		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID).
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery("SELECT user_uuid,tenant_id,cluster_id FROM ai_chat_sessions WHERE session_id=\\?").
-		WithArgs(sqlmock.AnyArg()).WillReturnError(sql.ErrNoRows)
-	mock.ExpectExec("INSERT INTO ai_chat_sessions").
+	// EnsureSession uses an atomic no-op upsert so concurrent Query replicas do
+	// not race on the session primary key.
+	mock.ExpectExec(`INSERT INTO ai_chat_sessions[\s\S]*ON DUPLICATE KEY UPDATE session_id = session_id`).
 		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID, "", "orders").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT user_uuid,tenant_id,cluster_id FROM ai_chat_sessions WHERE session_id=\\?").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "tenant_id", "cluster_id"}).AddRow(authzUserID, authzTenantID, proxyClusterID))
+	mock.ExpectExec("UPDATE ai_chat_sessions SET intent=\\?,service=\\?,updated_at=CURRENT_TIMESTAMP\\(3\\) WHERE session_id=\\?").
+		WithArgs("", "orders", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`(?s)SELECT user_uuid FROM ai_chat_sessions.*WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
 		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid"}).AddRow(authzUserID))
-	mock.ExpectExec("INSERT INTO ai_chat_messages").
-		WithArgs(sqlmock.AnyArg(), "user", "", "diag", nil).
+	mock.ExpectExec(`INSERT INTO ai_chat_messages\(session_id,turn_id,role,kind,content,metadata_json\)[\s\S]*ON DUPLICATE KEY UPDATE id = id`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "user", "", "diag", nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT role,kind,content,metadata_json FROM ai_chat_messages.*WHERE session_id=\? AND turn_id=\? AND role=\? AND kind=\?`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "user", "").
+		WillReturnRows(sqlmock.NewRows([]string{"role", "kind", "content", "metadata_json"}).AddRow("user", "", "diag", nil))
+	// ProxyChat checks the durable turn before invoking the orchestrator.  A
+	// fresh turn contains only the user card, so the lookup must return no rows.
 	mock.ExpectQuery(`(?s)SELECT user_uuid FROM ai_chat_sessions.*WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
 		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid"}).AddRow(authzUserID))
-	mock.ExpectExec("INSERT INTO ai_chat_messages").
-		WithArgs(sqlmock.AnyArg(), "assistant", "", "ok", nil).
+	mock.ExpectQuery(`(?s)SELECT id,role,kind,content,metadata_json,created_at FROM ai_chat_messages WHERE session_id=\? AND turn_id=\? ORDER BY id`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "role", "kind", "content", "metadata_json", "created_at"}))
+	mock.ExpectQuery(`(?s)SELECT user_uuid FROM ai_chat_sessions.*WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
+		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid"}).AddRow(authzUserID))
+	mock.ExpectExec(`INSERT INTO ai_chat_messages\(session_id,turn_id,role,kind,content,metadata_json\)[\s\S]*ON DUPLICATE KEY UPDATE id = id`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "assistant", "", "ok", nil).
 		WillReturnResult(sqlmock.NewResult(2, 1))
+	mock.ExpectQuery(`(?s)SELECT role,kind,content,metadata_json FROM ai_chat_messages.*WHERE session_id=\? AND turn_id=\? AND role=\? AND kind=\?`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "assistant", "").
+		WillReturnRows(sqlmock.NewRows([]string{"role", "kind", "content", "metadata_json"}).AddRow("assistant", "", "ok", nil))
 }
 
 func TestProxyChatSignsAI_CHATAndForwardsStreaming(t *testing.T) {
@@ -149,6 +169,41 @@ func TestProxyChatSignsAI_CHATAndForwardsStreaming(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplayChatTurnEmitsDurableCardsOnly(t *testing.T) {
+	rec := httptest.NewRecorder()
+	messages := []store.ChatMessage{
+		{Role: "user", Content: "diag"},
+		{Role: "assistant", Kind: "suggestion", Metadata: map[string]any{"script": "kubectl get deploy"}},
+		{Role: "assistant", Content: "root cause summary"},
+	}
+	if !replayChatTurn(rec, "11111111-1111-4111-8111-111111111111", "55555555-5555-4555-8555-555555555555", messages) {
+		t.Fatal("replayChatTurn() = false, want completed turn")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replay status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "id: 1\nevent: suggestion") || !strings.Contains(body, "id: 2\nevent: done") {
+		t.Fatalf("durable SSE cards missing: %s", body)
+	}
+	if strings.Contains(body, "diag") {
+		t.Fatalf("replay must not emit the user card: %s", body)
+	}
+	if rec.Header().Get("X-Chat-Turn-Id") == "" || rec.Header().Get("X-Session-Id") != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("replay identity headers missing: %#v", rec.Header())
+	}
+}
+
+func TestReplayChatTurnDoesNotReplayIncompleteTurn(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if replayChatTurn(rec, "11111111-1111-4111-8111-111111111111", "55555555-5555-4555-8555-555555555555", []store.ChatMessage{{Role: "user", Content: "diag"}}) {
+		t.Fatal("replayChatTurn() = true for incomplete turn")
+	}
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+		t.Fatalf("incomplete replay mutated response: status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 

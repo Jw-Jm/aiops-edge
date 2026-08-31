@@ -164,6 +164,10 @@ const AiChat: React.FC = () => {
     if (!text && !execResult) return
     if (loading) return
     const sessionId = activeSession
+    // Stable per-submission identity: a transport retry can reuse this turn
+    // and Query API will converge transcript inserts instead of duplicating
+    // the user message.
+    const turnId = crypto.randomUUID()
     setInput('')
     if (text) setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content: text, timestamp: new Date().toISOString() }])
     setLoading(true); setProgress('正在分析…')
@@ -185,7 +189,7 @@ const AiChat: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, cluster_id: clusterId, exec_result: execResult || '' }),
+        body: JSON.stringify({ intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, turn_id: turnId, cluster_id: clusterId, exec_result: execResult || '' }),
         signal: controller.signal,
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -516,7 +520,7 @@ const AiChat: React.FC = () => {
         onOk={doExecute}
         okText="确认执行" cancelText="取消"
         okButtonProps={{ danger: true, loading: loading }}
-        width={600} destroyOnClose>
+        width={600} destroyOnHidden>
         <Alert type="warning" showIcon style={{ marginBottom: 14 }}
           message="此操作将改变运行环境，请确认已获授权"
           description="执行后将在目标环境实际运行以下命令，部分操作不可撤销。" />

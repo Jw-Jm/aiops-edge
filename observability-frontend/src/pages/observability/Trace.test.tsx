@@ -17,7 +17,7 @@ describe('Trace authentic failure states', () => {
   })
 
   it('shows an error state instead of an empty trace table when the query fails', async () => {
-    render(<MemoryRouter><Trace /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Trace /></MemoryRouter>)
     expect(await screen.findByText('trace backend unavailable')).toBeInTheDocument()
   })
 })
@@ -50,7 +50,7 @@ describe('Trace service filter contract', () => {
   it('renders service options from the services envelope', async () => {
     vi.mocked(getTraces).mockResolvedValue({ data: { data: [] } } as never)
     vi.mocked(getServices).mockResolvedValue({ data: { services: [{ service_name: 'checkout' }] } } as never)
-    render(<MemoryRouter><Trace /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Trace /></MemoryRouter>)
     const user = userEvent.setup()
     await user.click(screen.getAllByRole('combobox')[0])
     expect((await screen.findAllByText('checkout')).length).toBeGreaterThan(0)

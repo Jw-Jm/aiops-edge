@@ -149,7 +149,7 @@ const Changes: React.FC = () => {
       </div>
 
       <Modal title="登记变更" open={modalOpen} onOk={submit} confirmLoading={submitting}
-        onCancel={() => setModalOpen(false)} destroyOnClose width={560}>
+        onCancel={() => setModalOpen(false)} destroyOnHidden width={560}>
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
           <Form.Item name="cluster_id" label="集群" rules={[{ required: true, message: '请选择集群' }]}>
             <Select placeholder="选择集群" options={clusterOptions} showSearch optionFilterProp="label" />

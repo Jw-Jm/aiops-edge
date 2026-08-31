@@ -19,14 +19,14 @@ describe('InvestigationCenter identity projection', () => {
   })
 
   it('renders the persisted run principal instead of a fixed system identity', async () => {
-    render(<MemoryRouter><InvestigationCenter /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><InvestigationCenter /></MemoryRouter>)
     expect(await screen.findByText('user-123')).toBeInTheDocument()
     expect(screen.queryByText('system')).not.toBeInTheDocument()
   })
 
   it('shows an error state when the persisted run source is unavailable', async () => {
     vi.mocked(listRuns).mockRejectedValueOnce(new Error('run store unavailable'))
-    render(<MemoryRouter><InvestigationCenter /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><InvestigationCenter /></MemoryRouter>)
     expect(await screen.findByText('run store unavailable')).toBeInTheDocument()
   })
 })

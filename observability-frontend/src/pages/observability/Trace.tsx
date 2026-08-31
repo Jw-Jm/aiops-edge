@@ -190,7 +190,7 @@ const Trace: React.FC = () => {
         </>}
       </div>
 
-      <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose title={`Trace ${detail?.trace_id || ''}`}
+      <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnHidden title={`Trace ${detail?.trace_id || ''}`}
         styles={{ body: { padding: 16, background: 'var(--surface-1)' } }}>
         {drawerLoading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : detailError ? <ErrorState message={detailError} onRetry={() => selectedTraceId && openDetail(selectedTraceId)} /> : (
           <div>

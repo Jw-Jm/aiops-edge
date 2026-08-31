@@ -14,7 +14,7 @@ describe('RequireAuth', () => {
     useAuthStore.setState({ token: 'session-token', mustChangePassword: true })
 
     render(
-      <MemoryRouter initialEntries={['/overview']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/overview']}>
         <Routes>
           <Route path="/change-password" element={<div>change-password-page</div>} />
           <Route path="/overview" element={<RequireAuth><div>overview-page</div></RequireAuth>} />
@@ -30,7 +30,7 @@ describe('RequireAuth', () => {
     useAuthStore.setState({ token: 'session-token', mustChangePassword: true })
 
     render(
-      <MemoryRouter initialEntries={['/change-password']}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={['/change-password']}>
         <Routes>
           <Route path="/change-password" element={<RequireAuth><div>change-password-page</div></RequireAuth>} />
           <Route path="/login" element={<div>login-page</div>} />

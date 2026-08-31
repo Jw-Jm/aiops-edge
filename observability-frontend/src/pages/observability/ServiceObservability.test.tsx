@@ -47,7 +47,7 @@ describe('ServiceObservability service panorama', () => {
   })
 
   it('renders the required panorama sections instead of a force/topology toggle', async () => {
-    render(<MemoryRouter><ServiceObservability /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><ServiceObservability /></MemoryRouter>)
     await waitFor(() => expect(screen.getByText('服务列表')).toBeInTheDocument())
     expect(screen.getByText('服务摘要')).toBeInTheDocument()
     expect(screen.getByText('服务地图')).toBeInTheDocument()

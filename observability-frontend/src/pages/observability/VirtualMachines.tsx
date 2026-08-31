@@ -94,7 +94,7 @@ const VirtualMachines: React.FC = () => {
             : <Empty text="暂无虚拟机" hint="集群中未发现 KubeVirt 虚拟机" /> }} />}
       </div>
 
-      <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnClose
+      <Drawer width={620} open={drawerOpen} onClose={() => setDrawerOpen(false)} destroyOnHidden
         title={`虚拟机 ${detail?.name || ''}`}
         styles={{ body: { padding: 16, background: 'var(--surface-1)' } }}>
         {drawerLoading ? <div style={{ textAlign: 'center', padding: 60 }}><Spin /></div> : detailError ? <ErrorState message={detailError} /> : (

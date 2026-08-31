@@ -82,7 +82,7 @@ migrator_password="$(kubectl -n observability get secret aiops-secrets -o jsonpa
 }
 schema_rows="$(kubectl -n observability exec statefulset/mysql -- env MYSQL_PWD="${root_password}" mysql -uroot -N -e \
   "SELECT migration_id FROM aiops.aiops_schema_migrations ORDER BY migration_id;")"
-for version in 0001 0002 0003 0004 0005 0006 0007 0008 0009 0010 0011; do
+for version in 0001 0002 0003 0004 0005 0006 0007 0008 0009 0010 0011 0012 0013 0014 0015 0016; do
   if ! rg -n --fixed-strings "mysql/${version}" <<<"${schema_rows}" >/dev/null; then
     echo "schema migration ${version} is missing" >&2
     exit 1
@@ -96,7 +96,23 @@ if ! rg -n --fixed-strings "mysql/0011_graph_projection" <<<"${schema_rows}" >/d
   echo "0011_graph_projection is missing" >&2
   exit 1
 fi
+if ! rg -n --fixed-strings "mysql/0016_ai_chat_turn_id" <<<"${schema_rows}" >/dev/null; then
+  echo "0016_ai_chat_turn_id is missing" >&2
+  exit 1
+fi
+chat_turn_columns="$(kubectl -n observability exec statefulset/mysql -- env MYSQL_PWD="${root_password}" mysql -uroot -N -e \
+  "SELECT CONCAT(table_name, '.', column_name) FROM information_schema.columns WHERE table_schema='aiops' AND table_name='ai_chat_messages' AND column_name='turn_id'; \
+   SELECT CONCAT(table_name, '.', index_name) FROM information_schema.statistics WHERE table_schema='aiops' AND table_name='ai_chat_messages' AND index_name='uq_ai_chat_message_turn' GROUP BY table_name, index_name;")"
+rg -n --fixed-strings 'ai_chat_messages.turn_id' <<<"${chat_turn_columns}" >/dev/null || {
+  echo "ai_chat_messages.turn_id is missing" >&2
+  exit 1
+}
+rg -n --fixed-strings 'ai_chat_messages.uq_ai_chat_message_turn' <<<"${chat_turn_columns}" >/dev/null || {
+  echo "ai_chat_messages.uq_ai_chat_message_turn is missing" >&2
+  exit 1
+}
 printf '%s\n' "${schema_rows}"
+printf '%s\n' "${chat_turn_columns}"
 kubectl -n observability exec statefulset/mysql -- env MYSQL_PWD="${root_password}" mysql -uroot -N -e \
   "SHOW GRANTS FOR 'aiops_app'@'%'; SHOW GRANTS FOR 'aiops_migrator'@'%';"
 

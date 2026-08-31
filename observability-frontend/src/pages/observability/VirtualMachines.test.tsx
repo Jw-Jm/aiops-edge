@@ -20,7 +20,7 @@ describe('VirtualMachines authentic failure states', () => {
   })
 
   it('shows an error state instead of a misleading empty VM list', async () => {
-    render(<MemoryRouter><VirtualMachines /></MemoryRouter>)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><VirtualMachines /></MemoryRouter>)
     expect(await screen.findByText('KubeVirt backend unavailable')).toBeInTheDocument()
   })
 })
