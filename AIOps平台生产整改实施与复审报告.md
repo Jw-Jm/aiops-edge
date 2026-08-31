@@ -1,7 +1,7 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
 **复审日期：** 2026-08-31（Asia/Shanghai）
-**分支/基线：** `main` / `340286515c49b5edc163d95edf6485c67e04e41a`（服务镜像构建源）
+**分支/基线：** `main` / `54b9ae3`（生产路由/生命周期隔离修复提交；服务镜像构建源仍为 `340286515c49`，本次代码需重新构建候选镜像）
 **本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 19（2026-08-31 16:47–16:48 +0800），运行镜像标签 `git-340286515c49`（服务镜像构建源提交为 `3402865`）
 **工作区：** 已提交本轮整改；仅保留既有/运行时未跟踪文件 `ai-orchestrator/:memory:.ses`，未重置、格式化或覆盖用户既有修改。
 
@@ -100,8 +100,8 @@
 | P1-01：未选集群时 Chat 提交 `cluster_id=all` 导致不可用 | **已修复（本机验证）** | `observability-frontend/src/pages/ai/AiChat.tsx:163-189` 在发送前要求 canonical scope；Query `settings.go:941-1037` 继续拒绝 `all`/越权 scope；本机管理员登录、scope 选择后 SSE 24 events、1 done、0 error | 多副本并发与真实 Provider 证据仍属 P2-04 |
 | P1-02：自动处置/写权限可能被过早打开 | **安全默认已修复；真实动作未发布** | `values-prod.yaml`、Executor `main.go`、Broker profile 均默认 `disabled`/`realMutation=false`；本机 safety gate 通过且未调用 mutation | 若纳入发布范围，完成 P1-05 的 Broker/TokenRequest/审批/审计验收；否则持续保持 disabled |
 | P1-03：NetworkPolicy 非默认拒绝且 Query selector 错误 | **代码与本机 selector 已修复；生产 CNI 未验证** | `values-prod.yaml:86-88` 开启 egress default-deny；`networkpolicy.yaml`/`graph-networkpolicy.yaml` 使用 `app=query-api-http`；生产 Helm 渲染 37 个策略、缺 API CIDR 时 fail-closed；revision 19 运行态 selector 核对通过 | 候选集群注入真实 API Server CIDR，执行连通性/拒绝矩阵 |
-| P1-04：真实 Agent 能力未成为默认主链 | **主链已接线；能力仍部分实现** | Query Run→Outbox→签名 RunInvocation→Orchestrator/Investigation Worker；`investigation_app.py` 不再 import `main`；本机 RCA Run 8/8 ToolRun complete | DeepFlow/依赖等完整证据、真实 Provider 和容量门禁仍未通过；legacy Chat/flow 清理见 P2-01 |
-| P1-05：前端遗留入口与新网关兼容性不足 | **核心路径已收敛；遗留封装仍存在** | Query `ProxyChat` 是浏览器 Chat 入口；legacy suggestion/execute 路由由 production gate 关闭；前端与 Go/跨服务合同测试通过 | 完成 route inventory、删除/编译隔离旧 public handler 和 SQLite owner |
+| P1-04：真实 Agent 能力未成为默认主链 | **主链已接线；能力仍部分实现** | Query Run→Outbox→签名 RunInvocation→Orchestrator/Investigation Worker；`investigation_app.py` 不再 import `main`；本机 RCA Run 8/8 ToolRun complete；生产路由过滤已接线 | DeepFlow/依赖等完整证据、真实 Provider 和容量门禁仍未通过；源码级 legacy helper 清理仍属 P2-01 |
+| P1-05：前端遗留入口与新网关兼容性不足 | **核心路径已收敛；遗留源码仍存在** | Query `ProxyChat` 是浏览器 Chat 入口；production route inventory 仅保留 8 个健康/签名内部端点；legacy suggestion/execute 路由由生产路由树移除；前端与 Go/跨服务合同测试通过 | 删除/编译隔离旧 public handler 和 SQLite owner 仍需后续清理；本轮已阻止误接线进入生产 |
 | P1-06：HA、重启恢复和断线回放未用运行证据确认 | **代码具备基础闭环；生产能力未验证** | MySQL Run/Chat/Outbox/lease/replay 结构、Worker 2 副本和本机 revision 19 Ready；Gateway/Worker initContainer 后无重启；本机为单节点 RWO | 多节点故障、SSE resume、PITR、RPO/RTO、升级/回滚和跨副本 replay 演练 |
 
 ## 3. 实际架构还原
@@ -201,6 +201,7 @@ flowchart LR
 - **内部服务 SAN：** `deploy/helm/aiops/templates/_helpers.tpl:12-24,174-181` 在 required mTLS 时强制注入 `AIOPS_TLS_CLIENT_SAN`；`ai-orchestrator/mtls_server.py:20-43` 从 TLS transport 读取 peer certificate，`mtls.py:8-84` 精确匹配 DNS/URI SAN 并在 ASGI 前拒绝；Helm 使用 `--ssl-cert-reqs 2`，Go/Python listener 均 fail-closed。revision 19 的 Gateway/Worker 实际以 `python -m mtls_server` 启动，真实 Gateway→Worker mTLS `/health` 返回 200；生产仍需逐服务证书、轮换、撤销和跨副本矩阵。
 - **启动依赖与本地验证脚本：** `templates/ai-orchestrator/deployment.yaml` 和 `templates/investigation-worker/deployment.yaml` 增加 `wait-for-query-api` initContainer，以同一 TLS CA/Query `/readyz` 作为启动前置；`test-production-architecture-contracts.sh` 增加 ARCH-312/313/314/315 契约；`local-validation.sh` 在 `SKIP_IMAGE_BUILD=1` 时强制显式 `RELEASE_TAG`，并支持 `AIOPS_REUSE_K8S_TLS_SECRET` 避免验证期间无意轮换 CA。revision 19 本机两个 Worker 与 Gateway 的 initContainer 成功、业务容器重启数为 0。
 - **Worker profile 接线：** `templates/investigation-worker/deployment.yaml:43-51` 在 TLS profile 使用 `python -m mtls_server investigation_app:app --ssl-cert-reqs 2`，在非 TLS profile 显式使用 `uvicorn investigation_app:app`，避免错误回退到镜像默认的 `main:app`；生产与默认 profile Helm 渲染均核对通过。
+- **生产 Gateway 路由与生命周期隔离：** `ai-orchestrator/production_surface.py` 对直接路由和 FastAPI 懒加载 `APIRouter` wrapper 递归执行精确 allowlist；`main.py:157-220,4269-4296` 在 production 不启动 legacy scheduler/recovery，并在 OpenAPI 生成前移除旧 public handler；`data_cleanup_api.py:11-31` 将迁移 SQLite adapter 改为请求时懒加载。生产导入日志 `kept=8 retired=117`，`/health` 200，旧 Chat 路径不进入业务 handler，内部清理路由保留并先过鉴权；定向 route/cleanup 测试 39 passed，静态架构合同 ARCH-316–320 通过。
 - **生产 Mock fail-closed：** `ai-orchestrator/main.py` 在 `AIOPS_ENV=production`（或非本地的生产部署模式）且 `LLM_MOCK=true` 时在应用初始化前退出；`tests/test_llm_mock.py` 的子进程回归测试、ARCH-404 生产渲染契约和 revision 19 容器内组合测试均通过，避免运行时误把模拟诊断当作真实模型结果。
 - **契约脚本参数：** `test-production-architecture-contracts.sh` 与 `verify-aiops-workflow-gates.sh` 的逗号分隔 SAN 参数已按 Helm 语法转义；修复后两个脚本和完整 workflow gate 均通过。
 - **Query 作用域与硬编码租户回退：** `auth.go:317-366` 现在只读取 `auth_sessions` 的 MySQL active scope；`handler.go:300-312` 的后台指标租户未配置时返回空并跳过 ETT，不再使用固定 UUID；`main.py:1580-1625` 的 legacy mutation 也只接受签名 context。`TestRequestAuthorizationContextIgnoresClientTenantHeader`、`TestMetricsTenantIDFailsClosedWithoutConfiguredSystemTenant`、Query full/race 和 ARCH-105/106/107/108 均通过。
@@ -255,14 +256,14 @@ flowchart LR
 - **整改实现：** 先保持 disabled；需要动作时注入明确 profile、Broker mTLS/token、target namespace RBAC，执行器关闭 automount/fallback；为 valid/unknown ref、namespace/resource/action drift、过期/replay、broker down、响应丢失分别实现故障注入和 reconcile。
 - **验收标准：** 未签名/跨 tenant/cluster/namespace/resource/action、未知 ref、过期/重放请求均拒绝；有效 profile 返回不超过 300 秒 TokenRequest；Action/Approval/Executor/Broker/K8s audit 可用 action_id/request_id 关联；Broker/Executor 不可用时不执行；`EXECUTION_MODE=disabled` 测试持续通过。
 
-### P2-01：Legacy Chat/编排/兼容代码仍造成重复建设
+### P2-01：Legacy Chat/编排/兼容代码仍造成重复建设（生产入口已隔离）
 
 - **类型/要求：** 架构债务；生产只保留 canonical Query→Worker/Orchestrator boundary，legacy 不能成为第二 owner/入口。
-- **证据：** `main.py:1064-1207` 与 `1234-1356` 有两套 SSE thread/queue；`main.py:1584-1620`、`2342-2488` 等旧动作/审批路由仍存在但由 `LEGACY_DIRECT_MUTATIONS_ENABLED`/production gate 关闭；`investigation_app.py` 已不再 import main，说明运行时隔离已完成但源码仍冗余。
+- **证据：** `main.py:1064-1207` 与 `1234-1356` 有两套 SSE thread/queue；`main.py:1584-1620`、`2342-2488` 等旧动作/审批 handler 仍存在。`production_surface.py:18-29,75-126` 对 FastAPI 直接和懒加载 `APIRouter` 路由树执行精确 path/method allowlist；`main.py:4269-4296` 在生产导入完成后裁剪路由并清空 OpenAPI 缓存；`data_cleanup_api.py:11-31` 仅在内部清理调用时懒加载 `SessionStore`。`investigation_app.py` 已不再 import main，运行时隔离完成但源码仍冗余。
 - **触发/影响：** 新功能若误接 legacy handler，会恢复 SQLite、shell 或旧 scope 依赖，造成行为分叉和安全回归。
-- **根因：** 迁移采用环境开关和路由退休，未完成包级删除/编译隔离。
-- **整改实现：** 将 canonical Chat/Report/Action 适配器移入独立模块；legacy 仅保留明确迁移 CLI；生产构建静态禁止旧 public route、SQLite owner、shell/K8s direct mutation；增加 route inventory contract。
-- **验收标准：** production OpenAPI/路由清单无 legacy public handler；Worker import graph 不含 `main`/scheduler/SQLite；`rg` 静态规则和不可达测试通过；删除 legacy 模块后全量测试仍通过。
+- **根因：** 迁移采用环境开关和路由退休，尚未完成包级删除/编译隔离；FastAPI 新版路由采用懒加载 wrapper，简单遍历 `app.router.routes` 会误删合法内部路由。
+- **整改实现：** 新增 `production_surface.py` 精确 allowlist，递归裁剪懒加载 router wrapper；生产生命周期不启动 scheduler、Investigation recovery 或 legacy worker；清理适配器改为懒加载 SQLite，生产启动不创建 `ai-sessions.db`；`test-production-architecture-contracts.sh` 增加 ARCH-316–320 静态门禁，`tests/test_production_surface.py` 覆盖旧入口拒绝、wrapper 保留和无副作用导入。
+- **验收标准：** 生产导入日志 `kept=8`，有效内部清理路由可达且受鉴权，legacy public route 不出现在生产 OpenAPI/路由树；生产导入不创建 SQLite 文件；Worker import graph 不含 `main`/scheduler/SQLite；全量 Python 1211 passed、定向 route/cleanup 39 passed、Helm/架构合同通过。包级删除仍是后续 P2 清理，不作为本修复的虚假完成项。
 
 ### P2-02：遗留 fixture/采集协议仍出现 scope 字符串（核心授权路径已关闭）
 
@@ -310,9 +311,9 @@ flowchart LR
 
 | 专项 | 结论 | 评价 |
 |---|---|---|
-| 服务拆分 | 有限通过 | Query HTTP/Run/Alert/Worker/Collector/Ingest/Proxy/Broker/Executor 边界清晰；Orchestrator gateway 仍包含 legacy 兼容职责。 |
-| 分层与依赖方向 | 有限通过 | Worker/Orchestrator 通过 Query internal client 读取事实，Collector→Ingest 已统一；legacy Python import graph 仍可能扩大依赖。 |
-| 接口契约 | 有限通过 | Go/Python/TS 的 UUID、Run window、target_type、ToolResultEnvelope、SSE 和 signed context 已对齐；旧路由数量多，需 route inventory。 |
+| 服务拆分 | 有限通过 | Query HTTP/Run/Alert/Worker/Collector/Ingest/Proxy/Broker/Executor 边界清晰；Orchestrator 源码仍含 legacy 兼容职责，但 production route surface 已收敛为 8 个端点。 |
+| 分层与依赖方向 | 有限通过 | Worker/Orchestrator 通过 Query internal client 读取事实，Collector→Ingest 已统一；生产 Gateway 不启动 legacy scheduler/recovery，懒加载清理适配器避免启动时获取 SQLite；源码 import graph 仍待最终删除。 |
+| 接口契约 | 有限通过 | Go/Python/TS 的 UUID、Run window、target_type、ToolResultEnvelope、SSE 和 signed context 已对齐；`production_surface.py` 精确约束生产 path/method，旧路由数量仅存在于非生产兼容源码。 |
 | 数据 owner/事务 | 有限通过 | MySQL owner、outbox/lease/event/evidence/action 事务和 Chat scope 已具备；历史 CH migration、真实 datasource 和 backup 未验收。 |
 | 安全权限 | 有限通过 | JWT role 不授权、MySQL SoT、capability/scope/replay、credential_ref、禁写默认已实现；mTLS SAN/轮换及生产 Secret 缺证据。 |
 | 可靠性 | 有限通过 | WAL、outbox、lease、bounded graph、timeouts、PDB、readiness 存在；跨副本 replay、HA/PITR、Provider fault injection 未完成。 |
@@ -342,7 +343,7 @@ flowchart LR
 - `NO_DATA` ToolRun 持久化语义已修复并有 Go 回归测试；本机真实 RCA Run 的 8/8 工具为 `success/complete`、6 条证据。
 - mTLS required/SAN 配置已进入 Helm revision 19；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401；Python Gateway/Worker 以 `python -m mtls_server` 启动，错误 SAN 在 ASGI 前返回 403，真实 Gateway→Worker mTLS health 返回 200；默认非 TLS Worker profile 显式使用 `uvicorn investigation_app:app`。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations/contract；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
-- 完整 workflow gate、Helm 和合同脚本均通过（Python 1211 tests、前端 39 tests/build）；本轮 Go 服务逐包测试也通过。
+- 完整 workflow gate、Helm 和合同脚本均通过（Python 1211 tests、根目录合并回归 1220 passed/1 skipped、前端 39 tests/build）；本轮 Go 服务逐包测试也通过。
 - 本机 Helm revision 19 所有核心服务 Ready；9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
 
 ### 未通过（明确阻断）
