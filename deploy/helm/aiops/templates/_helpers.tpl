@@ -9,6 +9,178 @@ aiops.name: chart 名
 {{- .Chart.Name -}}
 {{- end -}}
 
+{{- define "aiops.mtlsEnv" -}}
+{{- if .Values.internalTLS.enabled }}
+- name: AIOPS_MTLS_REQUIRED
+  value: {{ .Values.internalTLS.required | quote }}
+- name: AIOPS_TLS_CERT_FILE
+  value: {{ .Values.internalTLS.certFile | quote }}
+- name: AIOPS_TLS_KEY_FILE
+  value: {{ .Values.internalTLS.keyFile | quote }}
+- name: AIOPS_TLS_CLIENT_CA_FILE
+  value: {{ .Values.internalTLS.clientCAFile | quote }}
+- name: AIOPS_TLS_CLIENT_SAN
+  value: {{ required "internalTLS.clientSAN must be injected when mTLS is enabled" .Values.internalTLS.clientSAN | quote }}
+{{- end }}
+{{- end -}}
+
+{{- define "aiops.mtlsVolumeMount" -}}
+{{- if .Values.internalTLS.enabled }}
+- name: internal-tls
+  mountPath: {{ .Values.internalTLS.mountPath }}
+  readOnly: true
+{{- end }}
+{{- end -}}
+
+{{- define "aiops.mtlsVolume" -}}
+{{- if .Values.internalTLS.enabled }}
+- name: internal-tls
+  secret:
+    secretName: {{ .Values.internalTLS.secretName }}
+    defaultMode: 0440
+{{- end }}
+{{- end -}}
+
+{{- define "aiops.mtlsPodSecurityContext" -}}
+{{- if .Values.internalTLS.enabled }}
+securityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+{{- end }}
+{{- end -}}
+
+{{- define "aiops.internalScheme" -}}
+{{- if .Values.internalTLS.enabled -}}https{{- else -}}http{{- end -}}
+{{- end -}}
+
+{{/*
+aiops.queryApiCommonEnv: shared query runtime env for http, run-dispatch, and alert-eval.
+*/}}
+{{- define "aiops.queryApiCommonEnv" -}}
+- name: AIOPS_ENV
+  value: {{ .Values.global.environment | default "production" | quote }}
+- name: AIOPS_SYSTEM_TENANT_ID
+  value: {{ .Values.queryApi.systemTenantId | quote }}
+- name: AIOPS_SYSTEM_TENANT_NAME
+  value: {{ .Values.queryApi.systemTenantName | quote }}
+- name: AIOPS_SYSTEM_CLUSTER_ID
+  value: {{ .Values.queryApi.systemClusterId | quote }}
+- name: AIOPS_SYSTEM_CLUSTER_SLUG
+  value: {{ .Values.queryApi.systemClusterSlug | quote }}
+- name: AIOPS_SYSTEM_CLUSTER_NAME
+  value: {{ .Values.queryApi.systemClusterName | quote }}
+- name: AIOPS_SYSTEM_CLUSTER_ENVIRONMENT
+  value: {{ .Values.queryApi.systemClusterEnvironment | quote }}
+- name: AIOPS_SYSTEM_CLUSTER_REGION
+  value: {{ .Values.queryApi.systemClusterRegion | quote }}
+- name: AIOPS_SYSTEM_CLUSTER_CREDENTIAL_REF
+  value: {{ .Values.queryApi.systemClusterCredentialRef | quote }}
+- name: AIOPS_SYSTEM_CLUSTER_IDENTITY_UID
+  value: {{ .Values.queryApi.systemClusterIdentityUID | quote }}
+- name: AUTH_REQUIRE_FIRST_LOGIN_PASSWORD_CHANGE
+  value: {{ .Values.queryApi.authRequireFirstLoginPasswordChange | quote }}
+- name: CLICKHOUSE_HOST
+  value: {{ .Values.queryApi.clickhouseHost | quote }}
+- name: CLICKHOUSE_PORT
+  value: {{ .Values.queryApi.clickhousePort | quote }}
+- name: CLICKHOUSE_USER
+  value: {{ .Values.clickhouse.user | default "default" | quote }}
+- name: CLICKHOUSE_PASSWORD
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
+- name: VICTORIA_METRICS_URL
+  value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
+- name: VICTORIA_LOGS_URL
+  value: {{ .Values.queryApi.victoriaLogsUrl }}/insert/jsonline
+- name: QUERY_READER_MODE
+  value: {{ .Values.queryApi.queryReaderMode | default "legacy" | quote }}
+- name: GRAPH_BACKEND
+  value: {{ tpl (.Values.queryApi.graphBackend | default .Values.graph.backend) . | quote }}
+- name: HUGEGRAPH_URL
+  value: {{ tpl .Values.queryApi.hugeGraphUrl . | quote }}
+- name: HUGEGRAPH_GRAPHSPACE
+  value: {{ tpl .Values.queryApi.hugeGraphGraphspace . | quote }}
+- name: HUGEGRAPH_GRAPH
+  value: {{ tpl .Values.queryApi.hugeGraphGraph . | quote }}
+- name: HUGEGRAPH_USERNAME
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_USERNAME }
+- name: HUGEGRAPH_PASSWORD
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_PASSWORD }
+- name: GRAPH_READ_TIMEOUT_MS
+  value: {{ tpl .Values.queryApi.graphReadTimeoutMs . | quote }}
+- name: GRAPH_WRITE_TIMEOUT_MS
+  value: {{ tpl .Values.queryApi.graphWriteTimeoutMs . | quote }}
+- name: K8S_API_URL
+  value: {{ .Values.queryApi.k8sApiUrl | quote }}
+- name: K8S_INSECURE_SKIP_VERIFY
+  value: {{ .Values.queryApi.k8sInsecureSkipVerify | default "false" | quote }}
+- name: JWT_SECRET
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: JWT_SECRET }
+- name: LLM_ENCRYPTION_KEY
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: LLM_ENCRYPTION_KEY }
+- name: AI_LLM_EGRESS_PROXY_URL
+  value: {{ printf "%s://ai-llm-egress-proxy.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability | quote }}
+- name: AI_ORCHESTRATOR_URL
+  value: {{ printf "%s://ai-orchestrator.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability | quote }}
+- name: AI_INVESTIGATION_WORKER_URL
+  value: {{ printf "%s://ai-investigation-worker.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability | quote }}
+- name: LLM_PROXY_TOKEN
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: LLM_PROXY_TOKEN }
+- name: INTERNAL_TOKEN
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
+- name: TRUSTED_CONTEXT_ISSUER
+  value: "ai-orchestrator"
+- name: TRUSTED_CONTEXT_PUBLIC_KEYS
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: ORCHESTRATOR_TO_QUERY_VERIFY_KEYS }
+- name: QUERY_TO_ORCHESTRATOR_SIGNING_KEY
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_SIGNING_KEY }
+- name: QUERY_TO_ORCHESTRATOR_TOKEN
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
+- name: AI_ACTION_EXECUTOR_URL
+  value: {{ .Values.queryApi.actionExecutorUrl | default (printf "%s://ai-action-executor.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability) | quote }}
+- name: AI_ACTION_EXECUTOR_SIGNING_KEY
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: AI_ACTION_EXECUTOR_SIGNING_KEY }
+- name: EXECUTOR_TOKEN
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: EXECUTOR_TOKEN }
+- name: MYSQL_HOST
+  value: {{ .Values.queryApi.mysqlHost | default "mysql" | quote }}
+- name: MYSQL_PORT
+  value: {{ .Values.queryApi.mysqlPort | default "3306" | quote }}
+- name: MYSQL_USER
+  value: {{ .Values.queryApi.mysqlUser | default "aiops_app" | quote }}
+- name: MYSQL_PASSWORD
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: MYSQL_APP_PASSWORD }
+- name: MYSQL_DB
+  value: {{ .Values.queryApi.mysqlDb | default "aiops" | quote }}
+- name: ADMIN_INITIAL_PASSWORD
+  valueFrom:
+    secretKeyRef: { name: aiops-secrets, key: ADMIN_INITIAL_PASSWORD }
+{{- if .Values.internalTLS.enabled }}
+- name: AIOPS_MTLS_REQUIRED
+  value: {{ .Values.internalTLS.required | quote }}
+- name: AIOPS_TLS_CERT_FILE
+  value: {{ .Values.internalTLS.certFile | quote }}
+- name: AIOPS_TLS_KEY_FILE
+  value: {{ .Values.internalTLS.keyFile | quote }}
+- name: AIOPS_TLS_CLIENT_CA_FILE
+  value: {{ .Values.internalTLS.clientCAFile | quote }}
+- name: AIOPS_TLS_CLIENT_SAN
+  value: {{ required "internalTLS.clientSAN must be injected when mTLS is enabled" .Values.internalTLS.clientSAN | quote }}
+{{- end }}
+{{- end -}}
+
 {{/*
 aiops.fullname: release-chart 组合名
 */}}

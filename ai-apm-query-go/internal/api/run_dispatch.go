@@ -120,6 +120,7 @@ func (h *Handler) dispatchOne(o store.AIRunOutbox) {
 		"cluster_id":              run.PrimaryClusterID,
 		"intent":                  run.Intent,
 		"action_mode":             run.ActionMode,
+		"target_type":             run.TargetType,
 		"resource_id":             run.TargetResourceID,
 		"service":                 run.TargetResourceID,
 		"message":                 run.Intent,
@@ -127,6 +128,16 @@ func (h *Handler) dispatchOne(o store.AIRunOutbox) {
 		"principal_id":            systemDispatchPrincipalID,
 		"original_principal_type": run.PrincipalType,
 		"original_principal_id":   run.Principal,
+	}
+	// The query window is frozen on the authoritative Run and must travel with
+	// the signed invocation.  Workers never derive evidence windows from their
+	// own wall clock; symptom_time deterministically defaults to window_end.
+	if run.TimeRangeStart != nil {
+		body["time_range_start"] = run.TimeRangeStart.UTC().Format(time.RFC3339Nano)
+	}
+	if run.TimeRangeEnd != nil {
+		body["time_range_end"] = run.TimeRangeEnd.UTC().Format(time.RFC3339Nano)
+		body["symptom_time"] = run.TimeRangeEnd.UTC().Format(time.RFC3339Nano)
 	}
 	if err := h.postRunInvocation(ctxStr, issuer.ServiceToken(), body); err != nil {
 		retry()
@@ -137,12 +148,15 @@ func (h *Handler) dispatchOne(o store.AIRunOutbox) {
 
 // postRunInvocation 向 orchestrator /internal/v1/run-invocations 派发（带持久化 Run body）。
 func (h *Handler) postRunInvocation(trustedContext, serviceToken string, body map[string]interface{}) error {
-	url := orchestratorBase() + "/internal/v1/run-invocations"
+	url := investigationWorkerBase() + "/internal/v1/run-invocations"
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: dispatchHTTPTimeout}
+	client, err := newInternalServiceClient(dispatchHTTPTimeout)
+	if err != nil {
+		return err
+	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return err

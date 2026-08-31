@@ -20,6 +20,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from trusted_context import TrustedContextError, sign_trusted_request_context_v2
+from mtls import urlopen as mtls_urlopen
 
 # ── control-plane 独立内部服务能力域（D1，不进 Tool Registry）─────────────
 CP_RUNS_MUTATE = "control_plane.runs.mutate"
@@ -84,7 +85,7 @@ def _default_http(
     }
     request = Request(url, data=data, method=method.upper(), headers=request_headers)
     try:
-        with urlopen(request, timeout=_DEFAULT_TIMEOUT) as response:
+        with mtls_urlopen(request, timeout=_DEFAULT_TIMEOUT) as response:
             return response.status, response.read()
     except HTTPError as e:
         try:

@@ -32,13 +32,13 @@ type ackState struct {
 // 语义：Append 返回递增 seq → 成功写 CH 后 Ack(seq) → 重启从 consecutiveAck 之后 replay。
 // 仿 ai-apm-ingest-go/internal/clickhouse/wal.go 的最小实现。
 type WAL struct {
-	mu               sync.Mutex
-	path             string
-	ackPath          string
-	file             *os.File
-	writer           *bufio.Writer
-	seq              uint64
-	acked            map[uint64]struct{}
+	mu                sync.Mutex
+	path              string
+	ackPath           string
+	file              *os.File
+	writer            *bufio.Writer
+	seq               uint64
+	acked             map[uint64]struct{}
 	consecutiveAckSeq uint64
 }
 
@@ -97,6 +97,12 @@ func (w *WAL) Append(kind string, v []byte) (uint64, error) {
 		return 0, err
 	}
 	if err := w.writer.Flush(); err != nil {
+		return 0, err
+	}
+	// Flush only moves bytes into the kernel page cache. Sync before the
+	// collector can advance a checkpoint so a confirmed batch survives a
+	// process/node crash.
+	if err := w.file.Sync(); err != nil {
 		return 0, err
 	}
 	return w.seq, nil

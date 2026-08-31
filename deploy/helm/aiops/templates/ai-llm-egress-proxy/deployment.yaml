@@ -19,6 +19,7 @@ spec:
       labels:
         app: ai-llm-egress-proxy
     spec:
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
       containers:
         - name: proxy
           image: "{{ .Values.llmEgressProxy.image.repository }}:{{ tpl .Values.llmEgressProxy.image.tag . }}"
@@ -41,12 +42,24 @@ spec:
                   key: LLM_PROVIDER_KEYS
             - name: LLM_ALLOWLIST
               value: {{ .Values.llmEgressProxy.allowlist | default "api.deepseek.com,api.openai.com" | quote }}
+            {{- include "aiops.mtlsEnv" . | nindent 12 }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
               port: 8080
+              {{- if .Values.internalTLS.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

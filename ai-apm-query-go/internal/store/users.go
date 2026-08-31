@@ -161,6 +161,64 @@ func (d *UserDAO) CreateSession(userUUID, sessionID string, expiresAt time.Time)
 	return err
 }
 
+// GetActiveSessionScope reads the server-owned scope selected for a session.
+// A missing tenant is intentionally represented by an empty value; callers
+// must return SCOPE_SELECTION_REQUIRED instead of selecting a default.
+func (d *UserDAO) GetActiveSessionScope(sessionID string) (tenantID, clusterID string, version int64, err error) {
+	conn := GetDB()
+	if conn == nil {
+		return "", "", 0, ErrMySQLUnavailable
+	}
+	err = conn.QueryRow(`SELECT COALESCE(active_tenant_id, ''), COALESCE(active_cluster_id, ''), authorization_version
+FROM auth_sessions WHERE session_id = ? LIMIT 1`, sessionID).Scan(&tenantID, &clusterID, &version)
+	return
+}
+
+// SetActiveSessionScope atomically verifies tenant membership and cluster
+// ownership before changing the session scope.  It is the only write path for
+// browser scope selection.
+func (d *UserDAO) SetActiveSessionScope(sessionID, userUUID, tenantID, clusterID string) (int64, error) {
+	conn := GetDB()
+	if conn == nil {
+		return 0, ErrMySQLUnavailable
+	}
+	tx, err := conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var member string
+	if err := tx.QueryRow(`SELECT t.id FROM tenants t JOIN user_tenants ut ON ut.tenant_id=t.id
+WHERE ut.user_uuid=? AND t.id=? AND t.enabled=1 AND ut.status='active' LIMIT 1`, userUUID, tenantID).Scan(&member); err != nil {
+		return 0, ErrUnauthorized
+	}
+	if clusterID != "" {
+		var owner string
+		if err := tx.QueryRow(`SELECT cluster_id FROM clusters WHERE cluster_id=? AND tenant_id=? AND lifecycle_status IN ('active','ready') LIMIT 1`, clusterID, tenantID).Scan(&owner); err != nil {
+			return 0, ErrUnauthorized
+		}
+	}
+	var version int64
+	if err := tx.QueryRow(`SELECT authorization_version FROM auth_sessions WHERE session_id=? AND user_uuid=? AND status='active' FOR UPDATE`, sessionID, userUUID).Scan(&version); err != nil {
+		return 0, ErrUnauthorized
+	}
+	version++
+	if _, err := tx.Exec(`UPDATE auth_sessions SET active_tenant_id=?, active_cluster_id=?, authorization_version=? WHERE session_id=? AND user_uuid=?`, tenantID, nullableString(clusterID), version, sessionID, userUUID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
+func nullableString(value string) interface{} {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 // GetByID 按 ID 查用户。
 func (d *UserDAO) GetByID(id int64) (*User, error) {
 	conn := GetDB()

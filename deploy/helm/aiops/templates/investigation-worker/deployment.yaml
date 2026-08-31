@@ -16,16 +16,22 @@ spec:
       labels:
         app: ai-investigation-worker
     spec:
-      serviceAccountName: ai-orchestrator
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
+      # Worker data access is exclusively through signed Query API calls. It
+      # must not inherit the orchestrator's Kubernetes read credentials.
+      serviceAccountName: ai-investigation-worker
+      automountServiceAccountToken: false
       containers:
         - name: investigation-worker
           image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ tpl .Values.investigationWorker.image.tag . }}
           imagePullPolicy: IfNotPresent
           command: ["uvicorn"]
-          args: ["investigation_app:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"]
+          args: ["investigation_app:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"{{- if .Values.internalTLS.enabled }}, "--ssl-keyfile", "{{ .Values.internalTLS.keyFile }}", "--ssl-certfile", "{{ .Values.internalTLS.certFile }}", "--ssl-ca-certs", "{{ .Values.internalTLS.clientCAFile }}", "--ssl-cert-reqs", "1"{{- end }}]
           ports:
             - containerPort: 8080
           env:
+            - name: AIOPS_ENV
+              value: {{ .Values.global.environment | default "production" | quote }}
             - name: AIOPS_DEPLOYMENT_MODE
               value: "production"
             - name: INVESTIGATION_WORKER_MODE
@@ -60,23 +66,54 @@ spec:
                 secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
+            {{- include "aiops.mtlsEnv" . | nindent 12 }}
 {{- if .Values.llmEgressProxy.enabled }}
             - name: LLM_PROXY_URL
-              value: "http://ai-llm-egress-proxy:8080"
+              value: {{ printf "%s://ai-llm-egress-proxy.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability | quote }}
             - name: LLM_PROXY_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: LLM_PROXY_TOKEN }
 {{- end }}
           readinessProbe:
+            {{- if .Values.internalTLS.enabled }}
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  curl --fail --silent --show-error --cacert {{ .Values.internalTLS.clientCAFile }}
+                  --cert {{ .Values.internalTLS.certFile }} --key {{ .Values.internalTLS.keyFile }}
+                  https://127.0.0.1:8080/readyz
+            {{- else }}
             httpGet: { path: /readyz, port: 8080 }
+            {{- end }}
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 3
           livenessProbe:
+            {{- if .Values.internalTLS.enabled }}
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  curl --fail --silent --show-error --cacert {{ .Values.internalTLS.clientCAFile }}
+                  --cert {{ .Values.internalTLS.certFile }} --key {{ .Values.internalTLS.keyFile }}
+                  https://127.0.0.1:8080/health
+            {{- else }}
             httpGet: { path: /health, port: 8080 }
+            {{- end }}
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
           resources:
             {{- toYaml .Values.investigationWorker.resources | nindent 12 }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
+      {{- end }}
 {{- end }}

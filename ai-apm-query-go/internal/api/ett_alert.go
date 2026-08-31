@@ -69,7 +69,14 @@ type capacityETTResult struct {
 // capacityPromQLForCluster / LinearRegression / EstimateTimeToThreshold）。
 // 无数据点、查询失败或 horizon 内未触达阈值时返回 nil（无数据不误报）。
 func (h *Handler) evaluateInstanceETT(metric string, threshold float64, instance string) *capacityETTResult {
-	promQL := capacityPromQLForScope(metric, instance, "", metricsTenantID())
+	tenantID := metricsTenantID()
+	if tenantID == "" {
+		// A background evaluator has no request-scoped identity. Without an
+		// explicitly configured system tenant it must not widen the query to all
+		// tenants or use a baked-in local tenant.
+		return nil
+	}
+	promQL := capacityPromQLForScope(metric, instance, "", tenantID)
 	if promQL == "" {
 		return nil
 	}

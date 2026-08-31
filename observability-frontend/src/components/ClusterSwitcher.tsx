@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react'
 import { Select } from 'antd'
 import { useUIStore } from '../store/uiStore'
+import { setActiveScope } from '../api/client'
 
 // 全局集群选择器：多集群纳管入口。
 // 遵循亮色极简设计：复用 token 变量与 antd 标准组件，不引入新风格。
@@ -28,9 +29,7 @@ export default function ClusterSwitcher() {
     if (['down', 'error', 'offline', 'disconnected'].includes(st)) return { color: '#dc2626', label: '失联' }
     return { color: '#a3aebe', label: '未知' }
   }
-  const options = [
-    { value: 'all', label: '全部集群', labelNode: <span>全部集群</span> },
-    ...clusters.map((c) => {
+  const options = clusters.map((c) => {
       const d = statusDot(c.status)
       return {
         value: c.cluster_id || `legacy-${c.id}`,
@@ -44,14 +43,23 @@ export default function ClusterSwitcher() {
           {c.node_count ? ` (${c.node_count}节点)` : ''}
         </span>,
       }
-    }),
-  ]
+    })
 
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
       <Select
         value={currentClusterId}
-        onChange={(v) => setCurrentCluster(v)}
+        placeholder="选择作用域"
+        onChange={async (v) => {
+          const selected = clusters.find((c) => c.cluster_id === v)
+          if (!selected?.tenant_id) return
+          try {
+            await setActiveScope(selected.tenant_id, selected.cluster_id)
+            setCurrentCluster(v)
+          } catch {
+            // Keep the previous scope on a server-side authorization failure.
+          }
+        }}
         options={options.map((o) => ({ ...o, label: o.labelNode || o.label }))}
         style={{ minWidth: 130 }}
         size="small"

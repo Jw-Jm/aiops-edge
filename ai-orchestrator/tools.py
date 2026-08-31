@@ -14,6 +14,7 @@ from internal_query import signed_query_api_request
 from skill_registry import ToolRegistry
 from kg_tools import kg_evidence_tool
 from trusted_context import TrustedContextError
+from mtls import urlopen as mtls_urlopen
 
 QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
@@ -39,6 +40,7 @@ def _get_json(url: str, *, request_context: RequestContext | None = None) -> dic
 #  - 对 argv/stdout/stderr/异常/SSE/审计日志统一做 key 脱敏。
 
 import time as _time
+from datetime import datetime, timedelta, timezone
 
 _LLM_CONFIG_CACHE: dict = {"fetched_at": 0.0, "config": None}
 _LLM_CONFIG_TTL = 60.0  # 短时内存缓存，避免每次调用重复拉取
@@ -51,33 +53,87 @@ def _redact_key(text: str, api_key: str) -> str:
     return text.replace(api_key, "***REDACTED***")
 
 
+def _is_production() -> bool:
+    return os.environ.get("AIOPS_ENV", "").strip().lower() == "production" or os.environ.get(
+        "AIOPS_DEPLOYMENT_MODE", ""
+    ).strip().lower() == "production"
+
+
 def _fetch_llm_config_for_k8sgpt() -> dict | None:
-    """按需从 query-api 内部接口拉取当前启用 LLM 配置（含真实 API key），短时缓存。"""
+    """Return an ephemeral K8sGPT configuration.
+
+    Production is strictly proxy-only: the orchestrator may receive the short-lived
+    proxy ingress token, but it must never read a provider API key or provider URL.
+    The non-production branch is retained only for the isolated local K8sGPT seam
+    covered by legacy tests; it is unreachable when ``AIOPS_ENV=production``.
+    """
     now = _time.time()
     if _LLM_CONFIG_CACHE["config"] and (now - _LLM_CONFIG_CACHE["fetched_at"]) < _LLM_CONFIG_TTL:
         return _LLM_CONFIG_CACHE["config"]
     try:
-        req = urllib.request.Request(f"{QUERY_API}/settings/llm/internal", method="GET")
-        req.add_header("X-Internal-Token", INTERNAL_TOKEN)
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            cfg = data.get("data", data)
-            api_key = cfg.get("api_key") or cfg.get("apiKey")
-            if not api_key:
+        if _is_production():
+            # Provider credentials and endpoint ownership stay in the egress proxy.
+            # Fetch only routing metadata through the same signed internal boundary
+            # used by the normal LLM path.  A missing signing key or proxy token is
+            # an explicit unavailable state, never a direct-provider fallback.
+            proxy_url = (os.environ.get("AI_LLM_EGRESS_PROXY_URL") or os.environ.get("LLM_PROXY_URL") or "").strip()
+            proxy_token = os.environ.get("LLM_PROXY_TOKEN", "").strip()
+            if not proxy_url or not proxy_token:
                 return None
+            from contracts import TrustedRequestContext
+            from uuid import UUID
+
+            now_dt = datetime.now(timezone.utc)
+            system_tenant = os.environ.get("AIOPS_SYSTEM_TENANT_ID", "").strip()
+            system_cluster = os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", "").strip()
+            if not system_tenant or not system_cluster:
+                return None
+            context = TrustedRequestContext(
+                issuer="ai-orchestrator", audience="ai-apm-query-go", request_id=UUID(str(_uuid.uuid4())),
+                run_id=UUID(str(_uuid.uuid4())), principal_type="system", principal_id=UUID(str(_uuid.uuid4())),
+                session_id=None,
+                tenant_id=UUID(system_tenant),
+                scope_kind="cluster",
+                cluster_id=UUID(system_cluster),
+                capability="llm.config.read", source="k8sgpt-config-reader", workload_kind="platform",
+                issued_at=now_dt, expires_at=now_dt + timedelta(seconds=30), nonce=UUID(str(_uuid.uuid4())),
+            )
+            raw = signed_query_api_request(f"{QUERY_API}/settings/llm/internal", context=context, timeout=5)
+            data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+            cfg = data.get("data", data)
             provider = str(cfg.get("provider", "openai") or "openai").lower()
-            # K8sGPT openai backend 兼容 OpenAI 协议（deepseek/其它 OpenAI-compatible 均可）
-            if provider not in ("openai", "deepseek", "azure", "custom", "openai-compatible"):
+            if provider not in ("openai", "deepseek"):
                 return None
             result = {
-                "api_key": api_key,
+                "api_key": proxy_token,
                 "model": str(cfg.get("model") or "gpt-4o"),
-                "base_url": str(cfg.get("base_url") or "https://api.openai.com/v1"),
+                "base_url": proxy_url.rstrip("/") + "/v1/proxy/" + provider,
+                "proxy_only": True,
             }
-            # 原地更新（不重绑定模块全局，保证外部引用与模块读取同一 dict）
-            _LLM_CONFIG_CACHE["fetched_at"] = now
-            _LLM_CONFIG_CACHE["config"] = result
-            return result
+        else:
+            # Local-only compatibility seam. Never execute this branch in a
+            # production deployment (guard above is deliberately fail-closed).
+            req = urllib.request.Request(f"{QUERY_API}/settings/llm/internal", method="GET")
+            req.add_header("X-Internal-Token", INTERNAL_TOKEN)
+            with mtls_urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                cfg = data.get("data", data)
+                api_key = cfg.get("api_key") or cfg.get("apiKey")
+                if not api_key:
+                    return None
+                provider = str(cfg.get("provider", "openai") or "openai").lower()
+                if provider not in ("openai", "deepseek", "azure", "custom", "openai-compatible"):
+                    return None
+                result = {
+                    "api_key": api_key,
+                    "model": str(cfg.get("model") or "gpt-4o"),
+                    "base_url": str(cfg.get("base_url") or "https://api.openai.com/v1"),
+                    "proxy_only": False,
+                }
+        # 原地更新（不重绑定模块全局，保证外部引用与模块读取同一 dict）
+        _LLM_CONFIG_CACHE["fetched_at"] = now
+        _LLM_CONFIG_CACHE["config"] = result
+        return result
     except Exception:
         return None
 
@@ -151,6 +207,26 @@ def _internal_investigation_query(*, tool_id: str, operation: str,
             provenance_fingerprint=str(body.get("digest") or ""),
         )
     return body
+
+
+def _unwrap_internal_query_result(result: object) -> tuple[dict | None, str | None]:
+    """Unwrap the canonical query-api ToolResultEnvelope.
+
+    Internal query endpoints return ``{quality, data, digest, ...}``, while
+    older test seams sometimes return the data object directly.  Keep the
+    compatibility shape for those seams, but never treat a failed envelope as
+    an empty successful result.
+    """
+    if not isinstance(result, dict):
+        return None, "invalid query response"
+    if result.get("quality") == "failed":
+        errors = result.get("source_errors") or result.get("errors") or []
+        detail = "; ".join(str(item) for item in errors[:3]) if isinstance(errors, list) else str(errors)
+        return None, detail or "query failed"
+    payload = result.get("data", result)
+    if not isinstance(payload, dict):
+        return None, "invalid query data"
+    return payload, None
 
 
 def query_metrics(service: str, tenant_id: str = "", cluster_id: str = "", *, request_context: RequestContext | None = None) -> str:
@@ -456,8 +532,10 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
             data = _internal_investigation_query(
                 tool_id="query_k8s.v1", operation="kubernetes", params={"namespace": "all"}, context=context,
             )
-            if not isinstance(data, dict) or data.get("error"):
-                return f"K8s 基础设施数据不可用（数据源错误: {data.get('error') if isinstance(data, dict) else data}）"
+            data, unwrap_error = _unwrap_internal_query_result(data)
+            if unwrap_error or data is None or data.get("error"):
+                detail = unwrap_error or data.get("error")
+                return f"K8s 基础设施数据不可用（数据源错误: {detail}）"
             pods = data.get("pods") or []
             nodes = data.get("node_details") or data.get("nodes") or []
             if not nodes:
@@ -498,7 +576,7 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
                 "X-Trusted-Request-Context": jws,
             },
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with mtls_urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode())
     except TrustedContextError as e:
         data = {"error": e.error_code}
@@ -506,8 +584,10 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
         data = {"error": "HTTP Error %s: %s" % (e.code, e.read().decode()[:200])}
     except (urllib.error.URLError, json.JSONDecodeError) as e:
         data = {"error": str(e)}
-    if not isinstance(data, dict) or data.get("error"):
-        return f"K8s 基础设施数据不可用（节点/Pod 数量未知，无法据此判断健康）: {data.get('error') if isinstance(data, dict) else data}"
+    data, unwrap_error = _unwrap_internal_query_result(data)
+    if unwrap_error or data is None or data.get("error"):
+        detail = unwrap_error or data.get("error")
+        return f"K8s 基础设施数据不可用（节点/Pod 数量未知，无法据此判断健康）: {detail}"
 
     pods = data.get("pods") or []
     nodes = data.get("node_details") or []
@@ -570,6 +650,6 @@ if not ToolRegistry.get("query_knowledge_graph"):
         cls_="safe",
         params={
             "service": {"type": "string", "required": True, "default": "", "desc": "服务名"},
-            "cluster_id": {"type": "string", "required": False, "default": "default", "desc": "集群ID"},
+            "cluster_id": {"type": "string", "required": True, "default": "", "desc": "集群ID（必须由可信上下文提供）"},
         },
     )(kg_evidence_tool)

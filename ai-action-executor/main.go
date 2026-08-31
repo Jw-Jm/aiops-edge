@@ -26,6 +26,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -87,6 +88,7 @@ type ActionResult struct {
 type server struct {
 	mode          ExecutionMode
 	token         string
+	brokerToken   string
 	mu            sync.Mutex
 	results       map[string]ActionResult // 进程内结果（非 SoT；权威在 Query API）
 	credBrokerURL string
@@ -94,8 +96,13 @@ type server struct {
 	// 真实 K8s mutation（F5 已废除）：in-cluster SA token + API server（KUBERNETES_SERVICE_HOST）。
 	k8sEnabled bool
 	k8sToken   string
+	k8sTokenMu sync.RWMutex
 	k8sHost    string
 	httpClient *http.Client
+	// A broker token is loaded into the request-scoped K8s client credential
+	// slot. Serialize broker-backed operations so concurrent actions cannot
+	// overwrite one another's short-lived token or clear it prematurely.
+	credentialMu sync.Mutex
 	// Function seams keep the execution state machine testable without requiring
 	// a live Kubernetes API server. Production uses the methods below directly.
 	readCurrentStateFn   func(ActionExecutionContext) (string, string, bool, error)
@@ -124,6 +131,7 @@ type ReconcileRequest struct {
 	ResourceType    string          `json:"resource_type"`
 	Operation       string          `json:"operation"`
 	TargetSpec      json.RawMessage `json:"target_spec"`
+	CredentialRef   string          `json:"credential_ref"`
 }
 
 type reconcileObserved struct {
@@ -148,26 +156,26 @@ func (e *k8sNotFoundError) Error() string {
 // 需挂载 /var/run/secrets/kubernetes.io/serviceaccount/token 且 POD_SA_ACCESS=true。
 func (s *server) newK8sClient() {
 	tokenBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	if err == nil && len(tokenBytes) > 0 {
-		host := os.Getenv("KUBERNETES_SERVICE_HOST")
-		port := os.Getenv("KUBERNETES_SERVICE_PORT")
-		s.k8sToken = strings.TrimSpace(string(tokenBytes))
-		if host != "" {
-			s.k8sHost = "https://" + host + ":" + firstNonEmpty(port, "443")
-			// C-05 K8s TLS：加载 in-cluster CA（验证 API Server 证书），不做 insecureSkipVerify。
-			tlsConf := &tls.Config{MinVersion: tls.VersionTLS12}
-			if ca, caErr := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); caErr == nil && len(ca) > 0 {
-				pool := x509.NewCertPool()
-				if pool.AppendCertsFromPEM(ca) {
-					tlsConf.RootCAs = pool
-				}
-			}
-			s.httpClient = &http.Client{
-				Timeout:   15 * time.Second,
-				Transport: &http.Transport{TLSClientConfig: tlsConf},
-			}
-			s.k8sEnabled = true
+	host := os.Getenv("KUBERNETES_SERVICE_HOST")
+	port := os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host != "" && (err == nil && len(tokenBytes) > 0 || strings.TrimSpace(s.credBrokerURL) != "") {
+		if err == nil {
+			s.k8sToken = strings.TrimSpace(string(tokenBytes))
 		}
+		s.k8sHost = "https://" + host + ":" + firstNonEmpty(port, "443")
+		// C-05 K8s TLS：加载 in-cluster CA（验证 API Server 证书），不做 insecureSkipVerify。
+		tlsConf := &tls.Config{MinVersion: tls.VersionTLS12}
+		if ca, caErr := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"); caErr == nil && len(ca) > 0 {
+			pool := x509.NewCertPool()
+			if pool.AppendCertsFromPEM(ca) {
+				tlsConf.RootCAs = pool
+			}
+		}
+		s.httpClient = &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: &http.Transport{TLSClientConfig: tlsConf},
+		}
+		s.k8sEnabled = true
 	}
 }
 
@@ -181,9 +189,21 @@ func main() {
 	s := &server{
 		mode:          mode,
 		token:         os.Getenv("EXECUTOR_TOKEN"),
+		brokerToken:   strings.TrimSpace(os.Getenv("BROKER_TOKEN")),
 		results:       map[string]ActionResult{},
 		credBrokerURL: os.Getenv("CREDENTIAL_BROKER_URL"),
 		verifyKeyB64:  os.Getenv("EXECUTOR_VERIFY_KEYS"),
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") || strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_DEPLOYMENT_MODE")), "production") {
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("POD_SA_ACCESS")), "true") {
+			log.Fatalf("production executor refuses long-lived POD_SA_ACCESS; use Credential Broker TokenRequest")
+		}
+		if mode == ModeApproved && strings.TrimSpace(s.credBrokerURL) == "" {
+			log.Fatalf("EXECUTION_MODE=approved in production requires CREDENTIAL_BROKER_URL")
+		}
+		if mode == ModeApproved && strings.TrimSpace(s.credBrokerURL) != "" && s.brokerToken == "" {
+			log.Fatalf("EXECUTION_MODE=approved in production requires BROKER_TOKEN")
+		}
 	}
 	// Deterministic local-validation fault injection is opt-in and cannot be
 	// enabled while the executor is disabled. Production deployments leave
@@ -194,8 +214,13 @@ func main() {
 		s.dropResponseAfterApply = os.Getenv("LOCAL_VALIDATION_DROP_RESPONSE_AFTER_APPLY") == "true"
 		s.dropResponseActionID = s.dispatchGateActionID
 	}
-	// F5 已废除：若 POD_SA_ACCESS=true 则启用真实 K8s mutation（in-cluster SA + 限定 RBAC）。
-	if os.Getenv("POD_SA_ACCESS") == "true" {
+	// Production mutation uses a short-lived token returned by Credential Broker.
+	// The executor still needs the API-server endpoint/TLS trust bundle, but it
+	// must not use its own long-lived service-account token.  Local validation may
+	// explicitly opt into the historical SA seam for isolated tests only.
+	if mode == ModeApproved && strings.TrimSpace(s.credBrokerURL) != "" {
+		s.newK8sClient()
+	} else if os.Getenv("POD_SA_ACCESS") == "true" {
 		s.newK8sClient()
 	}
 	if err := validateExecutionConfig(s.mode, s.k8sEnabled, s.verifyKeyB64); err != nil {
@@ -213,7 +238,11 @@ func main() {
 	mux.HandleFunc("/v1/executor/reconcile", s.handleReconcile)
 
 	addr := ":" + firstNonEmpty(os.Getenv("EXECUTOR_PORT"), "8080")
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	server := &http.Server{Addr: addr, Handler: requireMTLS(mux)}
+	if err := configureMTLSServer(server); err != nil {
+		log.Fatalf("mTLS configuration: %v", err)
+	}
+	if err := listenHTTP(server); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
@@ -257,10 +286,12 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	if ctx.ResourceType == "" {
-		// Legacy signed contexts defaulted to deployment. New canonical Actions
-		// always carry the concrete resource type in the signed body.
-		ctx.ResourceType = "deployment"
+	// Canonical execution contexts must carry an explicit target type and
+	// namespace.  Never infer a deployment/default namespace: doing so can
+	// redirect an approved action to a different object or tenant boundary.
+	if err := validateCanonicalTarget(ctx.ResourceType, ctx.Namespace, ctx.TargetName); err != nil {
+		writeJSON(w, http.StatusBadRequest, ActionResult{ActionID: ctx.ActionID, Status: "rejected", Message: err.Error()})
+		return
 	}
 	// 校验 action 身份完整性（action_hash 必须非空——绑定 immutable action）。
 	if ctx.ActionID == "" || ctx.ActionHash == "" || ctx.TargetUID == "" {
@@ -268,6 +299,17 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 			ActionID: ctx.ActionID, Status: "rejected", Message: "missing action_id/action_hash/target_uid",
 		})
 		return
+	}
+	if s.credBrokerURL != "" {
+		s.credentialMu.Lock()
+		defer s.credentialMu.Unlock()
+		token, tokenErr := s.issueCredential(ctx)
+		if tokenErr != nil {
+			writeJSON(w, http.StatusServiceUnavailable, ActionResult{ActionID: ctx.ActionID, Status: "rejected", Message: "credential broker unavailable: " + tokenErr.Error()})
+			return
+		}
+		s.setK8sToken(token)
+		defer s.setK8sToken("")
 	}
 	s.waitForDispatchGate(ctx.ActionID)
 	if err := validateExecutionConfig(s.mode, s.k8sEnabled, s.verifyKeyB64); err != nil {
@@ -368,18 +410,15 @@ func (s *server) readCurrentState(ctx ActionExecutionContext) (string, string, b
 		return s.readCurrentStateFn(ctx)
 	}
 	if s.k8sEnabled {
-		ns := ctx.Namespace
-		if ns == "" && ctx.ResourceType != "node" {
-			ns = "default"
+		if err := validateCanonicalTarget(ctx.ResourceType, ctx.Namespace, ctx.TargetName); err != nil {
+			return "", "", false, err
 		}
+		ns := strings.TrimSpace(ctx.Namespace)
 		name := ctx.TargetName
-		if name == "" {
-			name = ctx.TargetUID
-		}
 		if name == "" {
 			return "", "", false, errors.New("cannot resolve target name for real K8s reread")
 		}
-		observed, err := s.k8sReadObjectState(firstNonEmpty(ctx.ResourceType, "deployment"), ns, name)
+		observed, err := s.k8sReadObjectState(strings.ToLower(strings.TrimSpace(ctx.ResourceType)), ns, name)
 		if err != nil {
 			return "", "", false, err
 		}
@@ -389,6 +428,73 @@ func (s *server) readCurrentState(ctx ActionExecutionContext) (string, string, b
 	}
 	// 回退（无 K8s 访问）：模拟（无 drift）。
 	return ctx.TargetUID, ctx.ResourceVersion, false, nil
+}
+
+func (s *server) setK8sToken(token string) {
+	s.k8sTokenMu.Lock()
+	s.k8sToken = token
+	s.k8sTokenMu.Unlock()
+}
+
+func (s *server) currentK8sToken() string {
+	s.k8sTokenMu.RLock()
+	defer s.k8sTokenMu.RUnlock()
+	return s.k8sToken
+}
+
+// issueCredential exchanges an opaque credential_ref for a short-lived token.
+// The broker, not the executor, owns the underlying Kubernetes Secret.
+func (s *server) issueCredential(ctx ActionExecutionContext) (string, error) {
+	if strings.TrimSpace(ctx.CredentialRef) == "" {
+		return "", errors.New("credential_ref is empty")
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"credential_ref": ctx.CredentialRef,
+		"cluster_id":     ctx.ClusterID,
+		"namespace":      ctx.Namespace,
+		"resource":       ctx.ResourceType + ":" + ctx.TargetName,
+		"operation":      ctx.Operation,
+		"audience":       "ai-action-executor",
+		"ttl_seconds":    300,
+	})
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(s.credBrokerURL, "/")+"/v1/credentials/token", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.brokerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+s.brokerToken)
+	} else if s.token != "" {
+		// Local validation seam only; production broker authentication is a
+		// dedicated token and never reuses the executor API credential.
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
+	client := s.httpClient
+	if mtlsClient, clientErr := newMTLSClient(10 * time.Second); clientErr != nil {
+		return "", clientErr
+	} else if mtlsClient != nil {
+		client = mtlsClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("broker returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var result struct {
+		AccessToken string `json:"access_token"`
+		ExpiresAt   string `json:"expires_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(result.AccessToken) == "" {
+		return "", errors.New("broker response missing access_token")
+	}
+	return result.AccessToken, nil
 }
 
 // k8sReadDeployment 从真实 K8s API 读取 deployment 的 UID + resourceVersion。
@@ -416,7 +522,7 @@ func (s *server) k8sReadObjectState(resourceType, namespace, name string) (recon
 	if err != nil {
 		return reconcileObserved{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	req.Header.Set("Authorization", "Bearer "+s.currentK8sToken())
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return reconcileObserved{}, err
@@ -494,15 +600,12 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	if !s.k8sEnabled || s.httpClient == nil {
 		return errors.New("k8s client not configured")
 	}
-	resourceType := strings.ToLower(strings.TrimSpace(firstNonEmpty(ctx.ResourceType, "deployment")))
-	ns := ctx.Namespace
-	if ns == "" && resourceType != "node" {
-		ns = "default"
+	if err := validateCanonicalTarget(ctx.ResourceType, ctx.Namespace, ctx.TargetName); err != nil {
+		return err
 	}
+	resourceType := strings.ToLower(strings.TrimSpace(ctx.ResourceType))
+	ns := strings.TrimSpace(ctx.Namespace)
 	name := ctx.TargetName
-	if name == "" {
-		name = ctx.TargetUID
-	}
 	if name == "" {
 		return errors.New("cannot resolve target name")
 	}
@@ -532,7 +635,7 @@ func (s *server) patchTarget(ctx ActionExecutionContext, observedVersion string)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	req.Header.Set("Authorization", "Bearer "+s.currentK8sToken())
 	req.Header.Set("Content-Type", "application/strategic-merge-patch+json")
 	// 乐观并发：resourceVersion precondition（TOCTOU）。
 	if observedVersion != "" {
@@ -681,7 +784,7 @@ func (s *server) listDrainPods(ctx context.Context, nodeName string) ([]drainPod
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	req.Header.Set("Authorization", "Bearer "+s.currentK8sToken())
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -766,7 +869,7 @@ func (s *server) doK8sMutationWithContext(ctx context.Context, method, endpoint,
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.k8sToken)
+	req.Header.Set("Authorization", "Bearer "+s.currentK8sToken())
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -882,6 +985,41 @@ func validateExecutionConfig(mode ExecutionMode, k8sEnabled bool, verifyKeyB64 s
 	return nil
 }
 
+// validateResourceScope enforces the canonical Kubernetes target identity.
+// Namespaced objects must carry an explicit namespace; cluster-scoped nodes
+// must not carry one.  Empty values are rejected instead of being mapped to
+// historical "default" fallbacks.
+func validateResourceScope(resourceType, namespace string) error {
+	resourceType = strings.ToLower(strings.TrimSpace(resourceType))
+	namespace = strings.TrimSpace(namespace)
+	if resourceType == "" {
+		return errors.New("resource_type is required")
+	}
+	switch resourceType {
+	case "deployment", "statefulset", "daemonset", "pod":
+		if namespace == "" {
+			return errors.New("namespace is required for namespaced resource")
+		}
+	case "node":
+		if namespace != "" {
+			return errors.New("node must not include namespace")
+		}
+	default:
+		return errors.New("unsupported resource_type: " + resourceType)
+	}
+	return nil
+}
+
+func validateCanonicalTarget(resourceType, namespace, targetName string) error {
+	if err := validateResourceScope(resourceType, namespace); err != nil {
+		return err
+	}
+	if strings.TrimSpace(targetName) == "" {
+		return errors.New("target_name is required")
+	}
+	return nil
+}
+
 // buildPatchPayload 根据 operation 构造受控 patch（annotation / replicas 白名单）。
 func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 	switch ctx.Operation {
@@ -986,18 +1124,35 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing action context", http.StatusBadRequest)
 		return
 	}
+	if err := validateCanonicalTarget(req.ResourceType, req.Namespace, req.TargetName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.credBrokerURL != "" {
+		s.credentialMu.Lock()
+		defer s.credentialMu.Unlock()
+		token, tokenErr := s.issueCredential(ActionExecutionContext{
+			ActionID: req.ActionID, ActionHash: req.ActionHash, ClusterID: req.ClusterID,
+			TargetUID: req.TargetUID, TargetName: req.TargetName, ResourceVersion: req.ResourceVersion,
+			ResourceType: req.ResourceType, Namespace: req.Namespace, Operation: req.Operation,
+			TargetSpec: req.TargetSpec, CredentialRef: req.CredentialRef,
+		})
+		if tokenErr != nil {
+			writeJSON(w, http.StatusServiceUnavailable, ActionResult{ActionID: req.ActionID, Status: "execution_unknown", Message: "credential broker unavailable: " + tokenErr.Error()})
+			return
+		}
+		s.setK8sToken(token)
+		defer s.setK8sToken("")
+	}
 	var observed reconcileObserved
 	if s.readReconcileStateFn != nil {
 		observed, err = s.readReconcileStateFn(req)
 	} else if s.k8sEnabled {
-		resourceType := firstNonEmpty(strings.ToLower(strings.TrimSpace(req.ResourceType)), "deployment")
+		resourceType := strings.ToLower(strings.TrimSpace(req.ResourceType))
 		if resourceType == "node" && req.Operation == "drain" {
 			observed, err = s.k8sReadDrainState(req.TargetName)
 		} else {
-			ns := req.Namespace
-			if resourceType != "node" {
-				ns = firstNonEmpty(ns, "default")
-			}
+			ns := strings.TrimSpace(req.Namespace)
 			observed, err = s.k8sReadObjectState(resourceType, ns, req.TargetName)
 		}
 	} else {
@@ -1051,9 +1206,13 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 }
 
 func desiredStateMatches(req ReconcileRequest, observed reconcileObserved) (bool, error) {
+	resourceType := strings.ToLower(strings.TrimSpace(req.ResourceType))
+	if err := validateResourceScope(resourceType, req.Namespace); err != nil {
+		return false, err
+	}
 	switch req.Operation {
 	case "scale":
-		if req.ResourceType != "" && req.ResourceType != "deployment" && req.ResourceType != "statefulset" {
+		if resourceType != "deployment" && resourceType != "statefulset" {
 			return false, errors.New("scale reconciliation requires deployment or statefulset")
 		}
 		var desired struct {
@@ -1064,7 +1223,7 @@ func desiredStateMatches(req ReconcileRequest, observed reconcileObserved) (bool
 		}
 		return observed.Replicas == *desired.Replicas, nil
 	case "patch", "rollout_restart":
-		if req.Operation == "rollout_restart" && req.ResourceType != "" && req.ResourceType != "deployment" && req.ResourceType != "statefulset" && req.ResourceType != "daemonset" {
+		if req.Operation == "rollout_restart" && resourceType != "deployment" && resourceType != "statefulset" && resourceType != "daemonset" {
 			return false, errors.New("rollout_restart reconciliation requires a workload")
 		}
 		var desired struct {
@@ -1082,22 +1241,22 @@ func desiredStateMatches(req ReconcileRequest, observed reconcileObserved) (bool
 		}
 		return true, nil
 	case "cordon":
-		if req.ResourceType != "" && req.ResourceType != "node" {
+		if resourceType != "node" {
 			return false, errors.New("cordon reconciliation requires node")
 		}
 		return observed.Unschedulable, nil
 	case "uncordon":
-		if req.ResourceType != "" && req.ResourceType != "node" {
+		if resourceType != "node" {
 			return false, errors.New("uncordon reconciliation requires node")
 		}
 		return !observed.Unschedulable, nil
 	case "drain":
-		if req.ResourceType != "" && req.ResourceType != "node" {
+		if resourceType != "node" {
 			return false, errors.New("drain reconciliation requires node")
 		}
 		return observed.Unschedulable && observed.PodsRemaining == 0, nil
 	case "delete_pod", "evict_pod":
-		if req.ResourceType != "" && req.ResourceType != "pod" {
+		if resourceType != "pod" {
 			return false, errors.New("pod deletion reconciliation requires pod")
 		}
 		return false, nil

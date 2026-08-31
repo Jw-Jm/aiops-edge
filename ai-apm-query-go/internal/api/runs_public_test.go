@@ -215,3 +215,34 @@ func TestCreateRunPublicRejectsEmptyCluster(t *testing.T) {
 		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestFrozenRunWindowDefaultsAndBoundsEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 31, 1, 30, 0, 123456000, time.UTC)
+	start, end, err := frozenRunWindow(createRunPublicRequest{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if end.Sub(*start) != 30*time.Minute || !end.Equal(now.Truncate(time.Millisecond)) {
+		t.Fatalf("default window = %s..%s, want 30m ending at millisecond-truncated now", start, end)
+	}
+
+	start, end, err = frozenRunWindow(createRunPublicRequest{
+		TimeRangeStart: "2026-08-31T00:00:00Z", TimeRangeEnd: "2026-08-31T01:00:00.999Z",
+	}, now)
+	if err != nil || end.Sub(*start) != time.Hour+999*time.Millisecond || end.Nanosecond() != 999000000 {
+		t.Fatalf("explicit window = %s..%s, err=%v", start, end, err)
+	}
+}
+
+func TestFrozenRunWindowRejectsUnboundedOrMalformedInput(t *testing.T) {
+	now := time.Now()
+	for _, req := range []createRunPublicRequest{
+		{TimeRangeStart: "2026-08-31T00:00:00Z"},
+		{TimeRangeStart: "2026-08-31T02:00:00Z", TimeRangeEnd: "2026-08-31T01:00:00Z"},
+		{TimeRangeStart: "2026-08-29T00:00:00Z", TimeRangeEnd: "2026-08-31T01:00:00Z"},
+	} {
+		if _, _, err := frozenRunWindow(req, now); err == nil {
+			t.Fatalf("expected invalid time window for %+v", req)
+		}
+	}
+}

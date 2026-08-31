@@ -19,14 +19,21 @@ spec:
       labels:
         app: ai-orchestrator
     spec:
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
       serviceAccountName: ai-orchestrator
       containers:
         - name: ai-orchestrator
           image: {{ tpl .Values.aiOrchestrator.image . }}
           imagePullPolicy: IfNotPresent
+          {{- if .Values.internalTLS.enabled }}
+          command: ["uvicorn"]
+          args: ["main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20", "--ssl-keyfile", "{{ .Values.internalTLS.keyFile }}", "--ssl-certfile", "{{ .Values.internalTLS.certFile }}", "--ssl-ca-certs", "{{ .Values.internalTLS.clientCAFile }}", "--ssl-cert-reqs", "1"]
+          {{- end }}
           ports:
             - containerPort: 8080
           env:
+            - name: AIOPS_ENV
+              value: {{ .Values.global.environment | default "production" | quote }}
             - name: QUERY_API_URL
               value: {{ .Values.aiOrchestrator.queryApiUrl | quote }}
             - name: INTERNAL_TOKEN
@@ -61,10 +68,11 @@ spec:
               value: {{ .Values.aiOrchestrator.legacyDirectMutationsEnabled | quote }}
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
+            {{- include "aiops.mtlsEnv" . | nindent 12 }}
 {{- if .Values.llmEgressProxy.enabled }}
             # C-04：启用代理时，orchestrator 只拿代理地址和代理 token；Provider key 只在 proxy。
             - name: LLM_PROXY_URL
-              value: "http://ai-llm-egress-proxy:8080"
+              value: {{ printf "%s://ai-llm-egress-proxy.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability | quote }}
             - name: LLM_PROXY_TOKEN
               valueFrom:
                 secretKeyRef: { name: aiops-secrets, key: LLM_PROXY_TOKEN }
@@ -79,18 +87,51 @@ spec:
             - name: KG_BUILD_INTERVAL_SECONDS
               value: {{ .Values.aiOrchestrator.kgBuildIntervalSeconds | default 60 | quote }}
           startupProbe:
+            {{- if .Values.internalTLS.enabled }}
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  curl --fail --silent --show-error --cacert {{ .Values.internalTLS.clientCAFile }}
+                  --cert {{ .Values.internalTLS.certFile }} --key {{ .Values.internalTLS.keyFile }}
+                  https://127.0.0.1:8080/health
+            {{- else }}
             httpGet: { path: /health, port: 8080 }
+            {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 12
           readinessProbe:
+            {{- if .Values.internalTLS.enabled }}
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  curl --fail --silent --show-error --cacert {{ .Values.internalTLS.clientCAFile }}
+                  --cert {{ .Values.internalTLS.certFile }} --key {{ .Values.internalTLS.keyFile }}
+                  https://127.0.0.1:8080/readyz
+            {{- else }}
             httpGet: { path: /readyz, port: 8080 }
+            {{- end }}
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 3
           livenessProbe:
+            {{- if .Values.internalTLS.enabled }}
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  curl --fail --silent --show-error --cacert {{ .Values.internalTLS.clientCAFile }}
+                  --cert {{ .Values.internalTLS.certFile }} --key {{ .Values.internalTLS.keyFile }}
+                  https://127.0.0.1:8080/health
+            {{- else }}
             httpGet: { path: /health, port: 8080 }
+            {{- end }}
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
@@ -100,10 +141,12 @@ spec:
             # 统一数据目录: ChromaDB 案例库 + LangGraph session, 由 AIOPS_DATA_DIR 指向 (默认 /var/lib/aiops)
             - name: data
               mountPath: /var/lib/aiops
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: orchestrator-data
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
 ---
 apiVersion: v1
 kind: Service

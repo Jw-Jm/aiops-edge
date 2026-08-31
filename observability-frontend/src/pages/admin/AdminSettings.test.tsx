@@ -28,10 +28,8 @@ describe('AdminSettings LLM configuration', () => {
       data: {
         provider: 'deepseek',
         model: 'deepseek-chat',
-        base_url: 'https://api.deepseek.com/v1',
         configured: true,
-        api_key_set: true,
-        api_key_masked: 'sk-***',
+        proxy_ready: true,
       },
     } as never)
     vi.mocked(testLLMConnection).mockResolvedValue({ data: { success: true } } as never)
@@ -46,7 +44,6 @@ describe('AdminSettings LLM configuration', () => {
     await waitFor(() => expect(testLLMConnection).toHaveBeenCalledTimes(2))
     expect(testLLMConnection).toHaveBeenLastCalledWith({
       provider: 'deepseek',
-      base_url: 'https://api.deepseek.com/v1',
       model: 'deepseek-chat',
     })
   })

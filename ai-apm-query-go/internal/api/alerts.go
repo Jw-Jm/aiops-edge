@@ -63,6 +63,7 @@ func shouldAlertAfterDampening(rule AlertRule, streak int) bool {
 // AlertEvent represents a triggered alert event.
 type AlertEvent struct {
 	ID             string  `json:"id"`
+	TenantID       string  `json:"tenant_id,omitempty"`
 	RuleID         string  `json:"rule_id"`
 	RuleName       string  `json:"rule_name"`
 	Object         string  `json:"object"` // 具体告警对象（Pod 名/Deployment 名等），避免前端 fallback 到 service
@@ -196,7 +197,7 @@ func fromCHTime(s string) string {
 // version 用当前纳秒时间戳，确保同 id 新版本被 ReplacingMergeTree 保留。
 func (h *Handler) insertAlertEvents(events []AlertEvent) error {
 	var buf strings.Builder
-	buf.WriteString(`INSERT INTO observability.alert_events (id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, cluster_id, version, date) VALUES `)
+	buf.WriteString(`INSERT INTO observability.alert_events (id, tenant_id, rule_id, rule_name, service, severity, message, value, threshold, timestamp, count, first_timestamp, last_timestamp, status, acknowledged_at, acknowledged_by, resolved_at, resolved_by, timeline, investigation, signature, cluster_id, version, date) VALUES `)
 	version := uint64(time.Now().UnixNano())
 	for i, e := range events {
 		if i > 0 {
@@ -206,19 +207,17 @@ func (h *Handler) insertAlertEvents(events []AlertEvent) error {
 		if t, err := time.Parse(time.RFC3339, e.LastTimestamp); err == nil {
 			date = t.UTC().Format("2006-01-02")
 		}
-		buf.WriteString(fmt.Sprintf("('%s','%s','%s','%s','%s','%s',%v,%v,%s,%d,%s,%s,'%s',%s,'%s',%s,'%s','%s','%s','%s','%s',%d,%s)",
-			escCH(e.ID), escCH(e.RuleID), escCH(e.RuleName), escCH(e.Service), escCH(e.Severity), escCH(e.Message),
-			e.Value, e.Threshold,
-			chTimeVal(e.Timestamp), e.Count,
-			chTimeVal(e.FirstTimestamp), chTimeVal(e.LastTimestamp),
-			escCH(e.Status),
-			chTimeVal(e.AcknowledgedAt), escCH(e.AcknowledgedBy),
-			chTimeVal(e.ResolvedAt), escCH(e.ResolvedBy),
-			escCH(e.Timeline), escCH(e.Investigation), escCH(e.Signature),
-			escCH(e.Cluster),
-			version,
-			dateVal(date),
-		))
+		values := []string{
+			"'" + escCH(e.ID) + "'", "'" + escCH(e.TenantID) + "'", "'" + escCH(e.RuleID) + "'",
+			"'" + escCH(e.RuleName) + "'", "'" + escCH(e.Service) + "'", "'" + escCH(e.Severity) + "'",
+			"'" + escCH(e.Message) + "'", strconv.FormatFloat(e.Value, 'f', -1, 64),
+			strconv.FormatFloat(e.Threshold, 'f', -1, 64), chTimeVal(e.Timestamp), strconv.Itoa(e.Count),
+			chTimeVal(e.FirstTimestamp), chTimeVal(e.LastTimestamp), "'" + escCH(e.Status) + "'",
+			chTimeVal(e.AcknowledgedAt), "'" + escCH(e.AcknowledgedBy) + "'", chTimeVal(e.ResolvedAt),
+			"'" + escCH(e.ResolvedBy) + "'", "'" + escCH(e.Timeline) + "'", "'" + escCH(e.Investigation) + "'",
+			"'" + escCH(e.Signature) + "'", "'" + escCH(e.Cluster) + "'", strconv.FormatUint(version, 10), dateVal(date),
+		}
+		buf.WriteString("(" + strings.Join(values, ",") + ")")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -284,6 +283,7 @@ func (h *Handler) queryAlertEvents(service string, offset, limit int) ([]AlertEv
 			Investigation:  str(r["investigation"]),
 			Signature:      str(r["signature"]),
 			Cluster:        str(r["cluster_id"]), // A-6：读取集群标记
+			TenantID:       str(r["tenant_id"]),
 		})
 	}
 	return out, nil

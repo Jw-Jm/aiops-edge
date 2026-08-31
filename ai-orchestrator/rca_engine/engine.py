@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+from pathlib import Path
 from typing import Any, Mapping
 
 from .candidates import candidate_rows, graph_candidates, propagation_paths
 from .context import GraphContext
 from .entity_resolver import resolve_entity
-from .evidence import evidence_for_candidate, independent_categories
+from .evidence import evidence_for_candidate, independent_categories, unbound_context
+from .contradictions import evaluate_contradictions
 from .explanation import explain
 from .scorer import classify, normalize_timestamp, parse_timestamp, score_candidate, timestamp_text
+
+
+def _policy_digest() -> str:
+    policy_path = Path(__file__).with_name("policies") / "v1.json"
+    try:
+        payload = policy_path.read_bytes()
+    except OSError:
+        payload = b'{"version":"v1"}'
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True, init=False)
@@ -169,6 +181,9 @@ class RCAResult:
     window_start: str = ""
     window_end: str = ""
     symptom_time: str = ""
+    policy_version: str = "v1"
+    policy_digest: str = ""
+    context_evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"run_id": self.run_id, "root_cause": self.root_cause, "root_cause_status": self.root_cause_status,
@@ -178,7 +193,8 @@ class RCAResult:
                 "missing_evidence": self.missing_evidence, "contradictions": self.contradictions,
                 "graph_context": self.graph_context, "explanation": self.explanation,
                 "window_start": self.window_start, "window_end": self.window_end,
-                "symptom_time": self.symptom_time}
+                "symptom_time": self.symptom_time, "policy_version": self.policy_version,
+                "policy_digest": self.policy_digest, "context_evidence": self.context_evidence}
 
 
 class RCAEngineV2:
@@ -217,6 +233,8 @@ class RCAEngineV2:
                                evidence=evidence, missing_evidence=["graph_relation"],
                                graph_context=context.to_dict(), window_start=window_start,
                                window_end=window_end, symptom_time=symptom_time,
+                               policy_version="v1", policy_digest=_policy_digest(),
+                               context_evidence=unbound_context(evidence),
                                explanation=explain({"root_cause_status": "insufficient_evidence", "evidence": evidence}))
             context.partial = True
             context.stale = True
@@ -259,7 +277,11 @@ class RCAEngineV2:
         ranked.sort(key=lambda row: (-row["score"], row["entity_uid"]))
         top = ranked[0] if ranked else None
         second = ranked[1] if len(ranked) > 1 else None
+        contradictions = evaluate_contradictions(top, top.get("evidence", []), symptom_time=request.symptom_time,
+                                                  window_end=request.window_end) if top else []
         status = classify(top["score"], top["evidence_categories"], top["score_breakdown"]["temporal"]) if top else "insufficient_evidence"
+        if contradictions:
+            status = "insufficient_evidence"
         if top and second and top["score"] - second["score"] < .05 and status == "confirmed":
             status = "multiple_probable_roots"
         context.record("root_cause_selected") if top else None
@@ -272,7 +294,7 @@ class RCAEngineV2:
         payload = {"root_cause_status": status, "root_cause": top["entity_uid"] if top else None,
                    "candidate_roots": ranked[:5], "propagation_paths": paths, "evidence": evidence,
                    "missing_evidence": missing_evidence,
-                   "contradictions": []}
+                   "contradictions": contradictions}
         if status == "confirmed":
             context.record("graph_context_finalized")
         result = RCAResult(run_id=request.run_id, root_cause=top["entity_uid"] if top else None,
@@ -280,7 +302,10 @@ class RCAEngineV2:
                            candidate_roots=ranked[:5], propagation_paths=paths, evidence=evidence,
                            missing_evidence=payload["missing_evidence"], graph_context=context.to_dict(),
                            window_start=window_start, window_end=window_end,
-                           symptom_time=symptom_time, explanation=explain(payload, self.llm))
+                           symptom_time=symptom_time, contradictions=contradictions,
+                           policy_version="v1", policy_digest=_policy_digest(),
+                           context_evidence=unbound_context(evidence),
+                           explanation=explain(payload, self.llm))
         if self.persistence is not None:
             self.persistence(result.to_dict(), context.to_dict())
         return result

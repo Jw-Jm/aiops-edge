@@ -23,13 +23,13 @@ class ProposeBody(BaseModel):
     tenant_id: str
     cluster_id: str
     resource_id: str
-    namespace: str = "default"
+    namespace: str
     action_type: str
     parameters: dict[str, Any] = {}
     expected_effect: str
     verification_policy: str = "manual_check"
     root_cause_confidence: float = 0.0
-    resource_version: str = "0"
+    resource_version: str
     rca_status: str
     blast_radius: str = "single_resource"
     environment: str = "production"
@@ -43,6 +43,8 @@ class ConfirmBody(BaseModel):
 @router.post("/propose")
 def propose(body: ProposeBody):
     try:
+        if not body.namespace.strip() or not body.resource_version.strip():
+            raise ValueError("namespace and resource_version are required")
         action = get_hub().propose(
             run_id=body.run_id,
             tenant_id=body.tenant_id,

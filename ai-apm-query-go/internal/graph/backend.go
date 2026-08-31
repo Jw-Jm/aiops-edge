@@ -17,6 +17,9 @@ import (
 func NewRepositoryFromEnv() (GraphRepository, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("GRAPH_BACKEND")))
 	if backend == "" {
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") {
+			return nil, fmt.Errorf("GRAPH_BACKEND must be explicitly configured in production")
+		}
 		backend = "legacy_mysql"
 	}
 	switch backend {

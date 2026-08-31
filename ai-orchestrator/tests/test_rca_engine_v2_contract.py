@@ -4,6 +4,7 @@ import pytest
 
 from rca_engine import RCARequest
 from rca_engine.engine import RCAEngineV2
+from rca_engine.evidence import evidence_for_candidate, independent_categories
 from rca_engine.scorer import deterministic_temporal_score
 
 
@@ -125,3 +126,52 @@ def test_graph_outage_persists_local_only_context_for_replay():
     assert result.graph_enhanced is False
     assert len(persisted) == 1
     assert persisted[0][1]["warning_codes"][0] == "GRAPH_UNAVAILABLE"
+
+
+def test_unbound_evidence_is_context_only_and_never_scores_candidate():
+    items = [
+        {"category": "metric", "severity": 1.0, "entity_uid": "service:other"},
+        {"category": "trace", "severity": 1.0},
+        {"category": "alert", "severity": 1.0, "entity_uid": "service:db"},
+    ]
+    scoped = evidence_for_candidate(items, "service:db")
+    assert [item["category"] for item in scoped] == ["alert"]
+
+
+def test_provenance_groups_not_categories_define_independence():
+    assert independent_categories([
+        {"category": "metric", "correlation_group": "query-1"},
+        {"category": "alert", "correlation_group": "query-1"},
+    ]) == 1
+    assert independent_categories([
+        {"category": "metric", "correlation_group": "query-1"},
+        {"category": "trace", "correlation_group": "query-2"},
+    ]) == 2
+
+
+def test_contradiction_downgrades_candidate_to_insufficient_evidence():
+    graph = {
+        "vertices": [_entity("service:db", "db"), _entity("service:checkout", "checkout")],
+        "edges": [{"edge_uid": "edge:checkout-db", "source_uid": "service:checkout",
+                   "target_uid": "service:db", "propagates_failure": True,
+                   "confidence": 1.0, "candidate_direction": "OUT"}],
+    }
+
+    def graph_client(**params):
+        if params["graph_operation"] == "get_vertex":
+            return {"entity": _entity("service:checkout", "checkout")}
+        return graph
+
+    request = RCARequest(run_id="run-contradiction", tenant_id="tenant-1", cluster_id="cluster-1",
+                         window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+                         symptom_time="2026-08-27T00:30:00Z", entity_uid="service:checkout",
+                         evidence=(
+                             {"entity_uid": "service:db", "category": "metric", "severity": 1.0,
+                              "observed_at": "2026-08-27T00:25:00Z", "correlation_group": "metric-1"},
+                             {"entity_uid": "service:db", "category": "trace", "degraded": True,
+                              "observed_at": "2026-08-27T00:25:00Z", "correlation_group": "trace-1",
+                              "contradicts": True, "contradiction_code": "TRACE_HEALTHY"},
+                         ))
+    result = RCAEngineV2(graph_client=graph_client).diagnose(request)
+    assert result.root_cause_status == "insufficient_evidence"
+    assert result.contradictions[0]["code"] == "TRACE_HEALTHY"

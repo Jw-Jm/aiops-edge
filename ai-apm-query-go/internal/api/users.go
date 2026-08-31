@@ -279,8 +279,81 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 401, map[string]interface{}{"error": "unauthorized"})
 		return
 	}
+	tenantIDs, clusterRows := availableScopeOptions(userUUID)
 	respondJSON(w, 200, map[string]interface{}{
-		"username": u.Username, "role": u.Role, "display_name": u.DisplayName, "email": u.Email, "scope": u.Scope,
+		"user_id": userUUID, "session_id": authCtx.SessionID,
+		"username": u.Username, "role": u.Role, "display_name": u.DisplayName, "email": u.Email,
+		"scope": u.Scope, "active_scope": map[string]string{"tenant_id": authCtx.TenantID, "cluster_id": authCtx.ActiveClusterID},
+		"available_tenants": tenantIDs, "available_clusters": clusterRows,
+		"capabilities":         []string{"read", "investigate"},
 		"must_change_password": authCtx.MustChangePassword,
 	})
+}
+
+// MeScope changes the active server-side scope. No tenant or cluster from a
+// browser header is trusted; both values are validated in one MySQL
+// transaction before auth_sessions is updated.
+func (h *Handler) MeScope(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	authCtx, ok := requestAuthorizationContext(r)
+	if !ok || authCtx.UserID == "" || authCtx.SessionID == "" {
+		respondJSON(w, http.StatusForbidden, map[string]string{"error": "permission_denied"})
+		return
+	}
+	var req struct {
+		TenantID  string `json:"tenant_id"`
+		ClusterID string `json:"cluster_id"`
+	}
+	if err := decodeBody(r, &req); err != nil || req.TenantID == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "tenant_id required"})
+		return
+	}
+	version, err := (&store.UserDAO{}).SetActiveSessionScope(authCtx.SessionID, authCtx.UserID, req.TenantID, req.ClusterID)
+	if err != nil {
+		respondJSON(w, http.StatusForbidden, map[string]string{"error": "scope_not_authorized"})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"active_scope":          map[string]string{"tenant_id": req.TenantID, "cluster_id": req.ClusterID},
+		"authorization_version": version,
+	})
+}
+
+func availableScopeOptions(userUUID string) ([]string, []map[string]interface{}) {
+	conn := store.GetDB()
+	if conn == nil {
+		return []string{}, []map[string]interface{}{}
+	}
+	rows, err := conn.Query(`SELECT DISTINCT t.id FROM tenants t JOIN user_tenants ut ON ut.tenant_id=t.id
+WHERE ut.user_uuid=? AND t.enabled=1 AND ut.status='active' ORDER BY t.id`, userUUID)
+	if err != nil {
+		return []string{}, []map[string]interface{}{}
+	}
+	defer rows.Close()
+	tenants := []string{}
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			tenants = append(tenants, id)
+		}
+	}
+	clusters := []map[string]interface{}{}
+	for _, tenantID := range tenants {
+		crows, qerr := conn.Query(`SELECT cluster_id, slug, name, lifecycle_status FROM clusters
+WHERE tenant_id=? AND cluster_id IS NOT NULL AND cluster_id!='' ORDER BY name`, tenantID)
+		if qerr != nil {
+			continue
+		}
+		for crows.Next() {
+			var id, slug, name, status string
+			if crows.Scan(&id, &slug, &name, &status) == nil {
+				clusters = append(clusters, map[string]interface{}{"cluster_id": id, "slug": slug, "name": name, "status": status, "tenant_id": tenantID})
+			}
+		}
+		crows.Close()
+	}
+	return tenants, clusters
 }

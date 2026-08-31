@@ -159,6 +159,9 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		"/api/v1/settings/llm/history/1/rollback",
 		// A0-04（11.11.7）：/api/v1/ai/runs/{runID} 单段详情——GetRunPublic 有 tenant/run ownership 校验
 		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/graph-context",
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/evidences",
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/evidences/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 		// A0-04（11.11.4）：/api/v1/metrics/query——typed RED metrics（canonical tenant + concrete cluster）
 		"/api/v1/metrics/query",
 		// Browser-facing canonical read/admin routes used by the acceptance plan.
@@ -257,6 +260,8 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		// A0-04：多段子路径（非详情/events/cancel）不放行，避免 ProxyAI legacy 面被整体放开
 		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/actions",
 		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/something",
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/evidences/",
+		"/api/v1/ai/runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/evidences/a/b",
 		// Unknown legacy proxy paths must remain fail-closed even though the
 		// surrounding registered prefixes are canonical-protected.
 		"/api/v1/ops/not-registered",

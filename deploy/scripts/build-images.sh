@@ -68,6 +68,7 @@ case "$TARGET" in
     build ai-orchestrator ai-orchestrator
     build ai-event-collector event-collector
     build ai-action-executor ai-action-executor
+    build ai-credential-broker ai-credential-broker
     build ai-llm-egress-proxy ai-llm-egress-proxy
     build ai-apm-query-go schema-migrator Dockerfile.schema-migrator
     build ai-apm-query-go graph-schema-migrator Dockerfile.graph-schema-migrator
@@ -79,12 +80,13 @@ case "$TARGET" in
   orchestrator) build ai-orchestrator ai-orchestrator ;;
   event-collector) build ai-event-collector event-collector ;;
   executor)  build ai-action-executor ai-action-executor ;;
+  credential-broker) build ai-credential-broker ai-credential-broker ;;
   llm-proxy) build ai-llm-egress-proxy ai-llm-egress-proxy ;;
   schema-migrator) build ai-apm-query-go schema-migrator Dockerfile.schema-migrator ;;
   graph-schema-migrator) build ai-apm-query-go graph-schema-migrator Dockerfile.graph-schema-migrator ;;
   ipmi)      build ipmi-exporter ipmi-exporter ;;
   *)
-    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/event-collector/executor/llm-proxy/schema-migrator/graph-schema-migrator/ipmi)"
+    echo "未知服务: $TARGET (可选: all/frontend/query-api/ingest/orchestrator/event-collector/executor/credential-broker/llm-proxy/schema-migrator/graph-schema-migrator/ipmi)"
     exit 1
     ;;
 esac

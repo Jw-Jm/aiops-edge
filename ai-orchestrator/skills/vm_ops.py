@@ -12,7 +12,11 @@ INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
 
 
 def _api_headers():
-    h = {"X-Tenant-ID": "default"}
+    # Legacy VM skill has no trusted request context and is never a source of
+    # authorization. Refuse direct use rather than guessing a tenant/cluster.
+    if os.environ.get("AIOPS_DEPLOYMENT_MODE", "").strip().lower() == "production":
+        raise RuntimeError("SIGNED_CONTEXT_REQUIRED")
+    h = {}
     if INTERNAL_TOKEN:
         h["X-Internal-Token"] = INTERNAL_TOKEN
     return h

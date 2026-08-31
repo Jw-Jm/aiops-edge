@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
@@ -32,11 +33,9 @@ func loadTenants() {
 	d := &store.TenantDAO{}
 	rows, err := d.LoadAll()
 	if err != nil || len(rows) == 0 {
-		// default tenant（MySQL 空则初始化并持久化）
-		tenants = map[string]*Tenant{"default": {ID: "default", Name: "默认租户", QuotaAI: 0, Enabled: true}}
-		if err == nil {
-			_ = d.ReplaceAll([]store.Tenant{{ID: "default", Name: "默认租户", QuotaAI: 0, Enabled: true}})
-		}
+		// MySQL is the sole tenant authority. An unavailable/empty database must
+		// not manufacture a shared default tenant in process memory.
+		tenants = map[string]*Tenant{}
 		return
 	}
 	tenants = make(map[string]*Tenant, len(rows))
@@ -85,10 +84,11 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := io.ReadAll(r.Body)
 	var t Tenant
-	if json.Unmarshal(body, &t) != nil || t.ID == "" {
-		respondJSON(w, 400, map[string]interface{}{"error": "invalid tenant data, id is required"})
+	if json.Unmarshal(body, &t) != nil || !canonicalUUID.MatchString(strings.ToLower(strings.TrimSpace(t.ID))) {
+		respondJSON(w, 400, map[string]interface{}{"error": "invalid tenant data, canonical UUID id is required"})
 		return
 	}
+	t.ID = strings.ToLower(strings.TrimSpace(t.ID))
 	if t.Name == "" {
 		t.Name = t.ID
 	}
@@ -114,8 +114,8 @@ func (h *Handler) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Path[len("/api/v1/tenants/"):]
-	if id == "default" {
-		respondJSON(w, 400, map[string]interface{}{"error": "cannot delete default tenant"})
+	if !canonicalUUID.MatchString(strings.ToLower(strings.TrimSpace(id))) {
+		respondJSON(w, 400, map[string]interface{}{"error": "canonical tenant id is required"})
 		return
 	}
 	tenantsMu.Lock()

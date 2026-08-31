@@ -1,147 +1,147 @@
 {{- if .Values.queryApi.enabled }}
+{{- $http := .Values.queryApi.http | default dict }}
+{{- $runDispatch := .Values.queryApi.runDispatch | default dict }}
+{{- $alertEval := .Values.queryApi.alertEval | default dict }}
+{{- $httpReplicas := get $http "replicas" | default .Values.replicaCount }}
+{{- $runDispatchReplicas := get $runDispatch "replicas" | default 1 }}
+{{- $alertEvalReplicas := get $alertEval "replicas" | default 1 }}
+{{- $httpResources := get $http "resources" | default .Values.queryApi.resources }}
+{{- $runDispatchResources := get $runDispatch "resources" | default .Values.queryApi.resources }}
+{{- $alertEvalResources := get $alertEval "resources" | default .Values.queryApi.resources }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: query-api
+  name: query-api-http
   namespace: {{ .Values.namespace.observability }}
   labels:
-    app: query-api
+    app: query-api-http
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ $httpReplicas }}
   selector:
     matchLabels:
-      app: query-api
+      app: query-api-http
   template:
     metadata:
       labels:
-        app: query-api
+        app: query-api-http
     spec:
-      serviceAccountName: query-api
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
+      serviceAccountName: query-api-http
       containers:
-        - name: query-api
+        - name: query-api-http
           image: {{ tpl .Values.queryApi.image . }}
           imagePullPolicy: IfNotPresent
+          command: ["/query-api-http"]
           ports:
             - containerPort: 8080
           env:
-            - name: AIOPS_SYSTEM_TENANT_ID
-              value: {{ .Values.queryApi.systemTenantId | quote }}
-            - name: AIOPS_SYSTEM_TENANT_NAME
-              value: {{ .Values.queryApi.systemTenantName | quote }}
-            - name: AIOPS_SYSTEM_CLUSTER_ID
-              value: {{ .Values.queryApi.systemClusterId | quote }}
-            - name: AIOPS_SYSTEM_CLUSTER_SLUG
-              value: {{ .Values.queryApi.systemClusterSlug | quote }}
-            - name: AIOPS_SYSTEM_CLUSTER_NAME
-              value: {{ .Values.queryApi.systemClusterName | quote }}
-            - name: AIOPS_SYSTEM_CLUSTER_ENVIRONMENT
-              value: {{ .Values.queryApi.systemClusterEnvironment | quote }}
-            - name: AIOPS_SYSTEM_CLUSTER_REGION
-              value: {{ .Values.queryApi.systemClusterRegion | quote }}
-            - name: AIOPS_SYSTEM_CLUSTER_CREDENTIAL_REF
-              value: {{ .Values.queryApi.systemClusterCredentialRef | quote }}
-            - name: AIOPS_SYSTEM_CLUSTER_IDENTITY_UID
-              value: {{ .Values.queryApi.systemClusterIdentityUID | quote }}
-            - name: AUTH_REQUIRE_FIRST_LOGIN_PASSWORD_CHANGE
-              value: {{ .Values.queryApi.authRequireFirstLoginPasswordChange | quote }}
-            - name: CLICKHOUSE_HOST
-              value: {{ .Values.queryApi.clickhouseHost | quote }}
-            - name: CLICKHOUSE_PORT
-              value: {{ .Values.queryApi.clickhousePort | quote }}
-            - name: CLICKHOUSE_USER
-              value: {{ .Values.clickhouse.user | default "default" | quote }}
-            - name: CLICKHOUSE_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
-            - name: VICTORIA_METRICS_URL
-              value: {{ .Values.queryApi.victoriaMetricsUrl | quote }}
-            - name: VICTORIA_LOGS_URL
-              value: {{ .Values.queryApi.victoriaLogsUrl }}/insert/jsonline
-            # P6.3.3/P6.4.0: reader 路由。default=legacy（Phase 6 transition，未切生产）；
-            # cutover 受控窗口内翻为 new。显式非法值 → startup FAIL（拒绝启动，绝不静默回 legacy）。
-            - name: QUERY_READER_MODE
-              value: {{ .Values.queryApi.queryReaderMode | default "legacy" | quote }}
-            - name: GRAPH_BACKEND
-              value: {{ tpl (.Values.queryApi.graphBackend | default .Values.graph.backend) . | quote }}
-            - name: HUGEGRAPH_URL
-              value: {{ tpl .Values.queryApi.hugeGraphUrl . | quote }}
-            - name: HUGEGRAPH_GRAPHSPACE
-              value: {{ tpl .Values.queryApi.hugeGraphGraphspace . | quote }}
-            - name: HUGEGRAPH_GRAPH
-              value: {{ tpl .Values.queryApi.hugeGraphGraph . | quote }}
-            - name: HUGEGRAPH_USERNAME
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_USERNAME }
-            - name: HUGEGRAPH_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: HUGEGRAPH_PASSWORD }
-            - name: GRAPH_READ_TIMEOUT_MS
-              value: {{ tpl .Values.queryApi.graphReadTimeoutMs . | quote }}
-            - name: GRAPH_WRITE_TIMEOUT_MS
-              value: {{ tpl .Values.queryApi.graphWriteTimeoutMs . | quote }}
-            - name: K8S_API_URL
-              value: {{ .Values.queryApi.k8sApiUrl | quote }}
-            # C-05/F-12：生产必须验证 K8s API Server 证书（CA）。insecure 仅限本地验证 profile，
-            # 默认 false（fail-closed）——未显式设 true 时强制校验，杜绝误部署为跳过校验。
-            - name: K8S_INSECURE_SKIP_VERIFY
-              value: {{ .Values.queryApi.k8sInsecureSkipVerify | default "false" | quote }}
-            - name: JWT_SECRET
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: JWT_SECRET }
-            - name: LLM_ENCRYPTION_KEY
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: LLM_ENCRYPTION_KEY }
-            - name: INTERNAL_TOKEN
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: INTERNAL_TOKEN }
-            # V9.2 Service Identity (P3.5 infra). query-api verifies orchestrator→query
-            # signed contexts and (from P3.9) signs query→orchestrator contexts.
-            - name: TRUSTED_CONTEXT_ISSUER
-              value: "ai-orchestrator"
-            - name: TRUSTED_CONTEXT_PUBLIC_KEYS
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: ORCHESTRATOR_TO_QUERY_VERIFY_KEYS }
-            - name: QUERY_TO_ORCHESTRATOR_SIGNING_KEY
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_SIGNING_KEY }
-            - name: QUERY_TO_ORCHESTRATOR_TOKEN
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: QUERY_TO_ORCHESTRATOR_TOKEN }
-            # Stage D 接线（报告 §29）：query-api 是 ai-action-executor 的唯一调用方。
-            # AI_ACTION_EXECUTOR_URL 指向 executor 服务；signed context 用独立
-            # AI_ACTION_EXECUTOR_SIGNING_KEY 签发（不复用 QUERY_TO_ORCHESTRATOR_SIGNING_KEY），
-            # executor 持对应公钥（EXECUTOR_VERIFY_KEYS）验签。
-            # 未配置时 action 执行端点 fail-closed（EXECUTOR_UNAVAILABLE）。
-            - name: AI_ACTION_EXECUTOR_URL
-              value: {{ .Values.queryApi.actionExecutorUrl | default "http://ai-action-executor:8080" | quote }}
-            - name: AI_ACTION_EXECUTOR_SIGNING_KEY
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: AI_ACTION_EXECUTOR_SIGNING_KEY }
-            - name: EXECUTOR_TOKEN
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: EXECUTOR_TOKEN }
-            - name: MYSQL_HOST
-              value: {{ .Values.queryApi.mysqlHost | default "mysql" | quote }}
-            - name: MYSQL_PORT
-              value: {{ .Values.queryApi.mysqlPort | default "3306" | quote }}
-            - name: MYSQL_USER
-              value: {{ .Values.queryApi.mysqlUser | default "aiops_app" | quote }}
-            - name: MYSQL_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: MYSQL_APP_PASSWORD }
-            - name: MYSQL_DB
-              value: {{ .Values.queryApi.mysqlDb | default "aiops" | quote }}
-            - name: ADMIN_INITIAL_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: ADMIN_INITIAL_PASSWORD }
+            {{- include "aiops.queryApiCommonEnv" . | nindent 12 }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
           readinessProbe:
-            httpGet: { path: /readyz, port: 8080 }
+            httpGet: { path: /readyz, port: 8080{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
             initialDelaySeconds: 10
           livenessProbe:
-            httpGet: { path: /livez, port: 8080 }
+            httpGet: { path: /livez, port: 8080{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
             initialDelaySeconds: 20
           resources:
-            {{- toYaml .Values.queryApi.resources | nindent 12 }}
+            {{- toYaml $httpResources | nindent 12 }}
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: query-run-dispatch
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-run-dispatch
+spec:
+  replicas: {{ $runDispatchReplicas }}
+  selector:
+    matchLabels:
+      app: query-run-dispatch
+  template:
+    metadata:
+      labels:
+        app: query-run-dispatch
+    spec:
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
+      serviceAccountName: query-run-dispatch
+      containers:
+        - name: query-run-dispatch
+          image: {{ tpl .Values.queryApi.image . }}
+          imagePullPolicy: IfNotPresent
+          command: ["/query-run-dispatcher"]
+          env:
+            {{- include "aiops.queryApiCommonEnv" . | nindent 12 }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "kill -0 1"]
+            initialDelaySeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "kill -0 1"]
+            initialDelaySeconds: 10
+          resources:
+            {{- toYaml $runDispatchResources | nindent 12 }}
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: query-alert-eval
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-alert-eval
+spec:
+  replicas: {{ $alertEvalReplicas }}
+  selector:
+    matchLabels:
+      app: query-alert-eval
+  template:
+    metadata:
+      labels:
+        app: query-alert-eval
+    spec:
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
+      serviceAccountName: query-alert-eval
+      containers:
+        - name: query-alert-eval
+          image: {{ tpl .Values.queryApi.image . }}
+          imagePullPolicy: IfNotPresent
+          command: ["/query-alert-evaluator"]
+          env:
+            {{- include "aiops.queryApiCommonEnv" . | nindent 12 }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "kill -0 1"]
+            initialDelaySeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "kill -0 1"]
+            initialDelaySeconds: 10
+          resources:
+            {{- toYaml $alertEvalResources | nindent 12 }}
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -149,10 +149,10 @@ metadata:
   name: query-api
   namespace: {{ .Values.namespace.observability }}
   labels:
-    app: query-api
+    app: query-api-http
 spec:
   selector:
-    app: query-api
+    app: query-api-http
   ports:
     - port: 8080
       targetPort: 8080

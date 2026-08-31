@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,7 @@ func configureRunInvocationIssuer(t *testing.T) {
 }
 
 func setupProxyMySQL(mock sqlmock.Sqlmock) {
+	expectActiveSessionScope(mock, authzTenantID, "")
 	expectRequestIdentityAndTenant(mock)
 	// ClusterDAO.ResolveRef — SELECT id, cluster_id, tenant_id, slug, name, ... FROM clusters WHERE tenant_id=? AND slug=?
 	mock.ExpectQuery("SELECT id, cluster_id, tenant_id, slug, name, environment, region, credential_ref, lifecycle_status, created_at, updated_at\nFROM clusters WHERE tenant_id = \\? AND slug = \\?").
@@ -46,6 +48,32 @@ func setupProxyMySQL(mock sqlmock.Sqlmock) {
 		WithArgs(authzUserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "username", "password_hash", "display_name", "role", "email", "status", "scope", "is_approver", "created_at"}).
 			AddRow(1, authzUserID, "admin", "x", "admin", "admin", "", 1, "", 0, time.Now()))
+	expectNewChatSessionPersistence(mock)
+}
+
+func expectNewChatSessionPersistence(mock sqlmock.Sqlmock) {
+	// The first request creates a fresh, canonical UUID session.  History is
+	// queried before EnsureSession and must be an explicit no-row result.
+	mock.ExpectQuery(`(?s)SELECT session_id,intent,service,created_at,updated_at.*FROM ai_chat_sessions WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
+		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("SELECT user_uuid,tenant_id,cluster_id FROM ai_chat_sessions WHERE session_id=\\?").
+		WithArgs(sqlmock.AnyArg()).WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("INSERT INTO ai_chat_sessions").
+		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID, "", "orders").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT user_uuid FROM ai_chat_sessions.*WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
+		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid"}).AddRow(authzUserID))
+	mock.ExpectExec("INSERT INTO ai_chat_messages").
+		WithArgs(sqlmock.AnyArg(), "user", "", "diag", nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT user_uuid FROM ai_chat_sessions.*WHERE session_id=\? AND user_uuid=\? AND tenant_id=\? AND cluster_id=\?`).
+		WithArgs(sqlmock.AnyArg(), authzUserID, authzTenantID, proxyClusterID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid"}).AddRow(authzUserID))
+	mock.ExpectExec("INSERT INTO ai_chat_messages").
+		WithArgs(sqlmock.AnyArg(), "assistant", "", "ok", nil).
+		WillReturnResult(sqlmock.NewResult(2, 1))
 }
 
 func TestProxyChatSignsAI_CHATAndForwardsStreaming(t *testing.T) {
@@ -149,6 +177,7 @@ func TestProxyChatAcceptsClusterIDField(t *testing.T) {
 
 	// JWT + tenant 身份校验（与 setupProxyMySQL 一致），但 cluster 用 canonical UUID →
 	// ResolveRef 走 cluster_id 分支（非 slug 分支）。
+	expectActiveSessionScope(mock, authzTenantID, "")
 	expectRequestIdentityAndTenant(mock)
 	mock.ExpectQuery("SELECT id, cluster_id, tenant_id, slug, name, environment, region, credential_ref, lifecycle_status, created_at, updated_at\nFROM clusters WHERE tenant_id = \\? AND cluster_id = \\? AND cluster_id IS NOT NULL AND cluster_id != '' AND lifecycle_status IN \\('active', 'ready'\\)").
 		WithArgs(authzTenantID, proxyClusterID).
@@ -163,6 +192,7 @@ func TestProxyChatAcceptsClusterIDField(t *testing.T) {
 		WithArgs(authzUserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "username", "password_hash", "display_name", "role", "email", "status", "scope", "is_approver", "created_at"}).
 			AddRow(1, authzUserID, "admin", "x", "admin", "admin", "", 1, "", 0, time.Now()))
+	expectNewChatSessionPersistence(mock)
 
 	h := &Handler{}
 	token := generateJWTWithSession(authzUserID, authzSessionID, "admin", `{}`)
@@ -204,6 +234,7 @@ func TestProxyChatRejectsUserWithoutAIChatRole(t *testing.T) {
 	t.Cleanup(func() { store.SetDB(prev) })
 
 	// cluster 解析 + ownership 正常，但用户 status=0（inactive）→ 无 ai.chat 授权
+	expectActiveSessionScope(mock, authzTenantID, "")
 	expectRequestIdentityAndTenant(mock)
 	mock.ExpectQuery("SELECT id, cluster_id, tenant_id, slug, name, environment, region, credential_ref, lifecycle_status, created_at, updated_at\nFROM clusters WHERE tenant_id = \\? AND slug = \\?").
 		WithArgs(authzTenantID, proxyClusterSlug).
@@ -250,6 +281,7 @@ func TestProxyAIMissingClusterFailsClosed(t *testing.T) {
 	t.Cleanup(func() { store.SetDB(prev) })
 
 	// auth passes, but body has no cluster → fail closed before any cluster query.
+	expectActiveSessionScope(mock, authzTenantID, "")
 	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(authzUserID, authzSessionID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).

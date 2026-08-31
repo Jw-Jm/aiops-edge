@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 type proxyConfig struct {
@@ -48,7 +49,7 @@ func main() {
 		baseURLs:     baseURLs,
 		allowlist:    parseAllowlist(os.Getenv("LLM_ALLOWLIST"), baseURLs),
 		proxyToken:   os.Getenv("PROXY_TOKEN"),
-		client:       &http.Client{},
+		client:       &http.Client{Timeout: 60 * time.Second},
 	}
 	// LLM_PROVIDER_KEYS = "deepseek:sk-...,openai:sk-..."
 	for _, kv := range strings.Split(os.Getenv("LLM_PROVIDER_KEYS"), ",") {
@@ -76,10 +77,14 @@ func main() {
 		_, _ = w.Write([]byte("ready"))
 	})
 	mux.HandleFunc("/v1/proxy/", cfg.handleProxy)
+	server := &http.Server{Addr: ":" + firstNonEmpty(os.Getenv("PROXY_PORT"), "8080"), Handler: requireMTLS(mux)}
+	if err := configureMTLSServer(server); err != nil {
+		log.Fatalf("mTLS configuration: %v", err)
+	}
 
-	addr := ":" + firstNonEmpty(os.Getenv("PROXY_PORT"), "8080")
+	addr := server.Addr
 	log.Printf("ai-llm-egress-proxy listening on %s (providers: %s)", addr, strings.Join(keys(cfg.providerKeys), ","))
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := listenHTTP(server); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }

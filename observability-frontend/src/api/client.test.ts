@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { TENANT_ID } from './client'
+import api from './client'
 
-describe('tenant request context', () => {
-  it('uses a canonical UUID instead of the legacy default tenant alias', () => {
-    expect(TENANT_ID).toBe('7ed01afc-cc79-4ecd-8767-a2befa6168ad')
+describe('server-owned request context', () => {
+  it('does not inject a fixed tenant header into browser requests', () => {
+    const tenantHeader = ['X', 'Tenant-ID'].join('-')
+    expect((api.defaults.headers.common as Record<string, unknown>)[tenantHeader]).toBeUndefined()
+    expect(api.defaults.withCredentials).toBe(true)
   })
 })

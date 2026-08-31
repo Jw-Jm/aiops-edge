@@ -1,9 +1,14 @@
+{{- $denyAll := .Values.networkPolicy.egressDefaultDeny }}
+{{- $canary := .Values.networkPolicy.egressCanaryServices | default (list) }}
+{{- $apiCIDRs := .Values.networkPolicy.kubernetesApiCIDRs | default (list) }}
+{{- $dnsTo := list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) "podSelector" (dict "matchLabels" (dict "k8s-app" "kube-dns"))) }}
+{{- $dnsPorts := list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53) }}
 {{- if .Values.networkPolicy.enabled }}
 # =============================================================================
 # NetworkPolicy（G5 安全加固）
 # 【入站】默认拒绝 observability 命名空间内所有入站流量，仅放行组件间必需链路：
 #   frontend→query-api；query-api→orchestrator/clickhouse/mysql/victoria-metrics/victoria-logs；
-#   ingest→clickhouse/victoria-logs；event-collector→clickhouse；
+#   ingest→clickhouse/victoria-logs；event-collector→ingest；
 #   ai-orchestrator→clickhouse/mysql/victoria-metrics。
 # 另含保持平台功能所必需的链路：frontend 公共入口放行、orchestrator→query-api、
 # categraf→victoria-metrics（remote write）、victoria-metrics→ingest/orchestrator/node-exporter（抓取）、
@@ -21,7 +26,7 @@
 #     query-api           mysql:3306、clickhouse:8123、victoria-metrics:8428、
 #                         victoria-logs:9428、ai-orchestrator:8080、kube-system:443（K8s API）、DNS
 #     ingest              platform clickhouse:8123、victoria-metrics:8428、victoria-logs:9428、DNS
-#     event-collector     clickhouse:8123、kube-system:443（Event watch / Lease 选主）、DNS
+#     event-collector     ingest:8080、kube-system:443（Event watch / Lease 选主）、DNS
 #     categraf            victoria-metrics:8428（remote write）、mysql:3306（input.mysql）、DNS
 #                         （主机指标经 hostPath 本地读，无网络流量；未用 hostNetwork，策略生效）
 #     victoria-metrics    抓取 ingest:8080、ai-orchestrator:8080、query-api:8080、DNS；
@@ -46,10 +51,9 @@ metadata:
 spec:
   podSelector: {}
   policyTypes: ["Ingress"]
-{{- $denyAll := .Values.networkPolicy.egressDefaultDeny }}
-{{- $canary := .Values.networkPolicy.egressCanaryServices | default (list) }}
-{{- $dnsTo := list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")) "podSelector" (dict "matchLabels" (dict "k8s-app" "kube-dns"))) }}
-{{- $dnsPorts := list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53) }}
+{{- if and $denyAll (empty $apiCIDRs) (or .Values.queryApi.enabled .Values.eventCollector.enabled .Values.aiActionExecutor.enabled .Values.credentialBroker.enabled) }}
+{{- fail "networkPolicy.kubernetesApiCIDRs must be injected when egressDefaultDeny=true and a component uses the Kubernetes API" }}
+{{- end }}
 {{- if $denyAll }}
 ---
 # 1b) 默认拒绝所有出站流量（P0-P13 审计 P0-4：全局 egress default-deny）。
@@ -101,7 +105,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
       ports:
         - protocol: TCP
           port: 8080
@@ -116,6 +120,29 @@ spec:
 {{ toYaml $dnsTo | indent 8 }}
       ports:
 {{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if .Values.investigationWorker.enabled }}
+---
+# Durable Run dispatch is the only caller of the investigation worker's
+# trusted ingress.  Keep the worker unreachable from browser-facing services.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-run-dispatch-to-investigation-worker
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-investigation-worker
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: query-run-dispatch
+      ports:
+        - protocol: TCP
+          port: 8080
 {{- end }}
 {{- if and .Values.investigationWorker.enabled $denyAll }}
 ---
@@ -135,7 +162,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
       ports:
         - protocol: TCP
           port: 8080
@@ -151,10 +178,114 @@ spec:
       ports:
 {{ toYaml $dnsPorts | indent 8 }}
 {{- end }}
+{{- if or $denyAll (has "query-run-dispatch" $canary) }}
+---
+# Durable Run/action dispatch uses MySQL as its source of truth and sends
+# signed invocations to the dedicated investigation worker.  It must not
+# reach the browser-facing HTTP role or any data-plane service directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-run-dispatch-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: query-run-dispatch
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ai-investigation-worker
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- if .Values.aiActionExecutor.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ai-action-executor
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- if or $denyAll (has "query-alert-eval" $canary) }}
+---
+# Alert evaluation reads MySQL rule/leader state, ClickHouse/VictoriaLogs
+# evidence, VictoriaMetrics metrics, and the in-cluster Kubernetes API.
+# Webhook delivery is intentionally not an arbitrary egress grant; production
+# notification must use an approved notifier/egress proxy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-query-alert-eval-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: query-alert-eval
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mysql
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:
+        - podSelector:
+            matchLabels:
+              app: clickhouse
+      ports:
+        - protocol: TCP
+          port: 8123
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+      ports:
+        - protocol: TCP
+          port: 8428
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-logs
+      ports:
+        - protocol: TCP
+          port: 9428
+{{- if $apiCIDRs }}
+    - to:
+{{- range $cidr := $apiCIDRs }}
+        - ipBlock:
+            cidr: {{ $cidr | quote }}
+{{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
 {{- if or $denyAll (has "query-api" $canary) }}
 ---
 # 1d) query-api 出站白名单：mysql/clickhouse/victoria-metrics/victoria-logs/ai-orchestrator +
-#     kube-system:443（K8s API，in-cluster 访问）+ DNS。
+#     Kubernetes API server CIDR（发布时注入）+ DNS。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -163,7 +294,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: query-api
+      app: query-api-http
   policyTypes: ["Egress"]
   egress:
     - to:
@@ -201,13 +332,34 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+{{- if .Values.hugeGraph.enabled }}
     - to:
-        - namespaceSelector:
+        - podSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              app: hugegraph
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- if .Values.aiActionExecutor.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ai-action-executor
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- if $apiCIDRs }}
+    - to:
+{{- range $cidr := $apiCIDRs }}
+        - ipBlock:
+            cidr: {{ $cidr | quote }}
+{{- end }}
       ports:
         - protocol: TCP
           port: 443
+{{- end }}
     - to:
 {{ toYaml $dnsTo | indent 8 }}
       ports:
@@ -281,8 +433,8 @@ spec:
 {{- end }}
 {{- if or $denyAll (has "event-collector" $canary) }}
 ---
-# 1f) event-collector 出站白名单：clickhouse:8123（事件落库）+
-#     kube-system:443（K8s API：Event watch / Lease leader election）+ DNS。
+# 1f) event-collector 出站白名单：ingest:8080（事件接收）+
+#     Kubernetes API server CIDR（Event watch / Lease leader election）+ DNS。
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -297,17 +449,20 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: clickhouse
+              app: ingest
       ports:
         - protocol: TCP
-          port: 8123
+          port: 8080
+{{- if $apiCIDRs }}
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
+{{- range $cidr := $apiCIDRs }}
+        - ipBlock:
+            cidr: {{ $cidr | quote }}
+{{- end }}
       ports:
         - protocol: TCP
           port: 443
+{{- end }}
     - to:
 {{ toYaml $dnsTo | indent 8 }}
       ports:
@@ -382,7 +537,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
       ports:
         - protocol: TCP
           port: 8080
@@ -458,6 +613,34 @@ spec:
       ports:
 {{ toYaml $dnsPorts | indent 8 }}
 {{- end }}
+{{- if or $denyAll (has "frontend" $canary) }}
+---
+# Nginx serves the browser and proxies /api to query-api.  DNS is included
+# explicitly even though the global DNS rule also exists, so canary mode has
+# the same behavior as the full default-deny profile.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-egress-to-query-api
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: query-api-http
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
 ---
 # 2) frontend 为公共入口（NodePort/Ingress），放行任意来源访问
 apiVersion: networking.k8s.io/v1
@@ -482,7 +665,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: query-api
+      app: query-api-http
   policyTypes: ["Ingress"]
   ingress:
     - from:
@@ -505,7 +688,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
 ---
 # 5) query-api → clickhouse
 apiVersion: networking.k8s.io/v1
@@ -522,7 +705,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
 ---
 # 6) query-api → mysql
 apiVersion: networking.k8s.io/v1
@@ -539,7 +722,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
 ---
 # 7) query-api → victoria-metrics（PromQL passthrough）
 apiVersion: networking.k8s.io/v1
@@ -556,7 +739,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
 ---
 # 8) query-api → victoria-logs（日志写入/查询）
 apiVersion: networking.k8s.io/v1
@@ -573,7 +756,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
 ---
 # 9) ingest → clickhouse
 apiVersion: networking.k8s.io/v1
@@ -609,16 +792,16 @@ spec:
             matchLabels:
               app: ingest
 ---
-# 11) event-collector → clickhouse
+# 11) event-collector → ingest
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-event-collector-to-clickhouse
+  name: allow-event-collector-to-ingest
   namespace: {{ .Values.namespace.observability }}
 spec:
   podSelector:
     matchLabels:
-      app: clickhouse
+      app: ingest
   policyTypes: ["Ingress"]
   ingress:
     - from:
@@ -690,7 +873,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: query-api
+      app: query-api-http
   policyTypes: ["Ingress"]
   ingress:
     - from:
@@ -826,6 +1009,33 @@ spec:
             matchLabels:
               app: vmalert
 {{- end }}
+{{- if and .Values.vmalert.enabled $denyAll }}
+---
+# vmalert reads and remote-writes VictoriaMetrics.  The notifier is empty in
+# the chart; external notification must be added through an approved proxy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-vmalert-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: vmalert
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: victoria-metrics
+      ports:
+        - protocol: TCP
+          port: 8428
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
 {{- end }}
 {{- if .Values.llmEgressProxy.enabled }}
 ---
@@ -909,8 +1119,77 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: query-api
+              app: query-api-http
       ports:
         - protocol: TCP
           port: 8080
+{{- if $denyAll }}
+---
+# Approved executor egress is limited to the credential broker and the
+# Kubernetes API.  No direct database or public-network path is granted.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-action-executor-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-action-executor
+  policyTypes: ["Egress"]
+  egress:
+{{- if .Values.credentialBroker.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ai-credential-broker
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- if $apiCIDRs }}
+    - to:
+{{- range $cidr := $apiCIDRs }}
+        - ipBlock:
+            cidr: {{ $cidr | quote }}
+{{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
+{{- end }}
+{{- end }}
+{{- if and .Values.credentialBroker.enabled $denyAll }}
+---
+# Credential Broker only exchanges registered refs through the Kubernetes
+# TokenRequest API; it has no data-plane or public egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-credential-broker-egress
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels:
+      app: ai-credential-broker
+  policyTypes: ["Egress"]
+  egress:
+{{- if $apiCIDRs }}
+    - to:
+{{- range $cidr := $apiCIDRs }}
+        - ipBlock:
+            cidr: {{ $cidr | quote }}
+{{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+    - to:
+{{ toYaml $dnsTo | indent 8 }}
+      ports:
+{{ toYaml $dnsPorts | indent 8 }}
 {{- end }}

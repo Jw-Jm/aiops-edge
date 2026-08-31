@@ -11,11 +11,10 @@ type Config struct {
 	TenantID  string
 	ClusterID string
 
-	// ClickHouse 连接
-	CHHost     string
-	CHPort     int
-	CHUser     string
-	CHPassword string
+	// Unified Ingest endpoint. The collector never owns a ClickHouse
+	// credential or writes the platform tables directly.
+	IngestURL    string
+	IngestAPIKey string
 
 	// K8s 事件采集
 	K8SWatchEnabled bool
@@ -51,27 +50,25 @@ func loadConfig() *Config {
 	return &Config{
 		// Phase 5：tenant/cluster 不再默认 "default"。缺省即空，由 main.go 在启动时
 		// 用 EventScope.Validate() fail-closed（必须 canonical UUID，禁止 default/slug/数值）。
-		TenantID:          os.Getenv("TENANT_ID"),
-		ClusterID:         os.Getenv("CLUSTER_ID"),
-		CHHost:            getenv("CLICKHOUSE_HOST", "clickhouse.observability.svc.cluster.local"),
-		CHPort:            getenvInt("CLICKHOUSE_PORT", 8123),
-		CHUser:            os.Getenv("CLICKHOUSE_USER"),
-		CHPassword:        os.Getenv("CLICKHOUSE_PASSWORD"),
-		K8SWatchEnabled:   getenvBool("K8S_WATCH_ENABLED", true),
+		TenantID:              os.Getenv("TENANT_ID"),
+		ClusterID:             os.Getenv("CLUSTER_ID"),
+		IngestURL:             getenv("INGEST_URL", "http://ingest:8080"),
+		IngestAPIKey:          os.Getenv("INGEST_API_KEY"),
+		K8SWatchEnabled:       getenvBool("K8S_WATCH_ENABLED", true),
 		LeaderElectionEnabled: getenvBool("LEADER_ELECTION_ENABLED", true),
 		LeaseName:             getenv("LEASE_NAME", "aiops-event-collector-leader"),
 		LeaseNamespace:        getenv("LEASE_NAMESPACE", os.Getenv("POD_NAMESPACE")),
 		SELCollectEnabled:     getenvBool("SEL_COLLECT_ENABLED", false),
-		SELNodes:          splitCSV(os.Getenv("SEL_NODES")),
-		SELLocalOnly:      getenvBool("SEL_LOCAL_ONLY", true),
-		SELInterval:       getenvInt("SEL_INTERVAL_SECONDS", 120),
-		IPMIUser:          os.Getenv("IPMI_USER"),
-		IPMIPass:          os.Getenv("IPMI_PASS"),
-		IPMICmd:           getenv("IPMI_CMD", "ipmitool"),
-		BatchSize:         getenvInt("BATCH_SIZE", 500),
-		FlushInterval:     getenvInt("FLUSH_INTERVAL_SECONDS", 5),
-		WALDir:            os.Getenv("WAL_DIR"),
-		HTTPPort:          getenvInt("HTTP_PORT", 8080),
+		SELNodes:              splitCSV(os.Getenv("SEL_NODES")),
+		SELLocalOnly:          getenvBool("SEL_LOCAL_ONLY", true),
+		SELInterval:           getenvInt("SEL_INTERVAL_SECONDS", 120),
+		IPMIUser:              os.Getenv("IPMI_USER"),
+		IPMIPass:              os.Getenv("IPMI_PASS"),
+		IPMICmd:               getenv("IPMI_CMD", "ipmitool"),
+		BatchSize:             getenvInt("BATCH_SIZE", 500),
+		FlushInterval:         getenvInt("FLUSH_INTERVAL_SECONDS", 5),
+		WALDir:                os.Getenv("WAL_DIR"),
+		HTTPPort:              getenvInt("HTTP_PORT", 8080),
 	}
 }
 

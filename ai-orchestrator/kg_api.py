@@ -18,8 +18,18 @@ router = APIRouter(prefix="/api/v1/ai/kg")
 
 def _require_legacy_backend():
     """The old integer-ID facade is disabled once native graph backends run."""
-    if os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower() != "legacy_mysql":
+    backend = os.environ.get("GRAPH_BACKEND", "").strip().lower()
+    if not backend and os.environ.get("AIOPS_ENV", "").strip().lower() == "production":
+        raise HTTPException(503, "GRAPH_BACKEND_NOT_CONFIGURED")
+    if backend != "legacy_mysql":
         raise HTTPException(503, "GRAPH_FEATURE_UNAVAILABLE_LEGACY")
+
+
+def _require_cluster(cluster_id: str) -> str:
+    value = str(cluster_id or "").strip()
+    if os.environ.get("AIOPS_ENV", "").strip().lower() == "production" and value in {"", "default", "all"}:
+        raise HTTPException(400, "cluster_id is required")
+    return value
 
 
 def _require_admin(request: Request):
@@ -34,13 +44,14 @@ def _require_admin(request: Request):
 
 
 class _BuildBody(BaseModel):
-    cluster_id: str = "default"
+    cluster_id: str = ""
 
 
 @router.get("/graph")
-def kg_graph_full(cluster_id: str = "default"):
+def kg_graph_full(cluster_id: str = ""):
     """全量图（按 props_json 里的 cluster_id 过滤）。"""
     _require_legacy_backend()
+    cluster_id = _require_cluster(cluster_id)
     try:
         node_rows, rel_rows = kg_graph._load_graph()
         nodes = []
@@ -63,9 +74,10 @@ def kg_graph_full(cluster_id: str = "default"):
 
 
 @router.get("/entity")
-def kg_entity(type: str = "service", name: str = "", cluster_id: str = "default"):
+def kg_entity(type: str = "service", name: str = "", cluster_id: str = ""):
     """按 (type, name, cluster_id) 查单个节点；无则返回 {"entity": null}。"""
     _require_legacy_backend()
+    cluster_id = _require_cluster(cluster_id)
     node = kg_graph.get_node(type, name, cluster_id)
     return {"entity": node}
 
@@ -83,17 +95,19 @@ def kg_neighbors(id: int, hops: int = 1, edge_types: str = ""):
 @router.get("/path")
 def kg_path(from_type: str = "service", from_name: str = "",
             to_type: str = "service", to_name: str = "",
-            cluster_id: str = "default"):
+            cluster_id: str = ""):
     """两节点最短路径（节点 id 序列）。"""
     _require_legacy_backend()
+    cluster_id = _require_cluster(cluster_id)
     return {"path": kg_graph.shortest_path(
         from_type, from_name, to_type, to_name, cluster_id)}
 
 
 @router.get("/impact")
-def kg_impact(service: str, cluster_id: str = "default", depth: int = 3):
+def kg_impact(service: str, cluster_id: str = "", depth: int = 3):
     """服务的下游影响面（沿出边 BFS 闭包）。"""
     _require_legacy_backend()
+    cluster_id = _require_cluster(cluster_id)
     node = kg_graph.get_node("service", service, cluster_id)
     if node is None:
         return {"service": service, "nodes": [], "edges": []}
@@ -132,7 +146,7 @@ def kg_evidence(entity_id: int, limit: int = 10):
             props = change.get("props", {})
             changes.append({
                 "id": props.get("change_id", change["name"]),
-                "cluster_id": props.get("cluster_id", "default"),
+                "cluster_id": props.get("cluster_id", ""),
                 "service": props.get("service", ""),
                 "change_type": props.get("change_type", ""),
                 "operator": props.get("operator", ""),
@@ -147,4 +161,4 @@ def kg_build(body: _BuildBody, request: Request):
     """重建指定集群的知识图谱（仅 admin）。"""
     _require_legacy_backend()
     _require_admin(request)
-    return kg_graph.build_all(body.cluster_id)
+    return kg_graph.build_all(_require_cluster(body.cluster_id))

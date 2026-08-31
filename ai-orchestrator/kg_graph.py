@@ -31,9 +31,8 @@ REL_TYPES = {
     "RAISES", "CAUSED_BY", "MENTIONED_IN",
 }
 
-_SYSTEM_TENANT_ID = os.environ.get(
-    "AIOPS_SYSTEM_TENANT_ID", "7ed01afc-cc79-4ecd-8767-a2befa6168ad")
-_SYSTEM_CLUSTER_ID = os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", "default")
+_SYSTEM_TENANT_ID = os.environ.get("AIOPS_SYSTEM_TENANT_ID", "").strip()
+_SYSTEM_CLUSTER_ID = os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", "").strip()
 _QUERY_TOOLS = {
     "topology": "query_topology.v1",
     "kubernetes": "query_k8s.v1",
@@ -70,6 +69,8 @@ def _kg_request(operation: str, body: dict, *, write: bool = False) -> dict:
 
 def _query_source(operation: str, cluster_id: str, params: Optional[dict] = None) -> dict:
     """Read source facts through the canonical query-api boundary."""
+    if not str(_SYSTEM_TENANT_ID).strip() or not str(cluster_id).strip() or str(cluster_id).strip() in {"default", "all"}:
+        raise ValueError("knowledge graph source requires an explicit tenant and cluster scope")
     from internal_query_client import InternalQueryClient
     from trusted_context_issuer import TrustedContextIssuer
     from internal_query import _load_private_key
@@ -209,13 +210,15 @@ def _find_node_id(node_type: str, node_name: str) -> Optional[int]:
 def upsert_node(type_, name, props: dict) -> int:
     """按 (type, name, props.cluster_id) 去重 upsert 节点。
 
-    - props 缺 cluster_id 默认 "default"，缺 created_by 默认 "auto"。
+    - props 缺 cluster_id 直接拒绝，created_by 可由系统标记为 auto。
     - 已存在且 created_by=="manual"：不改动（返回原 id，记 nodes_skipped）。
     - 已存在且非 manual：合并 props_json（新值覆盖旧值同键），刷新 updated_at。
     - 不存在：INSERT，返回新 id。
     """
     props = dict(props)
-    cluster_id = str(props.get("cluster_id", "default"))
+    cluster_id = str(props.get("cluster_id", "")).strip()
+    if not cluster_id or cluster_id in {"default", "all"}:
+        raise ValueError("knowledge graph node requires an explicit cluster_id")
     props["cluster_id"] = cluster_id
     props.setdefault("created_by", "auto")
     result = _kg_request("upsert_node", {
@@ -233,11 +236,13 @@ def upsert_node(type_, name, props: dict) -> int:
 def upsert_edge(src_id, dst_id, rel_type, props: dict) -> int:
     """按 (src_id, dst_id, rel_type) 去重 upsert 边；存在则合并 props。"""
     props = dict(props)
-    props.setdefault("cluster_id", "default")
+    props.setdefault("cluster_id", "")
+    if not str(props.get("cluster_id") or "").strip() or str(props.get("cluster_id")).strip() in {"default", "all"}:
+        raise ValueError("knowledge graph edge requires an explicit cluster_id")
     props.setdefault("created_by", "auto")
     result = _kg_request("upsert_edge", {
         "src_id": int(src_id), "dst_id": int(dst_id),
-        "cluster_id": str(props.get("cluster_id", "default")),
+        "cluster_id": str(props.get("cluster_id", "")),
         "edge_type": rel_type, "edge_props": props,
     }, write=True)
     if result.get("created"):
@@ -251,9 +256,21 @@ def upsert_edge(src_id, dst_id, rel_type, props: dict) -> int:
 #  构建函数
 # ═══════════════════════════════════════════════════════════════
 
-def build_from_traces(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
+def _require_build_cluster(cluster_id: str | None) -> str:
+    value = str(cluster_id or "").strip()
+    if not value or value in {"default", "all"}:
+        raise ValueError("knowledge graph build requires an explicit cluster_id")
+    return value
+
+
+def build_from_traces(cluster_id: str | None = None) -> dict:
     """从 query-api canonical topology 事实建 service 节点与依赖边。"""
     _reset_stats()
+    try:
+        cluster_id = _require_build_cluster(cluster_id)
+    except ValueError as exc:
+        _STATS["errors"].append(str(exc))
+        return _snapshot()
     try:
         payload = _query_source("topology", cluster_id, {"minutes": 1440})
     except Exception as e:
@@ -279,13 +296,18 @@ def build_from_traces(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
     return _snapshot()
 
 
-def build_from_k8s(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
+def build_from_k8s(cluster_id: str | None = None) -> dict:
     """从 query-api 拉 K8s 节点/Pod，建 node/pod 节点与 RUNS_ON 边（pod→node）。
 
     响应格式容错解析 {items:[...]} / {data:[...]} / {nodes|pods:[...]} / 直接数组。
     异常捕获进 errors 列表，不抛出。
     """
     _reset_stats()
+    try:
+        cluster_id = _require_build_cluster(cluster_id)
+    except ValueError as exc:
+        _STATS["errors"].append(str(exc))
+        return _snapshot()
     cluster_name = cluster_id
     payload = {}
     try:
@@ -348,9 +370,14 @@ def build_from_k8s(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
     return _snapshot()
 
 
-def attach_changes(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
+def attach_changes(cluster_id: str | None = None) -> dict:
     """从 canonical changes 查询读取最近 7 天变更，建 change 节点与 HAS_CHANGE 边。"""
     _reset_stats()
+    try:
+        cluster_id = _require_build_cluster(cluster_id)
+    except ValueError as exc:
+        _STATS["errors"].append(str(exc))
+        return _snapshot()
     try:
         since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         payload = _query_source("changes", cluster_id, {"since": since, "limit": 200})
@@ -391,13 +418,18 @@ def attach_changes(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
     return _snapshot()
 
 
-def attach_middleware(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
+def attach_middleware(cluster_id: str | None = None) -> dict:
     """从 trace_spans 的 db_system 字段挖掘 service→middleware 依赖边。
 
     例: orders 调用了 MySQL → middleware 节点 mysql + DEPENDS_ON 边。
     CH 不可达或表缺失时异常进 errors 列表，不抛出。
     """
     _reset_stats()
+    try:
+        cluster_id = _require_build_cluster(cluster_id)
+    except ValueError as exc:
+        _STATS["errors"].append(str(exc))
+        return _snapshot()
     try:
         payload = _query_source("middleware", cluster_id, {"minutes": 1440})
         rows = payload.get("middleware", []) if isinstance(payload, dict) else []
@@ -426,8 +458,13 @@ def attach_middleware(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
     return _snapshot()
 
 
-def build_all(cluster_id: str = _SYSTEM_CLUSTER_ID) -> dict:
+def build_all(cluster_id: str | None = None) -> dict:
     """依次执行 traces / k8s / middleware / changes 四条管线并汇总统计。"""
+    cluster_id = str(cluster_id or "").strip()
+    if not cluster_id or cluster_id in {"default", "all"}:
+        msg = "knowledge graph build requires an explicit cluster_id"
+        return {"traces": {"errors": [msg]}, "k8s": {"errors": []}, "middleware": {"errors": []},
+                "changes": {"errors": []}, "total": {k: 0 for k in _JSON_KEYS} | {"errors": [msg]}}
     traces = build_from_traces(cluster_id)
     k8s = build_from_k8s(cluster_id)
     middleware = attach_middleware(cluster_id)
@@ -461,7 +498,7 @@ def _node_dict(r) -> dict:
         "type": r["type"],
         "name": r["name"],
         "props": props,
-        "cluster_id": str(r.get("cluster_id", props.get("cluster_id", "default"))),
+        "cluster_id": str(r.get("cluster_id", props.get("cluster_id", ""))),
         "created_by": props.get("created_by", ""),
         "created_at": str(r.get("created_at") or ""),
         "updated_at": str(r.get("updated_at") or ""),
@@ -480,7 +517,7 @@ def _edge_dict(r) -> dict:
     }
 
 
-def get_node(type_, name, cluster_id: str = "default") -> Optional[dict]:
+def get_node(type_, name, cluster_id: str) -> Optional[dict]:
     """按 (type, name, cluster_id) 经 query-api 查节点。"""
     try:
         entity = _kg_request("find_node", {
@@ -558,7 +595,7 @@ def downstream_closure(node_id, depth: int = 3) -> dict:
 
 
 def shortest_path(src_type, src_name, dst_type, dst_name,
-                  cluster_id: str = "default") -> list:
+                  cluster_id: str) -> list:
     """求两节点间最短路径（节点 id 序列，无向 BFS；无路径返回空列表）。"""
     s = get_node(src_type, src_name, cluster_id)
     d = get_node(dst_type, dst_name, cluster_id)

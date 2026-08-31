@@ -1,10 +1,11 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { listClusters, type ClusterItem } from '../api/client'
+import { getMe } from '../api/client'
 
 export interface ClusterOption {
   id: number
   cluster_id: string
+  tenant_id?: string
   name: string
   status: string
   node_count: number
@@ -13,7 +14,7 @@ export interface ClusterOption {
 interface UIState {
   collapsed: boolean
   aiDockOpen: boolean
-  // 多集群纳管：当前选中的集群 id（'all' = 全部集群），持久化
+  // 多集群纳管：当前选中的集群 id；空值表示尚未选择作用域。
   currentClusterId: string
   clusters: ClusterOption[]
   // 集群是否加载中/失败
@@ -30,27 +31,25 @@ export const useUIStore = create<UIState>()(
     (set) => ({
       collapsed: false,
       aiDockOpen: false,
-      currentClusterId: 'all',
+      currentClusterId: '',
       clusters: [],
       clusterLoading: false,
       toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
       setAiDockOpen: (v) => set({ aiDockOpen: v }),
-      setCurrentCluster: (id) => set({ currentClusterId: id || 'all' }),
+      setCurrentCluster: (id) => set({ currentClusterId: id || '' }),
       setClusters: (clusters) => set({ clusters }),
       refreshClusters: async () => {
         set({ clusterLoading: true })
         try {
-          const res = await listClusters()
-          const data = res.data
-          const list = Array.isArray(data)
-            ? data
-            : (data?.data ?? data?.clusters ?? [])
-          const options: ClusterOption[] = (list as ClusterItem[]).map((c) => ({
-            id: c.id,
+          const res = await getMe()
+          const list = res.data?.available_clusters ?? []
+          const options: ClusterOption[] = list.map((c, index) => ({
+            id: index,
+            tenant_id: c.tenant_id,
             cluster_id: c.cluster_id || '',
             name: c.name,
-            status: c.status,
-            node_count: c.node_count,
+            status: c.status || 'unknown',
+            node_count: 0,
           }))
           set((state) => ({
             clusters: options,
@@ -58,9 +57,9 @@ export const useUIStore = create<UIState>()(
             // Clear stale pre-canonical values persisted by older builds. A
             // legacy alias must never become an API authorization context.
             currentClusterId:
-              state.currentClusterId === 'all' || options.some((c) => c.cluster_id === state.currentClusterId)
+              options.some((c) => c.cluster_id === state.currentClusterId)
                 ? state.currentClusterId
-                : 'all',
+                : '',
           }))
         } catch (e) {
           // 集群接口失败不阻塞页面：保持已缓存列表，仅清 loading

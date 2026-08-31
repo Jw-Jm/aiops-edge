@@ -56,17 +56,10 @@ import { fmtCpu } from '../../lib/format'
 import { clusterDetailError } from './clusterDetail'
 
 
-// ---- 预设 LLM 厂商：选择后自动填充 base_url ----
-const LLM_VENDORS: { key: string; name: string; base_url: string; default_model: string }[] = [
-  { key: 'deepseek',  name: 'DeepSeek',        base_url: 'https://api.deepseek.com/v1',                      default_model: 'deepseek-chat' },
-  { key: 'xiaomi',    name: '小米 MiMo',        base_url: 'https://api.mimo.xiaomi.com/v1',                  default_model: 'mimo-chat' },
-  { key: 'openai',    name: 'OpenAI',          base_url: 'https://api.openai.com/v1',                        default_model: 'gpt-4o-mini' },
-  { key: 'qwen',      name: '通义千问 Qwen',     base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', default_model: 'qwen-plus' },
-  { key: 'ernie',     name: '文心一言',          base_url: 'https://qianfan.baidubce.com/v2',                  default_model: 'ernie-4.0-8k' },
-  { key: 'kimi',      name: 'Kimi (Moonshot)',  base_url: 'https://api.moonshot.cn/v1',                       default_model: 'moonshot-v1-8k' },
-  { key: 'zhipu',     name: '智谱 GLM',          base_url: 'https://open.bigmodel.cn/api/paas/v4',             default_model: 'glm-4-flash' },
-  { key: 'doubao',    name: '火山引擎 豆包',      base_url: 'https://ark.cn-beijing.volces.com/api/v3',         default_model: 'doubao-pro-32k' },
-  { key: 'custom',    name: '自定义 (其他)',     base_url: '',                                                 default_model: '' },
+// ---- 预登记 LLM provider：浏览器只选择 provider_id，不接触 URL 或密钥 ----
+const LLM_VENDORS: { key: string; name: string; default_model: string }[] = [
+  { key: 'deepseek', name: 'DeepSeek', default_model: 'deepseek-chat' },
+  { key: 'openai', name: 'OpenAI', default_model: 'gpt-4o-mini' },
 ]
 
 // ---- 集群管理 ----
@@ -383,7 +376,7 @@ function LLMConfig() {
   const [modelsLoading, setModelsLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [hasSaved, setHasSaved] = useState(false)
-  const [cfg, setCfg] = useState<{ configured: boolean; api_key_set: boolean } | null>(null)
+  const [cfg, setCfg] = useState<{ configured: boolean; proxy_ready?: boolean } | null>(null)
   const [testing, setTesting] = useState(false)
   // P0-1 感知: 页面加载时自动探测 LLM 配置是否可用，异常时顶部提示
   const [configAlert, setConfigAlert] = useState(false)
@@ -394,14 +387,10 @@ function LLMConfig() {
       if (d) {
         form.setFieldsValue({
           provider: d.active_provider || d.provider || 'deepseek',
-          base_url: d.base_url || '',
           model: d.model || '',
-          // 脱敏标记只用于提示，不写入表单；否则“测试当前配置”会把
-          // sk-*** 当成真实凭据发送给上游并产生误报。
-          api_key: '',
         })
-        setCfg({ configured: !!d.configured, api_key_set: !!d.api_key_set })
-        // P0-1: 已配置时自动测一次连接（空 body），失败则提示重新填写 API Key
+        setCfg({ configured: !!d.configured, proxy_ready: !!d.proxy_ready })
+        // 已配置时自动测一次代理连接
         if (d.configured) {
           testLLMConnection({}).then((tr) => {
             if (tr.data && tr.data.success === false) setConfigAlert(true)
@@ -414,18 +403,17 @@ function LLMConfig() {
   const onProviderChange = (key: string) => {
     const v = LLM_VENDORS.find((x) => x.key === key)
     if (v) {
-      form.setFieldsValue({ base_url: v.base_url, model: v.default_model || '' })
+      form.setFieldsValue({ model: v.default_model || '' })
       setModels([])
     }
   }
 
   const fetchModels = async () => {
-    const base_url = form.getFieldValue('base_url')
-    const api_key = form.getFieldValue('api_key')
-    if (!base_url) { message.warning('请先填写 Base URL'); return }
+    const provider_id = String(form.getFieldValue('provider') || '').trim()
+    if (!provider_id) { message.warning('请先选择供应商'); return }
     setModelsLoading(true)
     try {
-      const r = await listLLMModels({ base_url, api_key })
+      const r = await listLLMModels({ provider_id })
       const list = Array.isArray(r.data) ? r.data : r.data?.models || r.data?.data || []
       const names = list.map((m: any) => (typeof m === 'string' ? m : m.id || m.name || m.model)).filter(Boolean)
       setModels(names)
@@ -439,21 +427,15 @@ function LLMConfig() {
   }
 
   const onSave = async () => {
-    const v = await form.validateFields(['provider', 'base_url', 'model'])
-    const apiKey = String(form.getFieldValue('api_key') || '').trim()
-    if (!apiKey && !cfg?.api_key_set) {
-      message.error('请先填写 API Key')
-      return
-    }
-    const payload: Record<string, unknown> = { provider: v.provider, base_url: v.base_url, model: v.model }
-    if (apiKey) payload.api_key = apiKey
+    const v = await form.validateFields(['provider', 'model'])
+    const payload: Record<string, unknown> = { provider: v.provider, model: v.model }
     setSaving(true)
     try {
       const test = await testLLMConnection(payload)
       if (test.data?.success === false) throw new Error(test.data?.message || 'API Key 验证失败')
       await saveLLMSettings(payload)
       setHasSaved(true)
-      setCfg({ configured: true, api_key_set: !!apiKey || !!cfg?.api_key_set })
+      setCfg({ configured: true, proxy_ready: true })
       message.success('配置已保存')
     } catch (e) {
       message.error((e as any)?.response?.data?.message || (e as any)?.message || 'API Key 验证失败，未保存')
@@ -464,11 +446,9 @@ function LLMConfig() {
 
   // 测试当前生效配置是否可用（主动确认）
   const testCurrent = async () => {
-    const v = await form.validateFields(['provider', 'base_url', 'model']).catch(() => null)
+    const v = await form.validateFields(['provider', 'model']).catch(() => null)
     if (!v) return
-    const apiKey = String(form.getFieldValue('api_key') || '').trim()
-    const payload: Record<string, unknown> = { provider: v.provider, base_url: v.base_url, model: v.model }
-    if (apiKey) payload.api_key = apiKey
+    const payload: Record<string, unknown> = { provider: v.provider, model: v.model }
     setTesting(true)
     try {
       const test = await testLLMConnection(payload)
@@ -485,12 +465,12 @@ function LLMConfig() {
     <div style={{ maxWidth: 720 }}>
       {configAlert && (
         <Alert type="warning" showIcon closable style={{ marginBottom: 16 }}
-          message="检测到 LLM 配置异常（API Key 可能已失效），请重新填写 API Key" />
+          message="检测到 LLM egress proxy 配置异常，请检查代理 Secret 和 provider registry" />
       )}
       <div className="card" style={{ padding: 20 }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>AI 模型配置</div>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-          选择厂商后自动填充 Base URL；可点击"获取模型"从接口拉取模型列表。保存时先验证 API Key 可用，通过后才写入数据库。
+          Provider URL 和密钥只由服务端 egress proxy 管理；此处仅选择已登记 provider 并保存模型。
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, padding: '10px 14px', borderRadius: 8, background: 'var(--surface-2)' }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>当前配置状态</span>
@@ -498,23 +478,17 @@ function LLMConfig() {
             ? <Tag color="green" style={{ margin: 0 }}>已配置</Tag>
             : <Tag style={{ margin: 0 }}>未配置</Tag>) : <Tag style={{ margin: 0 }}>未知</Tag>}
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {cfg?.configured ? (() => { const p = form.getFieldValue('provider'); const m = form.getFieldValue('model'); const b = form.getFieldValue('base_url'); return `生效：${p || '-'} · ${m || '-'}${b ? ' · ' + b : ''}` })() : '尚未保存任何 LLM 配置，AI 能力暂不可用'}
+            {cfg?.configured ? (() => { const p = form.getFieldValue('provider'); const m = form.getFieldValue('model'); return `生效：${p || '-'} · ${m || '-'}` })() : '尚未保存任何 LLM 配置，AI 能力暂不可用'}
           </span>
           <Button size="small" loading={testing} onClick={testCurrent} style={{ marginLeft: 'auto' }}>测试当前配置</Button>
         </div>
-        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="不同厂商 /models 路径统一为 OpenAI 兼容风格。" />
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="模型列表请求统一经 egress proxy，浏览器不接触 API URL 或密钥。" />
         <Form form={form} layout="vertical" disabled={loading}>
           <Form.Item name="provider" label="模型供应商" rules={[{ required: true }]}>
             <Select showSearch onChange={onProviderChange} options={LLM_VENDORS.map((v) => ({ value: v.key, label: v.name }))} />
           </Form.Item>
-          <Form.Item name="base_url" label="Base URL" rules={[{ required: true, message: '请输入 Base URL' }]}>
-            <Input placeholder="https://api.deepseek.com/v1" />
-          </Form.Item>
           <Form.Item name="model" label="模型" rules={[{ required: true, message: '请选择或输入模型' }]}>
             <Select showSearch allowClear options={models.map((m) => ({ value: m, label: m }))} notFoundContent="可手动输入或先获取模型" />
-          </Form.Item>
-          <Form.Item name="api_key" label="API Key" rules={[{ required: true, message: '请输入 API Key' }]}>
-            <Input.Password placeholder="sk-..." />
           </Form.Item>
           <Form.Item>
             <Space>

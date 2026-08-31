@@ -29,10 +29,12 @@ var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3
 // AuthorizationContext is the request identity and tenant membership verified
 // from the current MySQL state. It intentionally contains no JWT role or scope.
 type AuthorizationContext struct {
-	UserID             string
-	SessionID          string
-	TenantID           string
-	MustChangePassword bool
+	UserID               string
+	SessionID            string
+	TenantID             string
+	ActiveClusterID      string
+	AuthorizationVersion int64
+	MustChangePassword   bool
 }
 
 type authorizationError struct{ code string }
@@ -312,25 +314,83 @@ func currentScope(r *http.Request) *Scope {
 	return &Scope{}
 }
 
-// RequestAuthorizationContext validates a JWT identity/session and checks the
-// requested compatibility tenant hint against current MySQL identity, session,
-// and membership rows. X-Tenant-ID never becomes trusted until these checks
-// succeed, and is not copied to internal service headers.
+// RequestAuthorizationContext validates a JWT identity/session and resolves the
+// active tenant/cluster scope exclusively from MySQL. Client supplied scope
+// headers are deliberately ignored; callers must select scope through
+// POST /api/v1/me/scope or use a signed TrustedRequestContext on internal APIs.
 func RequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) {
 	if r.Header.Get("X-Internal-Token") != "" || r.Header.Get("X-Trusted-Request-Context") != "" {
 		return internalRequestAuthorizationContext(r)
 	}
 	var zero AuthorizationContext
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	token := bearerTokenFromRequest(r)
 	userID, sessionID, tokenVersion, ok := validateJWTIdentityFull(token)
 	if !ok || isTokenRevoked(token, userID) {
 		return zero, authorizationFailure("permission_denied")
 	}
-	tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
-	if tenantID == "" || tenantID == "all" || !canonicalUUID.MatchString(tenantID) {
+	if store.GetDB() == nil {
 		return zero, authorizationFailure("invalid_context")
 	}
-	return resolveMySQLAuthorizationContext(userID, sessionID, tenantID, tokenVersion)
+	// Browser requests use the active scope persisted on auth_sessions. A
+	// missing scope is never replaced with a request header, query parameter, or
+	// default tenant.
+	tenantID, activeClusterID, scopeVersion, scopeErr := (&store.UserDAO{}).GetActiveSessionScope(sessionID)
+	if scopeErr != nil {
+		return zero, authorizationFailure("cluster_unavailable")
+	}
+	if tenantID == "" {
+		// Identity-only endpoints are needed to render the scope selector. They
+		// still validate user/session/token_version from MySQL, but do not
+		// authorize a tenant until POST /me/scope selects one explicitly.
+		if r.URL.Path == "/api/v1/me" || r.URL.Path == "/api/v1/me/scope" {
+			return resolveMySQLAuthorizationIdentity(userID, sessionID, tokenVersion)
+		}
+		return zero, authorizationFailure("SCOPE_SELECTION_REQUIRED")
+	}
+	if tenantID == "all" || !canonicalUUID.MatchString(tenantID) {
+		return zero, authorizationFailure("invalid_context")
+	}
+	ctx, err := resolveMySQLAuthorizationContext(userID, sessionID, tenantID, tokenVersion)
+	if err == nil {
+		ctx.ActiveClusterID = activeClusterID
+		ctx.AuthorizationVersion = scopeVersion
+	}
+	return ctx, err
+}
+
+func resolveMySQLAuthorizationIdentity(userID, sessionID string, tokenVersion int64) (AuthorizationContext, error) {
+	var zero AuthorizationContext
+	conn := store.GetDB()
+	if conn == nil {
+		return zero, authorizationFailure("cluster_unavailable")
+	}
+	var currentUserID, sessionStatus string
+	var userStatus, mustChange int
+	var storedVersion int64
+	var expiresAt, revokedAt sql.NullTime
+	err := conn.QueryRow(`SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s ON s.user_uuid = u.user_uuid
+WHERE u.user_uuid = ? AND s.session_id = ? LIMIT 1`, userID, sessionID).Scan(&currentUserID, &userStatus, &mustChange, &sessionStatus, &expiresAt, &revokedAt, &storedVersion)
+	if err != nil || currentUserID != userID || userStatus != 1 || sessionStatus != "active" || !expiresAt.Valid || !expiresAt.Time.After(time.Now()) || (revokedAt.Valid && !revokedAt.Time.IsZero()) {
+		return zero, authorizationFailure("permission_denied")
+	}
+	if tokenVersion != -1 && storedVersion != tokenVersion {
+		return zero, authorizationFailure("permission_denied")
+	}
+	return AuthorizationContext{UserID: userID, SessionID: sessionID,
+		MustChangePassword: mustChange == 1 && requireFirstLoginPasswordChange(), AuthorizationVersion: storedVersion}, nil
+}
+
+// bearerTokenFromRequest keeps browser authentication in an HttpOnly cookie.
+// Authorization headers remain accepted for non-browser tooling during the
+// migration window, but browser code never needs to read or construct them.
+func bearerTokenFromRequest(r *http.Request) string {
+	if raw := strings.TrimSpace(r.Header.Get("Authorization")); raw != "" {
+		return strings.TrimSpace(strings.TrimPrefix(raw, "Bearer "))
+	}
+	if cookie, err := r.Cookie("aiops_access"); err == nil {
+		return strings.TrimSpace(cookie.Value)
+	}
+	return ""
 }
 
 func resolveMySQLAuthorizationContext(userID, sessionID, tenantID string, tokenVersion int64) (AuthorizationContext, error) {
@@ -475,8 +535,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 					respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
 					return
 				}
+				http.SetCookie(w, &http.Cookie{
+					Name: "aiops_access", Value: token, Path: "/", MaxAge: 24 * 60 * 60,
+					HttpOnly: true, Secure: secureSessionCookie(), SameSite: http.SameSiteLaxMode,
+				})
+				// The session credential is intentionally only delivered through the
+				// HttpOnly cookie.  Returning the JWT in JSON would make it readable
+				// by browser JavaScript and would defeat the browser token boundary.
 				respondJSON(w, 200, map[string]interface{}{
-					"token": token, "username": u.Username, "role": u.Role, "display_name": u.DisplayName, "scope": u.Scope,
+					"authenticated": true, "username": u.Username, "role": u.Role, "display_name": u.DisplayName, "scope": u.Scope,
 					"must_change_password": u.MustChangePassword && requireFirstLoginPasswordChange(),
 				})
 				return
@@ -491,6 +558,18 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, 401, map[string]interface{}{"error": "invalid credentials"})
+}
+
+// secureSessionCookie keeps production cookies transport-bound while allowing
+// the explicitly named local OrbStack profile to run over localhost HTTP.
+// Any unknown/missing environment remains secure by default.
+func secureSessionCookie() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AIOPS_ENV"))) {
+	case "local", "development", "test":
+		return false
+	default:
+		return true
+	}
 }
 
 // issueSessionToken creates a persisted session and signs a JWT that proves
@@ -688,16 +767,20 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/capacity/forecast",
 		"/api/v1/capacity/instances",
 		"/api/v1/ai/runs",                // P12：Run API 只读代理（JWT+tenant 校验后进 ProxyAI → orchestrator）
-		"/api/v1/me",                     // Phase E：前端用户信息端点（JWT + canonical tenant 授权）
+		"/api/v1/me", "/api/v1/me/scope", // server-owned identity and scope selection
 		"/api/v1/settings/llm",           // LLM 设置：GET 读当前配置 / POST 保存（admin 由 RequireRoleForWrite 校验）
 		"/api/v1/settings/llm/config",    // LLM 管理页所需的非敏感配置（admin 由 handler 校验）
 		"/api/v1/settings/llm/test",      // LLM 连接测试（admin 由 RequireRole 校验）
 		"/api/v1/settings/llm/models",    // 拉取模型列表（admin 由 RequireRole 校验）
 		"/api/v1/settings/llm/history",   // LLM 配置历史
 		"/api/v1/settings/llm/providers", // LLM provider 列表/创建
+		"/api/v1/ai/sessions",            // Query/MySQL-owned scoped chat history
 		"/api/v1/ai/chat":                // P19.6：对话型 canonical-protected 路由。query-api 完成 JWT+tenant+cluster
 		// 解析 + ai.chat capability 签名后转发 orchestrator /internal/v1/chat（SSE 流式）。
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
+		return true
+	}
+	if strings.HasPrefix(path, "/api/v1/ai/session/") {
 		return true
 	}
 	// Service list details still use the historical /services/{name} alias,
@@ -751,6 +834,21 @@ func isCanonicalProtectedRoute(path string) bool {
 	// tenant/run ownership 校验），不推断冒充。
 	if strings.HasPrefix(path, "/api/v1/ai/runs/") && strings.HasSuffix(path, "/tools") {
 		return true
+	}
+	// C2-5：图谱上下文与 Evidence 只读投影也由 query-api/MySQL 所有，
+	// 必须先通过 canonical tenant 边界，再由 handler 校验 run/evidence 归属。
+	// 仅放行固定的两段/三段形状，避免重新打开任意 legacy proxy 子路径。
+	if strings.HasPrefix(path, "/api/v1/ai/runs/") {
+		if strings.HasSuffix(path, "/") {
+			return false
+		}
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/ai/runs/"), "/"), "/")
+		if len(parts) == 2 && (parts[1] == "graph-context" || parts[1] == "evidences") && parts[0] != "" {
+			return true
+		}
+		if len(parts) == 3 && parts[1] == "evidences" && parts[0] != "" && parts[2] != "" {
+			return true
+		}
 	}
 	// Stage D 接线：/api/v1/ai/actions/{id}(/execute)——action 详情/执行端点。
 	// canonical 鉴权（JWT + tenant 成员）由 AuthMiddleware 完成；POST execute 需 admin

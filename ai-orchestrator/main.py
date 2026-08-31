@@ -10,6 +10,7 @@ import re
 import uuid
 import asyncio
 import secrets
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header
@@ -38,6 +39,12 @@ import agent_tool  # B4: 后台 persona worker 终态通知队列 (drain_notific
 os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
 if os.environ.get("LLM_MOCK", "").lower() in ("true", "1", "yes"):
     print("[WARN] LLM_MOCK=true：AI 诊断/RCA/NL2SQL 将返回模拟内容，仅适用于本地演示；生产必须设 LLM_MOCK=false", flush=True)
+
+def _legacy_public_api_retired() -> bool:
+    """Production exposes only signed internal chat/run ingress."""
+    return os.getenv("AIOPS_ENV", "").strip().lower() == "production" or os.getenv("AIOPS_DEPLOYMENT_MODE", "").strip().lower() == "production"
+
+_CANONICAL_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 
 # ═══════════════════════════════════════════════════════════════
 #  APScheduler — 定时异常扫描（每 5 分钟，只检测+持久化，不触发 LLM）
@@ -176,14 +183,11 @@ async def lifespan(app: FastAPI):
             finally:
                 _investigation_dispatcher = None
         return
-    # 1. APScheduler 定时异常扫描
+    # 1. APScheduler 定时：告警事件自动入库为 case 草稿（每 15 分钟，失败仅打日志不抛错）
     try:
-        scheduler.add_job(_scheduled_anomaly_scan, 'interval', minutes=5,
-                          id='anomaly_scan', replace_existing=True)
         scheduler.start()
     except Exception as e:  # noqa: BLE001
         print(f"[startup] scheduler error: {e}", flush=True)
-    # 1b. APScheduler 定时：告警事件自动入库为 case 草稿（每 15 分钟，失败仅打日志不抛错）
     try:
         scheduler.add_job(_scheduled_alert_to_case, 'interval', minutes=15,
                           id='alert_to_case', replace_existing=True)
@@ -257,7 +261,7 @@ async def lifespan(app: FastAPI):
 
             def _kg_build_job():
                 try:
-                    _r = _kg_build_all(os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", "default"))
+                    _r = _kg_build_all(os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", ""))
                     _t = _r.get("total", {})
                     print(
                         f"[kg] 定时重建完成: nodes+{_t.get('nodes_added', 0)} "
@@ -355,41 +359,6 @@ app.include_router(_ops_action_api.router)
 # reach this router because auth_middleware requires the directional token.
 from data_cleanup_api import router as _data_cleanup_router
 app.include_router(_data_cleanup_router)
-
-
-async def _scheduled_anomaly_scan():
-    """定时异常扫描（只检测+持久化，不触发 LLM 诊断）
-
-    从 query-api 拉服务列表，对 error_rate/p99_latency/request_rate 三指标做
-    3 算法投票检测。detect() 内部确认异常时会调 _persist_anomaly 写入 MySQL
-    anomaly_events 表（best-effort）。此处不调 LLM，避免定时任务产生模型开销。
-    """
-    # Background jobs have no user/session/cluster authorization context. They
-    # must not query query-api with a service token or an implicit tenant.
-    return
-    try:
-        from detector import detector
-        from tools import get_service_list
-        import json as _json
-        raw = await asyncio.to_thread(get_service_list)
-        try:
-            svc_data = _json.loads(raw)
-        except Exception:
-            svc_data = []
-        for svc in (svc_data if isinstance(svc_data, list) else []):
-            name = svc.get("service_name", "")
-            if not name:
-                continue
-            metrics_vals = {
-                "error_rate": float(svc.get("error_rate", 0) or 0),
-                "p99_latency": float(svc.get("max_ms", 0) or 0),
-                "request_rate": float(svc.get("traces", 0) or 0),
-            }
-            for metric, val in metrics_vals.items():
-                # detect() 内部已完成 vote + _persist_anomaly，无需重复调用 vote
-                detector.detect(name, metric, val)
-    except Exception as e:
-        print(f"[scheduler] anomaly scan error: {e}")
 
 
 async def _scheduled_node_health_aggregate():
@@ -679,6 +648,7 @@ async def _recover_investigations_on_startup() -> None:
                 message=str(run.get("intent") or "对目标进行诊断"),
                 action_mode=str(run.get("action_mode") or "read_only"),
                 request_context=scope,
+                target_type=str(run.get("target_type") or "service"),
             ))
         if items:
             await (await _get_investigation_dispatcher()).recover(items)
@@ -728,9 +698,8 @@ def _fetch_saved_llm_config() -> dict | None:
     """从 query-api 内部接口拉取已保存的启用 LLM 配置。
 
     F-14（Stage C）：外部 Provider API Key 不再下发到 Orchestrator——由固定 LLM Egress Proxy
-    独占。orchestrator 只读取 provider/model/base_url（base_url 指向 ai-llm-egress-proxy，
-    若已配置），API Key 经 proxy 注入（_LLM_KEY_HOLDER 仅在 proxy 未配置/回退时兜底）。
-    若配置了 LLM_PROXY_URL，则返回 proxy 基址且不持有真实 key。
+    独占。orchestrator 只读取 provider/model 元数据；配置 Proxy 后返回 proxy 基址和短时
+    ingress token。缺少 Proxy 或 token 时返回不可用，不存在 provider key 回退。
     """
     try:
         from internal_query import signed_query_api_request
@@ -739,16 +708,26 @@ def _fetch_saved_llm_config() -> dict | None:
         proxy_url = os.environ.get("LLM_PROXY_URL", "")
         proxy_token = os.environ.get("LLM_PROXY_TOKEN", "")
         # F-14：用 TrustedRequestContext（capability=llm.config.read）签发，不再仅凭共享 token。
-        from contracts import TrustedRequestContext as _TRC  # noqa: F401  # 兼容 legacy
-        context = {
-            "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
-            "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
-            "run_id": str(uuid.uuid4()),
-            "principal_type": "system",
-            "principal_id": str(uuid.uuid4()),
-            "capability": "llm.config.read",
-            "source": "llm-config-reader",
-        }
+        # Internal metadata reads use the same typed TrustedRequestContext V2 as
+        # every other orchestrator→query call.  The previous ad-hoc dictionary
+        # omitted context_type/issuer/audience/nonce and was rejected by the
+        # validator in production, silently disabling the real LLM path.
+        from contracts import TrustedRequestContext
+        system_tenant = os.environ.get("AIOPS_SYSTEM_TENANT_ID", "").strip()
+        system_cluster = os.environ.get("AIOPS_SYSTEM_CLUSTER_ID", "").strip()
+        if not system_tenant or not system_cluster:
+            return None
+        context = TrustedRequestContext(
+            issuer="ai-orchestrator", audience="ai-apm-query-go",
+            request_id=uuid.uuid4(), run_id=uuid.uuid4(), principal_type="system",
+            principal_id=uuid.uuid4(), session_id=None,
+            tenant_id=uuid.UUID(system_tenant),
+            scope_kind="cluster",
+            cluster_id=uuid.UUID(system_cluster),
+            capability="llm.config.read", source="llm-config-reader", workload_kind="platform",
+            issued_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=30), nonce=uuid.uuid4(),
+        )
         raw = signed_query_api_request(f"{qa}/settings/llm/internal", context=context, timeout=5)
         data = json.loads(raw)
         cfg = data.get("data", data)
@@ -862,9 +841,10 @@ async def rate_limit_middleware(request: Request, call_next):
 #  仅显式白名单放行（健康检查/指标/内部采集上报）。直连 orchestrator 无 token 一律 401。
 # ═══════════════════════════════════════════════════════════════
 
-# 白名单：健康检查、Prometheus 指标、ipmi-exporter 直接上报（该采集器不经代理、无法携带 token）
+# 白名单：健康检查、Prometheus 指标。IPMI direct-ingest is retired in
+# production; hardware data must arrive through the unified ingest envelope.
 # /readyz 与 /health 同为探活端点，readiness probe 无法携带 INTERNAL_TOKEN，须放行否则 pod 永不就绪。
-_AUTH_ALLOWLIST = ("/health", "/api/v1/health", "/metrics", "/api/v1/ipmi/ingest", "/readyz")
+_AUTH_ALLOWLIST = ("/health", "/api/v1/health", "/metrics", "/readyz")
 
 
 @app.middleware("http")
@@ -1014,6 +994,7 @@ async def run_invocations(request: Request):
             message=str(body.get("message") or body.get("intent") or "对目标进行诊断"),
             action_mode=str(body.get("action_mode") or "read_only"),
             request_context=scope,
+            target_type=str(body.get("target_type") or "service"),
         )
         try:
             accepted = await dispatcher.accept(item)
@@ -1122,8 +1103,11 @@ async def internal_chat(request: Request):
     message = body.get("message", "对目标进行诊断")
     service = body.get("service", "")
     intent = body.get("intent", "diagnosis")
-    thread_id = body.get("thread_id") or body.get("session_id") or uuid.uuid4().hex[:8]
+    thread_id = str(body.get("thread_id") or body.get("session_id") or uuid.uuid4())
+    if not _CANONICAL_UUID_RE.fullmatch(thread_id):
+        raise HTTPException(status_code=400, detail="INVALID_SESSION_ID")
     exec_context = body.get("exec_result", "")
+    history_context = str(body.get("history_context", "") or "")[:4000]
 
     # P19.6：加载真实 LLM 配置（从 query-api 内部接口拉取已保存配置，纯服务端来源，
     # 禁止请求头覆盖——G3 SSRF 防护）。与旧 /api/v1/ai/chat 一致，否则 brain 走确定性降级。
@@ -1144,7 +1128,8 @@ async def internal_chat(request: Request):
                     intent, service or "", message, thread_id,
                     mode="chat", exec_context=exec_context, iteration=(exec_context and 2 or 1),
                     cluster_id=str(scope.cluster_id),
-                    request_context=scope):
+                    request_context=scope,
+                    history_context_override=history_context):
                 if event.get("type") == "suggestion":
                     event["thread_id"] = thread_id
                     event["exec_context"] = exec_context
@@ -1248,6 +1233,8 @@ async def run_controls(operation: str, request: Request):
 
 @app.post("/api/v1/ai/chat")
 async def ai_chat(req: ChatRequest, request: Request):
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="LEGACY_ROUTE_RETIRED")
     _parse_llm_config(request)
     request_context = _request_context_from_request(request)
     thread_id = req.session_id or uuid.uuid4().hex[:8]
@@ -1281,7 +1268,8 @@ async def ai_chat(req: ChatRequest, request: Request):
                     if event.get("type") == "done":
                         _persist_streamed_chat_session(
                             thread_id, req.intent, req.service or "", req.message, streamed_events,
-                            tenant_id=str(request_context.tenant_id), cluster_id=str(request_context.cluster_id))
+                            tenant_id=str(getattr(request_context, "tenant_id", "") or ""),
+                            cluster_id=str(getattr(request_context, "cluster_id", "") or ""))
                     event_queue.put(event)
             try:
                 asyncio.run(_astream())
@@ -1602,6 +1590,14 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
     """
     if not _direct_mutation_enabled():
         raise HTTPException(410, "DIRECT_MUTATION_MOVED_TO_ACTION_EXECUTOR")
+    # Even the explicitly opt-in migration route must use a freshly verified
+    # signed request context. A caller-provided tenant header is never an
+    # authorization source or persistence scope.
+    request_context = _request_context_from_request(request)
+    request_tenant_id = str(getattr(request_context, "tenant_id", "") or "")
+    request_cluster_id = str(getattr(request_context, "cluster_id", "") or "")
+    if not request_tenant_id or not request_cluster_id:
+        raise HTTPException(403, "SCOPE_REQUIRED")
     _require_approver(request)  # 复用审批人校验（与任务工作台一致）
     script = (req.script or "").strip()
     if not script:
@@ -1609,7 +1605,7 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
     if not req.approved:
         exec_result = "已驳回，未执行"
         _persist_execution_result(req, exec_result,
-                                  tenant_id=request.headers.get("X-Tenant-ID", ""))
+                                  tenant_id=request_tenant_id, cluster_id=request_cluster_id)
         return {"thread_id": req.thread_id, "approved": False, "exec_result": exec_result}
     try:
         exec_result = _get_brain().execute_suggestion(
@@ -1617,7 +1613,7 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
     except Exception as e:
         exec_result = f"执行失败: {e}"
         _persist_execution_result(req, exec_result,
-                                  tenant_id=request.headers.get("X-Tenant-ID", ""))
+                                  tenant_id=request_tenant_id, cluster_id=request_cluster_id)
         return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result, "error": True}
     # 审计 (P1-2): task_id=真实会话ID(无则 "manual"), operator=当前用户/角色, target=服务名
     try:
@@ -1628,7 +1624,7 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
     except Exception:
         pass
     _persist_execution_result(req, exec_result,
-                              tenant_id=request.headers.get("X-Tenant-ID", ""))
+                              tenant_id=request_tenant_id, cluster_id=request_cluster_id)
     return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result}
 
 
@@ -1679,6 +1675,8 @@ async def final_report(req: FinalReportRequest):
 
 @app.get("/api/v1/ai/sessions")
 async def list_sessions():
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="LEGACY_ROUTE_RETIRED")
     try:
         rows = _get_brain()._conn.execute(
             "SELECT DISTINCT thread_id FROM checkpoints LIMIT 200"
@@ -1724,6 +1722,8 @@ async def list_sessions():
 
 @app.get("/api/v1/ai/session/{sid}")
 async def get_session(sid: str):
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="LEGACY_ROUTE_RETIRED")
     # P0: 改用同步 SQLite 读取 checkpoint state（get_session_state），
     # 不再用 graph.get_state()（AsyncSqliteSaver 主线程同步调用会抛 InvalidStateError /
     # 跨 loop 抛 RuntimeError → HTTP 500 → 前端历史会话点击无反应）。
@@ -1826,6 +1826,11 @@ def _persist_streamed_chat_session(thread_id: str, intent: str, service: str,
                                    user_message: str, events: list[dict],
                                    tenant_id: str = "", cluster_id: str = "") -> None:
     """Persist the same message cards emitted through the chat SSE stream."""
+    if _legacy_public_api_retired():
+        # Query API/MySQL is the transcript authority in production.  The
+        # orchestrator's SQLite sidecar is development-only and must not be
+        # written by canonical chat traffic.
+        return
     try:
         from session_store import session_store
         existing = session_store.load(thread_id) or {}
@@ -1858,7 +1863,7 @@ def _persist_streamed_chat_session(thread_id: str, intent: str, service: str,
 def _persist_execution_result(req: SuggestionRequest, exec_result: str,
                               tenant_id: str = "", cluster_id: str = "") -> None:
     """Replace the persisted suggestion card with its execution-result state."""
-    if not req.thread_id:
+    if not req.thread_id or _legacy_public_api_retired():
         return
     try:
         from session_store import session_store
@@ -1892,6 +1897,8 @@ def _persist_execution_result(req: SuggestionRequest, exec_result: str,
 
 @app.delete("/api/v1/ai/session/{sid}")
 async def delete_session(sid: str):
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="LEGACY_ROUTE_RETIRED")
     try:
         _get_brain()._conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (sid,))
         _get_brain()._conn.execute("DELETE FROM writes WHERE thread_id = ?", (sid,))
@@ -1915,6 +1922,8 @@ async def delete_session(sid: str):
 @app.delete("/api/v1/ai/sessions")
 async def clear_sessions():
     """Issue4: 清除全部历史会话（checkpoints + writes + session_store 元数据）。"""
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="LEGACY_ROUTE_RETIRED")
     try:
         _get_brain()._conn.execute("DELETE FROM checkpoints")
         _get_brain()._conn.execute("DELETE FROM writes")
@@ -2665,7 +2674,7 @@ async def rca_deep_analysis(req: TaskCreateRequest, request: Request):
                 tenant_id=str(getattr(request_context, "tenant_id", "") or ""),
                 cluster_id=str(getattr(request_context, "cluster_id", "") or ""),
                 resource_id=str(_svc),
-                namespace="default",
+                namespace="",
                 action_type="runbook",
                 parameters={
                     "recommendation": str(inner.get("recommendation", "") or inner.get("root_cause", ""))[:2000],
@@ -2745,7 +2754,7 @@ async def rca_alert_analysis(req: AlertRCARequest, request: Request):
             inner = {}
         _svc = inner.get("root_cause_service") or req.service or req.rule_id or "kubernetes"
         if _svc:
-            _ns = str(req.namespace or inner.get("namespace") or "default")
+            _ns = str(req.namespace or inner.get("namespace") or "")
             _ops_action_api.get_hub().propose(
                 run_id=str(inner.get("run_id") or inner.get("task_id") or f"rca-{req.service or req.rule_id or 'alert'}"),
                 tenant_id=str(getattr(request_context, "tenant_id", "") or ""),
@@ -3610,13 +3619,13 @@ async def add_knowledge_case(body: dict = None):
             "service": service,
             "symptom": symptom[:200],
             "root_cause": (root_cause or "")[:200],
-            "cluster_id": "default",
+            "cluster_id": "",
             "created_by": "auto",
         })
         svc = (service or "").strip()
         if svc and svc != "unknown":
             service_id = upsert_node("service", svc, {
-                "cluster_id": "default",
+                "cluster_id": "",
                 "created_by": "auto",
             })
             upsert_edge(service_id, case_node_id, "MENTIONED_IN", {
@@ -4018,7 +4027,7 @@ def _seed_knowledge_bg():
 # ═══════════════════════════════════════════════════════════════
 
 class ChangeEventRequest(BaseModel):
-    cluster_id: str = "default"
+    cluster_id: str
     service: str = ""
     change_type: str = ""
     operator: str = ""
@@ -4037,7 +4046,9 @@ async def create_change_event(req: ChangeEventRequest, request: Request):
     if not content:
         raise HTTPException(400, "content required")
     operator = (req.operator or "").strip() or _audit_operator(request)
-    cid = (req.cluster_id or "default").strip() or "default"
+    cid = (req.cluster_id or "").strip()
+    if not cid:
+        raise HTTPException(400, "cluster_id required")
     trace_ids = (req.related_trace_ids or "").strip()
     from db import db_available, get_conn
     if not db_available():
@@ -4086,7 +4097,9 @@ async def create_change_webhook(body: dict = None, request: Request = None):
         raise HTTPException(400, "service (or app/application) required")
     if not content:
         raise HTTPException(400, "content (or description/summary/message) required")
-    cluster_id = str(b.get("cluster_id") or "default").strip() or "default"
+    cluster_id = str(b.get("cluster_id") or "").strip()
+    if not cluster_id:
+        raise HTTPException(400, "cluster_id required")
     trace_ids = str(b.get("related_trace_ids") or "").strip()
     from db import db_available, get_conn
     if not db_available():
@@ -4161,7 +4174,9 @@ from node_health import NodeHealthAggregator
 
 @app.post("/api/v1/ipmi/ingest")
 async def ipmi_ingest(body: dict = None):
-    """ipmi-exporter 上报节点传感器 + SEL 事件（sel_events）。可降级。"""
+    """Development compatibility only; production uses unified ingest."""
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="IPMI_DIRECT_INGEST_RETIRED")
     b = body or {}
     node = b.get("node") or b.get("node_name")
     if not node:
@@ -4175,17 +4190,23 @@ async def ipmi_ingest(body: dict = None):
 
 @app.get("/api/v1/ipmi/sensors")
 async def list_ipmi_sensors(node: str = "", sensor_type: str = ""):
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="IPMI_DIRECT_INGEST_RETIRED")
     return {"sensors": IPMIStore().query(node=node or None, sensor_type=sensor_type or None)}
 
 
 @app.get("/api/v1/ipmi/events")
 async def list_ipmi_sel_events(node: str = "", limit: int = 50):
     """SEL 事件明细列表（按 event_time 倒序）。"""
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="IPMI_DIRECT_INGEST_RETIRED")
     return {"events": IPMIStore().query_sel(node=node or None, limit=limit)}
 
 
 @app.get("/api/v1/node/health")
 async def list_node_health(node: str = ""):
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="HARDWARE_DIRECT_PATH_RETIRED")
     return {"health": NodeHealthAggregator().query(node=node or None)}
 
 
@@ -4196,6 +4217,8 @@ async def aggregate_node_health(body: dict = None):
     body: {node?: 仅聚合该节点, metrics?: 兼容旧 mock 模式（提供 metrics 时走原判定逻辑）}
     不带 node 时聚合 VM 发现的全部节点。
     """
+    if _legacy_public_api_retired():
+        raise HTTPException(status_code=410, detail="HARDWARE_DIRECT_PATH_RETIRED")
     b = body or {}
     node = (b.get("node") or b.get("node_name") or "").strip()
     agg = NodeHealthAggregator()

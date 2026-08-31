@@ -42,6 +42,7 @@ func TestRequestAuthorizationContextDoesNotUseJWTClaimsAsAuthority(t *testing.T)
 	previous := store.GetDB()
 	store.SetDB(db)
 	t.Cleanup(func() { store.SetDB(previous) })
+	expectActiveSessionScope(mock, authzTenantID, "")
 	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(authzUserID, authzSessionID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
@@ -67,6 +68,39 @@ func TestRequestAuthorizationContextDoesNotUseJWTClaimsAsAuthority(t *testing.T)
 	}
 }
 
+func TestRequestAuthorizationContextIgnoresClientTenantHeader(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(previous) })
+	expectActiveSessionScope(mock, authzTenantID, "")
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
+		WithArgs(authzUserID, authzSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, 0, "active", time.Now().Add(time.Hour), nil, int64(0)))
+	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
+		WithArgs(authzUserID, authzTenantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/resources/resolve", nil)
+	request.Header.Set("Authorization", "Bearer "+generateJWTWithSession(authzUserID, authzSessionID, "admin", `{}`))
+	request.Header.Set("X-Tenant-ID", "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+	context, err := RequestAuthorizationContext(request)
+	if err != nil {
+		t.Fatalf("RequestAuthorizationContext() error = %v", err)
+	}
+	if context.TenantID != authzTenantID {
+		t.Fatalf("client tenant header changed authorization scope to %q", context.TenantID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestResolveResourceReturnsCanonicalReferenceOnlyAfterAuthorization(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -76,6 +110,7 @@ func TestResolveResourceReturnsCanonicalReferenceOnlyAfterAuthorization(t *testi
 	previous := store.GetDB()
 	store.SetDB(db)
 	t.Cleanup(func() { store.SetDB(previous) })
+	expectActiveSessionScope(mock, authzTenantID, "")
 	expectRequestIdentityAndTenant(mock)
 	expectAuthorizationCluster(mock, "production")
 	expectAuthorizationIdentity(mock)
@@ -234,6 +269,7 @@ func TestAuthMiddlewareFailsClosedForLegacyRoute(t *testing.T) {
 	previous := store.GetDB()
 	store.SetDB(db)
 	t.Cleanup(func() { store.SetDB(previous) })
+	expectActiveSessionScope(mock, authzTenantID, "")
 	expectRequestIdentityAndTenant(mock)
 
 	called := false
@@ -272,6 +308,13 @@ func expectRequestIdentityAndTenant(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
 		WithArgs(authzUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
+}
+
+func expectActiveSessionScope(mock sqlmock.Sqlmock, tenantID, clusterID string) {
+	mock.ExpectQuery("SELECT COALESCE\\(active_tenant_id, ''\\), COALESCE\\(active_cluster_id, ''\\), authorization_version").
+		WithArgs(authzSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "cluster_id", "authorization_version"}).
+			AddRow(tenantID, clusterID, int64(0)))
 }
 
 func expectAuthorizationIdentity(mock sqlmock.Sqlmock) {

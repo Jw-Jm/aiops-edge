@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping
 
 
@@ -38,7 +39,7 @@ def graph_query_tool(
     return result.body
 
 
-def kg_evidence_tool(service: str, cluster_id: str = "default") -> str:
+def kg_evidence_tool(service: str, cluster_id: str = "") -> str:
     """查询服务在运维知识图谱中的证据链：
     服务节点信息 + 上游/下游依赖 + 关联变更 + 所属 pod/node（RUNS_ON 边）。"""
     # Legacy compatibility only.  New RCA and graph tools use graph_query_tool.
@@ -47,6 +48,9 @@ def kg_evidence_tool(service: str, cluster_id: str = "default") -> str:
     service = (service or "").strip()
     if not service:
         return "请指定服务名"
+    if (os.environ.get("AIOPS_ENV", "").strip().lower() == "production"
+            and str(cluster_id or "").strip() in {"", "default", "all"}):
+        return "知识图谱查询拒绝：必须提供显式 cluster_id"
     node = kg_graph.get_node("service", service, cluster_id)
     if node is None:
         return (f"知识图谱中未找到服务 {service!r}（cluster_id={cluster_id}），"

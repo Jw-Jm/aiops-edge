@@ -15,6 +15,14 @@
 # 有状态中间件（mysql/clickhouse）固定用 statefulReplicaCount=1，不受此值影响。
 replicaCount: 2
 
+internalTLS:
+  enabled: true
+  required: true
+  secretName: aiops-internal-tls
+  # Must be injected by the production certificate/release system.  The
+  # chart rejects an empty value when required=true.
+  clientSAN: ""
+
 # 有状态单写组件固定 1 副本（RWO PVC 不可多副本；多副本需先外部化存储再调大）。
 orchestratorReplicas: 1
 ingestReplicas: 1
@@ -34,9 +42,11 @@ hugeGraph:
   enabled: true
   storageClass: "standard"
 
-# Keep the rollback backend until Phase 5 shadow gates have passed.
 graph:
-  backend: legacy_mysql
+  # Production uses HugeGraph only after the graph schema/source reconciliation
+  # gate; there is no silent legacy_mysql fallback in the release profile.
+  backend: hugegraph
+
 # 备份 PVC（backup-pvc，mysql/clickhouse 每日备份落地盘）
 backup:
   storageClass: "standard"
@@ -45,6 +55,20 @@ backup:
 aiOrchestrator:
   llmMock: "false"
   investigationRuntimeEnabled: "0"
+  queryApiUrl: "https://query-api.observability.svc.cluster.local:8080/api/v1"
+
+# Production mutation is opt-in only after the broker profiles and RBAC have
+# been provisioned. Keep disabled until CREDENTIAL_PROFILES is reviewed.
+credentialBroker:
+  enabled: false
+  token: ""
+  profiles: ""
+
+eventCollector:
+  # Production uses out-of-band BMC/Redfish collection. In-band /dev/ipmi0
+  # access is restricted to the explicit local-validation profile.
+  selCollectEnabled: false
+  ingestURL: "https://ingest.observability.svc.cluster.local:8080"
 
 investigationWorker:
   enabled: true
@@ -54,17 +78,16 @@ investigationWorker:
 llmEgressProxy:
   enabled: true
 
-# ── Egress 默认拒绝灰度（阶段一）────────────────────────────────────────
-# 阶段一：仅对 event-collector 施加 egress default-deny + 出站白名单
-#         （clickhouse:8123 / kube-system:443 / DNS），其余组件出站暂不限制。
-# 推进灰度：向列表追加组件（建议顺序 event-collector → categraf/ingest → 其余）；
-# 最终收紧：再叠加 networkPolicy.egressDefaultDeny=true 全局生效；
-# 回滚：清空列表（[]）即解除对应组件的 egress 限制。
+# ── Egress 默认拒绝（生产基线）──────────────────────────────────────────
+# 生产所有 Pod 默认禁止出站，仅允许 networkpolicy.yaml 中按角色声明的
+# MySQL/观测存储/Kubernetes API/内部服务/DNS 链路。外部 LLM 必须经 egress
+# proxy；告警 webhook 必须接入经审批的 notifier，不能靠任意 URL 放行。
 networkPolicy:
-  egressCanaryServices: ["event-collector"]
-  # 28.2 #18：egress default-deny 最终目标——灰度（event-collector → categraf/ingest → 其余）
-  # 全部通过后，置 egressDefaultDeny=true 全局默认拒绝出站（仅显式白名单）。当前暂缓（集群不稳定）。
-  # egressDefaultDeny: true
+  egressDefaultDeny: true
+  egressCanaryServices: []
+  # Inject the cluster-specific Service/API-server CIDRs at release time;
+  # leaving this empty intentionally fails Helm rendering (fail-closed).
+  kubernetesApiCIDRs: []
 
 # 密钥：正式环境必须显式注入强随机值（勿用 CHANGE_ME / 弱默认值）。
 # 生成建议：
@@ -80,3 +103,6 @@ secrets:
   ingestApiKey: "CHANGE_ME"
   clickhousePassword: "CHANGE_ME"
   mysqlRootPassword: "CHANGE_ME"
+  # Production must inject an explicit strong admin bootstrap secret at deploy
+  # time; never inherit the local admin1234 fallback.
+  adminInitialPassword: ""

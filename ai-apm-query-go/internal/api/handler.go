@@ -44,7 +44,54 @@ func isDeletedService(name string) bool {
 
 // orchestratorBase 返回 ai-orchestrator 服务地址（可经 env 覆盖，可移植）。
 func orchestratorBase() string {
-	return firstNonEmpty(os.Getenv("AI_ORCHESTRATOR_URL"), "http://ai-orchestrator.observability.svc.cluster.local:8080")
+	configured := strings.TrimSpace(os.Getenv("AI_ORCHESTRATOR_URL"))
+	if configured != "" {
+		return strings.TrimRight(configured, "/")
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_MTLS_REQUIRED")), "true") {
+		return "https://ai-orchestrator.observability.svc.cluster.local:8080"
+	}
+	return "http://ai-orchestrator.observability.svc.cluster.local:8080"
+}
+
+// investigationWorkerBase is the sole destination for durable Run
+// invocations.  Browser chat continues to use orchestratorBase; sharing one
+// URL made the outbox dispatcher send investigations to the gateway process,
+// which intentionally has INVESTIGATION_RUNTIME_ENABLED=0 in production.
+func investigationWorkerBase() string {
+	if configured := strings.TrimSpace(os.Getenv("AI_INVESTIGATION_WORKER_URL")); configured != "" {
+		return strings.TrimRight(configured, "/")
+	}
+	// Production must fail toward the dedicated worker boundary even when an
+	// incomplete deployment omitted the explicit variable.  Keep the legacy
+	// fallback only for local/unit-test transports that provide a custom
+	// AI_ORCHESTRATOR_URL.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_MTLS_REQUIRED")), "true") {
+		return "https://ai-investigation-worker.observability.svc.cluster.local:8080"
+	}
+	if legacy := strings.TrimSpace(os.Getenv("AI_ORCHESTRATOR_URL")); legacy != "" {
+		return strings.TrimRight(legacy, "/")
+	}
+	return "http://ai-investigation-worker.observability.svc.cluster.local:8080"
+}
+
+// internalHTTPClient returns the certificate-bearing transport for calls to
+// orchestrator and the LLM egress proxy. Tests may provide Handler.client as a
+// seam; that seam is never used when production mTLS is required.
+func (h *Handler) internalHTTPClient(timeout time.Duration) (*http.Client, error) {
+	if h.internalClient != nil {
+		clone := *h.internalClient
+		clone.Timeout = timeout
+		return &clone, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_MTLS_REQUIRED")), "true") {
+		return nil, errors.New("internal mTLS client is unavailable")
+	}
+	if h.client != nil {
+		return h.client, nil
+	}
+	return newInternalServiceClient(timeout)
 }
 
 // ProxyShellWS keeps R4 shell outside browser authorization and canonical
@@ -77,8 +124,12 @@ type Handler struct {
 	chUser     string // ClickHouse 用户名（经 env 注入，空则不启用认证）
 	chPassword string // ClickHouse 密码（经 Secret 注入，空则不启用认证）
 	client     *http.Client
-	vmURL      string         // VictoriaMetrics base URL（经 env 注入，可移植）
-	podNS      *podNSResolver // K8s pod→ns 兜底映射（GlobalTopology 对空 ns 服务使用；nil 时不启用）
+	// internalClient is used only for Query API → orchestrator/LLM proxy calls.
+	// It carries the client certificate in production; the generic client above
+	// remains a test/ClickHouse transport seam.
+	internalClient *http.Client
+	vmURL          string         // VictoriaMetrics base URL（经 env 注入，可移植）
+	podNS          *podNSResolver // K8s pod→ns 兜底映射（GlobalTopology 对空 ns 服务使用；nil 时不启用）
 
 	// repo 是统一 ClickHouse 事实查询 repository（P6.2）。handler 的 CH 查询经此
 	// 获得统一错误语义（no_data/unavailable/timeout），消除 per-handler 500。
@@ -160,14 +211,22 @@ type Handler struct {
 
 // NewHandler creates a new Handler.
 func NewHandler(chHost string, chPort int) *Handler {
+	internalClient, internalClientErr := newInternalServiceClient(120 * time.Second)
+	if internalClientErr != nil {
+		// Runtime startup performs the authoritative fail-closed check. Keep
+		// construction usable for unit tests while ensuring handlers cannot fall
+		// back to the generic client when mTLS is required.
+		log.Printf("internal service client unavailable: %v", internalClientErr)
+	}
 	h := &Handler{
-		chHost:     chHost,
-		chPort:     chPort,
-		chUser:     os.Getenv("CLICKHOUSE_USER"),
-		chPassword: os.Getenv("CLICKHOUSE_PASSWORD"),
-		client:     &http.Client{Timeout: 30 * time.Second},
-		vmURL:      firstNonEmpty(os.Getenv("VICTORIA_METRICS_URL"), "http://victoria-metrics.observability.svc.cluster.local:8428"),
-		podNS:      newPodNSResolver(),
+		chHost:         chHost,
+		chPort:         chPort,
+		chUser:         os.Getenv("CLICKHOUSE_USER"),
+		chPassword:     os.Getenv("CLICKHOUSE_PASSWORD"),
+		client:         &http.Client{Timeout: 30 * time.Second},
+		internalClient: internalClient,
+		vmURL:          firstNonEmpty(os.Getenv("VICTORIA_METRICS_URL"), "http://victoria-metrics.observability.svc.cluster.local:8428"),
+		podNS:          newPodNSResolver(),
 	}
 	chRepo := query.NewClickHouseRepo(
 		fmt.Sprintf("http://%s:%d", chHost, chPort),
@@ -235,23 +294,20 @@ func (h *Handler) SetVMURL(u string) {
 	}
 }
 
-// extractTenantID extracts tenant_id from X-Tenant-ID header or query param, defaults to "default".
+// extractTenantID returns only the middleware-verified tenant. There is no
+// header/query/default fallback: handlers reached without a canonical
+// authorization context must fail closed instead of guessing a tenant.
 func extractTenantID(r *http.Request) string {
-	if tid := r.Header.Get("X-Tenant-ID"); tid != "" {
-		return tid
+	if ctx, ok := requestAuthorizationContext(r); ok && ctx.TenantID != "" {
+		return ctx.TenantID
 	}
-	if tid := r.URL.Query().Get("tenant_id"); tid != "" {
-		return tid
-	}
-	return "default"
+	return ""
 }
 
 // metricsTenantID 是无 HTTP 请求上下文的后台容量告警循环使用的系统租户。
+// 未配置时返回空值；调用方必须跳过评估，不能把任何固定租户当作默认授权。
 func metricsTenantID() string {
-	if tid := strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_TENANT_ID")); tid != "" {
-		return tid
-	}
-	return "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
+	return strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_TENANT_ID"))
 }
 
 // extractClusterClause 返回按 cluster_id 过滤的 SQL 片段。
@@ -259,6 +315,11 @@ func metricsTenantID() string {
 // 其他值 → 返回 " AND cluster_id='xxx'"（仅查询该集群）。
 func extractClusterClause(r *http.Request) string {
 	cid := r.URL.Query().Get("cluster_id")
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") && (cid == "" || cid == "all") {
+		if ctx, ok := requestAuthorizationContext(r); ok {
+			cid = ctx.ActiveClusterID
+		}
+	}
 	if cid == "" || cid == "all" {
 		return ""
 	}
@@ -269,7 +330,17 @@ func extractClusterClause(r *http.Request) string {
 func extractClusterID(r *http.Request) string {
 	cid := r.URL.Query().Get("cluster_id")
 	if cid == "" {
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") {
+			if ctx, ok := requestAuthorizationContext(r); ok && ctx.ActiveClusterID != "" {
+				return ctx.ActiveClusterID
+			}
+		}
 		return "all"
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") && cid == "all" {
+		if ctx, ok := requestAuthorizationContext(r); ok && ctx.ActiveClusterID != "" {
+			return ctx.ActiveClusterID
+		}
 	}
 	return cid
 }
@@ -279,6 +350,11 @@ func extractClusterID(r *http.Request) string {
 func extractClusterIDIfSpecific(r *http.Request) string {
 	cid := r.URL.Query().Get("cluster_id")
 	if cid == "" || cid == "all" {
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") {
+			if ctx, ok := requestAuthorizationContext(r); ok {
+				return ctx.ActiveClusterID
+			}
+		}
 		return ""
 	}
 	return cid
@@ -438,7 +514,7 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Tenant-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
@@ -1005,11 +1081,13 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 	// 加 30s TTL 内存缓存（key 含 tenant+path+query，即 cluster_id 维度），
 	// 复用 cache.go 的 appCache（mutex 保护 + 过期清理），降低 CH 压力。
 	ck := cacheKey(r)
-	if cached, ok := appCache.Get(ck); ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "HIT")
-		w.Write([]byte(cached))
-		return
+	if ck != "" {
+		if cached, ok := appCache.Get(ck); ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "HIT")
+			w.Write([]byte(cached))
+			return
+		}
 	}
 	tid := extractTenantID(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -1126,7 +1204,9 @@ func (h *Handler) DashboardStats(w http.ResponseWriter, r *http.Request) {
 
 	// H5 修复（R4）：写入 30s TTL 缓存后返回。
 	data, _ := json.Marshal(stats)
-	appCache.Set(ck, string(data), 30*time.Second)
+	if ck != "" {
+		appCache.Set(ck, string(data), 30*time.Second)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", "MISS")
 	w.Write(data)

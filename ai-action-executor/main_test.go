@@ -40,7 +40,8 @@ func newTestServer(mode ExecutionMode) *server {
 
 func execBody() ActionExecutionContext {
 	return ActionExecutionContext{
-		ActionID: "act-1", ActionHash: "h1", TargetUID: "uid-1", ResourceVersion: "rv-1",
+		ActionID: "act-1", ActionHash: "h1", TargetUID: "uid-1", TargetName: "orders", ResourceVersion: "rv-1",
+		ResourceType: "deployment", Namespace: "prod",
 		Operation: "patch", CredentialRef: "ref-1", ApprovedAt: "2026-01-01T00:00:00Z",
 	}
 }
@@ -183,7 +184,11 @@ func TestDesiredStateMatchesCanonicalOperations(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := desiredStateMatches(ReconcileRequest{Operation: tt.operation, ResourceType: tt.resource, TargetSpec: json.RawMessage(tt.spec)}, tt.observed)
+			ns := ""
+			if tt.resource != "node" {
+				ns = "prod"
+			}
+			got, err := desiredStateMatches(ReconcileRequest{Operation: tt.operation, ResourceType: tt.resource, Namespace: ns, TargetSpec: json.RawMessage(tt.spec)}, tt.observed)
 			if err != nil || got != tt.want {
 				t.Fatalf("desiredStateMatches() = %v, %v; want %v", got, err, tt.want)
 			}
@@ -212,6 +217,29 @@ func TestMissingActionHashRejected(t *testing.T) {
 	rec := postJSON(http.HandlerFunc(s.handleExecute), "/v1/executor/execute", b)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing action_hash, got %d", rec.Code)
+	}
+}
+
+func TestExecutionRejectsImplicitResourceScope(t *testing.T) {
+	s := newTestServer(ModeApproved)
+	b := execBody()
+	b.ResourceType = ""
+	rec := postJSON(http.HandlerFunc(s.handleExecute), "/v1/executor/execute", b)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "resource_type is required") {
+		t.Fatalf("missing resource_type must fail closed, got %d: %s", rec.Code, rec.Body.String())
+	}
+	b = execBody()
+	b.Namespace = ""
+	rec = postJSON(http.HandlerFunc(s.handleExecute), "/v1/executor/execute", b)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "namespace is required") {
+		t.Fatalf("missing namespace must fail closed, got %d: %s", rec.Code, rec.Body.String())
+	}
+	b = execBody()
+	b.ResourceType = "node"
+	b.Namespace = "prod"
+	rec = postJSON(http.HandlerFunc(s.handleExecute), "/v1/executor/execute", b)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "node must not include namespace") {
+		t.Fatalf("namespaced node must fail closed, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -281,7 +309,7 @@ func TestReconcileReturnsSuccessOnlyWhenRealStateMatches(t *testing.T) {
 	}
 	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
 		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
-			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+			ResourceType: "deployment", Namespace: "prod", TargetSpec: json.RawMessage(`{"replicas":2}`)})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reconcile failed: %d", rec.Code)
 	}
@@ -299,7 +327,7 @@ func TestReconcileRequiresRealReadCapability(t *testing.T) {
 	s := newTestServer(ModeApproved)
 	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
 		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
-			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+			ResourceType: "deployment", Namespace: "prod", TargetSpec: json.RawMessage(`{"replicas":2}`)})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("missing read capability must fail closed, got %d", rec.Code)
 	}
@@ -312,7 +340,7 @@ func TestReconcileRequiresRealReadCapability(t *testing.T) {
 
 func TestReconcileRejectsUnsignedContext(t *testing.T) {
 	s := newTestServer(ModeApproved)
-	body, _ := json.Marshal(ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale", TargetSpec: json.RawMessage(`{"replicas":2}`)})
+	body, _ := json.Marshal(ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", ResourceType: "deployment", Namespace: "prod", Operation: "scale", TargetSpec: json.RawMessage(`{"replicas":2}`)})
 	req := httptest.NewRequest(http.MethodPost, "/v1/executor/reconcile", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleReconcile(rec, req)
@@ -328,7 +356,7 @@ func TestReconcileDoesNotAuthorizeBlindRetry(t *testing.T) {
 	}
 	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
 		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
-			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+			ResourceType: "deployment", Namespace: "prod", TargetSpec: json.RawMessage(`{"replicas":2}`)})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reconcile failed: %d", rec.Code)
 	}
@@ -349,7 +377,7 @@ func TestReconcileReportsDriftWhenUIDChanges(t *testing.T) {
 	}
 	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
 		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-old", TargetName: "orders", Operation: "scale",
-			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+			ResourceType: "deployment", Namespace: "prod", TargetSpec: json.RawMessage(`{"replicas":2}`)})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("UID drift must be a conflict, got %d", rec.Code)
 	}
@@ -367,7 +395,7 @@ func TestReconcileReportsUnknownWhenReadFails(t *testing.T) {
 	}
 	rec := postJSON(http.HandlerFunc(s.handleReconcile), "/v1/executor/reconcile",
 		ReconcileRequest{ActionID: "act-x", ActionHash: "hash-x", TargetUID: "uid-x", TargetName: "orders", Operation: "scale",
-			TargetSpec: json.RawMessage(`{"replicas":2}`)})
+			ResourceType: "deployment", Namespace: "prod", TargetSpec: json.RawMessage(`{"replicas":2}`)})
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("read failure must be unavailable, got %d", rec.Code)
 	}

@@ -336,6 +336,41 @@ func TestInternalQueryMetricsSuccess(t *testing.T) {
 	}
 }
 
+func TestInternalQueryMetricsNoDataUsesCompleteEnvelope(t *testing.T) {
+	c := newInternalQueryTestHandler(t, nil)
+	req := c.trustedRequest(t, http.MethodPost, "/internal/v1/query/metrics", `{"service":"checkout","minutes":60}`)
+	rec := httptest.NewRecorder()
+	c.h.InternalQueryMetrics(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on metrics no-data, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope ToolResultEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if envelope.Quality != "complete" || envelope.Count != 0 {
+		t.Fatalf("metrics no-data must be a complete empty envelope, got quality=%q count=%d", envelope.Quality, envelope.Count)
+	}
+}
+
+func TestExecToolQueryNoDataUsesCompleteEnvelope(t *testing.T) {
+	h := &Handler{}
+	rec := httptest.NewRecorder()
+	h.execToolQuery(rec, &internalQueryCtx{TenantID: authzTenantID, ClusterID: testClusterID}, &internalQueryRequest{}, func() ([]byte, error) {
+		return nil, query.NoData()
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for authorized no-data query, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope ToolResultEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if envelope.Quality != "complete" || envelope.Count != 0 {
+		t.Fatalf("no-data query must be a complete empty envelope, got quality=%q count=%d", envelope.Quality, envelope.Count)
+	}
+}
+
 func TestInternalQueryUnauthorizedCapability(t *testing.T) {
 	c := newInternalQueryTestHandler(t, nil)
 	// capability 不匹配 route（changes 需要 changes.read，提供 metrics.read）→ permission_denied。

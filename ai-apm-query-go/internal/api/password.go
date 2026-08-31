@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -69,9 +70,15 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Keep the response deliberately small: no password or hash is ever
-	// echoed, and the frontend only needs the rotated token and state.
+	// Rotate the browser session in the same HttpOnly cookie used by login.  The
+	// credential never appears in JSON, which prevents JavaScript from reading
+	// or persisting a bearer token.
+	http.SetCookie(w, &http.Cookie{
+		Name: "aiops_access", Value: token, Path: "/", MaxAge: 24 * 60 * 60,
+		Expires:  time.Now().UTC().Add(24 * time.Hour),
+		HttpOnly: true, Secure: secureSessionCookie(), SameSite: http.SameSiteLaxMode,
+	})
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"token": token, "must_change_password": false,
+		"authenticated": true, "must_change_password": false,
 	})
 }

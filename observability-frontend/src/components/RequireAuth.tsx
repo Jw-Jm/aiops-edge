@@ -3,7 +3,7 @@ import { Navigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 
 const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const token = localStorage.getItem('token')
+  const token = useAuthStore((state) => state.token)
   const mustChangePassword = useAuthStore((state) => state.mustChangePassword)
   const location = useLocation()
   if (!token) {

@@ -1,0 +1,147 @@
+{{- if .Values.credentialBroker.enabled }}
+{{- if empty .Values.credentialBroker.profiles }}
+{{- fail "credentialBroker.profiles must be explicitly configured when the broker is enabled" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-credential-broker
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-credential-broker
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ai-action-executor-broker-client
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-action-executor
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-credential-broker-profiles
+  namespace: {{ .Values.namespace.observability }}
+data:
+  CREDENTIAL_PROFILES: {{ .Values.credentialBroker.profiles | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-credential-broker
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-credential-broker
+spec:
+  replicas: {{ .Values.credentialBroker.replicas | default 2 }}
+  selector:
+    matchLabels:
+      app: ai-credential-broker
+  template:
+    metadata:
+      labels:
+        app: ai-credential-broker
+    spec:
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
+      serviceAccountName: ai-credential-broker
+      automountServiceAccountToken: true
+      containers:
+        - name: broker
+          image: "{{ .Values.credentialBroker.image.repository }}:{{ tpl .Values.credentialBroker.image.tag . }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AIOPS_ENV
+              value: {{ .Values.global.environment | default "production" | quote }}
+            - name: BROKER_PORT
+              value: "8080"
+            - name: BROKER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: CREDENTIAL_BROKER_TOKEN }
+            - name: CREDENTIAL_PROFILES
+              valueFrom:
+                configMapKeyRef: { name: ai-credential-broker-profiles, key: CREDENTIAL_PROFILES }
+            {{- include "aiops.mtlsEnv" . | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.credentialBroker.resources | nindent 12 }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-credential-broker
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: ai-credential-broker
+spec:
+  selector:
+    app: ai-credential-broker
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-action-executor-to-credential-broker
+  namespace: {{ .Values.namespace.observability }}
+spec:
+  podSelector:
+    matchLabels: { app: ai-credential-broker }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: ai-action-executor } }
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- range .Values.credentialBroker.targetNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ai-credential-broker-tokenrequest
+  namespace: {{ . }}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-credential-broker-tokenrequest
+  namespace: {{ . }}
+subjects:
+  - kind: ServiceAccount
+    name: ai-credential-broker
+    namespace: {{ $.Values.namespace.observability }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ai-credential-broker-tokenrequest
+{{- end }}
+{{- end }}

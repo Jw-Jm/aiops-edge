@@ -100,17 +100,15 @@ def verify_run_invocation_ingress(request: Request) -> dict:
         RunInvocationContext.model_validate(claims)
         return claims
     except ValidationError:
-        # Keep endpoint-specific authorization responses stable while still
-        # validating the complete context before an accepted investigation.
-        # The chat endpoint must report CAPABILITY_DENIED/SYSTEM_PRINCIPAL_DENIED
-        # and the run endpoint must report its identity mismatch code.
-        capability = str(claims.get("capability") or "")
-        if (
-            capability in {"ai.chat", "ai.investigate"}
-            or claims.get("principal_type") == "system"
-            or not claims.get("principal_id")
-        ):
-            return claims
+        # A valid signature does not make malformed scope/principal claims
+        # trustworthy. Never return unvalidated claims to the business layer;
+        # endpoint-specific authorization is applied only after this boundary.
+        if request.url.path.endswith("/chat") and claims.get("capability") != "ai.chat":
+            raise HTTPException(status_code=403, detail="CAPABILITY_DENIED") from None
+        if request.url.path.endswith("/run-invocations") and claims.get("capability") != "ai.investigate":
+            raise HTTPException(status_code=403, detail="CAPABILITY_DENIED") from None
+        if claims.get("principal_type") == "system":
+            raise HTTPException(status_code=403, detail="SYSTEM_PRINCIPAL_DENIED") from None
         raise HTTPException(status_code=403, detail="INVALID_CONTEXT") from None
     except TrustedContextError as exc:
         code = getattr(exc, "error_code", "invalid_context")

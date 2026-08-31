@@ -1,35 +1,35 @@
 import axios from 'axios'
-
-// Canonical tenant identity is tracked in source so a GitHub checkout and the
-// local build produce the same request context even when .env is absent.
-// VITE_TENANT_ID remains an explicit deployment override, never a legacy alias.
-const DEFAULT_TENANT_ID = '7ed01afc-cc79-4ecd-8767-a2befa6168ad'
-export const TENANT_ID = (import.meta.env.VITE_TENANT_ID as string) || DEFAULT_TENANT_ID
+import { useAuthStore } from '../store/authStore'
 
 const api = axios.create({
   baseURL: '/api/v1',
-  headers: { 'X-Tenant-ID': TENANT_ID },
+  withCredentials: true,
   timeout: 15000,
 })
 
 export { api }
 
-// Read token from localStorage on init
-const token = localStorage.getItem('token')
-if (token) {
-  api.defaults.headers.common['Authorization'] = `Bearer ${token}`
+export interface MeResponse {
+  user_id: string
+  session_id: string
+  active_scope: { tenant_id: string; cluster_id: string }
+  available_tenants: string[]
+  available_clusters: Array<{ tenant_id: string; cluster_id: string; slug?: string; name: string; status?: string }>
+  capabilities: string[]
 }
+export const setActiveScope = (tenantId: string, clusterId?: string) =>
+  api.post('/me/scope', { tenant_id: tenantId, cluster_id: clusterId || null })
 
 // 从持久化的 uiStore 读取当前集群选择（'all' = 全部集群），避免与 uiStore 循环依赖。
 function readCurrentClusterId(): string {
   try {
     const raw = localStorage.getItem('aiops-ui-v3')
-    if (!raw) return 'all'
+    if (!raw) return ''
     const parsed = JSON.parse(raw)
     const cid = parsed?.state?.currentClusterId
-    return cid || 'all'
+    return cid || ''
   } catch {
-    return 'all'
+    return ''
   }
 }
 
@@ -62,14 +62,12 @@ const GLOBAL_PATHS = [
 
 // Request interceptor: set Authorization header + 多集群过滤参数
 api.interceptors.request.use((config) => {
-  const t = localStorage.getItem('token')
-  if (t) {
-    config.headers.Authorization = `Bearer ${t}`
-  }
+  // Browser authentication is an HttpOnly cookie; no caller-controlled
+  // Authorization or tenant headers are constructed here.
   const cid = readCurrentClusterId()
   const url = config.url || ''
   const isGlobal = GLOBAL_PATHS.some((p) => url.startsWith(p))
-  if (!isGlobal && cid !== 'all') {
+  if (!isGlobal && cid) {
     config.params = { ...(config.params || {}), cluster_id: cid }
   }
   return config
@@ -80,7 +78,7 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('token')
+      useAuthStore.getState().logout()
       // Only redirect if not already on login page
       if (window.location.pathname !== '/login') {
         window.location.href = '/login'
@@ -188,7 +186,6 @@ export async function streamRunEvents(
   signal?: AbortSignal,
   options?: { afterSequence?: number; maxReconnects?: number },
 ): Promise<void> {
-  const auth = localStorage.getItem('token')
   let afterSequence = options?.afterSequence ?? 0
   let lastEventId = afterSequence > 0 ? String(afterSequence) : ''
   const maxReconnects = Math.max(0, options?.maxReconnects ?? 5)
@@ -199,8 +196,8 @@ export async function streamRunEvents(
       headers: {
         Accept: 'text/event-stream',
         ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
-        ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
       },
+      credentials: 'include',
       signal,
     })
     if (!response.ok || !response.body) {
@@ -484,7 +481,7 @@ export const listUsers = (params?: Record<string, unknown>) => api.get('/users',
 export const createUser = (data: Record<string, unknown>) => api.post('/users', data)
 export const updateUser = (id: number, data: Record<string, unknown>) => api.put(`/users/${id}`, data)
 export const deleteUser = (id: number) => api.delete(`/users/${id}`)
-export const getMe = () => api.get('/me')
+export const getMe = () => api.get<MeResponse>('/me')
 
 // ===== 报告中心 =====
 export const listReports = (params?: Record<string, unknown>) => api.get('/ops/reports/history', { params })

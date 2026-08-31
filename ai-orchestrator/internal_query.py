@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from contracts import TrustedRequestContext
 from invocation_scope import ScopeView
 from trusted_context import TrustedContextError, sign_trusted_request_context_v2
+from mtls import urlopen as mtls_urlopen
 
 
 _DEFAULT_TIMEOUT = 10
@@ -104,7 +105,7 @@ def signed_query_api_request(
         method=method.upper(),
         headers=request_headers,
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with mtls_urlopen(request, timeout=timeout) as response:
         return response.read()
 
 

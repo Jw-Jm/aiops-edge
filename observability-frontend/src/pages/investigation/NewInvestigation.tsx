@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { Button, Card, Form, Input, Select, Space, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { TENANT_ID, createRun } from '../../api/client'
+import { createRun } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
 
@@ -13,14 +13,14 @@ const NewInvestigation: React.FC = () => {
   const clusters = useUIStore((s) => s.clusters)
   const [submitting, setSubmitting] = useState(false)
 
-  const onFinish = (values: { resourceId: string; symptom: string; clusterId: string }) => {
+  const onFinish = (values: { resourceId: string; symptom: string; clusterId: string; targetType: string }) => {
     setSubmitting(true)
     // P12：真实触发 POST /api/v1/ai/runs（显式按钮才创建，服务器重新鉴权）
     createRun({
-      tenant_id: TENANT_ID,
       cluster_id: values.clusterId,
       resource_id: values.resourceId,
       service: values.resourceId,
+      target_type: values.targetType,
       intent: values.symptom,
       message: values.symptom,
       action_mode: 'read_only',
@@ -44,11 +44,25 @@ const NewInvestigation: React.FC = () => {
         actions={<Button onClick={() => window.history.back()}>返回</Button>}
       />
       <Card size="small" style={{ maxWidth: 560 }}>
-        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ clusterId: clusters[0]?.cluster_id ?? '' }}>
+        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ clusterId: clusters[0]?.cluster_id ?? '', targetType: 'service' }}>
           <Form.Item name="clusterId" label="Canonical Cluster" rules={[{ required: true }]}>
             <Select
               placeholder="选择 canonical cluster"
               options={clusters.filter((c) => c.cluster_id).map((c) => ({ value: c.cluster_id, label: `${c.name} (${c.cluster_id})` }))}
+            />
+          </Form.Item>
+          <Form.Item name="targetType" label="目标类型" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { value: 'service', label: '服务' },
+                { value: 'node', label: 'Kubernetes 节点' },
+                { value: 'deployment', label: 'Deployment' },
+                { value: 'statefulset', label: 'StatefulSet' },
+                { value: 'daemonset', label: 'DaemonSet' },
+                { value: 'pod', label: 'Pod' },
+                { value: 'namespace', label: 'Namespace' },
+                { value: 'vm', label: '虚拟机' },
+              ]}
             />
           </Form.Item>
           <Form.Item name="resourceId" label="资源" rules={[{ required: true, message: '请输入资源标识' }]}>

@@ -32,6 +32,18 @@ spec:
               # 注意：heredoc 必须用不带引号的 <<SQL，才能让 shell 展开 $MYSQL_* 密码变量；
               # 用 <<'SQL'（quoted heredoc）会把 $MYSQL_* 当字面量，密码被设成 "$MYSQL_..." 而非真实值，
               # 导致 schema-migrator/query-api 用 secret 密码连接时 Access denied。
+              # Headless Service 在 mysqld 启动期间可能尚无可用 endpoint；显式重试，
+              # 避免 Helm hook 在首次解析失败时耗尽 backoffLimit。
+              for attempt in $(seq 1 60); do
+                if mysql -h mysql.observability.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" -e 'SELECT 1' >/dev/null 2>&1; then
+                  break
+                fi
+                if [ "$attempt" -eq 60 ]; then
+                  echo "mysql did not become reachable within 120 seconds" >&2
+                  exit 1
+                fi
+                sleep 2
+              done
               mysql -h mysql.observability.svc.cluster.local -uroot -p"$MYSQL_ROOT_PASSWORD" <<SQL
               CREATE DATABASE IF NOT EXISTS aiops;
               CREATE USER IF NOT EXISTS 'aiops_app'@'%' IDENTIFIED BY '$MYSQL_APP_PASSWORD';
@@ -40,7 +52,10 @@ spec:
 
               CREATE USER IF NOT EXISTS 'aiops_migrator'@'%' IDENTIFIED BY '$MYSQL_MIGRATOR_PASSWORD';
               ALTER USER 'aiops_migrator'@'%' IDENTIFIED BY '$MYSQL_MIGRATOR_PASSWORD';
-              GRANT CREATE, ALTER, DROP, INDEX, SELECT, INSERT, UPDATE, DELETE ON aiops.* TO 'aiops_migrator'@'%';
+              # REFERENCES is required when migrations add foreign keys (for
+              # example ai_chat_sessions -> users). Keep it on the migrator
+              # only; the runtime account remains DML-only.
+              GRANT CREATE, ALTER, DROP, INDEX, REFERENCES, SELECT, INSERT, UPDATE, DELETE ON aiops.* TO 'aiops_migrator'@'%';
               FLUSH PRIVILEGES;
               SQL
               echo "mysql users (aiops_app / aiops_migrator) ready"

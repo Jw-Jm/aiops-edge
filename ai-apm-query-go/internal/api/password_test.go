@@ -112,14 +112,18 @@ func TestChangePasswordRotatesSessionAndClearsForceChange(t *testing.T) {
 		t.Fatalf("ChangePassword() status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var response struct {
-		Token              string `json:"token"`
-		MustChangePassword bool   `json:"must_change_password"`
+		Authenticated      bool `json:"authenticated"`
+		MustChangePassword bool `json:"must_change_password"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Token == "" || response.MustChangePassword {
-		t.Fatalf("ChangePassword() response = %+v, want rotated token and false force flag", response)
+	if !response.Authenticated || response.MustChangePassword {
+		t.Fatalf("ChangePassword() response = %+v, want authenticated cookie session and false force flag", response)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "aiops_access" || cookies[0].Value == "" || !cookies[0].HttpOnly {
+		t.Fatalf("ChangePassword() did not issue an HttpOnly rotated session cookie: %#v", cookies)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -135,6 +139,7 @@ func TestAuthMiddlewareBlocksBusinessRoutesUntilPasswordChanges(t *testing.T) {
 	previous := store.GetDB()
 	store.SetDB(db)
 	t.Cleanup(func() { store.SetDB(previous) })
+	expectActiveSessionScope(mock, authzTenantID, "")
 	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(authzUserID, authzSessionID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).

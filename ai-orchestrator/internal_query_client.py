@@ -93,6 +93,7 @@ def _default_http(
     import urllib.request
 
     from internal_query import _load_private_key, _validate_query_api_url
+    from mtls import urlopen as mtls_urlopen
 
     private_key = _load_private_key(os.environ.get("TRUSTED_CONTEXT_PRIVATE_KEY", ""))
     token = sign_trusted_request_context_v2(dict(context_claims), private_key)
@@ -117,7 +118,7 @@ def _default_http(
     }
     request = urllib.request.Request(url, data=data, method=method.upper(), headers=request_headers)
     try:
-        with urllib.request.urlopen(request, timeout=_DEFAULT_TIMEOUT) as response:
+        with mtls_urlopen(request, timeout=_DEFAULT_TIMEOUT) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as e:
         try:

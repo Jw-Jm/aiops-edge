@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -60,9 +61,13 @@ func ConfigureActionExecutionClient(baseURL, encodedPrivateKey, token string) er
 	if err != nil {
 		return fmt.Errorf("decode executor signing key: %w", err)
 	}
+	httpClient, err := newInternalServiceClient(20 * time.Second)
+	if err != nil {
+		return err
+	}
 	client := &ActionExecutionClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: 20 * time.Second},
+		httpClient: httpClient,
 		privateKey: priv,
 		token:      token,
 	}
@@ -146,6 +151,7 @@ func (c *ActionExecutionClient) Reconcile(ctx contract.ActionExecutionContext) (
 		"namespace":        ctx.Namespace,
 		"operation":        ctx.Operation,
 		"target_spec":      json.RawMessage(ctx.TargetSpec),
+		"credential_ref":   ctx.CredentialRef,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -206,6 +212,14 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 	if !json.Valid(targetSpec) {
 		return contract.ActionResult{}, errors.New("action params are not valid JSON")
 	}
+	credentialRef := "query-api:signed"
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") {
+		cluster, lookupErr := (&store.ClusterDAO{}).GetByClusterID(action.ClusterID)
+		if lookupErr != nil || cluster == nil || strings.TrimSpace(cluster.CredentialRef) == "" {
+			return contract.ActionResult{}, errors.New("credential_ref unavailable for action cluster")
+		}
+		credentialRef = cluster.CredentialRef
+	}
 	ctx := contract.ActionExecutionContext{
 		ActionID:        action.ActionID,
 		ActionHash:      action.ActionHash,
@@ -218,7 +232,7 @@ func (h *Handler) executeApprovedAction(action *store.AIAction, approval *store.
 		Namespace:       action.Namespace,
 		Operation:       action.Operation,
 		TargetSpec:      targetSpec,
-		CredentialRef:   "query-api:signed",
+		CredentialRef:   credentialRef,
 		ApprovedAt:      formatApprovedAt(approval.DecidedAt),
 		ExecutedBy:      "query-api",
 	}

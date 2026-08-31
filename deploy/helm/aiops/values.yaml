@@ -12,9 +12,29 @@ statefulReplicaCount: 1
 # 保留此值作为手工 Helm 部署的基线版本，保证"代码/版本/部署"一致。
 global:
   imageTag: "v1.1.1"
+  # Runtime environment is explicit so security-sensitive compatibility paths
+  # and cookie behavior cannot silently inherit a developer default.
+  environment: production
 namespace:
   observability: observability
   deepflow: deepflow
+
+# Internal service mTLS. The certificate Secret is provisioned by the external
+# secret manager; the chart never generates or stores private keys. Public
+# browser routes on query-api share the listener, while /internal/* and all
+# dedicated service APIs require a verified client certificate.
+internalTLS:
+  enabled: false
+  required: false
+  secretName: aiops-internal-tls
+  # Comma-separated DNS/URI SANs allowed for client certificates.  Required
+  # whenever mTLS is required; production release tooling must inject the
+  # caller identities instead of relying on a CA-only trust decision.
+  clientSAN: ""
+  mountPath: /var/run/aiops-tls
+  certFile: /var/run/aiops-tls/tls.crt
+  keyFile: /var/run/aiops-tls/tls.key
+  clientCAFile: /var/run/aiops-tls/ca.crt
 
 # ---------------------------------------------------------------------------
 # 网络策略（G5 安全加固）：默认拒绝所有入站流量，仅放行组件间必需链路。
@@ -36,6 +56,11 @@ networkPolicy:
   #   建议灰度顺序：["event-collector"] → ["event-collector","categraf","ingest"] → 其余组件 → 全局 true。
   #   回滚：清空列表（[]）即解除对应组件的 egress 限制。
   egressCanaryServices: []
+  # Destination CIDRs for the Kubernetes API server. NetworkPolicy evaluates
+  # the post-DNAT API endpoint (often a node address), not the kubernetes
+  # Service's namespace, so production release tooling must inject the exact
+  # control-plane/service CIDRs. Empty is allowed only when egress deny is off.
+  kubernetesApiCIDRs: []
 
 # Graph projection backend. legacy_mysql is the safe rollback default; shadow
 # and hugegraph are enabled only by an explicit cutover profile.
@@ -89,6 +114,24 @@ aiActionExecutor:
   # F5 已废除：realMutation=true 才启用真实 K8s mutation（挂专属 SA + 限定 action-test RBAC）。
   realMutation: false
 
+# Credential Broker exchanges pre-registered credential_ref values for <=300s
+# Kubernetes TokenRequest credentials. It is disabled in the default profile;
+# enabling approved mutations requires this service and explicit profiles.
+credentialBroker:
+  enabled: false
+  image:
+    repository: ai-credential-broker
+    tag: "{{ .Values.global.imageTag }}"
+  replicas: 2
+  token: ""
+  # ref|namespace|serviceaccount|operation[,operation...]; never accept an
+  # unregistered credential_ref or arbitrary namespace/service-account.
+  profiles: ""
+  targetNamespaces: []
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "200m", memory: "256Mi" }
+
 # C-04（报告 §19）：ai-llm-egress-proxy——LLM 出站唯一代理。
 #   默认 disabled；启用时 orchestrator 的 LLM 出站走本 proxy（Provider key 只存于 proxy Secret）。
 llmEgressProxy:
@@ -118,9 +161,10 @@ secrets:
   mysqlRootPassword: ""
   mysqlAppPassword: ""
   mysqlMigratorPassword: ""
-  # admin 首次种子密码；本机默认 admin123，首次登录后由 query-api 强制改密。
+  # admin 首次种子密码；本机默认 admin1234。首次登录是否强制改密由
+  # queryApi.authRequireFirstLoginPasswordChange 控制。
   # 显式注入值和已存在 Secret 优先，升级不会覆盖已有 admin 密码。
-  adminInitialPassword: "admin123"
+  adminInitialPassword: "admin1234"
   # LLM proxy credentials: provider keys remain exclusively in the proxy container.
   llmProxyToken: ""
   llmProviderKeys: ""
@@ -140,6 +184,7 @@ secrets:
   executorToken: ""
   aiActionExecutorSigningKey: ""           # Ed25519 private key, raw-url base64 without padding, 64-byte private key (seed||public)
   aiActionExecutorVerifyKeys: ""           # Ed25519 public key, raw-url base64 without padding
+  credentialBrokerToken: ""
   hugeGraphPassword: ""
 
 # ---------------------------------------------------------------------------
@@ -318,6 +363,9 @@ queryApi:
   systemClusterName: "kubernetes-cluster"
   systemClusterEnvironment: "local"
   systemClusterRegion: "local"
+  # First-login password enforcement is enabled by default. The local
+  # validation profile temporarily disables the interactive gate explicitly.
+  authRequireFirstLoginPasswordChange: true
   # Optional registration evidence. Empty means the cluster is visible to the
   # tenant but the Kubernetes Access Boundary remains fail-closed until a real
   # credential→kube-system UID registration is completed.
@@ -349,6 +397,21 @@ queryApi:
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits: { cpu: "1", memory: "1Gi" }
+  http:
+    replicas: 1
+    resources:
+      requests: { cpu: "200m", memory: "512Mi" }
+      limits: { cpu: "1", memory: "1Gi" }
+  runDispatch:
+    replicas: 1
+    resources:
+      requests: { cpu: "200m", memory: "256Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
+  alertEval:
+    replicas: 1
+    resources:
+      requests: { cpu: "200m", memory: "256Mi" }
+      limits: { cpu: "500m", memory: "512Mi" }
 
 ingest:
   enabled: true
@@ -374,6 +437,9 @@ ingest:
   otlpGrpcPort: 4317
   walStorageClass: ""
   walStorage: 5Gi
+  # Durable event acceptance high-water mark. Reaching the limit returns 429
+  # with Retry-After; no event is acknowledged after the disk is exhausted.
+  walMaxBytes: 1073741824
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits: { cpu: "1", memory: "2Gi" }
@@ -444,8 +510,7 @@ eventCollector:
   leaseName: "aiops-event-collector-leader"
   selCollectEnabled: "true"
   selIntervalSeconds: 120
-  clickhouseHost: "clickhouse"
-  clickhousePort: 8123
+  ingestURL: "http://ingest:8080"
   resources:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "200m", memory: "256Mi" }

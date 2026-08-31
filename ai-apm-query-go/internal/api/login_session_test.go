@@ -48,13 +48,24 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 		t.Fatalf("Login() status = %d, body = %s, sql = %v", recorder.Code, recorder.Body.String(), mock.ExpectationsWereMet())
 	}
 	var response struct {
-		Token              string `json:"token"`
-		MustChangePassword bool   `json:"must_change_password"`
+		Authenticated      bool `json:"authenticated"`
+		MustChangePassword bool `json:"must_change_password"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	userID, sessionID, ok := validateJWTIdentity(response.Token)
+	if !response.Authenticated {
+		t.Fatal("Login() authenticated=false, want true")
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "aiops_access" || cookies[0].Value == "" {
+		t.Fatalf("Login() did not issue an HttpOnly session cookie: %#v", cookies)
+	}
+	if !cookies[0].HttpOnly {
+		t.Fatal("Login() session cookie is not HttpOnly")
+	}
+	token := cookies[0].Value
+	userID, sessionID, ok := validateJWTIdentity(token)
 	if !ok || userID != canonicalUserID || sessionID == "" {
 		t.Fatalf("Login() token identity = %q/%q valid=%v, want canonical user UUID and persisted session ID", userID, sessionID, ok)
 	}
@@ -62,6 +73,11 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 		t.Fatal("Login() must_change_password=false, want true")
 	}
 
+	// Scope is resolved from the server-owned auth_sessions row; the browser
+	// must not supply X-Tenant-ID as an authorization hint.
+	mock.ExpectQuery("SELECT COALESCE\\(active_tenant_id, ''\\), COALESCE\\(active_cluster_id, ''\\), authorization_version").
+		WithArgs(sessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "cluster_id", "authorization_version"}).AddRow(authzTenantID, "", int64(0)))
 	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
 		WithArgs(canonicalUserID, sessionID).
 		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
@@ -70,7 +86,7 @@ func TestLoginPersistsCanonicalSessionUsedByAuthorization(t *testing.T) {
 		WithArgs(canonicalUserID, authzTenantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
 	authorized := httptest.NewRequest(http.MethodGet, "/api/v1/resources/resolve", nil)
-	authorized.Header.Set("Authorization", "Bearer "+response.Token)
+	authorized.AddCookie(cookies[0])
 	authorized.Header.Set("X-Tenant-ID", authzTenantID)
 	context, err := RequestAuthorizationContext(authorized)
 	if err != nil || context.UserID != canonicalUserID || context.SessionID != sessionID {

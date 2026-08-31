@@ -57,6 +57,10 @@ func ettSeries(base, slope float64, n int) [][2]interface{} {
 //     memory（缓慢上升 10+0.06i，ETT≈73.3h >72h → 不触发）；
 //     其余（disk/network，平缓 30 → 不触发）。
 func newETTVMServer(t *testing.T, cpuSeries *[][2]interface{}) *httptest.Server {
+	// Background ETT evaluation is fail-closed without an explicit system
+	// tenant; tests must provide that dependency instead of relying on a
+	// baked-in local tenant.
+	t.Setenv("AIOPS_SYSTEM_TENANT_ID", "test-system-tenant")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {

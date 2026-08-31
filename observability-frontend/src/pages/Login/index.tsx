@@ -13,14 +13,15 @@ const Login: React.FC = () => {
     setLoading(true)
     try {
       const res = await login(values.username, values.password)
-      const token = res.data?.token || res.data?.data?.token
-      if (token) {
+      if (res.data?.authenticated === true || res.data?.data?.authenticated === true) {
         const mustChangePassword = Boolean(res.data?.must_change_password ?? res.data?.data?.must_change_password)
-        useAuthStore.getState().login(token, res.data?.username || values.username, res.data?.role || 'user', res.data?.display_name || '', mustChangePassword)
+        // Authentication is carried by the HttpOnly cookie; keep only a
+        // non-secret in-memory session marker for route rendering.
+        useAuthStore.getState().login('cookie-session', res.data?.username || values.username, res.data?.role || 'user', res.data?.display_name || '', mustChangePassword)
         message.success('登录成功')
         navigate(mustChangePassword ? '/change-password' : '/overview')
       } else {
-        message.error('登录失败：未收到 token')
+        message.error('登录失败：会话未建立')
       }
     } catch (err: any) {
       message.error(err?.response?.data?.message || err?.response?.data?.error || '登录失败，请检查用户名和密码')

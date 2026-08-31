@@ -8,12 +8,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-// healthCache 缓存 ClickHouse 连通性探测结果，避免每次探针都打 CH（H4）。
+// healthCache 缓存统一 Ingest 连通性探测结果，避免每次探针都发起请求（H4）。
 type healthCache struct {
 	mu        sync.Mutex
 	lastCheck time.Time
@@ -33,7 +34,7 @@ func (h *healthCache) check(writer *EventWriter) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	if err := writer.Ping(ctx); err != nil {
 		healthy = false
-		reason = fmt.Sprintf("clickhouse unreachable: %v", err)
+		reason = fmt.Sprintf("unified ingest unreachable: %v", err)
 	}
 	cancel()
 	if rq := writer.RetryQueueSize(); rq > 80 { // 重试队列上限 100 批，>80 视为高水位不健康
@@ -57,13 +58,19 @@ func main() {
 	if err := scope.Validate(); err != nil {
 		log.Fatalf("invalid event scope (TENANT_ID/CLUSTER_ID must be canonical UUID): %v", err)
 	}
-	log.Printf("ai-event-collector starting (tenant=%s cluster=%s k8sWatch=%v selCollect=%v ch=%s:%d batch=%d flush=%ds)",
+	if strings.TrimSpace(cfg.IngestURL) == "" || strings.TrimSpace(cfg.IngestAPIKey) == "" {
+		log.Fatalf("unified ingest authentication is required: set INGEST_URL and INGEST_API_KEY")
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") && strings.TrimSpace(cfg.WALDir) == "" {
+		log.Fatalf("WAL_DIR is required in production: collector cannot acknowledge events from memory")
+	}
+	log.Printf("ai-event-collector starting (tenant=%s cluster=%s k8sWatch=%v selCollect=%v ingest=%s batch=%d flush=%ds)",
 		cfg.TenantID, cfg.ClusterID, cfg.K8SWatchEnabled, cfg.SELCollectEnabled,
-		cfg.CHHost, cfg.CHPort, cfg.BatchSize, cfg.FlushInterval)
+		cfg.IngestURL, cfg.BatchSize, cfg.FlushInterval)
 
 	writer, err := NewEventWriter(cfg)
 	if err != nil {
-		log.Fatalf("clickhouse writer init failed: %v", err)
+		log.Fatalf("event writer init failed: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,7 +100,7 @@ func main() {
 		log.Printf("IPMI SEL collection disabled (SEL_COLLECT_ENABLED=false)")
 	}
 
-	// 健康端点 :8080/health（供探针）：真实反映 CH 连通性与重试队列水位（H4）。
+	// 健康端点 :8080/health（供探针）：真实反映统一 Ingest 连通性与重试队列水位（H4）。
 	// 依赖异常时返回 503 + JSON body，触发重启/告警。
 	hc := &healthCache{}
 	mux := http.NewServeMux()
@@ -117,7 +124,7 @@ func main() {
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		body := fmt.Sprintf(
-			"# HELP ai_event_collector_events_flushed_total Total events successfully flushed to ClickHouse.\n"+
+			"# HELP ai_event_collector_events_flushed_total Total events accepted by unified ingest.\n"+
 				"# TYPE ai_event_collector_events_flushed_total counter\n"+
 				"ai_event_collector_events_flushed_total %d\n"+
 				"# HELP ai_event_collector_retry_queue_batches Current retry queue depth (batches).\n"+
@@ -141,9 +148,12 @@ func main() {
 	})
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	srv := &http.Server{Addr: addr, Handler: mux}
+	if err := configureMTLSServer(srv); err != nil {
+		log.Fatalf("mTLS configuration: %v", err)
+	}
 	go func() {
 		log.Printf("health server listening on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := listenHTTP(srv); err != nil && err != http.ErrServerClosed {
 			log.Printf("health server error: %v", err)
 		}
 	}()

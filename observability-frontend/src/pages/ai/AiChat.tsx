@@ -3,7 +3,7 @@ import { Button, Input, Empty, Alert, Modal, message } from 'antd'
 import { BookOutlined, ExperimentOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import api, { TENANT_ID, getSession, finalReport, addKnowledgeCase } from '../../api/client'
+import api, { getSession, finalReport, addKnowledgeCase } from '../../api/client'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
 import { useUIStore } from '../../store/uiStore'
@@ -89,20 +89,23 @@ const AiChat: React.FC = () => {
   const [execConfirm, setExecConfirm] = useState<{ m: ChatMessage; customScript?: string } | null>(null)
 
   const loadSessions = async () => {
-    try { const r = await api.get('/ai/sessions'); setSessions(r.data?.sessions || []) } catch {}
+    try { const r = await api.get('/ai/sessions'); setSessions(r.data?.sessions || []) }
+    catch { setNotice('会话列表加载失败，请稍后重试') }
   }
   // Issue4: 清除单个会话（checkpoints + session_store）
   const clearOne = async (e: React.MouseEvent, sid: string) => {
     e.stopPropagation()
     if (!window.confirm('确认删除该会话？')) return
-    try { await api.delete(`/ai/session/${sid}`) } catch {}
+    try { await api.delete(`/ai/session/${sid}`) }
+    catch { message.error('会话删除失败'); return }
     setSessions((p) => p.filter((s) => s.session_id !== sid))
     if (activeSession === sid) { setActiveSession(''); setMessages([]) }
   }
   // Issue4: 清除全部会话
   const clearAll = async () => {
     if (!window.confirm(`确认清空全部 ${sessions.length} 个历史会话？`)) return
-    try { await api.delete('/ai/sessions') } catch {}
+    try { await api.delete('/ai/sessions') }
+    catch { message.error('会话清空失败'); return }
     setSessions([]); setActiveSession(''); setMessages([])
   }
   // 修复(P2-1)：会话标题清理。preview 是用户首条消息原文，可能含 markdown 标记
@@ -136,7 +139,7 @@ const AiChat: React.FC = () => {
         else if (m.role === 'assistant') msgs.push({ ...base, role: 'assistant', content: m.content })
       })
       setMessages(msgs); setActiveSession(sid)
-    } catch {}
+    } catch { setNotice('会话加载失败，请稍后重试') }
   }
 
   useEffect(() => { loadSessions() }, [])
@@ -178,11 +181,10 @@ const AiChat: React.FC = () => {
       const clusterId = currentClusterId
       // B12 修复：统一走共享 api 实例（复用其 baseURL / token / 拦截器逻辑），
       // SSE 流式响应保留 fetch 实现（axios 不便于流式读取）。
-      const authHeader = (api.defaults.headers.common.Authorization as string) || ''
-      const tok = authHeader.replace(/^Bearer\s+/i, '') || localStorage.getItem('token') || ''
       const resp = await fetch(`${api.defaults.baseURL}/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Tenant-ID': TENANT_ID, Authorization: tok ? `Bearer ${tok}` : '' },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, cluster_id: clusterId, exec_result: execResult || '' }),
         signal: controller.signal,
       })
@@ -244,7 +246,7 @@ const AiChat: React.FC = () => {
                 })
               }
             }
-          } catch {}
+          } catch { setNotice('服务返回了无法解析的事件') }
         }
       }
       const aiText = fullText || 'LLM 分析未返回结果，请检查配置后重试。'
@@ -254,7 +256,13 @@ const AiChat: React.FC = () => {
           plan: s.plan, script: s.script, threadId: s.threadId, riskScore: s.riskScore, riskReason: s.riskReason, timestamp: new Date().toISOString() })
       })
       setMessages((prev) => [...prev, ...newMsgs])
-      if (fullText || pendingSuggestions.length) { setActiveSession(sessionId); loadSessions() }
+      const responseSessionId = resp.headers.get('X-Session-Id') || resp.headers.get('X-Session-ID') || ''
+      if (fullText || pendingSuggestions.length) {
+        // The server is the session-id authority. Persist the response value
+        // immediately so a first turn followed by refresh remains multi-turn.
+        setActiveSession(responseSessionId || sessionId)
+        loadSessions()
+      }
     } catch (err: any) {
       const msg = err?.name === 'AbortError' ? '⏱️ 已中断 / 超时 (120s)' : `❌ 请求失败：${err?.message || ''}`
       setMessages((prev) => [...prev, { id: `e-${Date.now()}`, role: 'assistant', content: msg, timestamp: new Date().toISOString() }])

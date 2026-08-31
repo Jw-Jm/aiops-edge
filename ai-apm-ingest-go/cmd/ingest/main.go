@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,21 +32,27 @@ import (
 	"github.com/observability-platform/ai-apm-ingest-go/internal/tracesink"
 )
 
+var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var eventIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
 	flag.Parse()
 
-	// WAL 持久化目录（生产挂载 PVC 保证数据不丢；空则退化为内存重试）
+	// WAL 持久化目录（生产挂载 PVC 保证数据不丢）。生产环境没有 WAL
+	// 时拒绝启动，避免把 200/202 当成不可恢复的内存接受。
 	walDir := os.Getenv("INGEST_WAL_DIR")
+	production := strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production")
+	if production && strings.TrimSpace(walDir) == "" {
+		log.Fatalf("INGEST_WAL_DIR is required in production: durable event acceptance cannot use memory fallback")
+	}
 	// 多集群纳管：本 ingest 实例所属集群 ID。
 	// Phase 5 Gate（R2 §71）：cluster_id 是本实例的静态身份，不允许缺失后写空——那既违反
 	// "禁止猜"，也写不出 partial/missing_fields（ClickHouse 列固定无法表达该语义）。因此
 	// 缺失即 fail-closed 拒绝启动（reject 路径，符合"该路径不允许 partial 则直接 reject"）。
-	// 现有部署 clusterId="default"（非空）不受影响；真正缺失时才拒绝。
 	clusterID := os.Getenv("CLUSTER_ID")
-	if clusterID == "" {
-		log.Fatalf("CLUSTER_ID not set: ingest instance requires a cluster identity to tag writes; " +
-			"set CLUSTER_ID (deployment clusterId). Refusing to start with empty cluster_id.")
+	if !canonicalUUID.MatchString(strings.TrimSpace(clusterID)) {
+		log.Fatalf("CLUSTER_ID must be a canonical UUID: ingest instance requires an immutable cluster identity")
 	}
 
 	// V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已物理删除。写路径唯一为 new 后端
@@ -69,18 +79,45 @@ func main() {
 		log.Fatalf("no write path active: telemetry new backend disabled; refusing to start with no data sink")
 	}
 
+	clickHouseHTTPURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CLICKHOUSE_HTTP_URL")), "/")
+	eventsWAL, err := newEventWAL(walDir)
+	if err != nil {
+		log.Fatalf("event acceptance WAL init failed: %v", err)
+	}
+	eventReplayCtx, cancelEventReplay := context.WithCancel(context.Background())
+	if eventsWAL != nil {
+		met.SetEventsWALPending(int64(eventsWAL.PendingCount()))
+		eventsWAL.StartReplay(eventReplayCtx, func(ctx context.Context, body []byte) error {
+			if clickHouseHTTPURL == "" {
+				met.IncEventsBackendFailed()
+				return fmt.Errorf("event sink unavailable")
+			}
+			if err := insertEventBatch(ctx, clickHouseHTTPURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), body); err != nil {
+				met.IncEventsBackendFailed()
+				return err
+			}
+			met.SetEventsWALPending(int64(eventsWAL.PendingCount()))
+			return nil
+		}, time.Second)
+		defer func() {
+			cancelEventReplay()
+			_ = eventsWAL.Close()
+		}()
+	} else {
+		defer cancelEventReplay()
+	}
 	// C-01（0004_runtime_convergence / 报告 §16）：固定 ClickHouse trace_spans 为平台
 	// Trace Persistent SoT。构造 ClickHouseSpanSink（CLICKHOUSE_HTTP_URL 配置，HTTP 接口，
 	// 零新增依赖）。若配置了 CH 但写入失败 → readiness fail-closed（不允许"接收成功但静默丢 Span"）。
 	var spanSink pipeline.SpanSink
-	if chURL := os.Getenv("CLICKHOUSE_HTTP_URL"); chURL != "" {
+	if clickHouseHTTPURL != "" {
 		// C-01（报告 §16 / 27.18）：trace_spans 为平台 Trace SoT；使用带鉴权的 sink（生产 CH 需要）。
-		chs := tracesink.NewClickHouseSpanSinkAuth(chURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), 10*time.Second)
+		chs := tracesink.NewClickHouseSpanSinkAuth(clickHouseHTTPURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), 10*time.Second)
 		if err := chs.Probe(); err != nil {
 			log.Fatalf("ClickHouseSpanSink probe failed: %v", err)
 		}
 		spanSink = chs
-		log.Printf("ClickHouseSpanSink enabled (trace SoT): %s", chURL)
+		log.Printf("ClickHouseSpanSink enabled (trace SoT): %s", clickHouseHTTPURL)
 	} else {
 		// 27.18：candidate/production profile 不允许 SpanSink=nil（fail-closed 拒绝启动）。
 		// 默认本地（TRACE_SOT_MODE=off）仅 WARN；设 TRACE_SOT_MODE=required 时 SpanSink=nil → 拒绝启动。
@@ -107,11 +144,85 @@ func main() {
 	}
 	defer pl.Close()
 
-	apiKey := os.Getenv("INGEST_API_KEY")           // 为空则不启用鉴权（便于本地调试），生产必须配置
+	apiKey := os.Getenv("INGEST_API_KEY") // 为空则不启用鉴权（便于本地调试），生产必须配置
+	if production && strings.TrimSpace(apiKey) == "" {
+		log.Fatalf("INGEST_API_KEY is required in production: refusing unauthenticated event ingestion")
+	}
 	rl := newRateLimiter(parseEnvInt("INGEST_RPS")) // 每接收端点 QPS 上限；<=0 表示不限
 	maxBody := int64(10 << 20)                      // 默认 10MB body 上限
+	eventWALMaxBytes := parseEnvInt64Default("INGEST_WAL_MAX_BYTES", 1<<30)
 
 	mux := http.NewServeMux()
+	// Event collector is an adapter only. It POSTs the event envelope to this
+	// endpoint; ingest is the sole component allowed to write k8s_events.
+	mux.HandleFunc("/v1/events", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+		clusterID := strings.TrimSpace(r.Header.Get("X-Cluster-ID"))
+		if !canonicalUUID.MatchString(tenantID) || !canonicalUUID.MatchString(clusterID) {
+			http.Error(w, "tenant and cluster must be canonical UUIDs", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+		if err != nil {
+			http.Error(w, "body too large or read error", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if err := validateEventBatch(body, tenantID, clusterID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if clickHouseHTTPURL == "" {
+			http.Error(w, "event sink unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if eventsWAL != nil {
+			rec, err := eventsWAL.AppendBounded(tenantID, clusterID, body, eventWALMaxBytes)
+			if err != nil {
+				if errors.Is(err, errEventWALFull) {
+					w.Header().Set("Retry-After", "5")
+					http.Error(w, "event acceptance WAL is full", http.StatusTooManyRequests)
+					return
+				}
+				http.Error(w, "durable acceptance unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			met.AddEventsAccepted(int64(countEventRows(body)))
+			met.SetEventsWALPending(int64(eventsWAL.PendingCount()))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = fmt.Fprintf(w, `{"accepted":%d,"receipt_id":%q}`, countEventRows(body), rec.ReceiptID)
+			return
+		}
+		if err := insertEventBatch(r.Context(), clickHouseHTTPURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), body); err != nil {
+			http.Error(w, "event sink unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		met.AddEventsAccepted(int64(countEventRows(body)))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"accepted":%d}`, countEventRows(body))
+	})
+	mux.HandleFunc("/v1/events/checkpoint", func(w http.ResponseWriter, r *http.Request) {
+		tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+		clusterID := strings.TrimSpace(r.Header.Get("X-Cluster-ID"))
+		source := strings.TrimSpace(r.URL.Query().Get("source"))
+		if !canonicalUUID.MatchString(tenantID) || !canonicalUUID.MatchString(clusterID) || source == "" || clickHouseHTTPURL == "" {
+			http.Error(w, "invalid checkpoint scope", http.StatusBadRequest)
+			return
+		}
+		q := "SELECT max(ts) FROM observability.k8s_events WHERE source = " + quoteCHString(source) +
+			" AND tenant_id = " + quoteCHString(tenantID) + " AND cluster_id = " + quoteCHString(clusterID)
+		value, err := queryClickHouse(r.Context(), clickHouseHTTPURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), q)
+		if err != nil {
+			http.Error(w, "checkpoint unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(strings.TrimSpace(value)))
+	})
 	mux.HandleFunc("/v1/traces", func(w http.ResponseWriter, r *http.Request) {
 		tenantID := r.Header.Get("X-Tenant-ID")
 		// Phase 5：X-Tenant-ID 缺失不再静默兜底 "default"，改为 fail-closed 拒绝，
@@ -178,6 +289,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		// C-01：Trace Persistent SoT sink 配置了但不可用 → readiness fail-closed
 		//（不允许"接收成功但静默丢 Span"）。
+		if eventsWAL != nil && clickHouseHTTPURL == "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy", "reason": "event_sink_not_configured"})
+			return
+		}
 		if chs, ok := spanSink.(*tracesink.ClickHouseSpanSink); ok && !chs.Healthy() {
 			detail := "trace_sot_sink_not_ready"
 			if last := chs.LastError(); last != nil {
@@ -225,11 +341,14 @@ func main() {
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
-	server := &http.Server{Addr: addr, Handler: final}
+	server := &http.Server{Addr: addr, Handler: requireMTLS(final)}
+	if err := configureMTLSServer(server); err != nil {
+		log.Fatalf("mTLS configuration: %v", err)
+	}
 
 	go func() {
 		log.Printf("Ingest Pipeline listening on %s (apiKey=%v, rps=%d, walDir=%q)", addr, apiKey != "", rl.limit, walDir)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := listenHTTP(server); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
@@ -387,6 +506,83 @@ func sanitizeLogBody(s string) string {
 	return s
 }
 
+func validateEventBatch(body []byte, tenantID, clusterID string) error {
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && strings.TrimSpace(lines[0]) == "") {
+		return fmt.Errorf("event batch is empty")
+	}
+	for _, line := range lines {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 15 {
+			return fmt.Errorf("event row must contain 15 tab-separated fields")
+		}
+		if fields[0] != tenantID || fields[1] != clusterID {
+			return fmt.Errorf("event row scope does not match authenticated headers")
+		}
+		if !eventIDPattern.MatchString(fields[14]) {
+			return fmt.Errorf("event row event_id must be a 64-character SHA-256 hex digest")
+		}
+	}
+	return nil
+}
+
+func countEventRows(body []byte) int {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return 0
+	}
+	return len(strings.Split(trimmed, "\n"))
+}
+
+func insertEventBatch(ctx context.Context, baseURL, user, password string, body []byte) error {
+	target := strings.TrimRight(baseURL, "/") + "/?query=" + url.QueryEscape("INSERT INTO observability.k8s_events FORMAT TabSeparated") + "&wait_end_of_query=1&send_progress_in_http_headers=0"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	if user != "" {
+		req.SetBasicAuth(user, password)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("clickhouse insert status %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	return nil
+}
+
+func queryClickHouse(ctx context.Context, baseURL, user, password, query string) (string, error) {
+	target := strings.TrimRight(baseURL, "/") + "/?query=" + url.QueryEscape(query) + "&wait_end_of_query=1&send_progress_in_http_headers=0"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return "", err
+	}
+	if user != "" {
+		req.SetBasicAuth(user, password)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("clickhouse query status %d: %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	return string(payload), nil
+}
+
+func quoteCHString(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `'`, `\'`)
+	return "'" + value + "'"
+}
+
 // parseEnvInt 解析环境变量为整数，非法或空返回 0。
 func parseEnvInt(key string) int {
 	v := os.Getenv(key)
@@ -396,6 +592,18 @@ func parseEnvInt(key string) int {
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		return 0
+	}
+	return n
+}
+
+func parseEnvInt64Default(key string, defaultValue int64) int64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return defaultValue
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return defaultValue
 	}
 	return n
 }

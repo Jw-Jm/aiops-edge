@@ -208,7 +208,7 @@ func (r *LegacyMySQLRepository) snapshot(ctx context.Context, scope GraphScope) 
 func legacyEntity(node *store.TopologyNode) Entity {
 	props := parseLegacyProps(node.PropsJSON)
 	typ := legacyEntityType(node.Type)
-	tenant := firstNonEmptyString(stringMapValue(props, "tenant_id"), "default")
+	tenant := stringMapValue(props, "tenant_id")
 	cluster := stringMapValue(props, "cluster_id")
 	uid := firstNonEmptyString(stringMapValue(props, "entity_uid"), EntityUID("legacy-"+typ, strconv.FormatInt(node.ID, 10)))
 	return Entity{EntityUID: uid, EntityType: typ, TenantID: tenant, ClusterID: cluster, Name: node.Name, NameKey: NameKeyV1(node.Name), Source: "legacy_mysql", Status: firstNonEmptyString(stringMapValue(props, "status"), "active"), Attrs: props}

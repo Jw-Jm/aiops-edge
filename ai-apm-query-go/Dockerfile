@@ -6,7 +6,9 @@ WORKDIR /app
 COPY go.mod go.sum* ./
 COPY vendor ./vendor
 COPY . .
-RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /api ./cmd/api/
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /query-api-http ./cmd/api/
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /query-run-dispatcher ./cmd/run-dispatcher/
+RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /query-alert-evaluator ./cmd/alert-evaluator/
 
 FROM docker.m.daocloud.io/library/alpine:3.21
 # query-api 需要 kubectl 与集群交互（clusters/infrastructure/system 模块 exec kubectl）。
@@ -15,7 +17,9 @@ FROM docker.m.daocloud.io/library/alpine:3.21
 RUN sed -i 's@dl-cdn.alpinelinux.org@mirrors.aliyun.com@g' /etc/apk/repositories && \
     apk add --no-cache ca-certificates
 COPY docker/kubectl /usr/local/bin/kubectl
-COPY --from=builder /api /api
+COPY --from=builder /query-api-http /query-api-http
+COPY --from=builder /query-run-dispatcher /query-run-dispatcher
+COPY --from=builder /query-alert-evaluator /query-alert-evaluator
 RUN chmod +x /usr/local/bin/kubectl && kubectl version --client -o yaml >/dev/null 2>&1 || true
 EXPOSE 8080
-ENTRYPOINT ["/api"]
+ENTRYPOINT ["/query-api-http"]

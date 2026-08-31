@@ -115,6 +115,10 @@ class ContextType(str, Enum):
 
 
 class ToolCapability(str, Enum):
+    # Internal control-plane routing metadata. This capability is not exposed
+    # to end users or the Tool Registry; it is used only by the orchestrator's
+    # signed provider-metadata read before an LLM Proxy call.
+    LLM_CONFIG_READ = "llm.config.read"
     METRICS_READ = "observability.metrics.read"
     LOGS_READ = "observability.logs.read"
     TRACES_READ = "observability.traces.read"

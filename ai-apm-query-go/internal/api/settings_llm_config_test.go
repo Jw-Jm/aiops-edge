@@ -13,8 +13,8 @@ func TestGetLLMAdminConfigReturnsNonSecretConfiguration(t *testing.T) {
 	settings.LLM = LLMSettings{
 		Provider: "deepseek",
 		Model:    "deepseek-chat",
-		BaseURL:  "https://api.deepseek.com/v1",
-		APIKey:   "encrypted-key-material",
+		BaseURL:  "https://api.deepseek.com/v1", // legacy row must not be exposed
+		APIKey:   "encrypted-key-material",      // legacy row must not be exposed
 	}
 	settingsMu.Unlock()
 	t.Cleanup(func() {
@@ -35,13 +35,13 @@ func TestGetLLMAdminConfigReturnsNonSecretConfiguration(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Data["provider"] != "deepseek" || response.Data["model"] != "deepseek-chat" || response.Data["base_url"] != "https://api.deepseek.com/v1" {
+	if response.Data["provider"] != "deepseek" || response.Data["model"] != "deepseek-chat" || response.Data["base_url"] != "" {
 		t.Fatalf("GetLLMAdminConfig() = %v, want persisted non-secret configuration", response.Data)
 	}
 	if _, ok := response.Data["api_key"]; ok {
 		t.Fatalf("GetLLMAdminConfig() exposed api_key: %v", response.Data)
 	}
-	if _, ok := response.Data["api_key_masked"]; !ok {
-		t.Fatalf("GetLLMAdminConfig() = %v, want an explicit masked-key field", response.Data)
+	if _, ok := response.Data["api_key_masked"]; ok {
+		t.Fatalf("GetLLMAdminConfig() exposed legacy masked-key field: %v", response.Data)
 	}
 }

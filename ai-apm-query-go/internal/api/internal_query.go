@@ -287,6 +287,17 @@ func (h *Handler) execToolQuery(w http.ResponseWriter, rctx *internalQueryCtx, r
 	}
 	data, err := exec()
 	if err != nil {
+		// NO_DATA is an authorized, successful empty result. It must still
+		// complete the durable ToolRun with a canonical envelope; returning the
+		// raw query error here used to persist an ordinary empty series as
+		// result_quality=failed even though the HTTP contract returned 200.
+		var qe *query.QueryError
+		if errors.As(err, &qe) && qe.Code == query.NoDataCode {
+			empty := []byte(`{}`)
+			env := h.endToolRun(trc, "complete", empty, "")
+			respondJSON(w, http.StatusOK, env)
+			return
+		}
 		if trc != nil {
 			h.finishToolRun(trc, "failed", "failed", nil, 0, err.Error())
 		}
@@ -324,6 +335,16 @@ func (h *Handler) InternalQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		WindowStart: windowStart, WindowEnd: windowEnd,
 	}, req.Service, req.Minutes)
 	if err != nil {
+		// Keep the 200/no-data semantic while completing the durable ToolRun.
+		// Without this branch the special-case metrics handler persisted a
+		// failed ToolRun for an ordinary empty time series.
+		var qe *query.QueryError
+		if errors.As(err, &qe) && qe.Code == query.NoDataCode {
+			data := []byte(`{"points":[],"total":0}`)
+			env := h.endToolRun(trc, "complete", data, "")
+			respondJSON(w, http.StatusOK, env)
+			return
+		}
 		if trc != nil {
 			h.finishToolRun(trc, "failed", "failed", nil, 0, err.Error())
 		}

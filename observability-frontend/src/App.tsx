@@ -162,7 +162,9 @@ function AppLayout() {
     return () => clearInterval(t)
   }, [])
 
-  const displayName = (localStorage.getItem('display_name') || localStorage.getItem('username') || 'admin').slice(0, 1).toUpperCase()
+  const auth = useAuthStore()
+  const userLabel = auth.displayName || auth.username || '用户'
+  const displayName = userLabel.slice(0, 1).toUpperCase()
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
@@ -291,7 +293,7 @@ function AppLayout() {
           >
             <div className="user-chip" style={{ cursor: 'pointer' }}>
               <div className="avatar">{displayName}</div>
-              <span className="text-sm">{localStorage.getItem('display_name') || localStorage.getItem('username') || 'admin'}</span>
+              <span className="text-sm">{userLabel}</span>
             </div>
           </Dropdown>
         </header>

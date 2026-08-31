@@ -72,6 +72,10 @@ func CacheMiddleware(ttl time.Duration, next http.HandlerFunc) http.HandlerFunc 
 		}
 
 		cacheKey := cacheKey(r)
+		if cacheKey == "" {
+			next(w, r)
+			return
+		}
 		if cached, ok := appCache.Get(cacheKey); ok {
 			w.Header().Set("X-Cache", "HIT")
 			w.Header().Set("Content-Type", "application/json")
@@ -109,11 +113,14 @@ func (w *cacheResponseWriter) Write(b []byte) (int, error) {
 }
 
 func cacheKey(r *http.Request) string {
-	tenant := r.Header.Get("X-Tenant-ID")
-	if tenant == "" {
-		tenant = "default"
+	auth, ok := requestAuthorizationContext(r)
+	if !ok || strings.TrimSpace(auth.TenantID) == "" {
+		// Never derive a cache partition from an untrusted header or an implicit
+		// default tenant. Callers without a verified MySQL/signed context bypass
+		// response caching entirely.
+		return ""
 	}
-	raw := tenant + "|" + r.URL.Path + "?" + r.URL.RawQuery
+	raw := auth.TenantID + "|" + auth.ActiveClusterID + "|" + r.URL.Path + "?" + r.URL.RawQuery
 	return fmt.Sprintf("cache:%x", md5.Sum([]byte(raw)))
 }
 
@@ -171,7 +178,9 @@ func CachedRespondJSON(w http.ResponseWriter, r *http.Request, data interface{},
 	dataJSON, _ := json.Marshal(data)
 	dataStr := string(dataJSON)
 
-	appCache.Set(cacheKey, dataStr, ttl)
+	if cacheKey != "" {
+		appCache.Set(cacheKey, dataStr, ttl)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Cache", "MISS")
 	w.Write(dataJSON)

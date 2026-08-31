@@ -1,0 +1,17 @@
+{
+  "version": "v1",
+  "weights": {
+    "topology": 0.20,
+    "temporal": 0.20,
+    "anomaly": 0.15,
+    "change": 0.10,
+    "trace": 0.10,
+    "hardware_severity": 0.15,
+    "co_failure": 0.10
+  },
+  "thresholds": {
+    "confirmed": 0.80,
+    "probable": 0.65,
+    "minimum_independent_groups": 2
+  }
+}

@@ -1,14 +1,36 @@
 from __future__ import annotations
 from collections import defaultdict, deque
+import os
 from typing import Any
 
 
+def _bounded_limit(name: str, default: int, upper: int) -> int:
+    """Read an operator limit without allowing an unbounded graph request."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, upper))
+
+
 def graph_candidates(entity: dict[str, Any], graph_client: Any, *, max_depth: int = 6) -> dict[str, Any]:
-    """Ask query-api for the bounded propagation candidate subgraph."""
+    """Ask query-api for a bounded propagation candidate subgraph.
+
+    The RCA path starts with a conservative one-hop envelope (50 vertices,
+    150 edges).  A high-degree Kubernetes node can make HugeGraph spend most
+    of its budget expanding the frontier before its result limit is applied;
+    the old 6/2000/5000 request therefore turned a bounded API into a timeout
+    source.  Operators may raise the values only after a capacity gate, but
+    every value remains capped locally before it reaches the signed Query API
+    boundary.
+    """
     uid = str(entity.get("entity_uid") or "")
+    depth_cap = _bounded_limit("RCA_GRAPH_MAX_DEPTH", 1, 6)
+    vertex_cap = _bounded_limit("RCA_GRAPH_MAX_VERTICES", 50, 500)
+    edge_cap = _bounded_limit("RCA_GRAPH_MAX_EDGES", 150, 1500)
     return graph_client(graph_operation="candidate_subgraph", entity_uid=uid,
-                        relation_policy="root_cause_candidate_v1", max_depth=min(max_depth, 6),
-                        max_vertices=2000, max_edges=5000)
+                        relation_policy="root_cause_candidate_v1", max_depth=min(max_depth, depth_cap),
+                        max_vertices=vertex_cap, max_edges=edge_cap)
 
 
 def candidate_rows(subgraph: dict[str, Any]) -> list[dict[str, Any]]:

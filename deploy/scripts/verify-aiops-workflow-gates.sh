@@ -14,6 +14,14 @@ if [[ -x ai-orchestrator/.venv314/bin/python ]]; then
   python_bin="${repo_root}/ai-orchestrator/.venv314/bin/python"
 fi
 
+# Host-side workflow tests must never attempt to write the container's
+# production path (/var/lib/aiops).  Keep an explicit caller override for CI,
+# otherwise isolate all test state in a disposable local directory.
+if [[ -z "${AIOPS_DATA_DIR:-}" ]]; then
+  AIOPS_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/aiops-workflow-data.XXXXXX")"
+  export AIOPS_DATA_DIR
+fi
+
 echo "[G0] Go contract/store/API tests"
 (cd ai-apm-query-go && go test ./... -count=1)
 
@@ -61,6 +69,8 @@ if command -v helm >/dev/null 2>&1; then
     --set secrets.executorToken="gate-executor-token" \
     --set secrets.aiActionExecutorSigningKey="gate-executor-private" \
     --set secrets.aiActionExecutorVerifyKeys="gate-executor-public" \
+    --set 'networkPolicy.kubernetesApiCIDRs={10.0.0.0/8}' \
+    --set-string 'internalTLS.clientSAN=query-api.observability.svc.cluster.local\,query-run-dispatch.observability.svc.cluster.local\,ai-orchestrator.observability.svc.cluster.local' \
     >"${rendered}"
   awk 'BEGIN { RS="---" } /kind: ClusterRole/ && /name: ai-orchestrator-ops/ { print }' \
     "${rendered}" >"${role}"

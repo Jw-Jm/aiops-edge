@@ -143,3 +143,41 @@ def test_infrastructure_permission_error_is_not_reported_as_zero_resources(monke
     assert "权限" in report or "forbidden" in report
     assert "数量未知" in report
     assert "运行中 Pods: 0 个" not in report
+
+
+def test_infrastructure_unwraps_query_tool_result_envelope(monkeypatch):
+    """The canonical internal query response wraps K8s data under ``data``."""
+    from tools import get_infrastructure
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    import base64, hashlib, json
+
+    priv = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(b"test-infra-envelope-key").digest())
+    monkeypatch.setenv(
+        "TRUSTED_CONTEXT_PRIVATE_KEY",
+        base64.b64encode(priv.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode(),
+    )
+    monkeypatch.setenv("INTERNAL_TOKEN", "svc-token")
+    monkeypatch.setenv("QUERY_API_URL", "https://query-api.svc:8080/api/v1")
+
+    class _Resp:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+        def read(self):
+            return json.dumps({
+                "quality": "complete", "count": 1, "digest": "abc",
+                "data": {
+                    "nodes": ["node-a"],
+                    "node_details": [{"name": "node-a", "status": "Ready", "cpu": "4", "memory": "8Gi"}],
+                    "pods": [{"name": "api", "namespace": "default", "status": "Running", "restarts": 0}],
+                },
+            }).encode()
+
+    monkeypatch.setattr("tools.mtls_urlopen", lambda req, timeout=0: _Resp())
+    report = get_infrastructure(request_context=_context())
+
+    assert "运行中 Pods: 1 个" in report
+    assert "节点: 1 个" in report
+    assert "default/api: Running" in report

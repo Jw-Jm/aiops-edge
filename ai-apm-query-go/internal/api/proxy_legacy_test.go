@@ -33,6 +33,7 @@ func TestProxyAILegacyReadForwardsCanonicalIdentity(t *testing.T) {
 	})}
 	t.Setenv("AI_ORCHESTRATOR_URL", "http://orchestrator.test")
 	t.Setenv("INTERNAL_TOKEN", "proxy-secret")
+	expectActiveSessionScope(mock, authzTenantID, "")
 	expectRequestIdentityAndTenant(mock)
 	expectProxyUserRole(mock, "admin", 0)
 
@@ -76,6 +77,7 @@ func TestProxyAILegacyWriteForwardsBodyAndRole(t *testing.T) {
 	})}
 	t.Setenv("AI_ORCHESTRATOR_URL", "http://orchestrator.test")
 	t.Setenv("INTERNAL_TOKEN", "proxy-secret")
+	expectActiveSessionScope(mock, authzTenantID, "")
 	expectRequestIdentityAndTenant(mock)
 	expectProxyUserRole(mock, "admin", 0)
 

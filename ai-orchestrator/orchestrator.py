@@ -10,7 +10,6 @@ from typing import TypedDict, Annotated, Optional
 import operator
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 
@@ -122,6 +121,12 @@ from dual_agent import parse_subtasks, run_subtasks, merge_review
 _LLM_KEY_HOLDER = {"api_key": ""}
 
 
+def _llm_production_mode() -> bool:
+    return os.environ.get("AIOPS_ENV", "").strip().lower() == "production" or os.environ.get(
+        "AIOPS_DEPLOYMENT_MODE", ""
+    ).strip().lower() == "production"
+
+
 def _llm_boundary_ready() -> bool:
     """LLM egress is proxy-only; LLM_MOCK is the sole non-network bypass."""
     if os.environ.get("LLM_MOCK", "").lower() in ("1", "true", "yes", "on"):
@@ -183,6 +188,15 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
     api_key = cfg.get("api_key") or _LLM_KEY_HOLDER.get("api_key", "")
     if not api_key:
         return ""
+    if _llm_production_mode():
+        # Production egress is a single capability boundary. Reject any
+        # provider URL or credential that did not originate from the configured
+        # proxy, even if a legacy caller invokes _llm directly.
+        proxy_url = (os.environ.get("AI_LLM_EGRESS_PROXY_URL") or os.environ.get("LLM_PROXY_URL") or "").strip().rstrip("/")
+        proxy_token = os.environ.get("LLM_PROXY_TOKEN", "").strip()
+        base_url = str(cfg.get("base_url") or "").strip().rstrip("/")
+        if not proxy_url or not proxy_token or api_key != proxy_token or not base_url.startswith(proxy_url + "/v1/proxy/"):
+            return ""
     try:
         import os as _os
         # 禁用 CrewAI 遥测，避免启动时网络超时阻塞
@@ -1798,7 +1812,13 @@ class BrainOrchestrator:
     def __init__(self, db_path=None):
         import os as _os
         import tempfile
-        self._stateless_worker = _os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {"1", "true", "yes", "on"}
+        self._stateless_worker = (
+            _os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {"1", "true", "yes", "on"}
+            or (
+                _os.environ.get("AIOPS_DEPLOYMENT_MODE", "").lower() == "production"
+                and _os.environ.get("AIOPS_ORCHESTRATOR_LOCAL_CHECKPOINTS", "0").lower() not in {"1", "true", "yes", "on"}
+            )
+        )
         self.llm_config = None
         if self._stateless_worker:
             # Investigation workers rebuild work from query-api Run snapshots and
@@ -1953,7 +1973,19 @@ class BrainOrchestrator:
             self.llm_config = None
             _LLM_KEY_HOLDER["api_key"] = ""
             return
-        # 安全：明文 key 只存进程内存单例，不进 state/checkpoint
+        # 安全：明文 key 只存进程内存单例，不进 state/checkpoint。
+        # In production the only accepted credential is the proxy ingress token;
+        # direct provider keys/base URLs are rejected before they can reach the
+        # CrewAI client or a subprocess.
+        if _llm_production_mode():
+            proxy_url = (os.environ.get("AI_LLM_EGRESS_PROXY_URL") or os.environ.get("LLM_PROXY_URL") or "").strip().rstrip("/")
+            proxy_token = os.environ.get("LLM_PROXY_TOKEN", "").strip()
+            candidate_url = str(config.get("base_url") or "").strip().rstrip("/")
+            candidate_key = str(config.get("api_key") or "")
+            if not proxy_url or not proxy_token or candidate_key != proxy_token or not candidate_url.startswith(proxy_url + "/v1/proxy/"):
+                self.llm_config = None
+                _LLM_KEY_HOLDER["api_key"] = ""
+                return
         _LLM_KEY_HOLDER["api_key"] = config.get("api_key", "")
         self.llm_config = {
             # 剔除 api_key：state/checkpoint 只保留非敏感配置
@@ -2046,7 +2078,8 @@ class BrainOrchestrator:
     async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
                           mode: str = "chat", exec_context: str = "", iteration: int = 1,
                           cluster_id: str | None = None, *,
-                          request_context: ScopeView | None = None):
+                          request_context: ScopeView | None = None,
+                          history_context_override: str = ""):
         """异步生成器: async for event in brain.stream_sync(...)。
         节点为 async def，必须用 graph.astream (不能用 sync graph.stream, 会在
         已运行的 event loop 中失败)。astream 让出 event loop 给 liveness probe。
@@ -2066,13 +2099,14 @@ class BrainOrchestrator:
                 self._detect_service, message, request_context=request_context
             )
         # 多轮上下文：读上一轮 checkpoint（user_message + final_response 摘要）注入本轮
-        history_context = ""
+        history_context = str(history_context_override or "")
         try:
-            prev = await asyncio.to_thread(self.get_session_state, thread_id)
-            if prev and prev.get("user_message") and prev.get("user_message") != message:
-                prev_q = str(prev.get("user_message", ""))[:200]
-                prev_a = str(prev.get("final_response", ""))[:500]
-                history_context = f"上一轮问题: {prev_q}\n上一轮回答要点: {prev_a}"
+            if not history_context:
+                prev = await asyncio.to_thread(self.get_session_state, thread_id)
+                if prev and prev.get("user_message") and prev.get("user_message") != message:
+                    prev_q = str(prev.get("user_message", ""))[:200]
+                    prev_a = str(prev.get("final_response", ""))[:500]
+                    history_context = f"上一轮问题: {prev_q}\n上一轮回答要点: {prev_a}"
         except Exception:
             history_context = ""
         initial: AgentState = {

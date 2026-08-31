@@ -1,0 +1,40 @@
+{{- if .Values.queryApi.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: query-api-http
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-api-http
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app: query-api-http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: query-run-dispatch
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-run-dispatch
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app: query-run-dispatch
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: query-alert-eval
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-alert-eval
+spec:
+  minAvailable: 0
+  selector:
+    matchLabels:
+      app: query-alert-eval
+{{- end }}

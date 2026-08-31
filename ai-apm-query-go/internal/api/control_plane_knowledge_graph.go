@@ -451,7 +451,7 @@ func knowledgeGraphCluster(props map[string]interface{}) string {
 			return value
 		}
 	}
-	return "default"
+	return ""
 }
 
 func knowledgeGraphSameCluster(props map[string]interface{}, clusterID string) bool {
@@ -477,8 +477,9 @@ func knowledgeGraphUpsertNode(typeName, name string, props map[string]interface{
 		props = map[string]interface{}{}
 	}
 	props = cloneMap(props)
-	if _, ok := props["cluster_id"]; !ok {
-		props["cluster_id"] = "default"
+	clusterID := knowledgeGraphCluster(props)
+	if !canonicalUUID.MatchString(clusterID) {
+		return nil, errors.New("cluster_id must be a canonical UUID")
 	}
 	if _, ok := props["created_by"]; !ok {
 		props["created_by"] = "auto"
@@ -528,8 +529,9 @@ func knowledgeGraphUpsertEdge(srcID, dstID int64, edgeType string, props map[str
 		props = map[string]interface{}{}
 	}
 	props = cloneMap(props)
-	if _, ok := props["cluster_id"]; !ok {
-		props["cluster_id"] = "default"
+	clusterID := knowledgeGraphCluster(props)
+	if !canonicalUUID.MatchString(clusterID) {
+		return nil, errors.New("cluster_id must be a canonical UUID")
 	}
 	if _, ok := props["created_by"]; !ok {
 		props["created_by"] = "auto"

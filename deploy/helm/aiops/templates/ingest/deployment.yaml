@@ -18,6 +18,7 @@ spec:
       labels:
         app: ingest
     spec:
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
       containers:
         - name: ingest
           image: {{ tpl .Values.ingest.image . }}
@@ -29,6 +30,8 @@ spec:
               name: otlp-grpc
             {{- end }}
           env:
+            - name: AIOPS_ENV
+              value: {{ .Values.global.environment | default "production" | quote }}
             - name: CLICKHOUSE_HOST
               value: {{ .Values.ingest.clickhouseHost | quote }}
             - name: CLICKHOUSE_PORT
@@ -47,9 +50,11 @@ spec:
               value: {{ .Values.ingest.deepflowTenantId | default "default" | quote }}
             - name: INGEST_WAL_DIR
               value: "/wal"
+            - name: INGEST_WAL_MAX_BYTES
+              value: {{ .Values.ingest.walMaxBytes | default 1073741824 | quote }}
             # 多集群纳管：本 ingest 实例所属集群 ID（代码默认 "default"，主集群显式注入保持一致）
             - name: CLUSTER_ID
-              value: {{ .Values.ingest.clusterId | default "default" | quote }}
+              value: {{ .Values.ingest.clusterId | quote }}
             # V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已删除，不再注入 LEGACY_WRITER_ENABLED。
             # telemetry new backend：TELEMETRY_WRITER_MODE=new 启用写链（VM/VLogs）。空值/非法
             # → NewRuntimeFromEnv fail-closed 拒绝启动；new 未启用时 main 亦拒绝启动（无写路径）。
@@ -71,21 +76,24 @@ spec:
               value: {{ .Values.ingest.otlpGrpcEnabled | default true | quote }}
             - name: OTLP_GRPC_PORT
               value: {{ .Values.ingest.otlpGrpcPort | default 4317 | quote }}
+            {{- include "aiops.mtlsEnv" . | nindent 12 }}
           readinessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /health, port: 8080{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
             initialDelaySeconds: 10
           livenessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /health, port: 8080{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
             initialDelaySeconds: 20
           resources:
             {{- toYaml .Values.ingest.resources | nindent 12 }}
           volumeMounts:
             - name: wal
               mountPath: /wal
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
       volumes:
         - name: wal
           persistentVolumeClaim:
             claimName: ingest-wal
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
 ---
 apiVersion: v1
 kind: Service

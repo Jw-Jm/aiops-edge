@@ -13,7 +13,7 @@ CREATE DATABASE IF NOT EXISTS observability;
 CREATE TABLE IF NOT EXISTS observability.log_records
 (
     `tenant_id` String,
-    `cluster_id` String DEFAULT 'default',
+    `cluster_id` String,
     `timestamp` DateTime64(9),
     `service_name` String,
     `severity` String,
@@ -37,7 +37,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS observability.service_topology
 (
     `tenant_id` String,
-    `cluster_id` String DEFAULT 'default',
+    `cluster_id` String,
     `source_service` String,
     `target_service` String,
     `time_bucket` DateTime,
@@ -58,7 +58,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS observability.change_records
 (
     `tenant_id` String,
-    `cluster_id` String DEFAULT 'default',
+    `cluster_id` String,
     `change_id` String,
     `service_name` String,
     `change_type` String,
@@ -81,7 +81,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS observability.trace_spans
 (
     `tenant_id` String,
-    `cluster_id` String DEFAULT 'default',
+    `cluster_id` String,
     `trace_id` String,
     `span_id` String,
     `parent_span_id` String,
@@ -234,7 +234,8 @@ GROUP BY tenant_id, cluster_id, date, time_bucket, trace_id, service_name;
 CREATE TABLE IF NOT EXISTS observability.alert_events
 (
     `id` String,
-    `cluster_id` String DEFAULT 'default',
+    `tenant_id` String,
+    `cluster_id` String,
     `rule_id` String,
     `rule_name` String,
     `service` String,
@@ -258,8 +259,8 @@ CREATE TABLE IF NOT EXISTS observability.alert_events
     `date` Date
 )
 ENGINE = ReplacingMergeTree(version)
-PARTITION BY date
-ORDER BY (service, rule_id, id)
+PARTITION BY (tenant_id, toYYYYMM(timestamp))
+ORDER BY (tenant_id, cluster_id, timestamp, id)
 TTL toDateTime(last_timestamp) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
@@ -269,7 +270,7 @@ SETTINGS index_granularity = 8192;
 CREATE TABLE IF NOT EXISTS observability.k8s_events
 (
     `tenant_id` String,
-    `cluster_id` String DEFAULT 'default',
+    `cluster_id` String,
     `ts` DateTime64(9),
     `namespace` String,
     `kind` String,
@@ -281,8 +282,9 @@ CREATE TABLE IF NOT EXISTS observability.k8s_events
     `source_component` String,
     `source` String,
     `node` String DEFAULT '',
-    `time_bucket` DateTime
+    `time_bucket` DateTime,
+    `event_id` String DEFAULT ''
 )
 ENGINE = ReplacingMergeTree
-ORDER BY (tenant_id, cluster_id, ts, involved_object, reason, name, message)
+ORDER BY (tenant_id, cluster_id, event_id)
 TTL time_bucket + INTERVAL 30 DAY;

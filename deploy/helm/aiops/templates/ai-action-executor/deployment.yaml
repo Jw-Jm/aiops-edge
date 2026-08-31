@@ -1,3 +1,6 @@
+{{- if and .Values.aiActionExecutor.enabled (eq (.Values.aiActionExecutor.executionMode | default "disabled") "approved") (not .Values.credentialBroker.enabled) (eq (.Values.global.environment | default "production") "production") }}
+{{- fail "approved production executor requires credentialBroker.enabled" }}
+{{- end }}
 {{- if .Values.aiActionExecutor.enabled }}
 # Stage D（报告 §21 / F-22）：ai-action-executor——独立生产 mutation 安全执行边界。
 # Orchestrator / Query API API Pod 均不持生产写凭据；真实 mutation 只经本边界。
@@ -19,8 +22,11 @@ spec:
       labels:
         app: ai-action-executor
     spec:
-      # realMutation=true 时挂专属 SA（限定 targetNamespaces RBAC）启用真实 K8s mutation。
-      serviceAccountName: {{ if .Values.aiActionExecutor.realMutation }}ai-action-executor{{ else }}default{{ end }}
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
+      # Executor never uses a long-lived service-account token for mutation;
+      # Credential Broker returns a short-lived TokenRequest token per action.
+      serviceAccountName: {{ if .Values.credentialBroker.enabled }}ai-action-executor-broker-client{{ else }}default{{ end }}
+      automountServiceAccountToken: false
       containers:
         - name: executor
           image: "{{ .Values.aiActionExecutor.image.repository }}:{{ tpl .Values.aiActionExecutor.image.tag . }}"
@@ -29,6 +35,8 @@ spec:
             - containerPort: 8080
               name: http
           env:
+            - name: AIOPS_ENV
+              value: {{ .Values.global.environment | default "production" | quote }}
             - name: EXECUTOR_PORT
               value: "8080"
             - name: EXECUTION_MODE
@@ -38,11 +46,17 @@ spec:
                 secretKeyRef:
                   name: aiops-secrets
                   key: EXECUTOR_TOKEN
+            - name: BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aiops-secrets
+                  key: CREDENTIAL_BROKER_TOKEN
             - name: CREDENTIAL_BROKER_URL
-              value: {{ .Values.aiActionExecutor.credentialBrokerUrl | default "" | quote }}
-            # F5 已废除：realMutation=true 才启用真实 K8s mutation（in-cluster SA + 限定 RBAC）。
+              value: {{ if .Values.aiActionExecutor.credentialBrokerUrl }}{{ .Values.aiActionExecutor.credentialBrokerUrl | quote }}{{ else if .Values.credentialBroker.enabled }}{{ printf "%s://ai-credential-broker.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability | quote }}{{ else }}""{{ end }}
+            # Retained only as an explicit local-validation seam; production
+            # credentials always arrive from the broker.
             - name: POD_SA_ACCESS
-              value: {{ .Values.aiActionExecutor.realMutation | default false | quote }}
+              value: "false"
             # D-Gate：所有已启用的执行器都验签 query-api 签发的执行上下文。
             # 即使 EXECUTION_MODE=disabled，也必须先通过签名校验再返回拒绝，
             # 这样受控测试和生产禁写路径都不会退化为仅依赖可选 token。
@@ -53,12 +67,24 @@ spec:
                   name: aiops-secrets
                   key: AI_ACTION_EXECUTOR_VERIFY_KEYS
 {{- end }}
+            {{- include "aiops.mtlsEnv" . | nindent 12 }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
               port: 8080
+              {{- if .Values.internalTLS.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

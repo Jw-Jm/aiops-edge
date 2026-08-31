@@ -66,6 +66,8 @@ func respondAuthorizationError(w http.ResponseWriter, err error) {
 		respondResourceError(w, http.StatusBadRequest, "invalid_context")
 	case isAuthorizationError(err, "cluster_unavailable"):
 		respondResourceError(w, http.StatusServiceUnavailable, "cluster_unavailable")
+	case isAuthorizationError(err, "SCOPE_SELECTION_REQUIRED"):
+		respondResourceError(w, http.StatusConflict, "SCOPE_SELECTION_REQUIRED")
 	default:
 		respondResourceError(w, http.StatusForbidden, "permission_denied")
 	}

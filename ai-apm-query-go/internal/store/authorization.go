@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-var ErrMySQLUnavailable = errors.New("mysql unavailable")
+var (
+	ErrMySQLUnavailable = errors.New("mysql unavailable")
+	ErrUnauthorized     = errors.New("unauthorized")
+)
 
 const (
 	DenialInvalidContext   = "invalid_context"

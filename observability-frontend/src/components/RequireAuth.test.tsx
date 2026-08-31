@@ -11,7 +11,6 @@ describe('RequireAuth', () => {
   })
 
   it('redirects a first-login account to the password change page', () => {
-    localStorage.setItem('token', 'session-token')
     useAuthStore.setState({ token: 'session-token', mustChangePassword: true })
 
     render(
@@ -28,7 +27,6 @@ describe('RequireAuth', () => {
   })
 
   it('allows the forced-change route itself', () => {
-    localStorage.setItem('token', 'session-token')
     useAuthStore.setState({ token: 'session-token', mustChangePassword: true })
 
     render(

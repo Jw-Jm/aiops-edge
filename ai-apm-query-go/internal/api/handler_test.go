@@ -16,6 +16,17 @@ import (
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
+func TestMetricsTenantIDFailsClosedWithoutConfiguredSystemTenant(t *testing.T) {
+	t.Setenv("AIOPS_SYSTEM_TENANT_ID", "")
+	if got := metricsTenantID(); got != "" {
+		t.Fatalf("metricsTenantID()=%q, want empty when no system tenant is configured", got)
+	}
+	t.Setenv("AIOPS_SYSTEM_TENANT_ID", "tenant-from-config")
+	if got := metricsTenantID(); got != "tenant-from-config" {
+		t.Fatalf("metricsTenantID()=%q, want configured tenant", got)
+	}
+}
+
 // TestListServicesReturnsCHServicesWithMetadata 验证重写后的 ListServices：
 //   - 从 ClickHouse trace_spans 动态发现服务列表（source=trace）
 //   - LEFT JOIN MySQL service_metadata 富化 owner/team/tier/description

@@ -289,9 +289,9 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 	// P0-1 修复: "已配置"必须是真实可用的 —— 仅 provider/model/base_url 字段非空不足以
 	// 说明 LLM 可用, API key 必须能解密成功才算 api_key_set/configured。
 	// 否则密钥漂移/解密失败时界面会误报"已配置", 而实际 AI 全部降级为确定性模式。
-	decrypted := decryptAPIKey(llm.APIKey)
-	apiKeySet := decrypted != ""
-	configured := llm.Provider != "" && llm.Model != "" && llm.BaseURL != "" && apiKeySet
+	configured := llm.Provider != "" && llm.Model != "" &&
+		strings.TrimSpace(os.Getenv("AI_LLM_EGRESS_PROXY_URL")) != "" &&
+		strings.TrimSpace(os.Getenv("LLM_PROXY_TOKEN")) != ""
 	// This compatibility status endpoint intentionally exposes only readiness.
 	// It does not disclose provider/model topology, endpoint locations, or any
 	// secret-derived field.
@@ -308,24 +308,19 @@ func (h *Handler) GetLLMSettings(w http.ResponseWriter, r *http.Request) {
 // editable form and a constant masked-key marker, never the decrypted key.
 func (h *Handler) GetLLMAdminConfig(w http.ResponseWriter, r *http.Request) {
 	settingsMu.RLock()
-	decrypted := decryptAPIKey(settings.LLM.APIKey)
 	llm := settings.LLM
 	settingsMu.RUnlock()
 
-	apiKeySet := decrypted != ""
+	proxyReady := strings.TrimSpace(os.Getenv("AI_LLM_EGRESS_PROXY_URL")) != "" &&
+		strings.TrimSpace(os.Getenv("LLM_PROXY_TOKEN")) != ""
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"data": map[string]interface{}{
-			"provider":    llm.Provider,
-			"model":       llm.Model,
-			"base_url":    llm.BaseURL,
-			"configured":  llm.Provider != "" && llm.Model != "" && llm.BaseURL != "" && apiKeySet,
-			"api_key_set": apiKeySet,
-			"api_key_masked": func() string {
-				if apiKeySet {
-					return "sk-***"
-				}
-				return ""
-			}(),
+			"provider":        llm.Provider,
+			"active_provider": llm.Provider,
+			"model":           llm.Model,
+			"base_url":        "",
+			"configured":      llm.Provider != "" && llm.Model != "" && proxyReady,
+			"proxy_ready":     proxyReady,
 		},
 	})
 }
@@ -425,49 +420,25 @@ func (h *Handler) SaveLLMSettings(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid JSON: " + err.Error()})
 		return
 	}
+	if strings.TrimSpace(llm.APIKey) != "" || strings.TrimSpace(llm.BaseURL) != "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "provider credentials and base_url are managed by the egress proxy"})
+		return
+	}
+	if strings.TrimSpace(llm.Provider) == "" || strings.TrimSpace(llm.Model) == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "provider and model are required"})
+		return
+	}
 
 	settingsMu.Lock()
 	if llm.Provider != "" {
 		settings.LLM.Provider = llm.Provider
 	}
-	if llm.APIKey != "" {
-		enc := encryptAPIKey(llm.APIKey)
-		if enc == "" {
-			settingsMu.Unlock()
-			respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"error": "encryption key unavailable, cannot store API key safely",
-			})
-			return
-		}
-		settings.LLM.APIKey = enc
-	}
-	if llm.Model != "" {
-		settings.LLM.Model = llm.Model
-	}
-	if llm.BaseURL != "" {
-		// 安全(P0-4)：base_url 必须 https 且非私网/metadata 地址，防止 SSRF 窃取已保存 key
-		if msg := validateLLMBaseURL(llm.BaseURL); msg != "" {
-			settingsMu.Unlock()
-			respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "base_url 校验失败: " + msg})
-			return
-		}
-		settings.LLM.BaseURL = llm.BaseURL
-	}
+	settings.LLM.APIKey = ""
+	settings.LLM.Provider = strings.TrimSpace(llm.Provider)
+	settings.LLM.Model = strings.TrimSpace(llm.Model)
+	settings.LLM.BaseURL = ""
 	if err := saveSettings(settings); err != nil {
 		log.Printf("SaveLLMSettings save error: %v", err)
-	}
-	// P0-1 修复: 保存后立即回读解密自检, 防止因加密密钥缺失/漂移导致
-	// "已保存但实际不可用"的静默失败(此前界面显示 configured=true, 实际 LLM 全部降级)。
-	if llm.APIKey != "" {
-		if verify := decryptAPIKey(settings.LLM.APIKey); verify == "" {
-			settings.LLM.APIKey = ""
-			_ = saveSettings(settings)
-			settingsMu.Unlock()
-			respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"error": "API key 保存后自检解密失败(LLM_ENCRYPTION_KEY 缺失或不匹配), 已回滚配置, 请检查部署密钥",
-			})
-			return
-		}
 	}
 	settingsMu.Unlock()
 
@@ -487,53 +458,43 @@ func (h *Handler) TestLLMConnection(w http.ResponseWriter, r *http.Request) {
 	var testSettings map[string]string
 	json.Unmarshal(body, &testSettings)
 
-	apiKey := testSettings["api_key"]
-	baseURL := testSettings["base_url"]
-	model := testSettings["model"]
-	providerID := testSettings["provider_id"]
-	requestedProvider := testSettings["provider"]
-
-	// 优先从指定 provider 读取加密 key（修复：测试 deepseek 等非启用 provider 时，
-	// 不能误用全局默认 provider 的 key）
+	if strings.TrimSpace(testSettings["api_key"]) != "" || strings.TrimSpace(testSettings["base_url"]) != "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "message": "provider credentials and base_url are managed by the egress proxy"})
+		return
+	}
+	model := strings.TrimSpace(testSettings["model"])
+	providerID := strings.TrimSpace(testSettings["provider_id"])
+	requestedProvider := strings.TrimSpace(testSettings["provider"])
 	providerName := ""
 	if providerID != "" {
 		providerName = getProviderName(providerID)
 	}
-	if apiKey == "" && providerID != "" {
-		apiKey = getProviderEncryptedKey(providerID)
-	}
 
 	settingsMu.RLock()
-	if apiKey == "" {
-		apiKey = decryptAPIKey(settings.LLM.APIKey)
-	}
-	if baseURL == "" {
-		baseURL = settings.LLM.BaseURL
-	}
 	if model == "" {
 		model = settings.LLM.Model
 	}
 	testProviderName := resolveLLMTestProvider(requestedProvider, providerName, settings.LLM.Provider)
 	settingsMu.RUnlock()
-
-	// 安全(P0-4)：base_url 非空时必须 https 且主机名非私网/metadata 地址，
-	// 防止测试端点利用已保存的 API key 发起 SSRF 或把内网响应回传给攻击者
-	if msg := validateLLMBaseURL(baseURL); msg != "" {
-		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "base_url 校验失败: " + msg})
+	if testProviderName == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "message": "provider is required"})
 		return
 	}
-
-	if apiKey == "" {
+	proxyBase := strings.TrimRight(firstNonEmpty(os.Getenv("AI_LLM_EGRESS_PROXY_URL"), os.Getenv("LLM_PROXY_URL")), "/")
+	proxyToken := strings.TrimSpace(os.Getenv("LLM_PROXY_TOKEN"))
+	if proxyBase == "" || proxyToken == "" {
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
-			"message": "API key not configured",
+			"message": "LLM egress proxy is not configured",
 		})
 		return
 	}
 
-	// Test connectivity via /models endpoint
-	req, _ := http.NewRequest("GET", baseURL+"/models", nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// Test connectivity through the fixed egress proxy; provider routing is a
+	// server-side allow-listed identifier, never a caller URL.
+	target := proxyBase + "/v1/proxy/" + url.PathEscape(testProviderName) + "/models"
+	req, _ := http.NewRequest("GET", target, nil)
+	req.Header.Set("X-Proxy-Token", proxyToken)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
@@ -553,7 +514,7 @@ func (h *Handler) TestLLMConnection(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"success":     true,
-			"message":     "Connection successful",
+			"message":     "Connection successful via egress proxy",
 			"provider":    testProviderName,
 			"model":       model,
 			"http_status": resp.StatusCode,
@@ -565,7 +526,7 @@ func (h *Handler) TestLLMConnection(w http.ResponseWriter, r *http.Request) {
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"success":     false,
-			"message":     "API returned error",
+			"message":     "LLM proxy returned error",
 			"provider":    testProviderName,
 			"model":       model,
 			"http_status": resp.StatusCode,
@@ -593,54 +554,93 @@ func (h *Handler) GetK8sSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ModelsLLM(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	var req map[string]string
-	json.Unmarshal(body, &req)
-
-	apiKey := req["api_key"]
-	baseURL := req["base_url"]
-	if apiKey == "" || baseURL == "" {
-		settingsMu.RLock()
-		if apiKey == "" {
-			apiKey = decryptAPIKey(settings.LLM.APIKey)
-		}
-		if baseURL == "" {
-			baseURL = settings.LLM.BaseURL
-		}
-		settingsMu.RUnlock()
-	}
-
-	if apiKey == "" {
-		respondJSON(w, 200, map[string]interface{}{"models": []string{}, "error": "no api key"})
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<10))
+	if err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"models": []string{}, "error": "invalid request"})
 		return
 	}
-
-	req2, _ := http.NewRequest("GET", baseURL+"/models", nil)
-	req2.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := h.client.Do(req2)
+	var req struct {
+		ProviderID string `json:"provider_id"`
+		// api_key/base_url are intentionally decoded only to reject legacy callers;
+		// neither value is ever used for an outbound request.
+		APIKey  string `json:"api_key"`
+		BaseURL string `json:"base_url"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"models": []string{}, "error": "invalid JSON"})
+		return
+	}
+	if strings.TrimSpace(req.APIKey) != "" || strings.TrimSpace(req.BaseURL) != "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"models": []string{}, "error": "caller credentials or URL are not accepted; use provider_id"})
+		return
+	}
+	providerID := strings.TrimSpace(req.ProviderID)
+	if providerID == "" || len(providerID) > 64 || !validProviderID(providerID) {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"models": []string{}, "error": "provider_id is required"})
+		return
+	}
+	proxyDefault := "http://ai-llm-egress-proxy:8080"
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_MTLS_REQUIRED")), "true") {
+		proxyDefault = "https://ai-llm-egress-proxy:8080"
+	}
+	proxyBase := strings.TrimRight(firstNonEmpty(os.Getenv("AI_LLM_EGRESS_PROXY_URL"), proxyDefault), "/")
+	target := proxyBase + "/v1/proxy/" + url.PathEscape(providerID) + "/models"
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		respondJSON(w, 200, map[string]interface{}{"models": []string{}, "error": err.Error()})
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"models": []string{}, "error": "LLM proxy unavailable"})
+		return
+	}
+	req2.Header.Set("Accept", "application/json")
+	if token := strings.TrimSpace(os.Getenv("LLM_PROXY_TOKEN")); token != "" {
+		req2.Header.Set("X-Proxy-Token", token)
+	} else {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"models": []string{}, "error": "LLM proxy credential unavailable"})
+		return
+	}
+	client, clientErr := h.internalHTTPClient(15 * time.Second)
+	if clientErr != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"models": []string{}, "error": "BACKEND_MTLS_UNAVAILABLE"})
+		return
+	}
+	resp, err := client.Do(req2)
+	if err != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"models": []string{}, "error": "LLM proxy unavailable"})
 		return
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"models": []string{}, "error": "LLM proxy response unreadable"})
+		return
+	}
 
 	var result struct {
 		Data []struct{ ID string } `json:"data"`
 	}
-	if json.Unmarshal(data, &result) == nil && len(result.Data) > 0 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && json.Unmarshal(data, &result) == nil {
 		models := make([]string, len(result.Data))
 		for i, m := range result.Data {
 			models[i] = m.ID
 		}
-		respondJSON(w, 200, map[string]interface{}{"models": models, "provider": baseURL})
+		respondJSON(w, http.StatusOK, map[string]interface{}{"models": models, "provider": providerID})
 		return
 	}
 	raw := string(data)
 	if len(raw) > 500 {
 		raw = raw[:500]
 	}
-	respondJSON(w, 200, map[string]interface{}{"models": []string{}, "raw": raw})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"models": []string{}, "raw": raw, "provider": providerID})
+}
+
+func validProviderID(value string) bool {
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // GetLLMConfig returns the full (decrypted) LLM configuration for internal use.
@@ -819,6 +819,13 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		h.proxyRunList(w, r)
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") {
+		// All browser-facing legacy orchestrator proxies are retired in the
+		// production profile.  Canonical chat/session/run handlers above are the
+		// only supported entry points and carry signed scope context.
+		respondJSON(w, http.StatusGone, map[string]interface{}{"error": "LEGACY_ROUTE_RETIRED"})
+		return
+	}
 	if !legacyProxyAllowed(r.URL.Path, r.Method) {
 		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 		return
@@ -885,9 +892,10 @@ func (h *Handler) proxyLegacy(w http.ResponseWriter, r *http.Request, authCtx Au
 	} else {
 		req.Header.Set("X-Internal-Approver", "0")
 	}
-	client := h.client
-	if client == nil {
-		client = http.DefaultClient
+	client, clientErr := h.internalHTTPClient(proxyTimeout)
+	if clientErr != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "BACKEND_MTLS_UNAVAILABLE"})
+		return
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -967,13 +975,66 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "CLUSTER_ACCESS_DENIED"})
 		return
 	}
+	authCtx.ActiveClusterID = cluster.ClusterID
 
-	// 4. 用户 RBAC 权威 SoT：query-api 从 MySQL 读取用户权威角色，校验其授予 ai.chat
-	//    （对话型只读）。授权通过才签发 capability=ai.chat；否则 fail-closed。
-	//    绝不把前端 role / SERVICE_ACCOUNT_ROLES 全域映射当作用户 RBAC 权威来源。
+	// 4. 用户 RBAC 权威 SoT：先从 MySQL 读取用户权威角色，校验其授予
+	//    ai.chat（对话型只读），再创建/写入 transcript。这样失效用户不会
+	//    触发会话写入，也不会把鉴权失败伪装成 CHAT_SESSION_BACKEND_UNAVAILABLE。
 	if !authorizeUserChatCapability(authCtx.UserID) {
 		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
 		return
+	}
+
+	// Query API owns the browser transcript.  The caller may resume only a
+	// canonical UUID already belonging to this user/scope; first-turn sessions
+	// are generated here before any downstream call so the orchestrator cannot
+	// choose an unscoped/short identifier.
+	sessionID, _ := body["session_id"].(string)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		sessionID = newCanonicalSessionUUID()
+		if sessionID == "" {
+			respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "CHAT_SESSION_ID_UNAVAILABLE"})
+			return
+		}
+	} else if !canonicalUUID.MatchString(sessionID) {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid_session_id"})
+		return
+	}
+	body["session_id"] = sessionID
+	body["thread_id"] = sessionID
+	intent, _ := body["intent"].(string)
+	service, _ := body["service"].(string)
+	chatSessions := &store.AIChatSessionDAO{}
+	// Rehydrate a bounded transcript summary from MySQL so a second query-api
+	// replica can continue the conversation without depending on local SQLite.
+	if _, previous, historyErr := chatSessions.Get(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID); historyErr == nil {
+		var lastQuestion, lastAnswer string
+		for _, msg := range previous {
+			if msg.Role == "user" {
+				lastQuestion = msg.Content
+			}
+			if msg.Role == "assistant" && msg.Kind == "" {
+				lastAnswer = msg.Content
+			}
+		}
+		if lastQuestion != "" || lastAnswer != "" {
+			body["history_context"] = fmt.Sprintf("上一轮问题: %s\n上一轮回答要点: %s", lastQuestion[:minStringLen(len(lastQuestion), 200)], lastAnswer[:minStringLen(len(lastAnswer), 500)])
+		}
+	}
+	if err := chatSessions.EnsureSession(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, intent, service); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "scope mismatch") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "CHAT_SESSION_SCOPE_DENIED"})
+			return
+		}
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "CHAT_SESSION_BACKEND_UNAVAILABLE"})
+		return
+	}
+	if message, _ := body["message"].(string); strings.TrimSpace(message) != "" {
+		if err := chatSessions.AppendMessage(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, "user", "", message, nil); err != nil {
+			respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "CHAT_SESSION_BACKEND_UNAVAILABLE"})
+			return
+		}
 	}
 
 	// 5. Sign RunInvocationContext with capability=ai.chat (对话型，非 ai.investigate)。
@@ -998,7 +1059,18 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("X-Internal-Token", issuer.ServiceToken())
 	req.Header.Set("X-Trusted-Request-Context", signed)
 
-	resp, err := http.DefaultClient.Do(req)
+	// Bound the upstream stream lifetime.  The request context still cancels
+	// promptly when the browser disconnects; the deadline prevents a leaked
+	// connection when an upstream proxy stalls without closing.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	req = req.WithContext(ctx)
+	client, clientErr := newInternalServiceClient(5 * time.Minute)
+	if clientErr != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "BACKEND_MTLS_UNAVAILABLE"})
+		return
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
 		return
@@ -1015,9 +1087,12 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 	// 逐块 Flush 透传，不缓冲（对齐 P10 公共 SSE proxy WriteTimeout=0 的长连接语义）。
 	if flusher, ok := w.(http.Flusher); ok {
 		buf := make([]byte, 32*1024)
+		var streamBuffer string
 		for {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
+				streamBuffer += string(buf[:n])
+				streamBuffer = persistChatSSEFrames(chatSessions, sessionID, authCtx, streamBuffer)
 				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 					return
 				}
@@ -1028,8 +1103,74 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// 不支持 Flusher 的响应容器：退化为一次性复制（普通测试 recorder 场景）。
-	io.Copy(w, resp.Body)
+	// 不支持 Flusher 的响应容器：退化为一次性复制，同时保留 transcript。
+	data, _ := io.ReadAll(resp.Body)
+	_ = persistChatSSEFrames(chatSessions, sessionID, authCtx, string(data))
+	_, _ = w.Write(data)
+}
+
+func newCanonicalSessionUUID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		// crypto/rand failure is process-fatal in the sense that a deterministic
+		// session ID would violate the session ownership invariant.
+		return ""
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+}
+
+func minStringLen(length, max int) int {
+	if length < max {
+		return length
+	}
+	return max
+}
+
+// persistChatSSEFrames records only durable transcript cards (assistant done
+// text and actionable suggestions).  Progress/tool telemetry remains ephemeral
+// and is still streamed to the browser without inflating the MySQL transcript.
+func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID string, authCtx AuthorizationContext, input string) string {
+	for {
+		idx := strings.Index(input, "\n\n")
+		if idx < 0 {
+			return input
+		}
+		frame := input[:idx]
+		input = input[idx+2:]
+		name := "message"
+		var data string
+		for _, line := range strings.Split(frame, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				name = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+			case strings.HasPrefix(line, "data: "):
+				data += strings.TrimPrefix(line, "data: ")
+			}
+		}
+		if data == "" {
+			continue
+		}
+		var event map[string]any
+		if json.Unmarshal([]byte(data), &event) != nil {
+			continue
+		}
+		switch name {
+		case "done":
+			if text, _ := event["text"].(string); strings.TrimSpace(text) != "" {
+				_ = dao.AppendMessage(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, "assistant", "", text, nil)
+			}
+		case "suggestion":
+			metadata := map[string]any{}
+			for _, key := range []string{"plan", "script", "thread_id", "risk_score", "risk_reason", "service"} {
+				if value, ok := event[key]; ok {
+					metadata[key] = value
+				}
+			}
+			_ = dao.AppendMessage(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, "assistant", "suggestion", "", metadata)
+		}
+	}
 }
 
 // roleGrantsAIChat：服务端权威角色 → ai.chat（对话只读）授权映射。
@@ -1084,7 +1225,12 @@ func (h *Handler) proxyRunList(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("X-Internal-Token", internalServiceToken())
 	req.Header.Set("X-Tenant-ID", authCtx.TenantID)
-	resp, err := http.DefaultClient.Do(req)
+	client, clientErr := h.internalHTTPClient(30 * time.Second)
+	if clientErr != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "BACKEND_MTLS_UNAVAILABLE"})
+		return
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		respondJSON(w, http.StatusBadGateway, map[string]interface{}{"error": "BACKEND_UNAVAILABLE"})
 		return

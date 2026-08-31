@@ -15,6 +15,7 @@ spec:
       labels:
         app: event-collector
     spec:
+      {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
       serviceAccountName: event-collector
       # G5 加固：移除 `tolerations: operator: Exists`（容忍所有污点）。
       # 默认不调度到被污点节点；如确需在特定污点节点采集 SEL，请显式添加受限 tolerations。
@@ -25,12 +26,14 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: AIOPS_ENV
+              value: {{ .Values.global.environment | default "production" | quote }}
             # 租户/集群 ID（Phase 5：必须 canonical UUID，缺失/非法将 fail-closed 拒绝启动；
             # 部署侧需注入注册后的集群 canonical UUID，而非 default/slug）
             - name: TENANT_ID
               value: {{ .Values.eventCollector.tenantId | quote }}
             - name: CLUSTER_ID
-              value: {{ .Values.eventCollector.clusterId | default "default" | quote }}
+              value: {{ .Values.eventCollector.clusterId | quote }}
             # WAL 持久化（Phase 5）：写入 CH 前落盘，崩溃/重启恢复未确认批次
             - name: WAL_DIR
               value: "/var/lib/aiops/wal"
@@ -48,53 +51,57 @@ spec:
               value: {{ .Values.eventCollector.leaseName | default "aiops-event-collector-leader" | quote }}
             - name: LEASE_NAMESPACE
               value: {{ .Values.namespace.observability | quote }}
-            # IPMI SEL 采集：本地 KCS（/dev/ipmi0）每节点采集；无 BMC 节点自动跳过
+            # IPMI SEL 采集：生产默认关闭 in-band KCS；启用时仅用于明确的本地验证。
             - name: SEL_COLLECT_ENABLED
-              value: {{ .Values.eventCollector.selCollectEnabled | default "true" | quote }}
+              value: {{ .Values.eventCollector.selCollectEnabled | quote }}
             - name: SEL_LOCAL_ONLY
               value: "true"
             - name: SEL_INTERVAL_SECONDS
               value: {{ .Values.eventCollector.selIntervalSeconds | default 120 | quote }}
-            # ClickHouse（事件落库）
-            - name: CLICKHOUSE_HOST
-              value: {{ .Values.eventCollector.clickhouseHost | default "clickhouse" | quote }}
-            - name: CLICKHOUSE_PORT
-              value: {{ .Values.eventCollector.clickhousePort | default 8123 | quote }}
-            - name: CLICKHOUSE_USER
-              value: {{ .Values.clickhouse.user | default "default" | quote }}
-            - name: CLICKHOUSE_PASSWORD
+            # Unified Ingest（collector 不持有 ClickHouse 凭据）
+            - name: INGEST_URL
+              value: {{ .Values.eventCollector.ingestURL | default "http://ingest:8080" | quote }}
+            - name: INGEST_API_KEY
               valueFrom:
-                secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
+                secretKeyRef: { name: aiops-secrets, key: INGEST_API_KEY }
+            {{- include "aiops.mtlsEnv" . | nindent 12 }}
           securityContext:
-            # G5 加固：移除 privileged:true。IPMI KCS 本地读 /dev/ipmi0 需要原始 I/O，
-            # 改用最小 capability SYS_RAWIO（hostPath 设备挂载见下方 volumes）；
-            # 若运行环境不支持 capability 访问 /dev/ipmi0，可改用 device plugin 暴露设备。
+            # G5：无特权、无能力、禁止提权；硬件采集仅在显式本地验证 profile
+            # 中通过设备插件启用，生产 profile 保持关闭。
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+{{ if .Values.eventCollector.selCollectEnabled }}
               add: ["SYS_RAWIO"]
+{{ end }}
           volumeMounts:
-            # IPMI 本地 KCS 接口（无 /dev/ipmi0 的节点组件自动跳过 SEL 采集）
+{{ if .Values.eventCollector.selCollectEnabled }}
+            # IPMI 本地 KCS 接口（仅显式本地验证 profile）
             - name: dev-ipmi
               mountPath: /dev/ipmi0
+{{ end }}
             # WAL 持久化目录（hostPath：每节点本地，供崩溃恢复；仅 leader 写其节点 WAL）
             - name: wal
               mountPath: /var/lib/aiops/wal
+            {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
           readinessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /health, port: 8080{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
             initialDelaySeconds: 10
           livenessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /health, port: 8080{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
             initialDelaySeconds: 20
           resources:
             {{- toYaml .Values.eventCollector.resources | nindent 12 }}
       volumes:
+{{- if .Values.eventCollector.selCollectEnabled }}
         - name: dev-ipmi
           hostPath:
             path: /dev/ipmi0
+{{- end }}
         - name: wal
           hostPath:
             path: /var/lib/aiops/event-collector-wal
             type: DirectoryOrCreate
+        {{- include "aiops.mtlsVolume" . | nindent 8 }}
 {{- end }}

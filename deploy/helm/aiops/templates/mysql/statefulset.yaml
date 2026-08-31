@@ -68,6 +68,9 @@ metadata:
     app: mysql
 spec:
   clusterIP: None
+  # Publish the MySQL endpoint before readiness so post-install/pre-upgrade
+  # bootstrap hooks can resolve the headless service while mysqld is starting.
+  publishNotReadyAddresses: true
   selector:
     app: mysql
   ports:

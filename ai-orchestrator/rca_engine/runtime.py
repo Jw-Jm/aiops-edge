@@ -51,6 +51,20 @@ def _execution_context(item: Any, *, tool_id: str, params: Mapping[str, Any]) ->
     )
 
 
+def _unwrap_query_payload(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert a canonical ToolResultEnvelope into its typed data payload."""
+    if not isinstance(body, Mapping):
+        raise RuntimeError("QUERY_INVALID_RESPONSE")
+    if body.get("quality") == "failed":
+        errors = body.get("source_errors") or body.get("errors") or []
+        detail = "; ".join(str(item) for item in errors[:3]) if isinstance(errors, list) else str(errors)
+        raise RuntimeError(detail or "QUERY_FAILED")
+    payload = body.get("data", body)
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("QUERY_INVALID_DATA")
+    return dict(payload)
+
+
 class InvestigationGraphClient:
     """Callable graph adapter consumed by :class:`RCAEngineV2`."""
 
@@ -71,7 +85,7 @@ class InvestigationGraphClient:
             params={"graph_operation": operation, **params},
             context_ref=str(self.item.request_id), execution_context=execution,
         )
-        return result.body
+        return _unwrap_query_payload(result.body)
 
 
 def _items(body: Mapping[str, Any], *keys: str) -> list[dict[str, Any]]:
@@ -103,6 +117,10 @@ class InvestigationEvidenceProvider:
     def __init__(self, item: Any):
         self.item = item
         self.client = _client()
+        # Keep provider failures on the provider instance so the deterministic
+        # engine can mark the RCA partial without converting a datasource
+        # outage into ``RCA_V2_UNAVAILABLE``.
+        self.failures: list[str] = []
 
     def _query(self, tool_id: str, operation: str, params: dict[str, Any]) -> dict[str, Any]:
         execution = _execution_context(self.item, tool_id=tool_id, params=params)

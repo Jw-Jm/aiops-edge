@@ -3,13 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,10 +40,12 @@ type Event struct {
 	Node            string
 }
 
-// EventWriter 批量写入 ClickHouse（HTTP + TabSeparated，纯标准库无第三方依赖）。
+// EventWriter batches events to the unified Ingest HTTP API (TabSeparated,
+// standard library only). Ingest owns the ClickHouse write and schema.
 // 失败批次进入内存重试队列，指数退避重试，不崩溃。
 type EventWriter struct {
 	endpoint   string
+	apiKey     string
 	tenantID   string
 	clusterID  string
 	batchSize  int
@@ -68,19 +74,28 @@ type retryBatch struct {
 	rows   []byte
 }
 
-// NewEventWriter 创建写入器并确保 ClickHouse 表存在。
+// NewEventWriter creates an ingest client. The collector has no ClickHouse
+// credentials and cannot write platform tables directly; durable acceptance is
+// provided by the unified ingest service and this client's WAL/retry loop.
 func NewEventWriter(cfg *Config) (*EventWriter, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &EventWriter{
-		endpoint:   chEndpoint(cfg),
+		endpoint:   strings.TrimRight(cfg.IngestURL, "/"),
+		apiKey:     cfg.IngestAPIKey,
 		tenantID:   cfg.TenantID,
 		clusterID:  cfg.ClusterID,
 		batchSize:  cfg.BatchSize,
 		flushEvery: time.Duration(cfg.FlushInterval) * time.Second,
-		httpClient: newCHHTTPClient(),
+		httpClient: nil,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
+	client, clientErr := newIngestHTTPClient()
+	if clientErr != nil {
+		cancel()
+		return nil, clientErr
+	}
+	w.httpClient = client
 	// Phase 5：可选 WAL。配置 WAL_DIR 时启用崩溃安全持久化，并在启动时恢复
 	// 上次未确认写入 CH 的批次到重试队列（跨重启不丢事件）。
 	if cfg.WALDir != "" {
@@ -104,62 +119,9 @@ func NewEventWriter(cfg *Config) (*EventWriter, error) {
 			log.Printf("CH: recovered %d unacked batch(es) from WAL", len(entries))
 		}
 	}
-	if err := w.ensureSchema(); err != nil {
-		cancel()
-		return nil, err
-	}
 	go w.flushLoop()
 	go w.retryLoop()
 	return w, nil
-}
-
-// chEndpoint 构造 ClickHouse HTTP endpoint。CLICKHOUSE_USER/PASSWORD 经 Secret 注入时
-// 嵌入 URL userinfo，http.Client 自动以 Basic Auth 发送（与 ai-apm-ingest-go 风格一致）；
-// 未配置时保持无凭据，兼容本地/dev。
-func chEndpoint(cfg *Config) string {
-	if cfg.CHUser != "" && cfg.CHPassword != "" {
-		u := url.UserPassword(cfg.CHUser, cfg.CHPassword)
-		return "http://" + u.String() + "@" + net.JoinHostPort(cfg.CHHost, fmt.Sprintf("%d", cfg.CHPort))
-	}
-	return fmt.Sprintf("http://%s:%d", cfg.CHHost, cfg.CHPort)
-}
-
-// chQueryParams 将查询编码进 ClickHouse HTTP query 参数，并关闭进度/流式响应头，
-// 避免大批量写入时响应被进度头干扰。
-func chQueryParams(query string) string {
-	return "query=" + url.QueryEscape(query) + "&wait_end_of_query=1&send_progress_in_http_headers=0"
-}
-
-// ensureSchema 只读校验（V9.2 P4.5）：确认 observability 库与 k8s_events 表已由
-// ClickHouse versioned bootstrap 建立。缺失则 fail-closed（不 CREATE，依赖迁移器）。
-// 防止 runtime 在 schema 未就绪时静默写入失败。
-func (w *EventWriter) ensureSchema() error {
-	exists, err := w.tableExists("k8s_events")
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("CH schema not ready: observability.k8s_events missing (run ClickHouse bootstrap migration)")
-	}
-	log.Printf("CH: schema verified (observability.k8s_events)")
-	return nil
-}
-
-// tableExists 只读检查 observability.<table> 是否存在。
-func (w *EventWriter) tableExists(table string) (bool, error) {
-	q := "SELECT count() FROM system.tables WHERE database = 'observability' AND name = " + chSQLString(table)
-	u := w.endpoint + "/?" + chQueryParams(q)
-	resp, err := w.httpClient.Get(u)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("clickhouse schema check error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	body, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(body)) == "1", nil
 }
 
 // Add 追加一条事件到批缓冲；达到 batchSize 立即触发 flush。
@@ -190,7 +152,8 @@ func (w *EventWriter) flushLoop() {
 	}
 }
 
-// flush 将当前缓冲序列化为批次写 CH；失败进入重试队列。
+// flush serializes the current buffer and sends it to unified ingest; failures
+// remain in the durable retry queue.
 func (w *EventWriter) flush() {
 	w.mu.Lock()
 	if len(w.buffer) == 0 {
@@ -203,7 +166,7 @@ func (w *EventWriter) flush() {
 
 	rows := w.serializeEvents(batch)
 	if err := w.insertBatch(rows); err != nil {
-		log.Printf("CH: write failed (queued for retry): %v", err)
+		log.Printf("unified ingest write failed (queued for retry): %v", err)
 		// 有 WAL 时先持久化再入重试，保证崩溃不丢已落盘事件。
 		var seq uint64
 		if w.wal != nil {
@@ -217,22 +180,33 @@ func (w *EventWriter) flush() {
 	w.countFlushed(rows)
 }
 
-// enqueueRetry 将失败批次加入重试队列（上限 100 批，超限丢弃最旧，避免 CH 长时间不可用时内存无界增长）。
+// enqueueRetry 将失败批次加入重试队列。队列达到上限时等待消费者释放
+// 空间，而不是丢弃或 ACK WAL；调用方因此自然形成背压，已确认的事件始终
+// 可从 WAL 恢复。
 func (w *EventWriter) enqueueRetry(b retryBatch) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	const maxRetryBatches = 100
-	if len(w.retry) >= maxRetryBatches {
-		dropped := w.retry[0]
-		w.retry = w.retry[1:]
-		// 有 WAL 时 Ack 被丢弃批次，使其不再从 WAL 重复恢复。
-		if w.wal != nil && dropped.walSeq > 0 {
-			w.wal.Ack(dropped.walSeq)
+	for {
+		w.mu.Lock()
+		if len(w.retry) < maxRetryBatches {
+			w.retry = append(w.retry, b)
+			w.mu.Unlock()
+			return
 		}
-		w.retryDropped.Add(1)
-		log.Printf("CH: retry queue full (%d), dropping oldest batch", maxRetryBatches)
+		w.mu.Unlock()
+		select {
+		case <-w.ctx.Done():
+			// WAL remains unacked and will be replayed after restart. Without WAL,
+			// retain the batch in memory rather than claiming delivery.
+			if w.wal != nil {
+				return
+			}
+			w.mu.Lock()
+			w.retry = append(w.retry, b)
+			w.mu.Unlock()
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
-	w.retry = append(w.retry, b)
 }
 
 // retryLoop 周期性重试失败批次，指数退避（1s 起，翻倍至上限 60s）。
@@ -246,6 +220,7 @@ func (w *EventWriter) retryLoop() {
 			return
 		case <-timer.C:
 		}
+		w.replayWAL()
 		w.mu.Lock()
 		hasRetry := len(w.retry) > 0
 		w.mu.Unlock()
@@ -262,6 +237,37 @@ func (w *EventWriter) retryLoop() {
 		}
 		timer.Reset(backoff)
 	}
+}
+
+// replayWAL backfills batches that were durably appended while the bounded
+// in-memory retry queue was full.  It is idempotent by WAL sequence number.
+func (w *EventWriter) replayWAL() {
+	if w.wal == nil {
+		return
+	}
+	entries, err := w.wal.ReadAll()
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	w.mu.Lock()
+	seen := make(map[uint64]struct{}, len(w.retry))
+	for _, item := range w.retry {
+		if item.walSeq > 0 {
+			seen[item.walSeq] = struct{}{}
+		}
+	}
+	for _, entry := range entries {
+		if _, ok := seen[entry.Seq]; ok || len(w.retry) >= 100 {
+			continue
+		}
+		rows, derr := decodeWALValue(entry.Value)
+		if derr != nil {
+			continue
+		}
+		w.retry = append(w.retry, retryBatch{walSeq: entry.Seq, rows: rows})
+		seen[entry.Seq] = struct{}{}
+	}
+	w.mu.Unlock()
 }
 
 // flushRetry 重试所有失败批次；全部成功返回 nil。
@@ -309,7 +315,7 @@ func (w *EventWriter) serializeEvents(events []*Event) []byte {
 		if ts.IsZero() {
 			ts = time.Now().UTC()
 		}
-		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(&buf, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			escapeTSV(w.tenantID),
 			escapeTSV(w.clusterID),
 			ts.Format("2006-01-02 15:04:05.000000000"),
@@ -324,36 +330,64 @@ func (w *EventWriter) serializeEvents(events []*Event) []byte {
 			escapeTSV(ev.Source),
 			escapeTSV(ev.Node),
 			ts.Truncate(time.Minute).Format("2006-01-02 15:04:05"),
+			eventID(w.tenantID, w.clusterID, ts, ev),
 		)
 	}
 	return buf.Bytes()
 }
 
-// insertBatch 以 HTTP POST + FORMAT TabSeparated 写入一行批次。
+// eventID is stable for the complete event fact. The collector may retry a
+// batch, and the ingest WAL may replay it after a crash; hashing the canonical
+// scope plus all event fields makes those deliveries idempotent at the
+// ClickHouse ReplacingMergeTree key without trusting a caller-provided ID.
+func eventID(tenantID, clusterID string, ts time.Time, ev *Event) string {
+	canonical := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s",
+		tenantID, clusterID, ts.UTC().Format(time.RFC3339Nano), ev.Namespace, ev.Kind,
+		ev.Name, ev.Reason, ev.Type, ev.Message, ev.InvolvedObject, ev.SourceComponent,
+		ev.Source, ev.Node, ts.UTC().Truncate(time.Minute).Format(time.RFC3339),
+	)
+	digest := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(digest[:])
+}
+
+// insertBatch sends a TabSeparated event envelope to unified ingest. Ingest
+// owns ClickHouse writes and returns success only after durable acceptance.
 func (w *EventWriter) insertBatch(rows []byte) error {
-	u := w.endpoint + "/?" + chQueryParams("INSERT INTO observability.k8s_events FORMAT TabSeparated")
-	resp, err := w.httpClient.Post(u, "text/plain", bytes.NewReader(rows))
+	u := w.endpoint + "/v1/events"
+	req, err := http.NewRequestWithContext(w.ctx, http.MethodPost, u, bytes.NewReader(rows))
 	if err != nil {
-		return fmt.Errorf("http post: %w", err)
+		return fmt.Errorf("ingest request: %w", err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Tenant-ID", w.tenantID)
+	req.Header.Set("X-Cluster-ID", w.clusterID)
+	if w.apiKey != "" {
+		req.Header.Set("X-Api-Key", w.apiKey)
+	}
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("ingest post: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("ingest error %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
 }
 
-// latestTSQuery 构造 checkpoint 查询，key 限定 tenant_id + cluster_id + source（V9.2 §71：
-// checkpoint key = tenant+cluster+source）。三个字段缺一不可，避免多租户/多集群串读断点。
+// latestTSQuery remains a pure query-builder compatibility seam for callers
+// and tests that validate checkpoint scoping. Runtime checkpoint reads go
+// through unified ingest (QueryLatestTS above), so the collector never sends
+// this SQL directly to ClickHouse.
 func latestTSQuery(source, tenantID, clusterID string) string {
 	return "SELECT max(ts) FROM observability.k8s_events WHERE source = " + chSQLString(source) +
 		" AND tenant_id = " + chSQLString(tenantID) +
 		" AND cluster_id = " + chSQLString(clusterID)
 }
 
-// chSQLString quotes a ClickHouse string literal. Backslashes are escaped
-// before quotes so user/config-derived scope values cannot terminate it.
+// chSQLString quotes a ClickHouse string literal. It is retained for the
+// checkpoint query seam only; all runtime database access is owned by ingest.
 func chSQLString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
@@ -364,16 +398,25 @@ func chSQLString(s string) string {
 // checkpoint key 限定当前 writer 的 tenant+cluster（已由启动时 scope.Validate 强校验）。
 // 无数据返回零值 time.Time。
 func (w *EventWriter) QueryLatestTS(source string) (time.Time, error) {
-	q := latestTSQuery(source, w.tenantID, w.clusterID)
-	u := w.endpoint + "/?" + chQueryParams(q)
-	resp, err := w.httpClient.Get(u)
+	q := "source=" + url.QueryEscape(source)
+	u := w.endpoint + "/v1/events/checkpoint?" + q
+	req, err := http.NewRequestWithContext(w.ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	req.Header.Set("X-Tenant-ID", w.tenantID)
+	req.Header.Set("X-Cluster-ID", w.clusterID)
+	if w.apiKey != "" {
+		req.Header.Set("X-Api-Key", w.apiKey)
+	}
+	resp, err := w.httpClient.Do(req)
 	if err != nil {
 		return time.Time{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return time.Time{}, fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, string(body))
+		return time.Time{}, fmt.Errorf("ingest error %d: %s", resp.StatusCode, string(body))
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -403,11 +446,11 @@ func (w *EventWriter) countFlushed(rows []byte) {
 	log.Printf("CH: flushed %d events (total %d)", n, w.flushed.Load())
 }
 
-// Ping 快速探测 ClickHouse 连通性（短超时，供 /health 探针使用）。
+// Ping quickly probes unified Ingest (short timeout, used by /health).
 func (w *EventWriter) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	u := w.endpoint + "/?" + chQueryParams("SELECT 1")
+	u := w.endpoint + "/health"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
@@ -419,7 +462,7 @@ func (w *EventWriter) Ping(ctx context.Context) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("clickhouse error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("unified ingest error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }
@@ -485,9 +528,9 @@ func decodeWALValue(v string) ([]byte, error) {
 	return b, nil
 }
 
-// newCHHTTPClient 返回针对 ClickHouse 高频写入优化的 HTTP 客户端。
+// newIngestHTTPClient returns a pooled HTTP client for high-volume ingest.
 // 显式配置 Transport 连接池，避免使用 Go 默认（MaxIdleConnsPerHost=2）导致连接复用不足。
-func newCHHTTPClient() *http.Client {
+func newIngestHTTPClient() (*http.Client, error) {
 	transport := &http.Transport{
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   50,
@@ -496,7 +539,28 @@ func newCHHTTPClient() *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	certFile, keyFile, caFile := strings.TrimSpace(os.Getenv("AIOPS_TLS_CERT_FILE")), strings.TrimSpace(os.Getenv("AIOPS_TLS_KEY_FILE")), strings.TrimSpace(os.Getenv("AIOPS_TLS_CLIENT_CA_FILE"))
+	required := strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_MTLS_REQUIRED")), "true")
+	if certFile == "" || keyFile == "" || caFile == "" {
+		if required {
+			return nil, fmt.Errorf("mTLS is required but collector client certificate/key/CA are not configured")
+		}
+		return &http.Client{Timeout: 30 * time.Second, Transport: transport}, nil
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load mTLS collector certificate: %w", err)
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read mTLS collector CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("mTLS collector CA contains no certificate")
+	}
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, Certificates: []tls.Certificate{cert}}
+	return &http.Client{Timeout: 30 * time.Second, Transport: transport}, nil
 }
 
 func firstLine(s string) string {

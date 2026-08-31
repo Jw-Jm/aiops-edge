@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,7 +84,58 @@ type createRunPublicRequest struct {
 	ActionMode     string `json:"action_mode"`
 	Service        string `json:"service"`
 	ResourceID     string `json:"resource_id"`
+	TargetType     string `json:"target_type"`
 	Message        string `json:"message"`
+	TimeRangeStart string `json:"time_range_start"`
+	TimeRangeEnd   string `json:"time_range_end"`
+}
+
+const (
+	defaultRunWindow       = 30 * time.Minute
+	maxRunWindow           = 24 * time.Hour
+	defaultRunWindowEnvKey = "AI_RUN_DEFAULT_WINDOW_MINUTES"
+)
+
+var publicRunTargetTypes = map[string]struct{}{
+	"cluster": {}, "namespace": {}, "node": {}, "service": {}, "deployment": {},
+	"statefulset": {}, "daemonset": {}, "pod": {}, "container": {}, "workload": {},
+	"host": {}, "vm": {}, "alert": {}, "trace": {}, "resource": {},
+}
+
+// frozenRunWindow resolves a bounded, immutable investigation window at the
+// Run creation boundary.  Callers may provide both endpoints (for alert
+// replay); otherwise the server freezes [now-30m, now].  A missing/partial,
+// reversed, oversized or malformed window is rejected instead of allowing a
+// worker to re-anchor evidence to its own wall clock.
+func frozenRunWindow(req createRunPublicRequest, now time.Time) (*time.Time, *time.Time, error) {
+	startText, endText := strings.TrimSpace(req.TimeRangeStart), strings.TrimSpace(req.TimeRangeEnd)
+	if startText == "" && endText == "" {
+		window := defaultRunWindow
+		if raw := strings.TrimSpace(os.Getenv(defaultRunWindowEnvKey)); raw != "" {
+			if minutes, err := strconv.Atoi(raw); err == nil && minutes >= 1 && minutes <= 24*60 {
+				window = time.Duration(minutes) * time.Minute
+			}
+		}
+		end := now.UTC().Truncate(time.Millisecond)
+		start := end.Add(-window)
+		return &start, &end, nil
+	}
+	if startText == "" || endText == "" {
+		return nil, nil, errors.New("time_range_start and time_range_end must be provided together")
+	}
+	start, err := time.Parse(time.RFC3339Nano, startText)
+	if err != nil {
+		return nil, nil, errors.New("time_range_start must be RFC3339")
+	}
+	end, err := time.Parse(time.RFC3339Nano, endText)
+	if err != nil {
+		return nil, nil, errors.New("time_range_end must be RFC3339")
+	}
+	start, end = start.UTC().Truncate(time.Millisecond), end.UTC().Truncate(time.Millisecond)
+	if start.After(end) || end.Sub(start) > maxRunWindow {
+		return nil, nil, errors.New("time window must be ordered and no longer than 24h")
+	}
+	return &start, &end, nil
 }
 
 // CreateRunPublic handles POST /api/v1/ai/runs（JWT 鉴权 + 创建 + 同事务写 outbox）。
@@ -110,6 +164,11 @@ func (h *Handler) CreateRunPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{"error": "INVALID_SCOPE", "detail": "cluster_id required"})
 		return
 	}
+	windowStart, windowEnd, windowErr := frozenRunWindow(req, time.Now())
+	if windowErr != nil {
+		respondJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{"error": "INVALID_TIME_WINDOW", "detail": windowErr.Error()})
+		return
+	}
 	cluster, err := (&store.ClusterDAO{}).GetByClusterID(req.ClusterID)
 	if err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "INVALID_CLUSTER"})
@@ -131,6 +190,11 @@ func (h *Handler) CreateRunPublic(w http.ResponseWriter, r *http.Request) {
 	}
 	scopeKind := "single_cluster"
 	intent := firstNonEmpty(req.Intent, req.Message)
+	targetType := firstNonEmpty(req.TargetType, "service")
+	if _, valid := publicRunTargetTypes[targetType]; !valid {
+		respondJSON(w, http.StatusUnprocessableEntity, map[string]interface{}{"error": "INVALID_TARGET_TYPE"})
+		return
+	}
 	// 同事务创建 Run + 写 outbox（P0-5：outbox 失败则回滚，不留下"永不派发"的 Run）。
 	created, err := h.runDAO.CreateWithOutbox(
 		store.AIRun{
@@ -144,8 +208,10 @@ func (h *Handler) CreateRunPublic(w http.ResponseWriter, r *http.Request) {
 			PrimaryClusterID: req.ClusterID,
 			Intent:           intent,
 			ActionMode:       firstNonEmpty(req.ActionMode, "read_only"),
-			TargetType:       "service",
+			TargetType:       targetType,
 			TargetResourceID: firstNonEmpty(req.ResourceID, req.Service),
+			TimeRangeStart:   windowStart,
+			TimeRangeEnd:     windowEnd,
 			Status:           "created",
 			StateVersion:     0,
 			CreatedAt:        now,

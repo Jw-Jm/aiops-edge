@@ -27,6 +27,9 @@ type Metrics struct {
 	metricsWritten   atomic.Int64
 	metricsDropped   atomic.Int64 // 累计因背压丢弃的指标/拓扑边批次（缓冲满，H3）
 	edgesWritten     atomic.Int64
+	eventsAccepted   atomic.Int64
+	eventsWALPending atomic.Int64
+	eventsBackendFailed atomic.Int64
 	reqTotal         atomic.Int64 // 接收请求总数
 	reqRejected      atomic.Int64 // 因鉴权/限流拒绝的请求
 	lastWriteOk      atomic.Int64 // 最近一次成功写入时间戳(秒)
@@ -113,6 +116,9 @@ func (m *Metrics) AddLogsDropped(n int64)      { m.logsDropped.Add(n) }
 func (m *Metrics) AddMetricsWritten(n int64)   { m.metricsWritten.Add(n) }
 func (m *Metrics) AddMetricsDropped(n int64)   { m.metricsDropped.Add(n) }
 func (m *Metrics) AddEdgesWritten(n int64)     { m.edgesWritten.Add(n) }
+func (m *Metrics) AddEventsAccepted(n int64)   { m.eventsAccepted.Add(n) }
+func (m *Metrics) SetEventsWALPending(n int64) { m.eventsWALPending.Store(n) }
+func (m *Metrics) IncEventsBackendFailed()     { m.eventsBackendFailed.Add(1); m.lastWriteFail.Store(time.Now().Unix()) }
 func (m *Metrics) IncReqTotal()                { m.reqTotal.Add(1) }
 func (m *Metrics) IncReqRejected()             { m.reqRejected.Add(1) }
 
@@ -157,6 +163,15 @@ ai_ingest_metrics_dropped_total %d
 # HELP ai_ingest_edges_written_total Total topology edges written.
 # TYPE ai_ingest_edges_written_total counter
 ai_ingest_edges_written_total %d
+# HELP ai_ingest_events_accepted_total Event batches durably accepted from adapters.
+# TYPE ai_ingest_events_accepted_total counter
+ai_ingest_events_accepted_total %d
+# HELP ai_ingest_events_wal_pending Current event batches pending backend persistence.
+# TYPE ai_ingest_events_wal_pending gauge
+ai_ingest_events_wal_pending %d
+# HELP ai_ingest_events_backend_failed_total Event backend write failures retained for replay.
+# TYPE ai_ingest_events_backend_failed_total counter
+ai_ingest_events_backend_failed_total %d
 # HELP ai_ingest_requests_total Total HTTP requests.
 # TYPE ai_ingest_requests_total counter
 ai_ingest_requests_total %d
@@ -173,7 +188,7 @@ ai_ingest_last_write_fail_time %d
 		m.spansReceived.Load(), m.spansWritten.Load(), m.spansFailed.Load(), m.spansDropped.Load(),
 		m.otlpGRPCReceived.Load(), m.otlpGRPCAccepted.Load(), m.otlpGRPCRejected.Load(), m.otlpGRPCFailed.Load(),
 		m.logsReceived.Load(), m.logsDropped.Load(),
-		m.metricsWritten.Load(), m.metricsDropped.Load(), m.edgesWritten.Load(),
+		m.metricsWritten.Load(), m.metricsDropped.Load(), m.edgesWritten.Load(), m.eventsAccepted.Load(), m.eventsWALPending.Load(), m.eventsBackendFailed.Load(),
 		m.reqTotal.Load(), m.reqRejected.Load(),
 		m.lastWriteOk.Load(), m.lastWriteFail.Load()) + m.serviceREDSnapshot()
 }

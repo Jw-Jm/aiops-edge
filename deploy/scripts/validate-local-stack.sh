@@ -41,7 +41,7 @@ done
 
 echo "[validator] core workload readiness"
 for selector in \
-  app=query-api \
+  app=query-api-http \
   app=ai-investigation-worker \
   app=ai-llm-egress-proxy \
   app=ingest \
@@ -58,12 +58,12 @@ kubectl -n observability wait --for=condition=complete job/graph-schema-migrator
 kubectl -n observability wait --for=condition=ready pod -l app=mysql --timeout=300s
 
 echo "[validator] Query API readiness endpoint"
-kubectl -n observability get pods -l app=query-api -o wide
-if ! kubectl -n observability exec deploy/query-api -- wget -q -O - http://127.0.0.1:8080/readyz >/dev/null; then
+kubectl -n observability get pods -l app=query-api-http -o wide
+if ! kubectl -n observability exec deploy/query-api-http -- wget --no-check-certificate -q -O - https://127.0.0.1:8080/readyz >/dev/null; then
   echo "Query API /readyz failed" >&2
   exit 1
 fi
-query_graph_env="$(kubectl -n observability get deployment query-api -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}')"
+query_graph_env="$(kubectl -n observability get deployment query-api-http -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}')"
 rg -n '^GRAPH_BACKEND=hugegraph$' <<<"${query_graph_env}" >/dev/null || { echo "query-api is not using hugegraph in local validation" >&2; exit 1; }
 rg -n '^HUGEGRAPH_URL=http://hugegraph' <<<"${query_graph_env}" >/dev/null || { echo "query-api HugeGraph URL is not cluster-local" >&2; exit 1; }
 
@@ -116,7 +116,7 @@ rg -n '^INVESTIGATION_RUNTIME_ENABLED=1$' <<<"${worker_env}" >/dev/null || { ech
 for switch in LEGACY_FLOW_RUNTIME_ENABLED LEGACY_DIRECT_MUTATIONS_ENABLED; do
   rg -n "^${switch}=0$" <<<"${worker_env}" >/dev/null || { echo "Worker ${switch} is not 0" >&2; exit 1; }
 done
-kubectl -n observability exec deploy/ai-llm-egress-proxy -- wget -q -O - http://127.0.0.1:8080/readyz >/dev/null
+kubectl -n observability exec deploy/ai-llm-egress-proxy -- wget --no-check-certificate -q -O - https://127.0.0.1:8080/readyz >/dev/null
 proxy_env="$(kubectl -n observability get deployment ai-llm-egress-proxy -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}')"
 if awk -F= '$1 ~ /(PROVIDER|API_KEY)/ && length($2) > 0 { found=1 } END { exit(found ? 0 : 1) }' <<<"${proxy_env}" || \
    rg -n 'sk-[^[:space:]]+' <<<"${proxy_env}" >/dev/null; then

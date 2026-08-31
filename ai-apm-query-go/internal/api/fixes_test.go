@@ -310,7 +310,7 @@ func TestQueryLogsExplicitVictoriaLogsUsesScopedRepository(t *testing.T) {
 	)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/query?source=victorialogs&service=checkout&level=error&exclude_health=true", nil)
-	req.Header.Set("X-Tenant-ID", "tenant-a")
+	req = withAuthorizationContext(req, AuthorizationContext{TenantID: "tenant-a"})
 	req.URL.RawQuery += "&cluster_id=cluster-a"
 	h.QueryLogs(rec, req)
 	if rec.Code != http.StatusOK {

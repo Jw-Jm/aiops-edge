@@ -1,41 +1,53 @@
 {{- if .Values.queryApi.enabled }}
-# query-api 专用 ServiceAccount + 只读集群 RBAC（支撑 /infrastructure 读取真实 K8s 资源）
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: query-api
+  name: query-api-http
   namespace: {{ .Values.namespace.observability }}
   labels:
-    app: query-api
+    app: query-api-http
 ---
-# view 角色：namespaces/pods/deployments 等核心资源只读
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: query-run-dispatch
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-run-dispatch
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: query-alert-eval
+  namespace: {{ .Values.namespace.observability }}
+  labels:
+    app: query-alert-eval
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: query-api-view
+  name: query-api-http-view
   labels:
-    app: query-api
+    app: query-api-http
 subjects:
 - kind: ServiceAccount
-  name: query-api
+  name: query-api-http
   namespace: {{ .Values.namespace.observability }}
 roleRef:
   kind: ClusterRole
   name: view
   apiGroup: rbac.authorization.k8s.io
 ---
-# nodes 不在 view 默认规则，单独授权只读（节点信息敏感但 /infrastructure 需要）
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: query-api-node-reader
+  name: query-api-http-node-reader
   labels:
-    app: query-api
+    app: query-api-http
 rules:
 - apiGroups: [""]
   resources: ["nodes"]
   verbs: ["get", "list", "watch"]
-# metrics-server：节点实时用量（GET /api/v1/nodes/metrics）
 - apiGroups: ["metrics.k8s.io"]
   resources: ["nodes"]
   verbs: ["get", "list"]
@@ -43,29 +55,26 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: query-api-node-reader
+  name: query-api-http-node-reader
   labels:
-    app: query-api
+    app: query-api-http
 subjects:
 - kind: ServiceAccount
-  name: query-api
+  name: query-api-http
   namespace: {{ .Values.namespace.observability }}
 roleRef:
   kind: ClusterRole
-  name: query-api-node-reader
+  name: query-api-http-node-reader
   apiGroup: rbac.authorization.k8s.io
----
-# Local validation binds one fixed credential Secret to the query-api
-# management-plane ServiceAccount. Production installations should provide an
-# explicit ADMIN_KUBECONFIG with equivalent, narrowly scoped Secret access.
 {{- if .Values.queryApi.localCredentialSecretName }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: query-api-credential-reader
+  name: query-api-http-credential-reader
   namespace: {{ .Values.namespace.observability }}
   labels:
-    app: query-api
+    app: query-api-http
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -75,17 +84,17 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: query-api-credential-reader
+  name: query-api-http-credential-reader
   namespace: {{ .Values.namespace.observability }}
   labels:
-    app: query-api
+    app: query-api-http
 subjects:
 - kind: ServiceAccount
-  name: query-api
+  name: query-api-http
   namespace: {{ .Values.namespace.observability }}
 roleRef:
   kind: Role
-  name: query-api-credential-reader
+  name: query-api-http-credential-reader
   apiGroup: rbac.authorization.k8s.io
 {{- end }}
 {{- end }}

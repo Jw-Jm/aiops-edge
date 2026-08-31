@@ -20,12 +20,13 @@ const ChangePassword: React.FC = () => {
     setLoading(true)
     try {
       const res = await changePassword(values)
-      const token = res.data?.token || res.data?.data?.token
-      if (!token) {
-        message.error('密码修改失败：未收到新的登录凭证')
+      if (!(res.data?.authenticated === true || res.data?.data?.authenticated === true)) {
+        message.error('密码修改失败：会话未建立')
         return
       }
-      auth.login(token, auth.username, auth.role, auth.displayName, false)
+      // The rotated credential is set as an HttpOnly cookie by the API; only
+      // update the non-secret in-memory UI projection here.
+      auth.login('cookie-session', auth.username, auth.role, auth.displayName, false)
       message.success('密码修改成功，请继续使用系统')
       navigate('/overview', { replace: true })
     } catch (err: any) {

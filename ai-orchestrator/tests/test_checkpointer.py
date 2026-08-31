@@ -291,7 +291,9 @@ def test_streamed_suggestion_execution_and_reload_preserve_aichat_card(monkeypat
     import types as _types
     monkeypatch.setattr(
         main, "_request_context_from_request",
-        lambda request: _types.SimpleNamespace(cluster_id="cluster-1"))
+        lambda request: _types.SimpleNamespace(
+            tenant_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            cluster_id="cluster-1"))
     monkeypatch.setattr(main, "_get_brain", lambda: FakeBrain())
     monkeypatch.setattr(main, "_audit_log", lambda *args, **kwargs: None)
     request = Request({"type": "http", "method": "POST", "path": "/api/v1/ai/chat", "headers": []})

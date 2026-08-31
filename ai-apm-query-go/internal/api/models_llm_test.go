@@ -21,6 +21,8 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 // （< 500 字节，如 deepseek 401 鉴权错误）时，ModelsLLM 不再因 `string(data)[:500]` 越界 panic。
 func TestModelsLLMShortErrorBodyDoesNotPanic(t *testing.T) {
 	h := &Handler{}
+	t.Setenv("AI_LLM_EGRESS_PROXY_URL", "https://llm-proxy.invalid")
+	t.Setenv("LLM_PROXY_TOKEN", "test-proxy-token")
 	// 短错误响应（153 字节，模拟 deepseek 401）
 	shortBody := `{"error":{"message":"Authentication Fails","type":"authentication_error"}}`
 	h.client = &http.Client{
@@ -36,7 +38,7 @@ func TestModelsLLMShortErrorBodyDoesNotPanic(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/llm/models",
-		strings.NewReader(`{"base_url":"https://api.deepseek.com/v1","api_key":"sk-dummy"}`))
+		strings.NewReader(`{"provider_id":"deepseek"}`))
 	h.ModelsLLM(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -55,6 +57,8 @@ func TestModelsLLMShortErrorBodyDoesNotPanic(t *testing.T) {
 // TestModelsLLMLongErrorBodyTruncatedTo500 验证长响应被安全截断到 500，不越界。
 func TestModelsLLMLongErrorBodyTruncatedTo500(t *testing.T) {
 	h := &Handler{}
+	t.Setenv("AI_LLM_EGRESS_PROXY_URL", "https://llm-proxy.invalid")
+	t.Setenv("LLM_PROXY_TOKEN", "test-proxy-token")
 	longBody := strings.Repeat("x", 1000)
 	h.client = &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -68,7 +72,7 @@ func TestModelsLLMLongErrorBodyTruncatedTo500(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/llm/models",
-		strings.NewReader(`{"base_url":"https://api.deepseek.com/v1","api_key":"sk-dummy"}`))
+		strings.NewReader(`{"provider_id":"deepseek"}`))
 	h.ModelsLLM(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -77,6 +81,17 @@ func TestModelsLLMLongErrorBodyTruncatedTo500(t *testing.T) {
 	// 长响应被安全截断（不越界 panic），raw 长度被限制在 ~500
 	if len(rec.Body.String()) > 600 {
 		t.Fatalf("raw should be truncated, got response length %d", len(rec.Body.String()))
+	}
+}
+
+func TestModelsLLMRejectsCallerSuppliedURLAndKey(t *testing.T) {
+	h := &Handler{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/llm/models",
+		strings.NewReader(`{"provider_id":"deepseek","base_url":"https://evil.invalid","api_key":"secret"}`))
+	h.ModelsLLM(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "caller credentials") {
+		t.Fatalf("caller URL/key must be rejected, status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

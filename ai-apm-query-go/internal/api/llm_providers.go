@@ -24,6 +24,15 @@ type LLMProvider struct {
 	CreatedAt    string `json:"created_at"`
 }
 
+func validateProviderIdentity(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "deepseek", "openai":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *Handler) ListLLMProviders(w http.ResponseWriter, r *http.Request) {
 	d := &store.LLMProviderDAO{}
 	list, err := d.List()
@@ -68,8 +77,12 @@ func (h *Handler) CreateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	cost, _ := p["cost"].(string)
 	apiKey, _ := p["api_key"].(string)
 
-	if name == "" || baseURL == "" {
-		respondJSON(w, 400, map[string]interface{}{"error": "name and base_url required"})
+	if !validateProviderIdentity(name) {
+		respondJSON(w, 400, map[string]interface{}{"error": "provider must be an allow-listed egress provider (deepseek or openai)"})
+		return
+	}
+	if strings.TrimSpace(apiKey) != "" || strings.TrimSpace(baseURL) != "" {
+		respondJSON(w, 400, map[string]interface{}{"error": "provider credentials and base_url are managed by the egress proxy"})
 		return
 	}
 	if typ == "" {
@@ -82,18 +95,11 @@ func (h *Handler) CreateLLMProvider(w http.ResponseWriter, r *http.Request) {
 		model = "default"
 	}
 
-	apiKeyHash := "****"
-	apiKeyEncrypted := ""
-	if apiKey != "" {
-		apiKeyHash = "sha256:" + sha256Hash(apiKey)[:16]
-		apiKeyEncrypted = encryptAPIKey(apiKey)
-	}
-
 	d := &store.LLMProviderDAO{}
 	id, err := d.Create(&store.LLMProvider{
-		Name: name, Type: typ, BaseURL: baseURL, DefaultModel: model,
+		Name: strings.ToLower(strings.TrimSpace(name)), Type: typ, BaseURL: "", DefaultModel: model,
 		Cost: cost, Available: true, Enabled: false,
-		APIKeyHash: apiKeyHash, APIKeyEncrypted: apiKeyEncrypted,
+		APIKeyHash: "", APIKeyEncrypted: "",
 	})
 	if err != nil {
 		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
@@ -129,8 +135,9 @@ func (h *Handler) UpdateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if v, ok := p["name"].(string); ok && v != "" {
 		name = v
 	}
-	if v, ok := p["base_url"].(string); ok && v != "" {
-		baseURL = v
+	if v, ok := p["base_url"].(string); ok && strings.TrimSpace(v) != "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "base_url is managed by the egress proxy"})
+		return
 	}
 	if v, ok := p["default_model"].(string); ok && v != "" {
 		model = v
@@ -138,9 +145,9 @@ func (h *Handler) UpdateLLMProvider(w http.ResponseWriter, r *http.Request) {
 	if v, ok := p["cost"].(string); ok && v != "" {
 		cost = v
 	}
-	if v, ok := p["api_key"].(string); ok && v != "" {
-		apiKeyHash = "sha256:" + sha256Hash(v)[:16]
-		apiKeyEnc = encryptAPIKey(v)
+	if v, ok := p["api_key"].(string); ok && strings.TrimSpace(v) != "" {
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "api_key is managed by the egress proxy"})
+		return
 	}
 
 	if err := d.Update(id, name, baseURL, model, cost, apiKeyHash, apiKeyEnc); err != nil {
