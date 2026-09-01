@@ -14,7 +14,7 @@ data:
     #!/bin/sh
     set -e
     echo "waiting for clickhouse..."
-    until clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1; do sleep 5; done
+    until clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local --password="$CLICKHOUSE_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1; do sleep 5; done
     echo "clickhouse ready, exporting key tables..."
     TS=$(date +%Y%m%d-%H%M%S)
     OUT=/backup/clickhouse
@@ -23,7 +23,7 @@ data:
     for t in trace_spans log_records service_topology change_records alert_events; do
       echo "exporting observability.$t"
       clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local \
-        --password "$CLICKHOUSE_PASSWORD" \
+        --password="$CLICKHOUSE_PASSWORD" \
         --query "SELECT * FROM observability.$t FORMAT TSV" \
         > "$OUT/${t}-${TS}.tsv"
     done

@@ -28,7 +28,7 @@ fi
 
 ch() {
   if [[ -n "${ch_password}" ]]; then
-    clickhouse-client --host "${ch_host}" --port "${ch_port}" --user "${ch_user}" --password "${ch_password}" "$@" </dev/null
+    clickhouse-client --host "${ch_host}" --port "${ch_port}" --user "${ch_user}" --password="${ch_password}" "$@" </dev/null
   else
     clickhouse-client --host "${ch_host}" --port "${ch_port}" --user "${ch_user}" "$@" </dev/null
   fi

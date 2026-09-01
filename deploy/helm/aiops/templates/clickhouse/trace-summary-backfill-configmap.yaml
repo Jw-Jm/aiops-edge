@@ -11,7 +11,7 @@ data:
     #!/bin/sh
     set -eu
     ch() {
-      clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT" --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" "$@" </dev/null
+      clickhouse-client --host "$CLICKHOUSE_HOST" --port "$CLICKHOUSE_PORT" --user "$CLICKHOUSE_USER" --password="$CLICKHOUSE_PASSWORD" "$@" </dev/null
     }
     summary_exists=""
     attempt=0

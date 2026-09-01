@@ -80,14 +80,14 @@ spec:
           # 导致认证失败、探针失败/重启）。改用 sh -c shell 包装，让 shell 完成环境变量展开。
           readinessProbe:
             exec:
-              command: ["sh", "-c", "clickhouse-client --host 127.0.0.1 --password \"$CH_PROBE_PASSWORD\" --query \"SELECT 1\""]
+              command: ["sh", "-c", "clickhouse-client --host 127.0.0.1 --password=\"$CH_PROBE_PASSWORD\" --query \"SELECT 1\""]
             initialDelaySeconds: 20
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 6
           livenessProbe:
             exec:
-              command: ["sh", "-c", "clickhouse-client --host 127.0.0.1 --password \"$CH_PROBE_PASSWORD\" --query \"SELECT 1\""]
+              command: ["sh", "-c", "clickhouse-client --host 127.0.0.1 --password=\"$CH_PROBE_PASSWORD\" --query \"SELECT 1\""]
             initialDelaySeconds: 30
             periodSeconds: 15
             timeoutSeconds: 5

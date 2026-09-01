@@ -182,7 +182,7 @@ query_count() {
   local ns="$1" pod="$2" password="$3" sql="$4"
   [[ -n "${pod}" && -n "${password}" ]] || return 1
   kubectl -n "${ns}" exec "${pod}" -- env CH_PASSWORD="${password}" sh -c \
-    'clickhouse-client --password "$CH_PASSWORD" --query "$1"' sh "${sql}" 2>/dev/null | tr -d '[:space:]'
+    'clickhouse-client --password="$CH_PASSWORD" --query "$1"' sh "${sql}" 2>/dev/null | tr -d '[:space:]'
 }
 
 platform_pod="${CUTOVER_PLATFORM_CH_POD:-clickhouse-0}"

@@ -58,9 +58,9 @@ render() {
 
 fail_if_contains() {
   local pattern="$1" file="$2" message="$3"
-  if rg -n --fixed-strings "${pattern}" "${file}" >/dev/null; then
+  if rg -n --fixed-strings -- "${pattern}" "${file}" >/dev/null; then
     echo "contract failed: ${message}" >&2
-    rg -n --fixed-strings "${pattern}" "${file}" >&2 || true
+    rg -n --fixed-strings -- "${pattern}" "${file}" >&2 || true
     exit 1
   fi
 }
@@ -85,7 +85,7 @@ fail_if_multiline_matches() {
 
 require_contains() {
   local pattern="$1" file="$2" message="$3"
-  if ! rg -n --fixed-strings "${pattern}" "${file}" >/dev/null; then
+  if ! rg -n --fixed-strings -- "${pattern}" "${file}" >/dev/null; then
     echo "contract failed: ${message}" >&2
     exit 1
   fi
@@ -139,6 +139,8 @@ require_contains 'name: CLICKHOUSE_HTTP_URL' "${tmp_dir}/validation.yaml" 'inges
 require_contains 'name: TRACE_SOT_MODE' "${tmp_dir}/validation.yaml" 'ingest does not enforce fail-closed Trace SoT mode'
 require_contains 'CREATE TABLE IF NOT EXISTS observability.trace_summary_state' "${tmp_dir}/validation.yaml" 'ClickHouse bootstrap omits the Trace Summary table'
 require_contains 'name: clickhouse-migrator' "${tmp_dir}/validation.yaml" 'ClickHouse migration Job is not rendered'
+require_contains '--password=\"$CH_PROBE_PASSWORD\"' "${tmp_dir}/validation.yaml" 'ClickHouse probes must pass passwords as a single option argument'
+fail_if_contains '--password \"$CH_PROBE_PASSWORD\"' "${tmp_dir}/validation.yaml" 'ClickHouse probes split a password argument that may begin with a dash'
 require_contains '0008_k8s_events_identity_cutover.sql' "${tmp_dir}/validation.yaml" 'ClickHouse identity cutover migration is not mounted'
 require_contains '0009_k8s_events_require_identity.sql' "${tmp_dir}/validation.yaml" 'ClickHouse event identity enforcement migration is not mounted'
 require_contains 'event_id` String' "${tmp_dir}/validation.yaml" 'ClickHouse event_id must be required without a default'

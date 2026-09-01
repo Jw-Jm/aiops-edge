@@ -25,7 +25,7 @@ spec:
           args:
             - >-
               until clickhouse-client --host clickhouse.{{ .Values.namespace.observability }}.svc.cluster.local
-              --password "$CLICKHOUSE_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1;
+              --password="$CLICKHOUSE_PASSWORD" --query 'SELECT 1' >/dev/null 2>&1;
               do sleep 5; done
           env:
             - name: CLICKHOUSE_PASSWORD
