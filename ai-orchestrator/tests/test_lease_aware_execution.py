@@ -6,6 +6,7 @@
   3. commit 幂等（同 commit_id 重试返回首次）。
   4. renew 用 epoch+token fencing。
 """
+import base64
 import uuid
 
 import pytest
@@ -110,3 +111,28 @@ def test_lease_lost_stops_before_data_io():
     import pytest
     with pytest.raises(LeaseLostError):
         commit.check_active()
+
+
+def test_commit_rejects_uncertain_lease_before_control_plane_call():
+    """UNCERTAIN must stop the final commit race, not only data-plane callers."""
+    fc = FakeClient()
+    ex = LeaseAwareExecutor(client=fc)
+    lease = ex.lease("r1", "t1").__enter__()
+    lease._stop = True
+    from lease_aware_execution import LeaseLostError, _LeaseState
+    lease._state = _LeaseState.UNCERTAIN
+
+    with pytest.raises(LeaseLostError):
+        lease.commit(target="success", result={"ok": True}, events=[], expected_version=0)
+    assert fc.commits == []
+
+
+def test_caller_generated_lease_token_has_256_bits_of_entropy():
+    fc = FakeClient()
+    ex = LeaseAwareExecutor(client=fc)
+    lease = ex.lease("r1", "t1").__enter__()
+    lease._stop = True
+
+    token = lease._lease_token
+    padded = token + "=" * (-len(token) % 4)
+    assert len(base64.urlsafe_b64decode(padded)) == 32

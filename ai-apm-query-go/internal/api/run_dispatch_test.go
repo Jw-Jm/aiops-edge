@@ -45,8 +45,8 @@ func TestRunDispatchDelivers(t *testing.T) {
 			"dispatch_expires_at", "created_at", "updated_at"}).
 			AddRow("99999999-9999-4999-8999-999999999999", "22222222-2222-4222-8222-222222222222", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
 	// Claim → ok（fencing：owner/epoch/token）
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'claimed'")).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE ai_run_outbox SET status = 'claimed'.*dispatch_epoch = LAST_INSERT_ID\\(dispatch_epoch \\+ 1\\)").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	// runDAO.Get
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "request_id", "tenant_id", "principal",
@@ -103,8 +103,8 @@ func TestRunDispatchRetriesOnOrchestratorDown(t *testing.T) {
 			"next_retry_at", "dispatch_owner_id", "dispatch_epoch", "dispatch_token_hash",
 			"dispatch_expires_at", "created_at", "updated_at"}).
 			AddRow("99999999-9999-4999-8999-999999999999", "22222222-2222-4222-8222-222222222222", "pending", 0, nil, nil, 0, nil, nil, time.Now(), time.Now()))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'claimed'")).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE ai_run_outbox SET status = 'claimed'.*dispatch_epoch = LAST_INSERT_ID\\(dispatch_epoch \\+ 1\\)").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id")).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "request_id", "tenant_id", "principal",
 			"principal_type", "session_id", "scope_kind", "primary_cluster_id", "intent",

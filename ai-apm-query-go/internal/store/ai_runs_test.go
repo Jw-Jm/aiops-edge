@@ -62,6 +62,35 @@ func TestAIRunDAOCreateReturnsExistingOnDuplicate(t *testing.T) {
 	}
 }
 
+func TestAIRunDAOTransitionTxValidatedWithLeaseChecksLeaseAtFinalCAS(t *testing.T) {
+	mock, cleanup := setupAIRunsDB(t)
+	defer cleanup()
+	now := time.Date(2026, 9, 1, 3, 4, 5, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status FROM ai_runs WHERE run_id = \\?.*FOR UPDATE").
+		WithArgs("run-1").
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("investigating"))
+	mock.ExpectExec("UPDATE ai_runs SET status = \\?, state_version = state_version \\+ 1.*lease_owner_id = \\?.*lease_expires_at >= CURRENT_TIMESTAMP\\(3\\)").
+		WithArgs("verifying", now, nil, "run-1", int64(2), "owner-1", int64(3), "hash-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	tx, err := GetDB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := (&AIRunDAO{}).TransitionTxValidatedWithLease(tx, "run-1", "verifying", 2, now, "owner-1", 3, "hash-1")
+	if err != nil || !ok {
+		t.Fatalf("TransitionTxValidatedWithLease() = ok %v err %v, want true", ok, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAIRunDAOGet(t *testing.T) {
 	mock, cleanup := setupAIRunsDB(t)
 	defer cleanup()

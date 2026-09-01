@@ -13,8 +13,8 @@ func TestAIRunOutboxInsertAndClaim(t *testing.T) {
 	defer cleanup()
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO ai_run_outbox")).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_run_outbox SET status = 'claimed'")).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE ai_run_outbox SET status = 'claimed'.*dispatch_epoch = LAST_INSERT_ID\\(dispatch_epoch \\+ 1\\)").
+		WillReturnResult(sqlmock.NewResult(7, 1))
 	d := &AIRunOutboxDAO{}
 	if err := d.Insert(AIRunOutbox{
 		InvocationID: "i", RunID: "r", Status: "pending",
@@ -26,7 +26,7 @@ func TestAIRunOutboxInsertAndClaim(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Claim: ok=%v err=%v", ok, err)
 	}
-	if fence.OwnerID != "owner-1" || fence.TokenHash == "" || fence.Epoch == 0 {
+	if fence.OwnerID != "owner-1" || fence.TokenHash == "" || fence.Epoch != 7 {
 		t.Fatalf("fence not populated: %+v", fence)
 	}
 }

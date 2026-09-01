@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,12 +45,8 @@ func (h *Handler) internalControlPlaneRunClaim(w http.ResponseWriter, r *http.Re
 		leaseSeconds = *body.LeaseSeconds
 	}
 	// P0-LEASE-03：caller 提供 claim_id/lease_token → 精确重试；否则服务端生成。
-	var caller []store.ClaimRequest
-	if body.ClaimID != "" {
-		caller = append(caller, store.ClaimRequest{
-			ClaimID: body.ClaimID, LeaseToken: body.LeaseToken, ClaimSource: body.ClaimSource,
-		})
-	}
+	// 任一字段出现都必须交给 DAO 做成对/强度校验，不能静默丢弃 token-only 请求。
+	caller := claimRequestFromBody(body.ClaimID, body.LeaseToken, body.ClaimSource)
 	holder, err := h.leaseDAO.Claim(runID, body.OwnerID, leaseSeconds, caller...)
 	if err != nil {
 		cp.inc("lease_fencing")
@@ -69,6 +66,13 @@ func (h *Handler) internalControlPlaneRunClaim(w http.ResponseWriter, r *http.Re
 		"server_now":         holder.ServerNow.UTC().Format(time.RFC3339),
 		"lease_remaining_ms": holder.LeaseRemainingMS,
 	})
+}
+
+func claimRequestFromBody(claimID, leaseToken, claimSource string) []store.ClaimRequest {
+	if claimID == "" && leaseToken == "" {
+		return nil
+	}
+	return []store.ClaimRequest{{ClaimID: claimID, LeaseToken: leaseToken, ClaimSource: claimSource}}
 }
 
 // internalControlPlaneRunRenew handles POST /internal/v1/control-plane/runs/{id}/renew。
@@ -215,8 +219,19 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 	}
 	defer tx.Rollback()
 
-	// 0) in-tx recheck commit_id（P0-COMMIT-01/02）：同 commit_id 已存在。
-	//    在锁 Run 后 recheck，避免 fast-path 之外的并发窗口。
+	// 0) Lock the authoritative Run before rechecking commit_id. An absent
+	// commit row cannot serialize concurrent first submissions; the Run row is
+	// the stable lock that makes same-key retries observe the first result.
+	var lockedRunID string
+	if err := tx.QueryRow(`SELECT run_id FROM ai_runs WHERE run_id = ? FOR UPDATE`, runID).Scan(&lockedRunID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.ErrRunNotFound
+		}
+		return err
+	}
+
+	// 1) in-tx recheck commit_id（P0-COMMIT-01/02）：同 commit_id 已存在。
+	//    Run 已加锁，避免 fast-path 之外的并发窗口。
 	if existing, err := h.commitDAO.GetTx(tx, runID, body.CommitID); err == nil {
 		// same key + same hash → return first result（幂等命中）
 		if existing.PayloadHash == body.PayloadHash {
@@ -228,7 +243,7 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 		return err
 	}
 
-	// 1) Lease fencing：owner + epoch + token 匹配，且 Lease 未过期（DB time）。
+	// 2) Lease fencing：owner + epoch + token 匹配，且 Lease 未过期（DB time）。
 	valid, err := store.LeaseFencingTx(tx, runID, body.OwnerID, body.Epoch, hashToken(body.Token))
 	if err != nil {
 		return err
@@ -237,10 +252,11 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 		return store.ErrLeaseFencing
 	}
 
-	// 2) Run 状态合法迁移推进（P0-COMMIT-03：终态不可复活 + legal transition）。
+	// 3) Run 状态合法迁移推进（P0-COMMIT-03：终态不可复活 + legal transition）。
 	//    TransitionTxValidated 内部锁 Run、读当前 status、ValidateRunTransition、CAS。
 	now := time.Now()
-	ok, err := h.runDAO.TransitionTxValidated(tx, runID, body.Target, body.ExpectedVersion, now)
+	ok, err := h.runDAO.TransitionTxValidatedWithLease(tx, runID, body.Target, body.ExpectedVersion, now,
+		body.OwnerID, body.Epoch, hashToken(body.Token))
 	if err != nil {
 		var ite *store.IllegalTransitionError
 		if errors.As(err, &ite) {
@@ -252,7 +268,7 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 		return &runStateConflictError{}
 	}
 
-	// 3) 事件 AppendTx（原子，不留下孤立 event/sequence）。
+	// 4) 事件 AppendTx（原子，不留下孤立 event/sequence）。
 	firstSeq, lastSeq := int64(0), int64(0)
 	for _, ev := range body.Events {
 		appended, created, err := h.eventDAO.AppendTx(tx, store.AIRunEvent{
@@ -271,7 +287,7 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 		}
 	}
 
-	// 4) commit 记录（in-tx 插入，duplicate → 竞态幂等命中）。
+	// 5) commit 记录（in-tx 插入，duplicate → 竞态幂等命中）。
 	commit := store.RuntimeCommit{
 		RunID: runID, CommitID: body.CommitID, PayloadHash: body.PayloadHash,
 		CommittedStateVersion: body.ExpectedVersion + 1,
@@ -373,6 +389,8 @@ func hashToken(token string) string {
 
 func respondLeaseError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, store.ErrClaimRequestIncomplete), errors.Is(err, store.ErrClaimTokenTooShort):
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "MISSING_CLAIM_FENCING"})
 	case errors.Is(err, store.ErrLeaseHeld):
 		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "RUN_LEASE_HELD"})
 	case errors.Is(err, store.ErrLeaseFencing):

@@ -93,6 +93,20 @@ func NewLeaseToken() (string, string) {
 //
 // 所有时间判定用 DB time（CURRENT_TIMESTAMP(3)），不依赖进程时钟。
 func (d *RuntimeLeaseDAO) Claim(runID, ownerID string, leaseSeconds int, caller ...ClaimRequest) (RunLeaseHolder, error) {
+	if len(caller) > 0 {
+		// A caller-provided claim is an idempotency/fencing pair. Accepting only
+		// one half would silently replace the caller token or claim id and make a
+		// lost response impossible to recover safely.
+		if (caller[0].ClaimID == "") != (caller[0].LeaseToken == "") {
+			return RunLeaseHolder{}, ErrClaimRequestIncomplete
+		}
+		// NewLeaseToken encodes 32 random bytes as 43 base64url characters.
+		// Reject shorter caller tokens so a predictable value cannot become a
+		// recoverable fencing credential.
+		if caller[0].ClaimID != "" && len(caller[0].LeaseToken) < 43 {
+			return RunLeaseHolder{}, ErrClaimTokenTooShort
+		}
+	}
 	conn := GetDB()
 	if conn == nil {
 		return RunLeaseHolder{}, errors.New("mysql unavailable")
@@ -170,17 +184,15 @@ func (d *RuntimeLeaseDAO) Claim(runID, ownerID string, leaseSeconds int, caller 
 			// 同 owner exact retry：claim_id 与当前一致且 token 匹配 → 返回既有权（epoch 不变）。
 			if curClaimID.Valid && curClaimID.String == claimID &&
 				curTokenHash.Valid && curTokenHash.String == tokenHash {
-				exp := curExpiresAt.Time
-				var remaining int64
-				_ = tx.QueryRow(
-					`SELECT TIMESTAMPDIFF(MICROSECOND, CURRENT_TIMESTAMP(3), lease_expires_at) FROM ai_runs WHERE run_id = ?`,
-					runID,
-				).Scan(&remaining)
+				serverNow, exp, remaining, err := readLeaseTiming(tx, runID, ownerID, curEpoch, tokenHash)
+				if err != nil {
+					return RunLeaseHolder{}, err
+				}
 				return RunLeaseHolder{
 					RunID: runID, OwnerID: ownerID, Epoch: curEpoch, ClaimID: claimID,
 					Token: rawToken, TokenHash: tokenHash, ExpiresAt: exp, WaitKind: waitKind.String,
 					RetryAttempt: int(retryAttempt), RetryBefore: nil,
-					LeaseRemainingMS: remaining / 1000, ServerNow: time.Now(),
+					LeaseRemainingMS: remaining / 1000, ServerNow: serverNow, ClaimSource: claimSource,
 				}, nil
 			}
 			// 同 owner 但 claim_id 不同 → 若 claim_id 曾用于本 run 且不同 token → ErrClaimIDReused。
@@ -219,20 +231,36 @@ func (d *RuntimeLeaseDAO) Claim(runID, ownerID string, leaseSeconds int, caller 
 	if err := tx.Commit(); err != nil {
 		return RunLeaseHolder{}, err
 	}
-	// 返回的 expires_at / remaining 用 DB time 回读。
-	var exp time.Time
-	var remaining int64
-	_ = conn.QueryRow(
-		`SELECT lease_expires_at FROM ai_runs WHERE run_id = ?`, runID,
-	).Scan(&exp)
-	_ = conn.QueryRow(
-		`SELECT TIMESTAMPDIFF(MICROSECOND, CURRENT_TIMESTAMP(3), lease_expires_at) FROM ai_runs WHERE run_id = ?`, runID,
-	).Scan(&remaining)
+	// 返回的 server_now / expires_at / remaining 用同一条 DB-time 查询回读，
+	// 并校验 lease 仍属于本次 claim，避免抢占后响应携带别人的租约数据。
+	serverNow, exp, remaining, err := readLeaseTiming(conn, runID, ownerID, newEpoch, tokenHash)
+	if err != nil {
+		return RunLeaseHolder{}, err
+	}
 	return RunLeaseHolder{
 		RunID: runID, OwnerID: ownerID, Epoch: newEpoch, ClaimID: claimID,
 		Token: rawToken, TokenHash: tokenHash, ExpiresAt: exp, WaitKind: "none",
-		LeaseRemainingMS: remaining / 1000, ServerNow: time.Now(), ClaimSource: claimSource,
+		LeaseRemainingMS: remaining / 1000, ServerNow: serverNow, ClaimSource: claimSource,
 	}, nil
+}
+
+// readLeaseTiming reads all response timing fields from one database statement.
+// The owner/epoch/token predicates turn a post-commit race into ErrLeaseLost
+// instead of returning a timing tuple for a newer holder.
+func readLeaseTiming(q interface {
+	QueryRow(query string, args ...interface{}) *sql.Row
+}, runID, ownerID string, epoch int64, tokenHash string) (serverNow, expiresAt time.Time, remainingUS int64, err error) {
+	err = q.QueryRow(
+		`SELECT CURRENT_TIMESTAMP(3), lease_expires_at,
+		   TIMESTAMPDIFF(MICROSECOND, CURRENT_TIMESTAMP(3), lease_expires_at)
+		 FROM ai_runs
+		 WHERE run_id = ? AND lease_owner_id = ? AND lease_epoch = ? AND lease_token_hash = ?`,
+		runID, ownerID, epoch, tokenHash,
+	).Scan(&serverNow, &expiresAt, &remainingUS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, time.Time{}, 0, ErrLeaseLost
+	}
+	return serverNow, expiresAt, remainingUS, err
 }
 
 // ClaimRequest 是 caller 提供的 claim 参数（P0-LEASE-03：支持精确恢复）。
@@ -491,13 +519,15 @@ func (d *RuntimeLeaseDAO) LeaseExpired(runID string) (bool, error) {
 
 // ─── errors ──────────────────────────────────────────────────────────────
 var (
-	ErrLeaseHeld      = errors.New("run lease held by another owner")
-	ErrLeaseFencing   = errors.New("run lease epoch/token fencing mismatch")
-	ErrLeaseLost      = errors.New("run lease lost or expired (cannot renew/resume)")
-	ErrRunTerminal    = errors.New("run is in terminal state")
-	ErrRunNotFound    = errors.New("run not found")
-	ErrClaimIDReused  = errors.New("claim_id reused with different executor/token")
-	ErrClaimIDExpired = errors.New("claim_id retry but original lease already expired")
+	ErrLeaseHeld              = errors.New("run lease held by another owner")
+	ErrLeaseFencing           = errors.New("run lease epoch/token fencing mismatch")
+	ErrLeaseLost              = errors.New("run lease lost or expired (cannot renew/resume)")
+	ErrRunTerminal            = errors.New("run is in terminal state")
+	ErrRunNotFound            = errors.New("run not found")
+	ErrClaimIDReused          = errors.New("claim_id reused with different executor/token")
+	ErrClaimIDExpired         = errors.New("claim_id retry but original lease already expired")
+	ErrClaimRequestIncomplete = errors.New("claim_id and lease_token must be provided together")
+	ErrClaimTokenTooShort     = errors.New("lease_token must contain at least 256 bits of entropy")
 )
 
 // RetryBackoffError 表示 Run 处于 retry backoff（retry_not_before 前不可 claim）。
@@ -511,18 +541,24 @@ func (e *RetryBackoffError) Error() string {
 // 供 Runtime Commit 在最终权威更新前重新校验 DB-time Lease（报告 28.2："Commit 在最终权威更新
 // 前重新校验 DB-time Lease"）。返回 valid 布尔。
 func LeaseFencingTx(tx *sql.Tx, runID, ownerID string, epoch int64, tokenHash string) (bool, error) {
-	var n int64
+	// Lock the authoritative Run row while checking DB time. A plain aggregate
+	// read leaves a race where the lease can be replaced/expired before the
+	// state transition in the same Runtime Commit transaction.
+	var foundRunID string
 	err := tx.QueryRow(
-		`SELECT COUNT(*) FROM ai_runs WHERE run_id = ? AND lease_owner_id = ? AND lease_epoch = ?
+		`SELECT run_id FROM ai_runs WHERE run_id = ? AND lease_owner_id = ? AND lease_epoch = ?
 		   AND lease_token_hash = ? AND lease_expires_at IS NOT NULL
 		   AND lease_expires_at >= CURRENT_TIMESTAMP(3)
-		   AND status NOT IN ('success','partial','failed','regressed','cancelled')`,
+		   AND status NOT IN ('success','partial','failed','regressed','cancelled') FOR UPDATE`,
 		runID, ownerID, epoch, tokenHash,
-	).Scan(&n)
+	).Scan(&foundRunID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	return n == 1, nil
+	return foundRunID == runID, nil
 }
 
 // NewUUIDv4 生成 RFC4122 v4 UUID 字符串（claim_id 等用）。

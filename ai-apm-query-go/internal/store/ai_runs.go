@@ -322,6 +322,41 @@ func (d *AIRunDAO) TransitionTxValidated(tx *sql.Tx, runID, target string, expec
 	return n == 1, nil
 }
 
+// TransitionTxValidatedWithLease performs the final Runtime Commit CAS while
+// rechecking the lease predicate in the UPDATE statement itself. The prior
+// LeaseFencingTx row lock prevents concurrent ownership changes; this second
+// predicate also rejects a lease that naturally expires between the check and
+// the state transition.
+func (d *AIRunDAO) TransitionTxValidatedWithLease(tx *sql.Tx, runID, target string, expectedVersion int64, now time.Time,
+	ownerID string, epoch int64, tokenHash string) (bool, error) {
+	var current string
+	if err := tx.QueryRow(`SELECT status FROM ai_runs WHERE run_id = ? FOR UPDATE`, runID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, ErrRunNotFound
+		}
+		return false, err
+	}
+	if !ValidateRunTransition(current, target) {
+		return false, &IllegalTransitionError{Current: current, Target: target}
+	}
+	var finishedAt interface{} = nil
+	if isTerminalStatus(target) {
+		finishedAt = now
+	}
+	res, err := tx.Exec(
+		`UPDATE ai_runs SET status = ?, state_version = state_version + 1, updated_at = ?, finished_at = ?
+		   WHERE run_id = ? AND state_version = ?
+		     AND lease_owner_id = ? AND lease_epoch = ? AND lease_token_hash = ?
+		     AND lease_expires_at IS NOT NULL AND lease_expires_at >= CURRENT_TIMESTAMP(3)
+		     AND status NOT IN ('success','partial','failed','regressed','cancelled')`,
+		target, now, finishedAt, runID, expectedVersion, ownerID, epoch, tokenHash)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
 // CancelTx 在给定事务内显式 cancel（供 ApplyRunControlCommandTx mutateFn 使用）。
 func (d *AIRunDAO) CancelTx(tx *sql.Tx, runID string, expectedVersion int64, now time.Time) (bool, error) {
 	res, err := tx.Exec(

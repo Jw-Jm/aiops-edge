@@ -45,11 +45,12 @@ type DispatchFence struct {
 	TokenHash string
 }
 
-// NewDispatchFence 生成一次 claim 的 fencing 身份。
+// NewDispatchFence 生成一次 claim 的 fencing 身份。Epoch 由数据库在 Claim
+// 时原子递增并回传；构造阶段不使用应用时钟，避免时钟回拨或并发覆盖。
 func NewDispatchFence(ownerID string) DispatchFence {
 	return DispatchFence{
 		OwnerID:   ownerID,
-		Epoch:     time.Now().UnixNano(),
+		Epoch:     0,
 		TokenHash: randomHash(),
 	}
 }
@@ -102,18 +103,29 @@ func (d *AIRunOutboxDAO) Claim(invocationID, ownerID string, lease time.Duration
 	res, err := conn.Exec(
 		`UPDATE ai_run_outbox
 		   SET status = 'claimed', dispatch_count = dispatch_count + 1,
-		       dispatch_owner_id = ?, dispatch_epoch = ?, dispatch_token_hash = ?,
+		       dispatch_owner_id = ?, dispatch_epoch = LAST_INSERT_ID(dispatch_epoch + 1), dispatch_token_hash = ?,
 		       dispatch_expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND),
 		       next_retry_at = DATE_ADD(NOW(), INTERVAL ? SECOND), updated_at = NOW()
 		 WHERE invocation_id = ?
 		   AND (status = 'pending'
 		        OR (status = 'claimed' AND dispatch_expires_at IS NOT NULL AND dispatch_expires_at <= NOW()))`,
-		fence.OwnerID, fence.Epoch, fence.TokenHash, leaseSec, leaseSec, invocationID)
+		fence.OwnerID, fence.TokenHash, leaseSec, leaseSec, invocationID)
 	if err != nil {
 		return DispatchFence{}, false, err
 	}
 	n, _ := res.RowsAffected()
-	return fence, n == 1, nil
+	if n != 1 {
+		return fence, false, nil
+	}
+	epoch, err := res.LastInsertId()
+	if err != nil {
+		return DispatchFence{}, false, err
+	}
+	if epoch <= 0 {
+		return DispatchFence{}, false, errors.New("dispatch epoch unavailable")
+	}
+	fence.Epoch = epoch
+	return fence, true, nil
 }
 
 // Deliver 标记派发成功（fencing：必须匹配当前 claim 的 owner+epoch+token）。

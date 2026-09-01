@@ -30,9 +30,9 @@ func approvalReadRows() *sqlmock.Rows {
 }
 
 func expectActionClaim(mock sqlmock.Sqlmock) {
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE ai_action_outbox")).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), int64(30), int64(30), "cmd-1").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE ai_action_outbox.*dispatch_epoch = LAST_INSERT_ID\\(dispatch_epoch \\+ 1\\)").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), int64(30), int64(30), "cmd-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
 func TestActionDispatcherDeliversExecutionResultAndMovesRunToVerification(t *testing.T) {

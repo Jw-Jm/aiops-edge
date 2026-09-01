@@ -62,17 +62,28 @@ func (d *AIActionOutboxDAO) Claim(commandID, ownerID string, lease time.Duration
 	}
 	res, err := conn.Exec(`UPDATE ai_action_outbox
 		SET status = 'claimed', dispatch_count = dispatch_count + 1,
-			dispatch_owner_id = ?, dispatch_epoch = ?, dispatch_token_hash = ?,
+			dispatch_owner_id = ?, dispatch_epoch = LAST_INSERT_ID(dispatch_epoch + 1), dispatch_token_hash = ?,
 			dispatch_expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND),
 			next_retry_at = DATE_ADD(NOW(), INTERVAL ? SECOND), updated_at = NOW()
 		WHERE command_id = ?
 		  AND (status = 'pending' OR (status = 'claimed' AND dispatch_expires_at IS NOT NULL AND dispatch_expires_at <= NOW()))`,
-		fence.OwnerID, fence.Epoch, fence.TokenHash, leaseSec, leaseSec, commandID)
+		fence.OwnerID, fence.TokenHash, leaseSec, leaseSec, commandID)
 	if err != nil {
 		return DispatchFence{}, false, err
 	}
 	n, _ := res.RowsAffected()
-	return fence, n == 1, nil
+	if n != 1 {
+		return fence, false, nil
+	}
+	epoch, err := res.LastInsertId()
+	if err != nil {
+		return DispatchFence{}, false, err
+	}
+	if epoch <= 0 {
+		return DispatchFence{}, false, errors.New("dispatch epoch unavailable")
+	}
+	fence.Epoch = epoch
+	return fence, true, nil
 }
 
 func (d *AIActionOutboxDAO) Deliver(commandID string, fence DispatchFence) error {

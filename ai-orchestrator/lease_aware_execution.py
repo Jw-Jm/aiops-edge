@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
@@ -96,7 +97,7 @@ class _LeaseContext:
         # P0-LEASE-03：caller 生成稳定 claim_id + lease_token（>=256-bit random），
         # Claim 响应丢失后以相同 claim_id 精确重试恢复同一 Lease。
         self._claim_id = claim_id or str(uuid.uuid4())
-        self._lease_token = str(uuid.uuid4()) + str(uuid.uuid4())
+        self._lease_token = secrets.token_urlsafe(32)
 
     def __enter__(self) -> "_LeaseContext":
         holder = self._client.claim_lease(
@@ -175,6 +176,10 @@ class _LeaseContext:
                expected_version: int, payload: Any = None) -> dict:
         """原子 Runtime Commit（P0#12：commit_id 稳定——同一次执行的重试复用同一 commit_id，
         幂等返回首次结果；不因重试生成新 commit_id）。"""
+        # Re-check immediately before the control-plane call.  A renew failure
+        # can race with callers' last data-plane check; UNCERTAIN and LOST must
+        # never cross the commit boundary.
+        self.check_active()
         payload_hash = _sha256(payload if payload is not None else result)
         if self._commit_id is None:
             self._commit_id = str(uuid.uuid4())

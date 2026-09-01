@@ -11,6 +11,7 @@ import (
 
 	trustedauth "github.com/observability-platform/ai-apm-query-go/internal/auth"
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 func newControlPlaneVerifier(t *testing.T) ed25519.PrivateKey {
@@ -98,5 +99,16 @@ func TestAuthorizeControlPlaneRejectsMissingToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/internal/v1/control-plane/runs/x/transition", nil)
 	if _, err := authorizeInternalControlPlane(req, "control_plane.runs.mutate", "ai-orchestrator"); err == nil {
 		t.Fatalf("expected reject for missing token")
+	}
+}
+
+func TestRespondLeaseErrorMapsIncompleteClaimToBadRequest(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	respondLeaseError(recorder, store.ErrClaimRequestIncomplete)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "MISSING_CLAIM_FENCING") {
+		t.Fatalf("body = %s, want MISSING_CLAIM_FENCING", recorder.Body.String())
 	}
 }
