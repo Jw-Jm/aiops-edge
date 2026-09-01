@@ -38,14 +38,14 @@ func (r *HugeGraphRepository) MarkStaleByGeneration(ctx context.Context, source,
 	if r == nil || r.client == nil {
 		return 0, 0, graphError(ErrGraphUnavailable, "HugeGraph client is not configured")
 	}
-	vertices, err := r.client.ListVertices(ctx)
+	vertices, err := r.client.ListVerticesForScope(ctx, source, tenantID, clusterID)
 	if err != nil {
 		return 0, 0, graphError(ErrGraphUnavailable, err.Error())
 	}
 	updatedVertices := make([]Entity, 0)
 	for _, raw := range vertices {
 		entity, parseErr := entityFromHugeGraph(raw, "")
-		if parseErr != nil || entity.TenantID != tenantID || entity.ClusterID != clusterID || entity.Source != source || entity.Generation >= generation || entity.Status == "stale" {
+		if parseErr != nil || entity.Generation >= generation || entity.Status == "stale" {
 			continue
 		}
 		entity.Status = "stale"
@@ -61,14 +61,14 @@ func (r *HugeGraphRepository) MarkStaleByGeneration(ctx context.Context, source,
 		}
 	}
 
-	edges, err := r.client.ListEdges(ctx)
+	edges, err := r.client.ListEdgesForScope(ctx, source, tenantID, clusterID)
 	if err != nil {
 		return int64(len(updatedVertices)), 0, graphError(ErrGraphUnavailable, err.Error())
 	}
 	updatedEdges := make([]Edge, 0)
 	for _, raw := range edges {
 		edge, parseErr := edgeFromHugeGraph(raw)
-		if parseErr != nil || edge.TenantID != tenantID || edge.ClusterID != clusterID || edge.Source != source || edge.Generation >= generation || edge.Status == "stale" {
+		if parseErr != nil || edge.Generation >= generation || edge.Status == "stale" {
 			continue
 		}
 		edge.Status = "stale"

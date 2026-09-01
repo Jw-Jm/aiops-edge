@@ -10,6 +10,65 @@ import (
 	"time"
 )
 
+func TestHugeGraphClientListVerticesForScopeUsesIndexedOffsetQuery(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("label") != "Entity" || r.URL.Query().Get("offset") != "0" || r.URL.Query().Get("limit") != "5000" {
+			t.Fatalf("unexpected pagination query: %s", r.URL.RawQuery)
+		}
+		var properties map[string]string
+		if err := json.Unmarshal([]byte(r.URL.Query().Get("properties")), &properties); err != nil {
+			t.Fatalf("properties: %v", err)
+		}
+		if properties["source"] != "kubernetes" || properties["tenant_id"] != "tenant" || properties["cluster_id"] != "cluster" {
+			t.Fatalf("scope properties: %#v", properties)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"vertices":[{"id":"v1"}]}`))
+	}))
+	defer server.Close()
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "", "", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := client.ListVerticesForScope(t.Context(), "kubernetes", "tenant", "cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || requests != 1 || items[0]["id"] != "v1" {
+		t.Fatalf("items=%#v requests=%d", items, requests)
+	}
+}
+
+func TestHugeGraphClientListEdgesForScopeUsesFrozenLabelIndexes(t *testing.T) {
+	seen := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("offset") != "0" || r.URL.Query().Get("limit") != "5000" {
+			t.Fatalf("unexpected edge pagination query: %s", r.URL.RawQuery)
+		}
+		label := r.URL.Query().Get("label")
+		if label == "" {
+			t.Fatal("edge label is required")
+		}
+		seen[label] = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"edges":[]}`))
+	}))
+	defer server.Close()
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "", "", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := client.ListEdgesForScope(t.Context(), "kubernetes", "tenant", "cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 || len(seen) != len(RelationTypes()) {
+		t.Fatalf("items=%#v labels=%d want=%d", items, len(seen), len(RelationTypes()))
+	}
+}
+
 func TestHugeGraphClientBatchVertexCarriesCustomStringIDAndEntityLabel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops/graph/vertices/batch" {

@@ -183,6 +183,8 @@ if [[ ! -x "${verify_graph_script}" ]]; then
   exit 1
 fi
 require_contains 'graphspaces/${graphspace}/graphs/${graph}' "${verify_graph_script}" 'Kubernetes graph verification does not inspect the configured named graph'
+require_contains 'query_api_deployment="${QUERY_API_DEPLOYMENT:-query-api-http}"' "${verify_graph_script}" 'Kubernetes graph verification does not target the actual Query API deployment'
+require_contains 'deploy/${query_api_deployment}' "${verify_graph_script}" 'Kubernetes graph verification does not exec the configured Query API deployment'
 require_contains 'source=kubernetes status=success' "${verify_graph_script}" 'Kubernetes graph verification does not require a successful source reconcile'
 require_contains 'graph/vertices' "${verify_graph_script}" 'Kubernetes graph verification does not inspect a projected entity'
 if ! rg -n --fixed-strings 'finalizeAggregation' "${repo_root}/ai-apm-query-go/internal/query/traces.go" >/dev/null; then

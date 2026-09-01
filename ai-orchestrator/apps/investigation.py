@@ -13,6 +13,7 @@ import os
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -63,6 +64,21 @@ def _build_authz_matrix():
 _authz_matrix = _build_authz_matrix()
 _dispatcher: InvestigationDispatcher | None = None
 _recovery_task: asyncio.Task | None = None
+_graph_sync_runtime: Any | None = None
+
+
+def _graph_reconcile_enabled() -> bool:
+    """Return whether this worker must run the canonical graph source sync.
+
+    The gateway and the stateless Investigation Worker share the same durable
+    Query API lease, so either may safely perform the initial/backfill pass.
+    Keeping the decision in the Worker composition root is important: this
+    module does not execute ``main.lifespan`` and therefore cannot inherit the
+    gateway's scheduler implicitly.
+    """
+    backend = os.environ.get("GRAPH_BACKEND", "legacy_mysql").strip().lower()
+    enabled = os.environ.get("GRAPH_SOURCE_RECONCILE_ENABLED", "1").strip().lower()
+    return backend in {"shadow", "hugegraph"} and enabled in {"1", "true", "yes", "on"}
 
 
 class _WorkerBrain:
@@ -281,9 +297,32 @@ async def _recovery_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _recovery_task
+    global _recovery_task, _graph_sync_runtime
     if _runtime_enabled() and os.environ.get("QUERY_API_URL"):
         _recovery_task = asyncio.create_task(_recovery_loop())
+    # This Worker has an independent FastAPI composition root; importing
+    # ``main`` does not run the gateway lifespan.  Start the canonical graph
+    # source reconcile here as well, using the existing Query-owned lease and
+    # Control Plane boundary.  A construction failure is observable and keeps
+    # the source absent/partial rather than inventing a successful projection.
+    if _graph_reconcile_enabled():
+        try:
+            from kg.runtime import build_graph_sync_runtime
+
+            _graph_sync_runtime = build_graph_sync_runtime()
+            _graph_sync_runtime.start()
+            print(
+                "[startup] canonical graph source reconcile enabled: "
+                f"backend={os.environ.get('GRAPH_BACKEND', '').strip().lower()}",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - source remains fail-closed
+            _graph_sync_runtime = None
+            print(
+                "[startup] canonical graph source reconcile unavailable: "
+                f"{type(exc).__name__}",
+                flush=True,
+            )
     await _get_dispatcher()
     try:
         yield
@@ -294,6 +333,9 @@ async def lifespan(_app: FastAPI):
             _recovery_task = None
         if _dispatcher is not None:
             await _dispatcher.stop()
+        if _graph_sync_runtime is not None:
+            await _graph_sync_runtime.stop()
+            _graph_sync_runtime = None
 
 
 app = FastAPI(title="AIOps Investigation Worker", version="5.0", lifespan=lifespan)

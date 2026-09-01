@@ -6,6 +6,7 @@ set -euo pipefail
 # response bodies are intentionally not printed.
 namespace="${GRAPH_NAMESPACE:-observability}"
 since="${GRAPH_VERIFY_SINCE:-15m}"
+query_api_deployment="${QUERY_API_DEPLOYMENT:-query-api-http}"
 
 usage() {
   cat <<'EOF'
@@ -38,7 +39,7 @@ die() {
   exit 1
 }
 
-query_api_env="$(kubectl -n "${namespace}" get deployment query-api -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}')" \
+query_api_env="$(kubectl -n "${namespace}" get deployment "${query_api_deployment}" -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}')" \
   || die "query-api deployment is unavailable"
 
 deployment_value() {
@@ -70,7 +71,7 @@ entity_uid="k8s-k8s_node:v1:${cluster_id}:${node_uid}"
 encoded_entity_uid="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "${entity_uid}")"
 vertex_url="${hugegraph_url%/}/graphspaces/${graphspace}/graphs/${graph}/graph/vertices/%22${encoded_entity_uid}%22"
 
-kubectl -n "${namespace}" exec deploy/query-api -- \
+kubectl -n "${namespace}" exec "deploy/${query_api_deployment}" -- \
   env "HG_USER=${hugegraph_user}" "HG_PASS=${hugegraph_pass}" \
   "HG_URL=${hugegraph_url%/}" "HG_SPACE=${graphspace}" "HG_GRAPH=${graph}" "HG_VERTEX_URL=${vertex_url}" \
   sh -c '

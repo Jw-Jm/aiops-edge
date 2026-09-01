@@ -15,13 +15,14 @@ import (
 )
 
 type HugeGraphClient struct {
-	baseURL       string
-	graphspaceURL string
-	graphName     string
-	username      string
-	password      string
-	readClient    *http.Client
-	writeClient   *http.Client
+	baseURL           string
+	graphspaceURL     string
+	graphName         string
+	username          string
+	password          string
+	readClient        *http.Client
+	writeClient       *http.Client
+	maintenanceClient *http.Client
 }
 
 // HugeGraph expands edge upserts into an `id in [...]` lookup and rejects
@@ -41,11 +42,16 @@ func NewHugeGraphClient(rawURL, graphspace, graph, username, password string, re
 	if writeTimeout <= 0 {
 		writeTimeout = 3 * time.Second
 	}
+	maintenanceTimeout := 30 * time.Second
+	if writeTimeout > maintenanceTimeout {
+		maintenanceTimeout = writeTimeout
+	}
 	graphspaceBase := strings.TrimRight(rawURL, "/") + "/graphspaces/" + url.PathEscape(graphspace)
 	base := graphspaceBase + "/graphs/" + url.PathEscape(graph)
 	return &HugeGraphClient{
 		baseURL: base, graphspaceURL: graphspaceBase, graphName: graph, username: username, password: password,
 		readClient: &http.Client{Timeout: readTimeout}, writeClient: &http.Client{Timeout: writeTimeout},
+		maintenanceClient: &http.Client{Timeout: maintenanceTimeout},
 	}, nil
 }
 
@@ -54,6 +60,10 @@ func (c *HugeGraphClient) request(ctx context.Context, method, relativePath stri
 }
 
 func (c *HugeGraphClient) requestURL(ctx context.Context, targetURL, method string, payload interface{}, write bool) ([]byte, error) {
+	return c.requestURLWithClient(ctx, targetURL, method, payload, write, false)
+}
+
+func (c *HugeGraphClient) requestURLWithClient(ctx context.Context, targetURL, method string, payload interface{}, write, maintenance bool) ([]byte, error) {
 	if c == nil {
 		return nil, errors.New("HugeGraph client is nil")
 	}
@@ -78,6 +88,8 @@ func (c *HugeGraphClient) requestURL(ctx context.Context, targetURL, method stri
 	client := c.readClient
 	if write {
 		client = c.writeClient
+	} else if maintenance {
+		client = c.maintenanceClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -189,19 +201,50 @@ func (c *HugeGraphClient) PutVerticesBatch(ctx context.Context, entities []Entit
 	return err
 }
 
-// ListVertices is a typed repository-supporting read used only by generation
-// reconciliation.  Callers cannot provide Gremlin or an arbitrary path.
-func (c *HugeGraphClient) ListVertices(ctx context.Context) ([]map[string]interface{}, error) {
-	data, err := c.request(ctx, http.MethodGet, "/graph/vertices?label=Entity&limit=100000", nil, false)
+// ListVerticesForScope is a typed, bounded read used only by generation
+// reconciliation. The server-side scope predicates use the existing
+// composite/source indexes and offset pagination; callers cannot provide
+// Gremlin or an arbitrary path. Maintenance reads use a longer timeout than
+// interactive graph reads because a production scope may be large.
+func (c *HugeGraphClient) ListVerticesForScope(ctx context.Context, source, tenantID, clusterID string) ([]map[string]interface{}, error) {
+	return c.listVerticesPage(ctx, map[string]string{"source": source, "tenant_id": tenantID, "cluster_id": clusterID})
+}
+
+func (c *HugeGraphClient) listVerticesPage(ctx context.Context, properties map[string]string) ([]map[string]interface{}, error) {
+	const pageSize = 5000
+	items := make([]map[string]interface{}, 0)
+	encodedProperties, err := json.Marshal(properties)
 	if err != nil {
 		return nil, err
 	}
+	for offset := 0; ; offset += pageSize {
+		params := url.Values{}
+		params.Set("label", "Entity")
+		params.Set("properties", string(encodedProperties))
+		params.Set("offset", strconv.Itoa(offset))
+		params.Set("limit", strconv.Itoa(pageSize))
+		data, err := c.requestURLWithClient(ctx, c.baseURL+"/graph/vertices?"+params.Encode(), http.MethodGet, nil, false, true)
+		if err != nil {
+			return nil, err
+		}
+		page, err := graphPageItems(data, "vertices")
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, page...)
+		if len(page) < pageSize {
+			return items, nil
+		}
+	}
+}
+
+func graphPageItems(data []byte, key string) ([]map[string]interface{}, error) {
 	var envelope map[string]interface{}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, err
 	}
-	for _, key := range []string{"vertices", "items"} {
-		if raw, ok := envelope[key].([]interface{}); ok {
+	for _, itemKey := range []string{key, "items"} {
+		if raw, ok := envelope[itemKey].([]interface{}); ok {
 			items := make([]map[string]interface{}, 0, len(raw))
 			for _, item := range raw {
 				if value, ok := item.(map[string]interface{}); ok {
@@ -214,27 +257,38 @@ func (c *HugeGraphClient) ListVertices(ctx context.Context) ([]map[string]interf
 	return []map[string]interface{}{}, nil
 }
 
-func (c *HugeGraphClient) ListEdges(ctx context.Context) ([]map[string]interface{}, error) {
-	data, err := c.request(ctx, http.MethodGet, "/graph/edges?limit=100000", nil, false)
+// ListEdgesForScope reads each frozen edge label independently. HugeGraph
+// edge property indexes are label-scoped, so this retains the scope predicate
+// without a graph-wide edge scan.
+func (c *HugeGraphClient) ListEdgesForScope(ctx context.Context, source, tenantID, clusterID string) ([]map[string]interface{}, error) {
+	const pageSize = 5000
+	items := make([]map[string]interface{}, 0)
+	encodedProperties, err := json.Marshal(map[string]string{"source": source, "tenant_id": tenantID, "cluster_id": clusterID})
 	if err != nil {
 		return nil, err
 	}
-	var envelope map[string]interface{}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, err
-	}
-	for _, key := range []string{"edges", "items"} {
-		if raw, ok := envelope[key].([]interface{}); ok {
-			items := make([]map[string]interface{}, 0, len(raw))
-			for _, item := range raw {
-				if value, ok := item.(map[string]interface{}); ok {
-					items = append(items, value)
-				}
+	for _, label := range RelationTypes() {
+		for offset := 0; ; offset += pageSize {
+			params := url.Values{}
+			params.Set("label", label)
+			params.Set("properties", string(encodedProperties))
+			params.Set("offset", strconv.Itoa(offset))
+			params.Set("limit", strconv.Itoa(pageSize))
+			data, err := c.requestURLWithClient(ctx, c.baseURL+"/graph/edges?"+params.Encode(), http.MethodGet, nil, false, true)
+			if err != nil {
+				return nil, err
 			}
-			return items, nil
+			page, err := graphPageItems(data, "edges")
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, page...)
+			if len(page) < pageSize {
+				break
+			}
 		}
 	}
-	return []map[string]interface{}{}, nil
+	return items, nil
 }
 
 func (c *HugeGraphClient) PutEdgesBatch(ctx context.Context, edges []Edge) error {

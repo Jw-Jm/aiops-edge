@@ -17,6 +17,9 @@
     {"name": "entityBySource", "fields": ["source"], "type": "SECONDARY"},
     {"name": "entityByLastSeen", "fields": ["last_seen_ms"], "type": "RANGE"}
   ],
+  "edge_indexes": [
+    {"name_pattern": "edgeByScope_<relation>", "base_type": "EDGE_LABEL", "fields": ["tenant_id", "cluster_id", "source"], "type": "SECONDARY"}
+  ],
   "edge_labels": [
     "HAS_COMPONENT", "HOSTS", "CONTAINS", "OWNS", "INSTANCE_OF", "RUNS_ON", "TARGETS", "BACKED_BY",
     "REPRESENTS", "USES_VOLUME", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO", "DEPENDS_ON", "BELONGS_TO",

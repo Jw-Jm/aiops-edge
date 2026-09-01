@@ -80,6 +80,16 @@ func SchemaResourcesV2() []SchemaResource {
 			"name": index.name, "base_type": "VERTEX_LABEL", "base_value": "Entity", "index_type": index.indexType, "fields": index.fields,
 		}})
 	}
+	// HugeGraph edge indexes are label-scoped. Reconciliation therefore needs
+	// the same tenant/cluster/source composite index on every frozen relation
+	// label to avoid a graph-wide edge scan.
+	for _, relation := range RelationTypes() {
+		name := "edgeByScope_" + relation
+		resources = append(resources, SchemaResource{Kind: "indexlabel", Name: name, Payload: map[string]interface{}{
+			"name": name, "base_type": "EDGE_LABEL", "base_value": relation, "index_type": "SECONDARY",
+			"fields": []string{"tenant_id", "cluster_id", "source"},
+		}})
+	}
 	return resources
 }
 
