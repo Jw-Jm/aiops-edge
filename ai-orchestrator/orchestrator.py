@@ -230,7 +230,10 @@ def _llm(cfg: dict, system_prompt: str, user_prompt: str, role: str = "分析专
         finally:
             _LLM_SEMAPHORE.release()
     except Exception as e:
-        return f"[LLM error: {e}]"
+        logging.getLogger("aiops.llm").error(
+            "llm call failed error_type=%s", type(e).__name__
+        )
+        return "[LLM error]"
 
 
 async def _llm_async(cfg: dict, system_prompt: str, user_prompt: str,
@@ -2304,11 +2307,12 @@ class BrainOrchestrator:
             # Issue2: done 事件携带完整报告文本（不截断），供报告中心持久化完整巡检内容
             yield {"type": "done", "text": full_resp}
         except Exception as e:
-            # DAG 执行异常，返回错误信息而不是卡死
-            import traceback
-            err_detail = str(e)[:300]
-            print(f"[stream_sync] DAG 执行异常: {err_detail}")
-            yield {"type": "error", "text": f"分析执行异常: {err_detail}"}
+            # DAG 执行异常必须保持稳定 wire contract；异常详情仅由类型
+            # 进入服务端日志，不能随 Run event/report 传播到客户端或持久化层。
+            logging.getLogger("aiops.investigation").error(
+                "stream failed error_type=%s", type(e).__name__
+            )
+            yield {"type": "error", "error_code": "BRAIN_ERROR", "text": "BRAIN_ERROR"}
 
     async def approve_and_resume(self, thread_id: str, approved: bool = True):
         """Resume interrupted graph with approval decision. (async — 调用方需 await)"""

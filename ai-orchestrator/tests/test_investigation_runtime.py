@@ -198,3 +198,11 @@ def test_normalize_outcome_replaces_untrusted_error_text_with_stable_message():
     assert result["error_code"] == "BRAIN_ERROR"
     assert result["error_message"] == "investigation failed"
     assert "secret" not in repr(result)
+
+
+def test_error_safety_contract_has_no_raw_llm_or_stream_error_text():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "orchestrator.py").read_text()
+    assert 'return f"[LLM error: {e}]"' not in source
+    assert "分析执行异常: {err_detail}" not in source

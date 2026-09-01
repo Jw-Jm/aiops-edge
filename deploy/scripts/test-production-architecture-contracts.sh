@@ -121,6 +121,8 @@ required 'def _public_path_allowed' "$repo_root/ai-orchestrator/apps/investigati
 required 'def _public_auth_path_allowed' "$repo_root/ai-orchestrator/main.py" 'ARCH-336 gateway probe path boundary missing';
 forbidden '"error": str(exc)' "$repo_root/ai-orchestrator/apps/investigation.py" 'ARCH-337 worker persists raw RCA exception';
 forbidden 'if any(path.startswith(p) for p in _AUTH_ALLOWLIST)' "$repo_root/ai-orchestrator/main.py" 'ARCH-338 gateway auth allowlist uses prefix matching';
+forbidden 'return f"[LLM error: {e}]"' "$repo_root/ai-orchestrator/orchestrator.py" 'ARCH-339 LLM exception text crosses the runtime boundary';
+forbidden '分析执行异常: {err_detail}' "$repo_root/ai-orchestrator/orchestrator.py" 'ARCH-340 stream exception text crosses the runtime boundary';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi
