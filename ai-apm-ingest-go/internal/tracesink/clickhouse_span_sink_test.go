@@ -1,6 +1,7 @@
 package tracesink
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -48,6 +49,27 @@ func TestClickHouseSpanSinkAddWritesHTTP(t *testing.T) {
 	}
 	if got == "" || len(got) == 0 {
 		t.Fatalf("expected insert query in URL, got empty")
+	}
+}
+
+func TestSpanRowIncludesRequiredSummaryTimeBucket(t *testing.T) {
+	row := spanRow{}.from(&model.Span{
+		TenantID: "t1", ClusterID: "c1", TraceID: "trace-1", SpanID: "span-1",
+		StartTime: time.Date(2026, 1, 1, 12, 34, 56, 123000000, time.FixedZone("CST", 8*60*60)),
+	})
+	encoded, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["time_bucket"] != "2026-01-01T04:30:00" {
+		t.Fatalf("time_bucket=%v, want UTC five-minute bucket", got["time_bucket"])
+	}
+	if got["date"] != "2026-01-01" {
+		t.Fatalf("date=%v, want UTC date", got["date"])
 	}
 }
 

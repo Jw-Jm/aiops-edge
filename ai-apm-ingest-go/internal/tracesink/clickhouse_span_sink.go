@@ -242,8 +242,13 @@ type spanRow struct {
 	K8sNamespace      string            `json:"k8s_namespace"`
 	IsSlow            uint8             `json:"is_slow"`
 	IsError           uint8             `json:"is_error"`
-	SpanDedupKey      string            `json:"span_dedup_key"`
-	Date              string            `json:"date"`
+	// trace_spans.time_bucket is a required DateTime column used by the
+	// materialized trace-summary index.  JSONEachRow does not apply a
+	// server-side expression for omitted required columns, so the ingest
+	// adapter must materialize the same five-minute bucket as the summary MV.
+	TimeBucket   string `json:"time_bucket"`
+	SpanDedupKey string `json:"span_dedup_key"`
+	Date         string `json:"date"`
 }
 
 func (spanRow) from(sp *model.Span) spanRow {
@@ -259,6 +264,7 @@ func (spanRow) from(sp *model.Span) spanRow {
 		DBSystem: sp.DBSystem, DBStatement: sp.DBStatement, RPCSystem: sp.RPCSystem,
 		ServiceInstanceID: sp.ServiceInstanceID, K8sNamespace: sp.K8sNamespace,
 		IsSlow: sp.IsSlow, IsError: sp.IsError,
+		TimeBucket:   start.UTC().Truncate(5 * time.Minute).Format("2006-01-02T15:04:05"),
 		SpanDedupKey: spanDedupKey(sp),
 		Date:         start.UTC().Format("2006-01-02"),
 	}
