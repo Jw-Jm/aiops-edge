@@ -179,7 +179,11 @@ else:
         start = dt.datetime.fromisoformat(str(rca["time_range_start"]).replace("Z", "+00:00"))
         end = dt.datetime.fromisoformat(str(rca["time_range_end"]).replace("Z", "+00:00"))
         symptom = dt.datetime.fromisoformat(str(rca["symptom_time"]).replace("Z", "+00:00"))
-        if not start < symptom < end:
+        # Canonical Run dispatch deterministically defaults symptom_time to
+        # the persisted window_end when no separate symptom timestamp exists.
+        # The frozen window is therefore closed at both ends; rejecting the
+        # endpoint here would make every valid default-symptom Run unverifiable.
+        if not start <= symptom <= end:
             rca_failures.append("time window does not contain symptom_time")
     except (KeyError, TypeError, ValueError):
         rca_failures.append("frozen time window is incomplete")

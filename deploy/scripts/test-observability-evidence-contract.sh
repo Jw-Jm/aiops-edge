@@ -6,7 +6,7 @@ script="${repo_root}/deploy/scripts/validate-observability-evidence.sh"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/aiops-evidence-contract.XXXXXX")"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
-python3 - "${tmp_dir}/complete.json" "${tmp_dir}/invalid.json" <<'PY'
+python3 - "${tmp_dir}/complete.json" "${tmp_dir}/invalid.json" "${tmp_dir}/endpoint.json" <<'PY'
 import json, sys
 marker = "aiops-validation-fixture"
 complete = {
@@ -33,8 +33,12 @@ complete = {
 invalid = dict(complete)
 invalid["rca"] = dict(complete["rca"])
 invalid["rca"]["evidence"] = [{"category": "metrics"}]
+endpoint = dict(complete)
+endpoint["rca"] = dict(complete["rca"])
+endpoint["rca"]["symptom_time"] = endpoint["rca"]["time_range_end"]
 json.dump(complete, open(sys.argv[1], "w", encoding="utf-8"))
 json.dump(invalid, open(sys.argv[2], "w", encoding="utf-8"))
+json.dump(endpoint, open(sys.argv[3], "w", encoding="utf-8"))
 PY
 
 if ! bash "${script}" --marker aiops-validation-fixture --fixture "${tmp_dir}/complete.json" --output "${tmp_dir}/complete-report.json" >/dev/null; then
@@ -46,6 +50,16 @@ import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 assert data["gate_status"] == "PASS"
 assert data["checks"]["rca"]["evidence_categories"] == 2
+PY
+
+if ! bash "${script}" --marker aiops-validation-fixture --fixture "${tmp_dir}/endpoint.json" --output "${tmp_dir}/endpoint-report.json" >/dev/null; then
+  echo "observability evidence contract failed: default endpoint symptom_time was rejected" >&2
+  exit 1
+fi
+python3 - "${tmp_dir}/endpoint-report.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["gate_status"] == "PASS"
 PY
 
 if bash "${script}" --marker aiops-validation-fixture --fixture "${tmp_dir}/invalid.json" --output "${tmp_dir}/invalid-report.json" >/dev/null 2>&1; then
