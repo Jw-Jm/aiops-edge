@@ -260,3 +260,25 @@ def test_chat_stream_queue_is_bounded_and_honors_disconnect():
     stop_event.set()
     assert not main._put_chat_stream_event(event_queue, stop_event, {"type": "done"})
     assert event_queue.qsize() == 1
+
+
+def test_chat_stream_error_does_not_expose_internal_exception(monkeypatch, client):
+    """Provider/SQL details must not cross the canonical SSE boundary."""
+    private_key = _keypair()
+    _configure(monkeypatch, private_key)
+
+    async def failing_stream(*_args, **_kwargs):
+        raise RuntimeError("provider api_key=super-secret host=10.0.0.7")
+        yield  # keep this an async generator
+
+    client._stub_brain.stream_sync = failing_stream
+    resp = _post_chat(
+        client,
+        private_key,
+        _claims(),
+        body={"turn_id": "99999999-9999-4999-8999-999999999999"},
+    )
+    assert resp.status_code == 200
+    assert "CHAT_BACKEND_ERROR" in resp.text
+    assert "super-secret" not in resp.text
+    assert "10.0.0.7" not in resp.text

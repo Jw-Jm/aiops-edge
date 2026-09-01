@@ -11,6 +11,7 @@ import uuid
 import asyncio
 import queue
 import secrets
+import logging
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -74,6 +75,26 @@ def _put_chat_stream_event(event_queue, stop_event, event) -> bool:
         except queue.Full:
             continue
     return False
+
+
+def _chat_stream_error_event(exc: BaseException, request_id: str = "") -> dict:
+    """Return a stable client error without exposing provider/internal details.
+
+    Provider, SQL and transport exceptions may contain credentials, network
+    addresses or local paths.  Keep those details in server-side telemetry as
+    an exception *type* only and make the SSE contract deterministic for both
+    the canonical and retired compatibility stream handlers.
+    """
+    logging.getLogger("aiops.chat").error(
+        "chat stream failed request_id=%s error_type=%s",
+        request_id or "-",
+        type(exc).__name__,
+    )
+    return {
+        "type": "error",
+        "text": "CHAT_BACKEND_ERROR",
+        "code": "CHAT_BACKEND_ERROR",
+    }
 
 # ═══════════════════════════════════════════════════════════════
 #  APScheduler — 定时异常扫描（每 5 分钟，只检测+持久化，不触发 LLM）
@@ -1209,7 +1230,11 @@ async def internal_chat(request: Request):
             _asyncio.run(_astream())
             _put_chat_stream_event(event_queue, stop_event, None)
         except Exception as e:  # noqa: BLE001
-            _put_chat_stream_event(event_queue, stop_event, {"type": "error", "text": str(e)[:200]})
+            _put_chat_stream_event(
+                event_queue,
+                stop_event,
+                _chat_stream_error_event(e, request_id=str(claims.get("request_id", ""))),
+            )
             _put_chat_stream_event(event_queue, stop_event, None)
         finally:
             stop_event.set()
@@ -1277,7 +1302,11 @@ async def internal_chat(request: Request):
                 event["thread_id"] = thread_id
                 yield format_sse(event)
             elif event.get("type") == "error":
-                yield format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
+                yield format_sse({
+                    "type": "error",
+                    "error": event.get("text", "CHAT_BACKEND_ERROR"),
+                    "code": event.get("code", "CHAT_BACKEND_ERROR"),
+                })
                 break
             else:
                 yield format_sse(event)
@@ -1355,7 +1384,7 @@ async def ai_chat(req: ChatRequest, request: Request):
                 asyncio.run(_astream())
                 event_queue.put(None)  # sentinel: done
             except Exception as e:
-                event_queue.put({"type": "error", "text": str(e)[:200]})
+                event_queue.put(_chat_stream_error_event(e, request_id=str(getattr(request_context, "request_id", ""))))
                 event_queue.put(None)
             finally:
                 stop_event.set()
@@ -1426,7 +1455,11 @@ async def ai_chat(req: ChatRequest, request: Request):
                     event["thread_id"] = thread_id
                     yield _format_sse(event)
                 elif event.get("type") == "error":
-                    yield _format_sse({"type": "error", "error": event.get("text", ""), "code": "dag_error"})
+                    yield _format_sse({
+                        "type": "error",
+                        "error": event.get("text", "CHAT_BACKEND_ERROR"),
+                        "code": event.get("code", "CHAT_BACKEND_ERROR"),
+                    })
                     # error 后也立即结束, 避免流悬挂
                     break
                 else:
