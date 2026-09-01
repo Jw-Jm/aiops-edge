@@ -450,7 +450,7 @@ func (h *Handler) InternalQueryTopology(w http.ResponseWriter, r *http.Request) 
 		if nerr != nil {
 			return nil, nerr
 		}
-		edges, eerr := h.topoRepo.GlobalEdges(r.Context(), scope, minutes)
+		edges, eerr := h.topoRepo.GlobalEdgesWithTraceFallback(r.Context(), scope, minutes)
 		if eerr != nil {
 			return nil, eerr
 		}

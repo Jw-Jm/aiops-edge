@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -287,6 +288,46 @@ func (r *TopologyRepository) GlobalEdges(ctx context.Context, scope TopologyScop
 		return nil, err
 	}
 	return parseTopologyEdges(rows), nil
+}
+
+// GlobalEdgesWithTraceFallback returns the materialized dependency projection
+// when it is available and otherwise derives a bounded, read-only edge view
+// from the Trace SoT. The fallback stays in the topology repository so
+// callers do not grow a second SQL owner or bypass tenant/cluster scope.
+// Backend errors are propagated when both the projection and trace derivations
+// are unavailable.
+func (r *TopologyRepository) GlobalEdgesWithTraceFallback(ctx context.Context, scope TopologyScope, minutes int) ([]TopologyEdge, error) {
+	edges, err := r.GlobalEdges(ctx, scope, minutes)
+	if err != nil {
+		var queryErr *QueryError
+		if !errors.As(err, &queryErr) || queryErr.Code != NoDataCode {
+			return nil, err
+		}
+		edges = []TopologyEdge{}
+	}
+	if len(edges) > 0 {
+		return edges, nil
+	}
+
+	var fallbackErr error
+	for _, loader := range []func(context.Context, TopologyScope, int) ([]TopologyEdge, error){r.ParentSpanEdges, r.SequenceEdges} {
+		derived, derr := loader(ctx, scope, minutes)
+		if derr != nil {
+			var queryErr *QueryError
+			if errors.As(derr, &queryErr) && queryErr.Code == NoDataCode {
+				continue
+			}
+			fallbackErr = derr
+			continue
+		}
+		if len(derived) > 0 {
+			return derived, nil
+		}
+	}
+	if fallbackErr != nil {
+		return nil, fallbackErr
+	}
+	return []TopologyEdge{}, nil
 }
 
 // ParentSpanEdges 用 parent_span_id self-join 重建调用边（GlobalTopology 兜底 1）。

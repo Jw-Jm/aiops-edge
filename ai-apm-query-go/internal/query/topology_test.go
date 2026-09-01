@@ -176,6 +176,33 @@ func TestTopologyRepoGlobalEdges(t *testing.T) {
 	}
 }
 
+func TestTopologyRepoGlobalEdgesWithTraceFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("query")
+		switch {
+		case strings.Contains(q, "FROM observability.service_topology"):
+			_, _ = w.Write([]byte(""))
+		case strings.Contains(q, "JOIN observability.trace_spans"):
+			// 该批 trace 没有可解析的 parent span，继续使用时序推导。
+			_, _ = w.Write([]byte(""))
+		case strings.Contains(q, "lagInFrame"):
+			_, _ = w.Write([]byte(`{"source_service":"ai-orchestrator","target_service":"victoria-metrics","calls":20,"errs":0,"avg_ns":1000000}` + "\n"))
+		default:
+			_, _ = w.Write([]byte(""))
+		}
+	}))
+	defer srv.Close()
+	r := NewTopologyRepository(NewClickHouseRepo(srv.URL, nil))
+	edges, err := r.GlobalEdgesWithTraceFallback(context.Background(), TopologyScope{TenantID: "t1", ClusterID: "c1"}, 10)
+	if err != nil {
+		t.Fatalf("GlobalEdgesWithTraceFallback: %v", err)
+	}
+	if len(edges) != 1 || edges[0].Source != "ai-orchestrator" || edges[0].Target != "victoria-metrics" || edges[0].Calls != 20 {
+		t.Fatalf("fallback edges = %+v", edges)
+	}
+}
+
 func TestTopologyRepoGlobalNodes(t *testing.T) {
 	rows := "" +
 		`{"service":"frontend","calls":100,"errs":2,"avg_ns":1000000}` + "\n"

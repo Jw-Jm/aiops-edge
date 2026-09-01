@@ -175,7 +175,7 @@ func (h *Handler) collectServicePanorama(ctx context.Context, r *http.Request, m
 	if err != nil && !panoramaNoData(err) {
 		return servicePanoramaData{}, err
 	}
-	edges, err := h.topoRepo.GlobalEdges(ctx, scope, minutes)
+	edges, err := h.topoRepo.GlobalEdgesWithTraceFallback(ctx, scope, minutes)
 	if err != nil && !panoramaNoData(err) {
 		return servicePanoramaData{}, err
 	}
