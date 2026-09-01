@@ -123,6 +123,11 @@ forbidden '"error": str(exc)' "$repo_root/ai-orchestrator/apps/investigation.py"
 forbidden 'if any(path.startswith(p) for p in _AUTH_ALLOWLIST)' "$repo_root/ai-orchestrator/main.py" 'ARCH-338 gateway auth allowlist uses prefix matching';
 forbidden 'return f"[LLM error: {e}]"' "$repo_root/ai-orchestrator/orchestrator.py" 'ARCH-339 LLM exception text crosses the runtime boundary';
 forbidden '分析执行异常: {err_detail}' "$repo_root/ai-orchestrator/orchestrator.py" 'ARCH-340 stream exception text crosses the runtime boundary';
+required '_PRODUCTION_COMPOSITION' "$repo_root/ai-orchestrator/main.py" 'ARCH-341 production composition guard missing';
+required 'scheduler = AsyncIOScheduler() if not _PRODUCTION_COMPOSITION else None' "$repo_root/ai-orchestrator/main.py" 'ARCH-342 production scheduler is constructed at import';
+required 'shell_policy = ShellPolicy() if not _PRODUCTION_COMPOSITION else None' "$repo_root/ai-orchestrator/main.py" 'ARCH-343 production shell policy owner is constructed at import';
+required 'def _rate_limit_bypass_path_allowed' "$repo_root/ai-orchestrator/main.py" 'ARCH-344 rate-limit probe boundary helper missing';
+forbidden 'request.url.path.startswith(p)' "$repo_root/ai-orchestrator/main.py" 'ARCH-345 rate-limit bypass uses prefix matching';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi

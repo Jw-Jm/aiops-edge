@@ -15,26 +15,52 @@ import logging
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from contextlib import asynccontextmanager
+
+
+def _legacy_public_api_retired() -> bool:
+    """Production must not construct the legacy Gateway composition root."""
+
+    return os.getenv("AIOPS_ENV", "").strip().lower() == "production" or os.getenv(
+        "AIOPS_DEPLOYMENT_MODE", ""
+    ).strip().lower() == "production"
+
+
+_PRODUCTION_COMPOSITION = _legacy_public_api_retired()
+
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-from shell_policy import ShellPolicy
+if not _PRODUCTION_COMPOSITION:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from shell_policy import ShellPolicy
+    from skill_registry import SkillRegistry, ExpertRegistry
+    from skills import init_skills, init_experts
+    from flow_api import router as flow_router
+    from kg_api import router as kg_router
+    import agent_tool  # B4: 后台 persona worker 终态通知队列 (drain_notifications)
+else:
+    # Legacy names remain explicit sentinels for route functions that are
+    # retained only for development/migration compatibility.  Production
+    # filtering removes those routes before serving and cannot accidentally
+    # instantiate their scheduler, shell or data-owner dependencies.
+    AsyncIOScheduler = None
+    ShellPolicy = None
+    SkillRegistry = None
+    ExpertRegistry = None
+    init_skills = None
+    init_experts = None
+    flow_router = None
+    kg_router = None
+    agent_tool = None
 from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCARequest
 from contracts import RequestContext
 from invocation_scope import LegacyScopeAdapter
 from internal_ingress import build_invocation_scope, verify_run_control_ingress, verify_run_invocation_ingress
 from store import _task_store
 import metrics  # noqa: F401 — 注册 Prometheus 指标
-from skill_registry import SkillRegistry, ExpertRegistry
-from skills import init_skills, init_experts
 from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check, _llm_async
-from flow_api import router as flow_router
-from kg_api import router as kg_router
-import agent_tool  # B4: 后台 persona worker 终态通知队列 (drain_notifications)
 
 # 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
 # 注意：mock 模式下 NL2SQL/RCA 深度/AI 诊断返回的是模拟内容，生产环境必须关闭。
@@ -49,10 +75,6 @@ if _llm_mock_enabled and _explicit_production:
     raise SystemExit("[FATAL] LLM_MOCK=true is forbidden when AIOPS_ENV/AIOPS_DEPLOYMENT_MODE is production")
 if _llm_mock_enabled:
     print("[WARN] LLM_MOCK=true：AI 诊断/RCA/NL2SQL 将返回模拟内容，仅适用于本地演示；生产必须设 LLM_MOCK=false", flush=True)
-
-def _legacy_public_api_retired() -> bool:
-    """Production exposes only signed internal chat/run ingress."""
-    return os.getenv("AIOPS_ENV", "").strip().lower() == "production" or os.getenv("AIOPS_DEPLOYMENT_MODE", "").strip().lower() == "production"
 
 _CANONICAL_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
 
@@ -99,7 +121,7 @@ def _chat_stream_error_event(exc: BaseException, request_id: str = "") -> dict:
 # ═══════════════════════════════════════════════════════════════
 #  APScheduler — 定时异常扫描（每 5 分钟，只检测+持久化，不触发 LLM）
 # ═══════════════════════════════════════════════════════════════
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler() if not _PRODUCTION_COMPOSITION else None
 
 # 安全修复(G7): 后台 BackgroundScheduler 句柄（flow cron / kg 重建），
 # 优雅关闭时一并停止，避免进程退出后线程泄漏。
@@ -400,10 +422,11 @@ async def lifespan(app: FastAPI):
     if _graph_sync_runtime is not None:
         await _graph_sync_runtime.stop()
         _graph_sync_runtime = None
-    try:
-        scheduler.shutdown(wait=False)
-    except Exception:  # noqa: BLE001
-        pass
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:  # noqa: BLE001
+            pass
     # 安全修复(G7): 一并停止 flow cron / kg 重建 BackgroundScheduler，避免线程泄漏
     for _sched in (_flow_sched, _kg_sched):
         if _sched is not None:
@@ -427,9 +450,11 @@ app = FastAPI(title="AIOps Orchestrator", version="5.0", lifespan=lifespan)
 # 默认 http://localhost:30253（本地前端 dev server）；生产部署前后端同源时配置为实际来源。
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:30253").split(",") if o.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"])
-shell_policy = ShellPolicy()
-app.include_router(flow_router)
-app.include_router(kg_router)
+shell_policy = ShellPolicy() if not _PRODUCTION_COMPOSITION else None
+if flow_router is not None:
+    app.include_router(flow_router)
+if kg_router is not None:
+    app.include_router(kg_router)
 # P12：Run API 端点（/api/v1/ai/runs，前端调查中心数据源）
 from ai_runs_api import router as _ai_runs_router
 app.include_router(_ai_runs_router)
@@ -862,6 +887,15 @@ _RATE_LIMIT_PER_MIN = int(os.environ.get("RATE_LIMIT_PER_MIN", "100"))
 _LLM_RATE_LIMIT_PER_MIN = int(os.environ.get("LLM_RATE_LIMIT_PER_MIN", "20"))
 _RATE_WINDOW = 60  # 秒
 _RATE_PRUNE_AGE = 600  # 秒：超过 10 分钟未活动的 IP 条目被清理
+_RATE_LIMIT_BYPASS_PATHS = frozenset(
+    {"/health", "/api/v1/health", "/metrics", "/docs", "/openapi.json"}
+)
+
+
+def _rate_limit_bypass_path_allowed(path: str) -> bool:
+    """Only exact documentation/probe routes bypass the request limiter."""
+
+    return path in _RATE_LIMIT_BYPASS_PATHS
 
 
 def _prune_rate_store(store: dict, now: float):
@@ -887,8 +921,7 @@ def _is_llm_heavy_path(path: str) -> bool:
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    skip_paths = ("/health", "/api/v1/health", "/metrics", "/docs", "/openapi.json")
-    if any(request.url.path.startswith(p) for p in skip_paths):
+    if _rate_limit_bypass_path_allowed(request.url.path):
         return await call_next(request)
 
     client_ip = request.client.host if request.client else "unknown"
