@@ -54,3 +54,12 @@ func TestIdentityMigrationTargetState(t *testing.T) {
 		}
 	}
 }
+
+func TestTopologyEngineTargetState(t *testing.T) {
+	if !topologyEngineTargetSatisfied("SummingMergeTree\n") {
+		t.Fatal("SummingMergeTree must be treated as the satisfied topology target")
+	}
+	if topologyEngineTargetSatisfied("ReplacingMergeTree") {
+		t.Fatal("ReplacingMergeTree must require migration")
+	}
+}

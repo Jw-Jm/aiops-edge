@@ -143,6 +143,8 @@ require_contains '--password=\"$CH_PROBE_PASSWORD\"' "${tmp_dir}/validation.yaml
 fail_if_contains '--password \"$CH_PROBE_PASSWORD\"' "${tmp_dir}/validation.yaml" 'ClickHouse probes split a password argument that may begin with a dash'
 require_contains '0008_k8s_events_identity_cutover.sql' "${tmp_dir}/validation.yaml" 'ClickHouse identity cutover migration is not mounted'
 require_contains '0009_k8s_events_require_identity.sql' "${tmp_dir}/validation.yaml" 'ClickHouse event identity enforcement migration is not mounted'
+require_contains 'ENGINE = SummingMergeTree' "${tmp_dir}/validation.yaml" 'service_topology must aggregate repeated ingest flushes without replacement loss'
+require_contains '0010_service_topology_summing.sql' "${tmp_dir}/validation.yaml" 'service_topology summing migration is not mounted'
 require_contains 'event_id` String' "${tmp_dir}/validation.yaml" 'ClickHouse event_id must be required without a default'
 require_contains 'ENGINE = AggregatingMergeTree' "${tmp_dir}/validation.yaml" 'Trace Summary table is not a pre-aggregated ClickHouse table'
 require_contains 'CREATE MATERIALIZED VIEW IF NOT EXISTS observability.trace_spans_to_summary_state' "${tmp_dir}/validation.yaml" 'Trace Summary incremental builder is missing'

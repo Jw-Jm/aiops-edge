@@ -110,6 +110,7 @@ func main() {
 	// Trace Persistent SoT。构造 ClickHouseSpanSink（CLICKHOUSE_HTTP_URL 配置，HTTP 接口，
 	// 零新增依赖）。若配置了 CH 但写入失败 → readiness fail-closed（不允许"接收成功但静默丢 Span"）。
 	var spanSink pipeline.SpanSink
+	var topologySink *tracesink.ClickHouseTopologyEdgeSink
 	if clickHouseHTTPURL != "" {
 		// C-01（报告 §16 / 27.18）：trace_spans 为平台 Trace SoT；使用带鉴权的 sink（生产 CH 需要）。
 		chs := tracesink.NewClickHouseSpanSinkAuth(clickHouseHTTPURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), 10*time.Second)
@@ -118,6 +119,11 @@ func main() {
 		}
 		spanSink = chs
 		log.Printf("ClickHouseSpanSink enabled (trace SoT): %s", clickHouseHTTPURL)
+		topologySink = tracesink.NewClickHouseTopologyEdgeSinkAuth(clickHouseHTTPURL, os.Getenv("CLICKHOUSE_USER"), os.Getenv("CLICKHOUSE_PASSWORD"), 10*time.Second)
+		if err := topologySink.Probe(); err != nil {
+			log.Fatalf("ClickHouseTopologyEdgeSink probe failed: %v", err)
+		}
+		log.Printf("ClickHouseTopologyEdgeSink enabled (service dependency projection)")
 	} else {
 		// 27.18：candidate/production profile 不允许 SpanSink=nil（fail-closed 拒绝启动）。
 		// 默认本地（TRACE_SOT_MODE=off）仅 WARN；设 TRACE_SOT_MODE=required 时 SpanSink=nil → 拒绝启动。
@@ -129,9 +135,16 @@ func main() {
 
 	// C-01：Pipeline 以平台 ClickHouseSpanSink 作为 span sink（Trace Persistent SoT）。
 	// DeepFlow 只通过官方 OTLP/gRPC exporter 输入，不读取或修改 DeepFlow 自有 ClickHouse。
-	pl := pipeline.New(spanSink, nil)
-	pl.SetClusterID(clusterID)               // 多集群纳管：数据打 cluster_id 标
+	pl := pipeline.New(spanSink, topologySink)
+	pl.SetClusterID(clusterID)                                    // 多集群纳管：数据打 cluster_id 标
 	pl.SetOnServiceMetricWithCluster(met.AddServiceREDForCluster) // 服务 RED 指标保留不可变 cluster 维度
+	pl.SetEdgeSinkResultObserver(func(accepted int, failed bool) {
+		if failed {
+			met.AddMetricsDropped(1)
+			return
+		}
+		met.AddEdgesWritten(int64(accepted))
+	})
 	// P6.5 new 链双写：聚合的 RED 服务指标在 flush 时写 VictoriaMetrics（ModeNew 真实发送）。
 	// 失败仅记日志（可观测），不回退 ClickHouse，也不伪装成功。
 	if telRT.Enabled() {
@@ -302,6 +315,17 @@ func main() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"status": "unhealthy", "reason": "trace_sot_sink_unavailable", "detail": detail,
+			})
+			return
+		}
+		if topologySink != nil && !topologySink.Healthy() {
+			detail := "topology_projection_sink_not_ready"
+			if last := topologySink.LastError(); last != nil {
+				detail = last.Error()
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status": "unhealthy", "reason": "topology_projection_sink_unavailable", "detail": detail,
 			})
 			return
 		}

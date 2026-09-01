@@ -31,6 +31,13 @@ type EdgeSink interface {
 	AddEdge(*model.TopologyEdge)
 }
 
+// DurableEdgeSink optionally exposes an atomic/error-returning batch path. A
+// batch sink prevents a single flush from issuing one ClickHouse request per
+// edge and lets the caller surface derived-projection failures.
+type DurableEdgeSink interface {
+	AddEdges([]*model.TopologyEdge) error
+}
+
 // LogSink 落盘一条日志记录。
 type LogSink interface {
 	Add(*model.LogRecord)

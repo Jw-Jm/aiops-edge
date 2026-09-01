@@ -67,6 +67,9 @@ type Pipeline struct {
 	// redSink 可选回调：flush 时把聚合的 RED 服务指标推给外部（P6.5 用于双写 VictoriaMetrics）。
 	// 为空时跳过，不改变既有 Prometheus 行为。
 	redSink func(m *model.ServiceMetric)
+	// onEdgeSinkResult reports the number of edge rows durably accepted by the
+	// derived projection sink, or a failed batch when accepted is zero.
+	onEdgeSinkResult func(accepted int, failed bool)
 }
 
 // SetOnServiceMetric 注册服务 RED 回调（可选，用于暴露服务指标到 /metrics）。
@@ -85,6 +88,13 @@ func (p *Pipeline) SetOnServiceMetricWithCluster(fn func(cluster, service string
 // 回调在 flush 时按 (tenant, service, caller, minute) 聚合后调用一次。
 func (p *Pipeline) SetREDSink(fn func(m *model.ServiceMetric)) {
 	p.redSink = fn
+}
+
+// SetEdgeSinkResultObserver registers an optional metrics callback for the
+// derived topology projection. It is deliberately separate from EdgeSink so
+// the pipeline remains independent of any metrics implementation.
+func (p *Pipeline) SetEdgeSinkResultObserver(fn func(accepted int, failed bool)) {
+	p.onEdgeSinkResult = fn
 }
 
 // New creates a new Pipeline with the given optional span/edge sinks (may be nil).
@@ -159,6 +169,7 @@ func (p *Pipeline) flushMetrics() {
 		}
 	}
 
+	edgeRows := make([]*model.TopologyEdge, 0, len(edges))
 	for k, v := range edges {
 		tb, _ := time.Parse("2006-01-02T15:04", k.timeBucket)
 		date := tb.Format("2006-01-02")
@@ -166,10 +177,8 @@ func (p *Pipeline) flushMetrics() {
 		if v.durationCount > 0 {
 			avgNs = v.durationSumNs / v.durationCount
 		}
-		// B1：LEGACY_WRITER_ENABLED=false 时 metricsWriter 为 nil，跳过 CH 边写入
-		// （new 链 RED 指标仍经 redSink 写入 VictoriaMetrics）。
 		if p.metricsWriter != nil {
-			p.metricsWriter.AddEdge(&model.TopologyEdge{
+			edgeRows = append(edgeRows, &model.TopologyEdge{
 				TenantID:      k.tenantID,
 				ClusterID:     p.clusterID,
 				SourceService: k.sourceService,
@@ -180,6 +189,25 @@ func (p *Pipeline) flushMetrics() {
 				AvgDurationNs: avgNs,
 				Date:          date,
 			})
+		}
+	}
+	if p.metricsWriter != nil && len(edgeRows) > 0 {
+		if durable, ok := p.metricsWriter.(DurableEdgeSink); ok {
+			if err := durable.AddEdges(edgeRows); err != nil {
+				log.Printf("topology edge sink batch failed: %v", err)
+				if p.onEdgeSinkResult != nil {
+					p.onEdgeSinkResult(0, true)
+				}
+			} else if p.onEdgeSinkResult != nil {
+				p.onEdgeSinkResult(len(edgeRows), false)
+			}
+		} else {
+			for _, edge := range edgeRows {
+				p.metricsWriter.AddEdge(edge)
+			}
+			if p.onEdgeSinkResult != nil {
+				p.onEdgeSinkResult(len(edgeRows), false)
+			}
 		}
 	}
 }

@@ -35,6 +35,7 @@ import (
 const metaTable = "observability.aiops_schema_migrations"
 
 const identityDefaultMigrationID = "0009_k8s_events_require_identity"
+const topologySummingMigrationID = "0010_service_topology_summing"
 
 var (
 	httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -109,6 +110,14 @@ func main() {
 // system.columns first makes the migration idempotent across both states and
 // still fails closed if the expected column is missing or ambiguous.
 func migrationTargetAlreadySatisfied(endpoint, user, pass, id string) (bool, error) {
+	if id == topologySummingMigrationID {
+		q := "SELECT engine FROM system.tables WHERE database = 'observability' AND name = 'service_topology' FORMAT TabSeparated"
+		resp, err := clickhouseQuery(endpoint, user, pass, q)
+		if err != nil {
+			return false, err
+		}
+		return topologyEngineTargetSatisfied(resp), nil
+	}
 	if id != identityDefaultMigrationID {
 		return false, nil
 	}
@@ -131,6 +140,10 @@ func migrationTargetAlreadySatisfied(endpoint, user, pass, id string) (bool, err
 		return false, fmt.Errorf("observability.k8s_events.event_id returned %d metadata rows", len(rows))
 	}
 	return identityDefaultTargetSatisfied(rows[0]), nil
+}
+
+func topologyEngineTargetSatisfied(engine string) bool {
+	return strings.TrimSpace(engine) == "SummingMergeTree"
 }
 
 func identityDefaultTargetSatisfied(defaultKind string) bool {
