@@ -928,10 +928,16 @@ async def rate_limit_middleware(request: Request, call_next):
 _AUTH_ALLOWLIST = ("/health", "/api/v1/health", "/metrics", "/readyz")
 
 
+def _public_auth_path_allowed(path: str) -> bool:
+    """Keep unauthenticated probes at exact routes; never prefix-match."""
+
+    return path in _AUTH_ALLOWLIST
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if any(path.startswith(p) for p in _AUTH_ALLOWLIST):
+    if _public_auth_path_allowed(path):
         return await call_next(request)
     # CORS 预检请求（OPTIONS）不带自定义头，放行交由 CORSMiddleware 处理
     if request.method == "OPTIONS":

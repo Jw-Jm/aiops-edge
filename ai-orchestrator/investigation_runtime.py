@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from control_plane_client import ControlPlaneError, ControlPlaneClient
+from error_safety import public_error_message, sanitize_runtime_payload, stable_error_code
 from investigation_dispatcher import AcceptedInvocation
 from invocation_scope import bind_execution_lease_token
 from lease_aware_execution import LeaseAwareExecutor
@@ -29,10 +30,16 @@ def _normalize_investigation_outcome(raw: Any) -> tuple[str, list, dict]:
     if isinstance(raw, dict):
         events = raw.get("events") if isinstance(raw.get("events"), list) else []
         status = str(raw.get("status") or "success").lower()
-        result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
-        for key in ("error_code", "error_message", "summary"):
-            if raw.get(key) is not None:
-                result[key] = raw[key]
+        result = dict(raw.get("result")) if isinstance(raw.get("result"), dict) else {}
+        if raw.get("summary") is not None:
+            result["summary"] = raw["summary"]
+        # Error text is never part of the durable result contract.  Preserve a
+        # stable code and a generic message so the UI/audit trail remains
+        # actionable without exposing provider/SQL/credential details.
+        raw_error_code = raw.get("error_code") or result.get("error_code")
+        if raw_error_code is not None:
+            result["error_code"] = stable_error_code(raw_error_code, "BRAIN_ERROR")
+        result.pop("error_message", None)
     elif isinstance(raw, list):
         events = raw
         status = "success"
@@ -40,7 +47,7 @@ def _normalize_investigation_outcome(raw: Any) -> tuple[str, list, dict]:
     else:
         events = []
         status = "failed"
-        result = {"error_code": "INVALID_BRAIN_OUTCOME", "error_message": "brain returned unsupported outcome"}
+        result = {"error_code": "INVALID_BRAIN_OUTCOME"}
     if status not in _TERMINAL_OUTCOMES | {"awaiting_approval", "awaiting_confirmation"}:
         status = "failed"
         result.setdefault("error_code", "INVALID_OUTCOME_STATUS")
@@ -49,6 +56,14 @@ def _normalize_investigation_outcome(raw: Any) -> tuple[str, list, dict]:
         if status == "success":
             status = "failed"
         result.setdefault("error_code", "BRAIN_ERROR_EVENT")
+    if status in {"failed", "regressed"}:
+        result["error_code"] = stable_error_code(result.get("error_code"), "BRAIN_ERROR")
+    elif result.get("error_code"):
+        result["error_code"] = stable_error_code(result["error_code"], "BRAIN_ERROR")
+        result.pop("error_message", None)
+    result = sanitize_runtime_payload(result)
+    if status in {"failed", "regressed"}:
+        result["error_message"] = public_error_message(result.get("error_code"), "investigation failed")
     result.setdefault("events", len(events))
     return status, events, result
 
@@ -67,11 +82,20 @@ def _runtime_events(events: list, *, invocation_id: str, target: str, result: di
     for index, event in enumerate(events):
         if isinstance(event, dict):
             event_type = str(event.get("event_type") or event.get("type") or "run.progress")
-            payload = event
+            raw_error = event.get("error_code") or event.get("error") or event.get("error_message")
+            payload = sanitize_runtime_payload(event)
+            if raw_error is not None:
+                if event_type == "rca.error":
+                    fallback = "RCA_V2_UNAVAILABLE"
+                elif event_type == "tool_end":
+                    fallback = "TOOL_FAILED"
+                else:
+                    fallback = "BRAIN_ERROR"
+                payload["error_code"] = stable_error_code(event.get("error_code") or raw_error, fallback)
             supplied_id = str(event.get("event_id") or "")
         else:
             event_type = "run.progress"
-            payload = {"value": str(event)}
+            payload = {"value": str(event)[:4096]}
             supplied_id = ""
         try:
             event_id = str(uuid.UUID(supplied_id)) if supplied_id else ""
@@ -80,8 +104,11 @@ def _runtime_events(events: list, *, invocation_id: str, target: str, result: di
         out.append({"event_id": event_id or _stable_event_id(invocation_id, f"{index}:{event_type}:{supplied_id}"),
                     "event_type": event_type, "payload": payload})
     if target in _TERMINAL_OUTCOMES:
+        safe_result = sanitize_runtime_payload(result)
+        if isinstance(safe_result, dict) and safe_result.get("error_code"):
+            safe_result["error_code"] = stable_error_code(safe_result["error_code"], "INTERNAL_ERROR")
         out.append({"event_id": _stable_event_id(invocation_id, f"completed:{target}"),
-                    "event_type": "run.completed", "payload": {"status": target, **result}})
+                    "event_type": "run.completed", "payload": {"status": target, **safe_result}})
     return out
 
 
@@ -172,7 +199,7 @@ class InvestigationRuntime:
             except Exception as exc:  # noqa: BLE001 - persist truthful failure
                 raw_outcome = {
                     "status": "failed", "error_code": "BRAIN_EXCEPTION",
-                    "error_message": str(exc)[:300], "events": [],
+                    "events": [],
                 }
             target, events, result = _normalize_investigation_outcome(raw_outcome)
             work.lease.check_active()
@@ -207,7 +234,7 @@ class InvestigationRuntime:
                     except Exception as exc:  # noqa: BLE001 - never claim durable RCA finality
                         target = "partial"
                         result["error_code"] = "GRAPH_CONTEXT_FINALIZE_FAILED"
-                        result["error_message"] = str(exc)[:200]
+                        result["error_message"] = public_error_message("GRAPH_CONTEXT_FINALIZE_FAILED")
             work.lease.commit(
                 target=target, result=result,
                 events=_runtime_events(events, invocation_id=item.invocation_id,

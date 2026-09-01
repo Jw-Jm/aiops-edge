@@ -126,6 +126,36 @@ def test_graph_outage_persists_local_only_context_for_replay():
     assert result.graph_enhanced is False
     assert len(persisted) == 1
     assert persisted[0][1]["warning_codes"][0] == "GRAPH_UNAVAILABLE"
+    assert "query-api unavailable" not in repr(persisted)
+
+
+def test_evidence_source_failures_are_stable_warning_codes():
+    graph = {
+        "vertices": [_entity("service:checkout", "checkout")],
+        "edges": [],
+    }
+
+    def graph_client(**params):
+        if params["graph_operation"] == "get_vertex":
+            return {"entity": _entity("service:checkout", "checkout")}
+        return graph
+
+    class FailingEvidence:
+        failures = []
+
+        def __call__(self, _request, _context):
+            self.failures.append("traces:provider api_key=secret host=10.0.0.7")
+            return []
+
+    provider = FailingEvidence()
+    request = RCARequest(
+        run_id="run-evidence-failure", tenant_id="tenant-1", cluster_id="cluster-1",
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z", entity_uid="service:checkout",
+    )
+    result = RCAEngineV2(graph_client=graph_client, evidence_provider=provider).diagnose(request)
+    assert all("api_key" not in code and "10.0.0.7" not in code
+               for code in result.graph_context["warning_codes"])
 
 
 def test_unbound_evidence_is_context_only_and_never_scores_candidate():

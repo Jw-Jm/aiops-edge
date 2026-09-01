@@ -2,7 +2,11 @@ import pytest
 
 from investigation_dispatcher import AcceptedInvocation
 from invocation_scope import current_execution_lease_token
-from investigation_runtime import InvestigationRuntime, _runtime_events
+from investigation_runtime import (
+    InvestigationRuntime,
+    _normalize_investigation_outcome,
+    _runtime_events,
+)
 
 
 class Lease:
@@ -153,3 +157,44 @@ def test_runtime_event_ids_are_stable_for_retries():
     second = _runtime_events([{"type": "progress", "node": "collect"}],
                              invocation_id=item().invocation_id, target="success", result={})
     assert [event["event_id"] for event in first] == [event["event_id"] for event in second]
+
+
+def test_runtime_events_do_not_persist_raw_exception_details():
+    events = _runtime_events(
+        [{
+            "type": "error",
+            "error": "provider api_key=super-secret host=10.0.0.7",
+            "exception": "Traceback (most recent call last): ...",
+            "token": "lease-secret",
+        }],
+        invocation_id=item().invocation_id,
+        target="failed",
+        result={
+            "error_code": "BRAIN_EXCEPTION",
+            "error_message": "SQL password=super-secret at mysql.internal",
+        },
+    )
+    payload = events[0]["payload"]
+    completed = events[-1]["payload"]
+    assert payload["error_code"] == "BRAIN_ERROR"
+    assert "error" not in payload
+    assert "exception" not in payload
+    assert "token" not in payload
+    assert "super-secret" not in repr(events)
+    assert "mysql.internal" not in repr(events)
+    assert completed["error_code"] == "BRAIN_EXCEPTION"
+    assert "error_message" not in completed
+
+
+def test_normalize_outcome_replaces_untrusted_error_text_with_stable_message():
+    status, events, result = _normalize_investigation_outcome({
+        "status": "failed",
+        "error_code": "not a stable code: provider api_key=secret",
+        "error_message": "password=secret host=10.0.0.8",
+        "events": [],
+    })
+    assert status == "failed"
+    assert events == []
+    assert result["error_code"] == "BRAIN_ERROR"
+    assert result["error_message"] == "investigation failed"
+    assert "secret" not in repr(result)

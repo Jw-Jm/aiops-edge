@@ -238,7 +238,7 @@ class RCAEngineV2:
                                explanation=explain({"root_cause_status": "insufficient_evidence", "evidence": evidence}))
             context.partial = True
             context.stale = True
-            context.warning_codes = ["GRAPH_UNAVAILABLE", str(exc)[:100]]
+            context.warning_codes = ["GRAPH_UNAVAILABLE"]
             context.record("graph_context_created")
             result.graph_context = context.to_dict()
             if self.persistence is not None:
@@ -250,7 +250,7 @@ class RCAEngineV2:
                     self.persistence(result.to_dict(), result.graph_context)
                 except Exception as persist_exc:  # noqa: BLE001 - preserve partial RCA
                     context.partial = True
-                    context.warning_codes.append(f"GRAPH_CONTEXT_PERSIST_FAILED:{str(persist_exc)[:100]}")
+                    context.warning_codes.append("GRAPH_CONTEXT_PERSIST_FAILED")
                     result.missing_evidence.append("graph_context_persistence")
                     result.graph_context = context.to_dict()
             return result

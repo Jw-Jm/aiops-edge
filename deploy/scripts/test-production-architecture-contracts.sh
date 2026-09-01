@@ -115,6 +115,12 @@ required 'rca_engine_legacy.py' "$repo_root/ai-orchestrator/.dockerignore" 'ARCH
 required 'def _legacy_compat_enabled' "$repo_root/ai-orchestrator/rca_engine/__init__.py" 'ARCH-330 RCA legacy bridge is not explicitly isolated';
 required 'def _legacy_graph_snapshot_enabled' "$repo_root/ai-orchestrator/tools.py" 'ARCH-331 production graph snapshot fallback is not explicitly isolated';
 required 'if _legacy_public_api_retired():' "$repo_root/ai-orchestrator/main.py" 'ARCH-332 production legacy mutation flags are not fail-closed';
+required 'def stable_error_code' "$repo_root/ai-orchestrator/error_safety.py" 'ARCH-333 stable runtime error boundary missing';
+required 'sanitize_runtime_payload' "$repo_root/ai-orchestrator/investigation_runtime.py" 'ARCH-334 durable Run event sanitization missing';
+required 'def _public_path_allowed' "$repo_root/ai-orchestrator/apps/investigation.py" 'ARCH-335 worker probe path boundary missing';
+required 'def _public_auth_path_allowed' "$repo_root/ai-orchestrator/main.py" 'ARCH-336 gateway probe path boundary missing';
+forbidden '"error": str(exc)' "$repo_root/ai-orchestrator/apps/investigation.py" 'ARCH-337 worker persists raw RCA exception';
+forbidden 'if any(path.startswith(p) for p in _AUTH_ALLOWLIST)' "$repo_root/ai-orchestrator/main.py" 'ARCH-338 gateway auth allowlist uses prefix matching';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi

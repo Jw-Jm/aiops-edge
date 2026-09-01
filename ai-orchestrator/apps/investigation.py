@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from authorization_matrix import AuthzError, build_runtime_authorization_matrix
 from control_plane_client import ControlPlaneClient
+from error_safety import stable_error_code
 from internal_ingress import build_invocation_scope, verify_run_invocation_ingress
 from investigation_dispatcher import AcceptedInvocation, InvestigationDispatcher
 from investigation_runtime import InvestigationRuntime
@@ -39,6 +40,12 @@ from orchestrator import brain  # noqa: E402
 
 _AUTH_ALLOWLIST = ("/health", "/readyz", "/metrics")
 _TERMINAL = {"success", "partial", "failed", "cancelled", "regressed"}
+
+
+def _public_path_allowed(path: str) -> bool:
+    """Health/metrics probes are public only at their exact route."""
+
+    return path in _AUTH_ALLOWLIST
 
 
 def _build_authz_matrix():
@@ -150,7 +157,7 @@ class _WorkerBrain:
             events.append({
                 "type": "rca.error",
                 "event_type": "rca.error",
-                "error": str(exc)[:200],
+                "error_code": "RCA_V2_UNAVAILABLE",
                 "status": "partial",
             })
             status, error_code = "partial", "RCA_V2_UNAVAILABLE"
@@ -171,9 +178,11 @@ class _WorkerBrain:
                 if isinstance(event, dict):
                     event_type = str(event.get("type") or event.get("event_type") or "")
                     if event_type == "error":
-                        status, error_code = "failed", str(event.get("error") or "BRAIN_ERROR")
+                        status, error_code = "failed", stable_error_code(
+                            event.get("error_code") or event.get("error"), "BRAIN_ERROR")
                     elif event_type == "tool_end" and str(event.get("status") or "").lower() in {"failed", "unavailable"}:
-                        status, error_code = "failed", str(event.get("error") or "TOOL_FAILED")
+                        status, error_code = "failed", stable_error_code(
+                            event.get("error_code") or event.get("error"), "TOOL_FAILED")
                     elif event_type == "done":
                         saw_done = True
                         final_text = str(event.get("text") or "")
@@ -292,7 +301,7 @@ app = FastAPI(title="AIOps Investigation Worker", version="5.0", lifespan=lifesp
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if any(request.url.path.startswith(prefix) for prefix in _AUTH_ALLOWLIST):
+    if _public_path_allowed(request.url.path):
         return await call_next(request)
     expected = os.environ.get("QUERY_TO_ORCHESTRATOR_TOKEN") or os.environ.get("INTERNAL_TOKEN", "")
     provided = request.headers.get("X-Internal-Token", "")

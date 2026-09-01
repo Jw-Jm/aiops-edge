@@ -208,7 +208,7 @@ class InvestigationEvidenceProvider:
             try:
                 self._append(output, "metric", self._query("query_metrics.v1", "metrics", {"service": name}), [candidate])
             except Exception as exc:
-                self.failures.append(f"metrics:{name}:{str(exc)[:100]}")
+                self.failures.append("EVIDENCE_METRICS_UNAVAILABLE")
         calls = [
             ("query_traces.v1", "traces", {"services": names, "limit": 100}, "trace"),
             ("query_logs.v1", "logs", {"services": names, "limit": 100}, "log"),
@@ -219,10 +219,10 @@ class InvestigationEvidenceProvider:
             try:
                 self._append(output, category, self._query(tool_id, operation, params), candidates)
             except Exception as exc:
-                self.failures.append(f"{operation}:{str(exc)[:120]}")
+                self.failures.append(f"EVIDENCE_{operation.upper()}_UNAVAILABLE")
         if self.failures:
             context.partial = True
-            context.warning_codes.extend(f"EVIDENCE_UNAVAILABLE:{failure}" for failure in self.failures[:4])
+            context.warning_codes.extend(dict.fromkeys(self.failures[:4]))
         return output
 
 
