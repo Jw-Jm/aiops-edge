@@ -525,6 +525,44 @@ func (c *HugeGraphClient) EdgesBetween(ctx context.Context, source, target strin
 	return result, nil
 }
 
+// EdgesForVertex returns a bounded, indexed edge view for one CUSTOMIZE_STRING
+// vertex.  HugeGraph 1.7's K-neighbor traverser can return an empty result for
+// string vertex IDs even when the indexed graph/edges query has real edges.
+// Keep this adapter typed and read-only so repositories can fail over without
+// exposing a raw graph query or broad edge scan.
+func (c *HugeGraphClient) EdgesForVertex(ctx context.Context, vertex string, direction string, edgeLabels []string) ([]map[string]interface{}, error) {
+	query := url.Values{}
+	query.Set("vertex_id", quotedHugeGraphQueryID(vertex))
+	query.Set("direction", normalizedDirection(direction))
+	query.Set("limit", strconv.Itoa(InternalGraphQueryLimits().MaxEdges))
+	if len(edgeLabels) == 1 {
+		query.Set("label", edgeLabels[0])
+	}
+	data, err := c.requestURL(ctx, c.baseURL+"/graph/edges?"+query.Encode(), http.MethodGet, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	var envelope map[string]interface{}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, err
+	}
+	result := make([]map[string]interface{}, 0)
+	for _, item := range interfaceSlice(envelope["edges"]) {
+		edge, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if len(edgeLabels) > 1 {
+			label := firstString(edge, "label", "relation_type")
+			if !containsString(edgeLabels, label) {
+				continue
+			}
+		}
+		result = append(result, edge)
+	}
+	return result, nil
+}
+
 func (c *HugeGraphClient) RawQuery(context.Context, string) (map[string]interface{}, error) {
 	return nil, graphError(ErrGraphFeatureUnavailable, "raw Gremlin/Cypher is not an allowed repository operation")
 }

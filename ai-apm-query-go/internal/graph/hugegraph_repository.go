@@ -74,7 +74,78 @@ func (r *HugeGraphRepository) Neighbors(ctx context.Context, scope GraphScope, q
 	if err != nil {
 		return Subgraph{}, graphError(ErrGraphUnavailable, err.Error())
 	}
+	// HugeGraph 1.7 may return an empty K-neighbor result for a valid
+	// CUSTOMIZE_STRING vertex ID.  The indexed vertex_id edge endpoint remains
+	// authoritative and bounded; use it only when the traverser produced no
+	// traversable object so RCA does not silently degrade to a single-node graph.
+	if len(interfaceSlice(raw["edges"])) == 0 && len(interfaceSlice(raw["vertices"])) == 0 && len(interfaceSlice(raw["paths"])) == 0 {
+		return r.neighborsFromIndexedEdges(ctx, scope, center, query)
+	}
 	return r.subgraphFromTraverser(ctx, scope, center.EntityUID, raw, query.MaxVertices, query.MaxEdges)
+}
+
+func (r *HugeGraphRepository) neighborsFromIndexedEdges(ctx context.Context, scope GraphScope, center Entity, query NeighborQuery) (Subgraph, error) {
+	labels := normalizedRelationLabels(query.RelationTypes)
+	rawEdges, err := r.client.EdgesForVertex(ctx, center.EntityUID, query.Direction, labels)
+	if err != nil {
+		return Subgraph{}, graphError(ErrGraphUnavailable, err.Error())
+	}
+	vertices := []Entity{center}
+	seenVertices := map[string]struct{}{center.EntityUID: {}}
+	capacity := len(rawEdges)
+	if capacity > query.MaxEdges {
+		capacity = query.MaxEdges
+	}
+	edges := make([]Edge, 0, capacity)
+	for _, rawEdge := range rawEdges {
+		if len(edges) >= query.MaxEdges {
+			break
+		}
+		edge, edgeErr := edgeFromHugeGraph(rawEdge)
+		if edgeErr != nil {
+			return Subgraph{}, edgeErr
+		}
+		if edge.SourceUID != center.EntityUID && edge.TargetUID != center.EntityUID {
+			continue
+		}
+		if edge.TenantID != "" && edge.TenantID != scope.TenantID {
+			continue
+		}
+		if edge.ClusterID != "" && !scope.Allows(Entity{TenantID: scope.TenantID, ClusterID: edge.ClusterID}) {
+			continue
+		}
+		if len(labels) > 0 && !containsString(labels, strings.ToUpper(edge.RelationType)) {
+			continue
+		}
+		neighborUID := edge.TargetUID
+		if neighborUID == center.EntityUID {
+			neighborUID = edge.SourceUID
+		}
+		if neighborUID == "" || neighborUID == center.EntityUID {
+			continue
+		}
+		neighbor, ok := findEntity(vertices, neighborUID)
+		if !ok {
+			neighbor, err = r.GetEntity(ctx, scope, neighborUID)
+			if err != nil {
+				return Subgraph{}, err
+			}
+		}
+		if !scope.Allows(neighbor) {
+			return Subgraph{}, graphError(ErrGraphScopeViolation, neighborUID)
+		}
+		if _, seen := seenVertices[neighbor.EntityUID]; !seen {
+			if len(vertices) >= query.MaxVertices {
+				break
+			}
+			vertices = append(vertices, neighbor)
+			seenVertices[neighbor.EntityUID] = struct{}{}
+		}
+		edges = append(edges, edge)
+	}
+	return Subgraph{CenterEntityUID: center.EntityUID, Vertices: vertices, Edges: edges,
+		Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion,
+			GeneratedAt: nowRFC3339(), WarningCodes: []string{}}}, nil
 }
 
 func (r *HugeGraphRepository) ShortestPath(ctx context.Context, scope GraphScope, query PathQuery) (Subgraph, error) {

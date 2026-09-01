@@ -382,3 +382,32 @@ func TestHugeGraphClientEdgesBetweenFiltersEndpointsAndLabels(t *testing.T) {
 		t.Fatalf("edges = %#v", edges)
 	}
 }
+
+func TestHugeGraphClientEdgesForVertexUsesQuotedCustomID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/graphspaces/DEFAULT/graphs/aiops/graph/edges" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("vertex_id") != `"service:tenant-a:checkout"` || r.URL.Query().Get("direction") != "BOTH" {
+			t.Fatalf("query = %v", r.URL.Query())
+		}
+		if r.URL.Query().Get("label") != "DEPENDS_ON" {
+			t.Fatalf("label = %q", r.URL.Query().Get("label"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"edges":[{"id":"e1","label":"DEPENDS_ON","outV":"service:tenant-a:checkout","inV":"service:tenant-a:payments"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewHugeGraphClient(server.URL, "DEFAULT", "aiops", "", "", time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges, err := client.EdgesForVertex(context.Background(), "service:tenant-a:checkout", "BOTH", []string{"DEPENDS_ON"})
+	if err != nil {
+		t.Fatalf("EdgesForVertex returned error: %v", err)
+	}
+	if len(edges) != 1 || edges[0]["id"] != "e1" {
+		t.Fatalf("edges = %#v", edges)
+	}
+}
