@@ -281,6 +281,7 @@ func (r *TopologyRepository) GlobalEdges(ctx context.Context, scope TopologyScop
 	sql := fmt.Sprintf(
 		"SELECT source_service, target_service, sum(call_count) AS calls, sum(error_count) AS errs, avg(avg_duration_ns) AS avg_ns "+
 			"FROM observability.service_topology WHERE %s AND time_bucket >= now() - INTERVAL %d MINUTE AND %s "+
+			"AND source_service != '' AND target_service != '' AND source_service != target_service "+
 			"GROUP BY source_service, target_service ORDER BY calls DESC LIMIT 200",
 		topoEdgeWhere(scope), minutes, dateCond)
 	rows, err := r.ch.QueryJSON(ctx, sql)
@@ -305,8 +306,15 @@ func (r *TopologyRepository) GlobalEdgesWithTraceFallback(ctx context.Context, s
 		}
 		edges = []TopologyEdge{}
 	}
-	if len(edges) > 0 {
-		return edges, nil
+	materialized := make([]TopologyEdge, 0, len(edges))
+	for _, edge := range edges {
+		if edge.Source == "" || edge.Target == "" || edge.Source == edge.Target {
+			continue
+		}
+		materialized = append(materialized, edge)
+	}
+	if len(materialized) > 0 {
+		return materialized, nil
 	}
 
 	var fallbackErr error

@@ -19,7 +19,11 @@ class TraceBuilder(GraphBuilder):
                                                  resolution="provisional", attrs={"observed_by": "trace"})
                     mutations.append(self.vertex_mutation(services[name]))
             source, target = services.get(str(row.get("source_service") or "")), services.get(str(row.get("target_service") or ""))
-            if source and target:
+            # Self-observations (for example exporter/ingest loops) are not
+            # dependency edges.  Persisting them makes HugeGraph traversals
+            # return a misleading single-node graph and prevents RCA from
+            # seeing the real cross-service propagation path.
+            if source and target and source.entity_uid != target.entity_uid:
                 mutations.append(self.edge_mutation(self.edge(source=source, target=target, relation_type="DEPENDS_ON",
                                                               confidence=min(float(row.get("confidence", 0.90)), 0.90))))
         return self.batch(mutations)

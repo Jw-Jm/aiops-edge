@@ -203,6 +203,33 @@ func TestTopologyRepoGlobalEdgesWithTraceFallback(t *testing.T) {
 	}
 }
 
+func TestTopologyRepoGlobalEdgesWithTraceFallbackIgnoresMaterializedSelfLoops(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("query")
+		switch {
+		case strings.Contains(q, "FROM observability.service_topology"):
+			_, _ = w.Write([]byte(`{"source_service":"ingest","target_service":"ingest","calls":99,"errs":0,"avg_ns":1}` + "\n"))
+		case strings.Contains(q, "JOIN observability.trace_spans"):
+			_, _ = w.Write([]byte(""))
+		case strings.Contains(q, "lagInFrame"):
+			_, _ = w.Write([]byte(`{"source_service":"ai-orchestrator","target_service":"victoria-metrics","calls":2,"errs":0,"avg_ns":3}` + "\n"))
+		default:
+			_, _ = w.Write([]byte(""))
+		}
+	}))
+	defer srv.Close()
+
+	r := NewTopologyRepository(NewClickHouseRepo(srv.URL, nil))
+	edges, err := r.GlobalEdgesWithTraceFallback(context.Background(), TopologyScope{TenantID: "t1", ClusterID: "c1"}, 10)
+	if err != nil {
+		t.Fatalf("GlobalEdgesWithTraceFallback: %v", err)
+	}
+	if len(edges) != 1 || edges[0].Source != "ai-orchestrator" || edges[0].Target != "victoria-metrics" {
+		t.Fatalf("fallback edges = %+v", edges)
+	}
+}
+
 func TestTopologyRepoGlobalNodes(t *testing.T) {
 	rows := "" +
 		`{"service":"frontend","calls":100,"errs":2,"avg_ns":1000000}` + "\n"
