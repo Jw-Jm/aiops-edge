@@ -188,7 +188,7 @@
 
 ### 2.4 OrbStack 实际运行证据
 
-当前本机 Helm revision 9 的非敏感摘要（revision 3–8 和更早 revision 的历史证据保留在 2.3.1/2.3.2–2.3.5）：
+该历史 revision 9 的非敏感摘要（revision 3–8 和更早 revision 的历史证据保留在 2.3.1/2.3.2–2.3.5；当前运行态请以 2.3.1 的 revision 14 为准）：
 
 - 当前代码提交为 `110353c`；12 个自研 Deployment/Job 使用 `git-110353c`；Helm `STATUS=deployed`、revision 9。Query Pod imageID 已核对为 `query-api@sha256:883899...`，Worker 2 副本和 Gateway 均 Ready。
 - 本轮首次仅覆盖 `queryApi.image` 完成 revision 8，随后对未改动服务做内容等价本地重标记并统一 `global.imageTag=git-110353c`，以 `--reuse-values --wait` 完成 revision 9；未使用旧镜像掩盖新代码，也未执行破坏性回滚。
