@@ -1,11 +1,20 @@
 package api
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
+
+type int64Argument struct{ want int64 }
+
+func (a int64Argument) Match(value driver.Value) bool {
+	n, ok := value.(int64)
+	return ok && n == a.want
+}
 
 func TestInvestigationToolRequestRequiresLeaseBoundContext(t *testing.T) {
 	req := &internalQueryRequest{WorkloadKind: "investigation", RunID: ""}
@@ -73,5 +82,66 @@ func TestToolReplayUsesStoredEnvelopeAndRunningStatus(t *testing.T) {
 	running := &toolRunContext{ToolRunID: "tool-2", Existing: &store.AIToolRun{ToolRunID: "tool-2", Status: "running"}}
 	if got := toolReplayEnvelope(running); got.Quality != "partial" || len(got.SourceErrors) != 1 {
 		t.Fatalf("running replay must be an explicit in-flight envelope: %+v", got)
+	}
+}
+
+func TestFinishToolRunFencingFailureNeverEligibleForEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := store.GetDB()
+	store.SetDB(db)
+	defer store.SetDB(previous)
+
+	// Simulate a transaction that cannot establish the final fencing check. The
+	// fallback must retain an auditable failure but can never mark the result as
+	// eligible for Evidence.
+	mock.ExpectBegin().WillReturnError(sqlmock.ErrCancelled)
+	mock.ExpectExec(".*").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			int64Argument{want: 0}, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	h := &Handler{toolDAO: &store.AIToolRunDAO{}}
+	h.finishToolRun(&toolRunContext{ToolRunID: "tool-1", RunID: "22222222-2222-4222-8222-222222222222"},
+		"success", "complete", nil, 0, "")
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("fencing failure fallback must force eligible_for_evidence=0: %v", err)
+	}
+}
+
+func TestFinishToolRunChecksLeaseBeforeCommit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := store.GetDB()
+	store.SetDB(db)
+	defer store.SetDB(previous)
+
+	runID := "22222222-2222-4222-8222-222222222222"
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT run_id FROM ai_runs").
+		WithArgs(runID, "exec-a", int64(7), hashToken("lease-token")).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id"}))
+	mock.ExpectRollback()
+	mock.ExpectExec(".*").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			int64Argument{want: 0}, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	h := &Handler{toolDAO: &store.AIToolRunDAO{}, leaseDAO: &store.RuntimeLeaseDAO{}}
+	h.finishToolRun(&toolRunContext{
+		ToolRunID: "tool-1", RunID: runID, ExecutorID: "exec-a", LeaseEpoch: 7, LeaseToken: "lease-token",
+	}, "success", "complete", nil, 0, "")
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("final lease fencing must run before commit and force ineligible fallback: %v", err)
 	}
 }

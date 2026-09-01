@@ -214,17 +214,25 @@ func (h *Handler) finishToolRun(trc *toolRunContext, status, quality string, res
 		sum := sha256.Sum256(result)
 		digest = hex.EncodeToString(sum[:])
 	}
-	// 尝试 fencing-aware finish；DB 不可用时回退到 UpdateQuality（尽力，但绝不进入 Evidence）。
+	// 尝试 fencing-aware finish；提交前再次校验服务端租约，防止 executor 在
+	// pre-I/O 检查后失去 owner/epoch/token 或租约过期仍把结果写入 Evidence。
 	conn := store.GetDB()
 	if conn != nil {
 		tx, err := conn.Begin()
 		if err == nil {
-			late, ferr := h.toolDAO.FinishToolRunWithFencing(tx, store.AIToolRun{
-				ToolRunID: trc.ToolRunID, RunID: trc.RunID, Status: status, Result: result,
-				ErrorMessage: errMsg, CompletedAt: &now, ObservedAt: &now, ResultQuality: quality,
-				ResultComplete: quality == "complete", ResultCount: int64(count),
-				ResultDigestSHA256: digest,
-			})
+			var ferr error
+			if h.leaseDAO != nil {
+				ferr = h.leaseDAO.FenceToolExecutionTx(tx, trc.RunID, trc.ExecutorID, trc.LeaseEpoch, hashToken(trc.LeaseToken))
+			}
+			var late bool
+			if ferr == nil {
+				late, ferr = h.toolDAO.FinishToolRunWithFencing(tx, store.AIToolRun{
+					ToolRunID: trc.ToolRunID, RunID: trc.RunID, Status: status, Result: result,
+					ErrorMessage: errMsg, CompletedAt: &now, ObservedAt: &now, ResultQuality: quality,
+					ResultComplete: quality == "complete", ResultCount: int64(count),
+					ResultDigestSHA256: digest,
+				})
+			}
 			if ferr == nil {
 				_ = tx.Commit()
 				if late && h.eventDAO != nil {
@@ -243,14 +251,17 @@ func (h *Handler) finishToolRun(trc *toolRunContext, status, quality string, res
 			_ = tx.Rollback()
 		}
 	}
-	// 回退：UpdateQuality（eligible 由调用方 quality 决定，但 fencing 失败时强制 0 更安全）。
-	eligible := quality == "complete"
-	_ = h.toolDAO.UpdateQuality(store.AIToolRun{
+	// 回退：无法建立/完成最终 fencing 时，结果可以保留供审计，但绝不能进入 Evidence。
+	// 使用错误码使降级状态可观测；UpdateQuality 错误也必须记录，不能静默吞掉。
+	if err := h.toolDAO.UpdateQuality(store.AIToolRun{
 		ToolRunID: trc.ToolRunID, Status: status, Result: result, ErrorMessage: errMsg,
+		ErrorCode:   "TOOL_FENCING_FAILED",
 		CompletedAt: &now, ObservedAt: &now, ResultQuality: quality,
 		ResultComplete: quality == "complete", ResultCount: int64(count),
-		ResultDigestSHA256: digest, EligibleForEvidence: eligible,
-	})
+		ResultDigestSHA256: digest, EligibleForEvidence: false,
+	}); err != nil {
+		log.Printf("toolrun fencing fallback persistence failed (tool_run_id=%s): %v", trc.ToolRunID, err)
+	}
 }
 
 // buildEnvelope 构造 ToolResultEnvelope（含 truncation/digest/window）。

@@ -454,17 +454,20 @@ func (d *RuntimeLeaseDAO) GetRuntimeMetadataTx(tx *sql.Tx, runID string) (*RunLe
 // 校验 Run 非终态 + lease_owner/epoch/token_hash 匹配 + Lease 未过期（DB time）。
 // 任何 datasource I/O 前调用，防迟到/过期 executor 在取消后仍访问数据面。
 func (d *RuntimeLeaseDAO) FenceToolExecutionTx(tx *sql.Tx, runID, ownerID string, epoch int64, tokenHash string) error {
-	var n int64
+	var foundRunID string
 	err := tx.QueryRow(
-		`SELECT COUNT(*) FROM ai_runs WHERE run_id = ? AND status NOT IN ('success','partial','failed','regressed','cancelled')
+		`SELECT run_id FROM ai_runs WHERE run_id = ? AND status NOT IN ('success','partial','failed','regressed','cancelled')
 		   AND lease_owner_id = ? AND lease_epoch = ? AND lease_token_hash = ?
-		   AND lease_expires_at IS NOT NULL AND lease_expires_at >= CURRENT_TIMESTAMP(3)`,
+		   AND lease_expires_at IS NOT NULL AND lease_expires_at >= CURRENT_TIMESTAMP(3) FOR UPDATE`,
 		runID, ownerID, epoch, tokenHash,
-	).Scan(&n)
+	).Scan(&foundRunID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrLeaseFencing
+		}
 		return err
 	}
-	if n != 1 {
+	if foundRunID != runID {
 		return ErrLeaseFencing
 	}
 	return nil
