@@ -14,6 +14,7 @@ global:
   # 环境修复: 本机无法访问 registry.cn-hongkong.aliyuncs.com (EOF),
   # 但本地 docker 已缓存全部 deepflow 镜像 → IfNotPresent 直接用本地镜像。
   image:
+    repository: registry.cn-beijing.aliyuncs.com/deepflow-ce
     pullPolicy: IfNotPresent
 
 # server 与各组件单副本（本机）
@@ -52,6 +53,13 @@ grafana:
 deepflow-agent:
   image:
     pullPolicy: IfNotPresent
+  # AF_PACKET collection requires the agent to see the node network namespace.
+  # Keep the netns directory read-only; eBPF capabilities remain explicitly
+  # enumerated by the chart securityContext below.
+  hostNetwork: "true"
+  dnsPolicy: "ClusterFirstWithHostNet"
+  netns:
+    mount: true
   # 临时测试策略：未收到明确开启指令前，关闭 Agent 自保护熔断。
   # DeepFlow 官方约定对应阈值为 0 时不检查该条件；仅修改 Helm 配置，不改 DeepFlow 源码。
   deepflowAgentConfig:
