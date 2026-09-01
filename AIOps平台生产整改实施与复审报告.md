@@ -316,6 +316,8 @@ flowchart LR
 
 本轮本机证据是完成真实登录/scope 后 HTTP 200、20 个 SSE event（含 1 个 done、0 个 error）；同一 `session_id+turn_id` 重试 HTTP 200 且仅 replay `done`，证明不是“只有接口定义”。当前 revision 14 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；Query persistence failure、Orchestrator queue helper、AICHAT SSE 脱敏错误边界、Investigation/RCA 错误净化、ToolRun 最终围栏、commit-error 处理和 lease/dispatch fencing 已分别通过 Go/Python 与镜像内源码断言。
 
+模块边界补充：`intent_engine.py` 和 `dual_agent.py` 是自研的意图/双层 Agent 组件，但不是当前 canonical AICHAT 的两个生产入口。`intent_engine.py` 当前由 Planner/SecurityGate 测试与内存 MVP 使用，`dual_agent.py` 仅在显式 `dual_agent` 模式下由旧 Chat 图引用；生产 canonical `/internal/v1/chat` 固定走 `mode="chat"`，不依赖这两个模块。它们的存在不能作为“生产 AICHAT 已具备结构化调查/双层 Agent”证据；若要启用，必须先定义持久化 Intent/Plan、ChatTool 审计和跨副本状态恢复契约。本轮还修复了 `intent_engine.py:135-142` 的时间窗缺陷：缺省窗口现在按当前 UTC 动态生成最近 1 小时，而不是查询固定历史日期。
+
 ### 5.2 真实缺口和可执行改进
 
 - **Provider 可用性：** 在候选环境注入 Proxy provider profile、短 token、超时/限流/熔断配置；用固定 canary prompt 验证 200/SSE、Provider 429/5xx/timeout、密钥轮换和脱敏日志。UI 必须显示 `provider_unavailable`，不能静默伪装成功。
@@ -543,6 +545,7 @@ flowchart LR
 - AICHAT 本机真实闭环已通过：首次 SSE HTTP 200/20 events/done，重复同一 `session_id+turn_id` HTTP 200 且仅 replay done；当前 `LLM_MOCK=true`，真实 Provider 仍是未验证发布项。
 - Investigation Worker GraphSyncRuntime 生命周期已真实接线：`GRAPH_BACKEND=hugegraph`、`GRAPH_SOURCE_RECONCILE_ENABLED=1` 时 Worker 启动/停止 canonical runtime；本机 MySQL `graph_reconcile_runs` 显示 Kubernetes generation=1、generation=2 均 success，generation=2 计数为 297 vertices/204 edges、staled=56/36、error length=0。
 - HugeGraph 代际清理已由全图 `limit=100000`/1.5 秒交互读取改为租户/集群/source scope offset 分页和独立维护 client；Helm revision 14 的 graph-schema-migrator 创建 19 个 `edgeByScope_<relation>` 索引，真实 offset=0/1 顶点/边查询及 `verify-kubernetes-graph.sh` 均通过。该代码修复提交为 `95d8489`，但候选 digest、p95 和跨节点恢复仍未验证。
+- IntentEngine 缺省时间窗已修复：`ai-orchestrator/intent_engine.py:135-142` 现在以当前 UTC 计算 `[now-1h, now]`，`tests/test_p75_intent_engine.py::test_missing_time_range_defaults` 校验 ISO 时间窗长度和新鲜度；35 个 AICHAT/意图/入口测试通过。该修复直接影响自然语言调查的时间范围正确性，但不改变 canonical Chat 与结构化 Investigation 的边界。
 
 ### 未通过（明确阻断）
 

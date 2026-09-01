@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timezone
 
 from intent_engine import (
     ACTION_MODES,
@@ -88,8 +89,11 @@ class TestT1IntentParsing:
 
     def test_missing_time_range_defaults(self, engine):
         intent = engine.create_intent(**_base(engine, time_range_start=None, time_range_end=None))
-        # 缺 time_range → 校验失败（设计：缺 time_range → 默认/校验）
-        assert intent.time_range_start is not None or intent.time_range_end is not None
+        start = datetime.fromisoformat(intent.time_range_start.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(intent.time_range_end.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        assert (end - start).total_seconds() == 3600
+        assert abs((now - end).total_seconds()) < 5
 
 
 # ═══════════════════════════════════════════════════════

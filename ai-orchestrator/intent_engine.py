@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -132,9 +133,14 @@ class IntentEngine:
         # 歧义检测：需 resource 的 target_type 缺 resource → RESOURCE_AMBIGUOUS（禁止猜）
         if target_type in _RESOURCE_REQUIRED_TARGETS and not target_resource_id:
             raise IntentAmbiguityError(["missing_resource"])
-        # 缺 time_range → 提供默认（最近 1h），不猜测目标
+        # 缺 time_range → 提供默认（最近 1h），不猜测目标。默认窗口必须
+        # 相对当前 UTC 计算，不能固定历史日期，否则自然语言调查会稳定地
+        # 查询过期数据并把“无证据”误报成当前状态。
         if not time_range_start and not time_range_end:
-            time_range_start, time_range_end = "2026-08-20T00:00:00Z", "2026-08-20T01:00:00Z"
+            end = datetime.now(timezone.utc).replace(microsecond=0)
+            start = end - timedelta(hours=1)
+            time_range_start = start.isoformat().replace("+00:00", "Z")
+            time_range_end = end.isoformat().replace("+00:00", "Z")
 
         it = Intent(
             intent_id=str(uuid.uuid4()),
