@@ -17,6 +17,7 @@ target_uid="${GRAPH_TEST_TARGET_UID:-loadtest:vertex:000001}"
 alias="${GRAPH_TEST_ENTITY_ALIAS:-graph-load-service-000000}"
 output="${GRAPH_LOAD_REPORT:-/tmp/aiops-graph-load-report.json}"
 require_resources="${GRAPH_LOAD_REQUIRE_RESOURCES:-0}"
+project_query_aliases="${GRAPH_LOAD_PROJECT_QUERY_ALIASES:-0}"
 tenant_id="${GRAPH_API_TENANT_ID:-${GRAPH_LOAD_TENANT_ID:-}}"
 cluster_id="${GRAPH_API_CLUSTER_ID:-${GRAPH_LOAD_CLUSTER_ID:-}}"
 dry_run=0
@@ -51,6 +52,7 @@ for value in "$vertices" "$edges" "$iterations" "$warmup_iterations" "$batch_siz
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "numeric options must be positive" >&2; exit 2; }
 done
 [[ "$require_resources" == "0" || "$require_resources" == "1" ]] || { echo "GRAPH_LOAD_REQUIRE_RESOURCES must be 0 or 1" >&2; exit 2; }
+[[ "$project_query_aliases" == "0" || "$project_query_aliases" == "1" ]] || { echo "GRAPH_LOAD_PROJECT_QUERY_ALIASES must be 0 or 1" >&2; exit 2; }
 if (( vertices < 2 || edges < 1 || batch_size > 500 )); then
   echo "vertices >= 2, edges >= 1 and batch-size <= 500 are required" >&2
   exit 2
@@ -110,7 +112,11 @@ if [[ -n "${GRAPH_LOAD_GENERATOR_CMD:-}" ]]; then
 else
   loader_cmd=(go run ./cmd/graph-load-generator)
 fi
-if ! loader_output="$(cd "$repo_root/ai-apm-query-go" && "${loader_cmd[@]}" --vertices "$vertices" --edges "$edges" --batch-size "$batch_size" --tenant-id "$tenant_id" --cluster-id "$cluster_id" --load=true --batch-benchmark-iterations "$iterations" 2>"$tmp_dir/loader.stderr")"; then
+loader_args=(--vertices "$vertices" --edges "$edges" --batch-size "$batch_size" --tenant-id "$tenant_id" --cluster-id "$cluster_id" --load=true --batch-benchmark-iterations "$iterations")
+if [[ "$project_query_aliases" == "1" ]]; then
+  loader_args+=(--project-query-aliases)
+fi
+if ! loader_output="$(cd "$repo_root/ai-apm-query-go" && "${loader_cmd[@]}" "${loader_args[@]}" 2>"$tmp_dir/loader.stderr")"; then
   write_blocked_report "HugeGraph fixture load did not complete"
   cat "$tmp_dir/loader.stderr" >&2 || true
   echo "BLOCKED_BY_ENV: HugeGraph fixture load did not complete" >&2

@@ -3,7 +3,11 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
+
+	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
 type GraphEntityAlias struct {
@@ -98,6 +102,90 @@ func (d *GraphEntityAliasDAO) Upsert(alias GraphEntityAlias) error {
 		alias.TenantID, alias.ScopeClusterID, alias.Source, alias.AliasType, alias.AliasValue,
 		alias.AliasValueSHA256, alias.CanonicalEntityUID, alias.Confidence, alias.Status, alias.Resolver)
 	return err
+}
+
+// UpsertMany atomically writes a bounded batch of canonical name aliases.
+//
+// The Query service owns graph_entity_alias, including validation tools that
+// seed a local rebuild. Keeping the write in this DAO prevents validation
+// utilities from opening a second data-owner implementation or issuing
+// per-row autocommit statements. Callers must chunk batches to 500 rows.
+func (d *GraphEntityAliasDAO) UpsertMany(aliases []GraphEntityAlias) error {
+	conn := GetDB()
+	if conn == nil {
+		return errors.New("mysql unavailable")
+	}
+	if len(aliases) == 0 {
+		return nil
+	}
+	if len(aliases) > 500 {
+		return errors.New("graph alias batch exceeds 500 rows")
+	}
+
+	placeholders := make([]string, 0, len(aliases))
+	args := make([]interface{}, 0, len(aliases)*10)
+	for _, alias := range aliases {
+		if alias.TenantID == "" || alias.ScopeClusterID == "" || alias.Source == "" ||
+			alias.AliasType == "" || alias.AliasValue == "" || alias.CanonicalEntityUID == "" {
+			return errors.New("graph alias requires tenant, cluster, source, type, value and canonical uid")
+		}
+		if alias.AliasValueSHA256 == "" {
+			alias.AliasValueSHA256 = sha256Parts(alias.AliasValue)
+		}
+		if alias.Status == "" {
+			alias.Status = "active"
+		}
+		if alias.Resolver == "" {
+			alias.Resolver = "deterministic"
+		}
+		if alias.Confidence == 0 {
+			alias.Confidence = 1
+		}
+		placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		args = append(args, alias.TenantID, alias.ScopeClusterID, alias.Source, alias.AliasType,
+			alias.AliasValue, alias.AliasValueSHA256, alias.CanonicalEntityUID, alias.Confidence,
+			alias.Status, alias.Resolver)
+	}
+
+	query := `INSERT INTO graph_entity_alias
+    (tenant_id, scope_cluster_id, source, alias_type, alias_value, alias_value_sha256,
+     canonical_entity_uid, confidence, status, resolver)
+    VALUES ` + strings.Join(placeholders, ", ") + `
+    ON DUPLICATE KEY UPDATE canonical_entity_uid=canonical_entity_uid,
+      confidence=VALUES(confidence), status=IF(canonical_entity_uid=VALUES(canonical_entity_uid), VALUES(status), 'conflict'),
+      resolver=VALUES(resolver), last_seen_at=NOW()`
+	const maxAttempts = 4
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		tx, err := conn.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(query, args...); err != nil {
+			_ = tx.Rollback()
+			if isRetryableGraphAliasTxError(err) && attempt < maxAttempts {
+				time.Sleep(time.Duration(attempt*25) * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("upsert graph aliases: %w", err)
+		}
+		if err = tx.Commit(); err != nil {
+			if isRetryableGraphAliasTxError(err) && attempt < maxAttempts {
+				time.Sleep(time.Duration(attempt*25) * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("commit graph aliases: %w", err)
+		}
+		return nil
+	}
+	return errors.New("upsert graph aliases exhausted retry budget")
+}
+
+func isRetryableGraphAliasTxError(err error) bool {
+	var mysqlErr *mysqlDriver.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return mysqlErr.Number == 1205 || mysqlErr.Number == 1213
+	}
+	return false
 }
 
 // Search resolves normalized name aliases. It is intentionally the only

@@ -132,8 +132,22 @@ def convert(match):
     return str(int(match.group(1)) * {"k": 1024, "m": 1024**2, "g": 1024**3}[match.group(2).lower()])
 print(convert(used), convert(total))' <<<"${heap_output}" 2>/dev/null || true)"
     read -r heap_used heap_max <<<"${heap_values}"
-    if [[ "${hg_rss}" =~ ^[0-9]+$ && "${heap_used}" =~ ^[0-9]+$ && "${heap_max}" =~ ^[0-9]+$ ]]; then
+    # The production HugeGraph image is intentionally JRE-sized and may not
+    # contain jcmd/jstat. In that case obtain the configured heap ceiling from
+    # the JVM command line and keep RSS as the measured resident footprint.
+    # We do not relabel RSS as heap-used; the JSON omits heap_used_bytes and
+    # records the fallback reason while still making the capacity ceiling
+    # auditable.
+    if [[ ! "${heap_max}" =~ ^[0-9]+$ && "${jvm_pid}" =~ ^[0-9]+$ ]]; then
+      jvm_cmdline="$(kubectl -n "${namespace}" exec "${hugegraph_pod}" -- cat "/proc/${jvm_pid}/cmdline" 2>/dev/null | tr '\000' ' ' || true)"
+      xmx_raw="$(grep -oE -- '-Xmx[0-9]+[KkMmGg]' <<<"${jvm_cmdline}" | head -1 | sed 's/^-Xmx//' || true)"
+      heap_max="$(to_bytes "${xmx_raw}" 2>/dev/null || true)"
+    fi
+    if [[ "${hg_rss}" =~ ^[0-9]+$ && "${heap_max}" =~ ^[0-9]+$ ]]; then
       status_hg="collected"; reason_hg=""
+      if [[ ! "${heap_used}" =~ ^[0-9]+$ ]]; then
+        reason_hg="heap_used unavailable in image; RSS and JVM -Xmx collected"
+      fi
     else
       reason_hg="HugeGraph JVM RSS/heap metrics were incomplete"
     fi
@@ -210,6 +224,9 @@ try { playwright = require("playwright"); } catch (_) { process.exit(3); }
 })().catch(() => process.exit(4));
 NODE
   )" || true
+  if [[ -z "${browser_output}" && -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" && -f "${repo_root}/deploy/scripts/collect-browser-long-tasks.js" ]]; then
+    browser_output="$(node "${repo_root}/deploy/scripts/collect-browser-long-tasks.js" "${browser_url}" "${AIOPS_BROWSER_BIN:-}" 2>/dev/null || true)"
+  fi
   if [[ -n "${browser_output}" ]]; then
     read -r long_task_count long_task_max < <(python3 - "${browser_output}" <<'PY'
 import json, sys

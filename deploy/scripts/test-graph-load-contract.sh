@@ -18,7 +18,9 @@ for required in \
   'ai_investigation_worker_cpu_rss' \
   'frontend_bundle_bytes' \
   'browser_long_tasks' \
-  'GRAPH_LOAD_REQUIRE_RESOURCES'; do
+  'GRAPH_LOAD_REQUIRE_RESOURCES' \
+  'GRAPH_LOAD_PROJECT_QUERY_ALIASES' \
+  '--project-query-aliases'; do
   rg -n --fixed-strings -- "${required}" "${script}" >/dev/null || {
     echo "graph load contract failed: missing ${required}" >&2
     exit 1

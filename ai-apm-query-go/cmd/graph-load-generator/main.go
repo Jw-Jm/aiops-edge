@@ -10,26 +10,30 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	graph "github.com/observability-platform/ai-apm-query-go/internal/graph"
+	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
 type report struct {
-	Vertices      int                `json:"vertices"`
-	Edges         int                `json:"edges"`
-	BatchSize     int                `json:"batch_size"`
-	Concurrency   int                `json:"concurrency"`
-	TenantID      string             `json:"tenant_id"`
-	ClusterID     string             `json:"cluster_id"`
-	AnchorUID     string             `json:"anchor_uid"`
-	TargetUID     string             `json:"target_uid"`
-	BatchMutation map[string]float64 `json:"batch_mutation,omitempty"`
-	VertexTypes   map[string]int     `json:"vertex_types"`
-	RelationTypes map[string]int     `json:"relation_types"`
-	Loaded        bool               `json:"loaded"`
-	DurationMS    int64              `json:"duration_ms"`
+	Vertices               int                `json:"vertices"`
+	Edges                  int                `json:"edges"`
+	BatchSize              int                `json:"batch_size"`
+	Concurrency            int                `json:"concurrency"`
+	TenantID               string             `json:"tenant_id"`
+	ClusterID              string             `json:"cluster_id"`
+	AnchorUID              string             `json:"anchor_uid"`
+	TargetUID              string             `json:"target_uid"`
+	BatchMutation          map[string]float64 `json:"batch_mutation,omitempty"`
+	AliasProjectionEnabled bool               `json:"alias_projection_enabled"`
+	AliasesProjected       int                `json:"aliases_projected"`
+	VertexTypes            map[string]int     `json:"vertex_types"`
+	RelationTypes          map[string]int     `json:"relation_types"`
+	Loaded                 bool               `json:"loaded"`
+	DurationMS             int64              `json:"duration_ms"`
 }
 
 type fixtureRange struct {
@@ -95,6 +99,7 @@ func main() {
 	load := flag.Bool("load", true, "write the fixture to HugeGraph")
 	benchmarkIterations := flag.Int("batch-benchmark-iterations", envInt("GRAPH_LOAD_BATCH_BENCHMARK_ITERATIONS", 20), "batch mutation latency samples")
 	concurrency := flag.Int("concurrency", envInt("GRAPH_LOAD_CONCURRENCY", 4), "parallel fixture mutation workers")
+	projectAliases := flag.Bool("project-query-aliases", envBool("GRAPH_LOAD_PROJECT_QUERY_ALIASES", false), "write name aliases through the Query-owned MySQL projection")
 	flag.Parse()
 	if *vertexCount < 2 || *edgeCount < 1 || *batchSize < 1 || *batchSize > 500 || *benchmarkIterations < 0 || *concurrency < 1 || *concurrency > 32 {
 		fatal("vertices >= 2, edges >= 1, batch-size 1..500, concurrency 1..32 and non-negative benchmark iterations are required")
@@ -102,7 +107,8 @@ func main() {
 
 	result := report{Vertices: *vertexCount, Edges: *edgeCount, BatchSize: *batchSize, Concurrency: *concurrency,
 		TenantID: *tenantID, ClusterID: *clusterID, AnchorUID: vertexUID(0), TargetUID: vertexUID(1), Loaded: false,
-		VertexTypes: fixtureTypeCounts(*vertexCount), RelationTypes: fixtureRelationCounts(*edgeCount)}
+		AliasProjectionEnabled: *projectAliases,
+		VertexTypes:            fixtureTypeCounts(*vertexCount), RelationTypes: fixtureRelationCounts(*edgeCount)}
 	if !*load {
 		writeReport(result)
 		return
@@ -119,14 +125,42 @@ func main() {
 		fatal(err.Error())
 	}
 	ctx := context.Background()
+	var aliasDAO *store.GraphEntityAliasDAO
+	if *projectAliases {
+		// The loader is a validation/admin utility. Alias writes still go through
+		// the Query-owned DAO and require an explicit opt-in, so the normal graph
+		// fixture command cannot silently mutate MySQL.
+		if store.GetDB() == nil {
+			fatal("--project-query-aliases requires a reachable Query-owned MySQL projection")
+		}
+		aliasDAO = &store.GraphEntityAliasDAO{}
+	}
 	started := time.Now()
+	var resultMu sync.Mutex
 	if err := loadBatches(ctx, *vertexCount, *batchSize, *concurrency, func(start, end int) error {
 		vertices := make([]graph.Entity, 0, end-start)
+		aliases := make([]store.GraphEntityAlias, 0, end-start)
 		for index := start; index < end; index++ {
-			vertices = append(vertices, fixtureEntity(index, *tenantID, *clusterID))
+			entity := fixtureEntity(index, *tenantID, *clusterID)
+			vertices = append(vertices, entity)
+			if aliasDAO != nil {
+				aliases = append(aliases, store.GraphEntityAlias{TenantID: entity.TenantID, ScopeClusterID: entity.ClusterID,
+					Source: entity.Source, AliasType: "name", AliasValue: entity.NameKey, CanonicalEntityUID: entity.EntityUID})
+			}
 		}
 		if err := client.PutVerticesBatch(ctx, vertices); err != nil {
 			return fmt.Errorf("load vertices [%d,%d): %w", start, end, err)
+		}
+		if aliasDAO != nil {
+			if err := aliasDAO.UpsertMany(aliases); err != nil {
+				return fmt.Errorf("project aliases [%d,%d): %w", start, end, err)
+			}
+			resultAliases := len(aliases)
+			// Multiple fixture workers update the report counter after their
+			// own transactional batch has committed.
+			resultMu.Lock()
+			result.AliasesProjected += resultAliases
+			resultMu.Unlock()
 		}
 		return nil
 	}); err != nil {
@@ -368,6 +402,13 @@ func envInt(key string, fallback int) int {
 		return value
 	}
 	return fallback
+}
+func envBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes"
 }
 func fatal(message string) { fmt.Fprintln(os.Stderr, "graph-load-generator:", message); os.Exit(1) }
 func writeReport(value report) {

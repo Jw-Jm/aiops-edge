@@ -54,7 +54,7 @@ else
 fi
 
 fail() { echo "production architecture contract failed: $1" >&2; exit 1; }
-contains() { rg -n --fixed-strings "$1" "$2" >/dev/null; }
+contains() { rg -n --fixed-strings -- "$1" "$2" >/dev/null; }
 forbidden() {
   if contains "$1" "$2"; then
     fail "$3"
@@ -130,6 +130,9 @@ required 'def _rate_limit_bypass_path_allowed' "$repo_root/ai-orchestrator/main.
 forbidden 'request.url.path.startswith(p)' "$repo_root/ai-orchestrator/main.py" 'ARCH-345 rate-limit bypass uses prefix matching';
 required 'func publicGraphErrorMessage' "$repo_root/ai-apm-query-go/internal/api/graph_public.go" 'ARCH-346 public graph backend error sanitizer missing';
 required 'knowledge graph is unavailable' "$repo_root/ai-apm-query-go/internal/api/graph_public.go" 'ARCH-347 public graph backend error leaks diagnostics';
+[[ -x "$repo_root/deploy/scripts/graph-capacity-gate.sh" ]] || fail 'ARCH-348 real Graph capacity gate missing or not executable'
+required '--batch-benchmark-iterations 0' "$repo_root/deploy/scripts/graph-capacity-gate.sh" 'ARCH-349 Graph capacity gate must disable benchmark sampling';
+required '--project-query-aliases' "$repo_root/deploy/scripts/graph-capacity-gate.sh" 'ARCH-350 Graph capacity gate must verify Query-owned aliases';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi
