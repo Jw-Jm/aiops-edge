@@ -1,14 +1,14 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
 **复审日期：** 2026-08-31 至 2026-09-01（Asia/Shanghai）
-**代码构建基线：** 功能代码 `a786ccb`；发布候选提交 `04cd751` 仅包含本报告基线修订和 `.gitignore`，未改变运行时功能代码。
+**代码构建基线：** 功能代码 `a786ccb`；当前运行镜像 tag `git-04cd7512698a` 与该功能代码内容一致。其后的提交均为本报告基线修订（文档-only），不改变运行时功能代码。
 **本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 21（2026-09-01，本轮代码同步）；未执行 Graph 压测或 `graph-load-test.sh`。本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步与代际清理验证，并用真实 mTLS/API-key OTLP marker 读回 ClickHouse `trace_spans` 和 `k8s_events`；当前运行态所有核心 Pod Ready，所有自研工作负载镜像引用统一为 `git-04cd7512698a`。这些镜像内容与功能代码 `a786ccb` 一致；完整重建在 Python 基础镜像镜像源 EOF 处受环境限制，未伪称全部重建。Helm 状态为 `deployed`。
-**报告文档提交：** 本报告与功能代码、镜像分离提交；报告提交不改变运行时功能代码。
+**报告文档提交：** 本报告与功能代码、镜像分离提交；报告提交不改变运行时功能代码或镜像内容。
 **工作区：** 代码修复已提交；用户既有未跟踪文件 `:memory:.ses`、`ai-orchestrator/:memory:.ses` 保留不动，不纳入审查工具产物。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
 
-> **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以功能代码 `a786ccb`、发布候选提交 `04cd751` 和 Helm revision 21 为准；运行时镜像引用统一为 `git-04cd7512698a`，镜像内容与 `a786ccb` 功能代码一致，完整 Python 镜像重建受基础镜像镜像源 EOF 限制。Worker GraphSyncRuntime 生命周期接线、HugeGraph scope 分页代际清理、19 个边范围索引、实际 `query-api-http` 验证、IntentEngine 动态时间窗、Ingest `time_bucket` 落盘和事件坏时间拒绝已通过源码、测试、迁移和真实 OrbStack 运行证据；HugeGraph 镜像不含 jcmd/jstat，heap-used 仍明确未采集。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放均通过，但当前 `LLM_MOCK=true`；真实 RCA Run 已完成图增强和有界 ToolRun，但证据不足时按设计返回 `partial/insufficient_evidence`。DeepFlow 同 marker span、真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
+> **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以功能代码 `a786ccb`、运行镜像 tag `git-04cd7512698a` 和 Helm revision 21 为准；其后的报告提交均为文档-only，不改变该运行镜像。镜像内容与 `a786ccb` 功能代码一致，完整 Python 镜像重建受基础镜像镜像源 EOF 限制。Worker GraphSyncRuntime 生命周期接线、HugeGraph scope 分页代际清理、19 个边范围索引、实际 `query-api-http` 验证、IntentEngine 动态时间窗、Ingest `time_bucket` 落盘和事件坏时间拒绝已通过源码、测试、迁移和真实 OrbStack 运行证据；HugeGraph 镜像不含 jcmd/jstat，heap-used 仍明确未采集。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放均通过，但当前 `LLM_MOCK=true`；真实 RCA Run 已完成图增强和有界 ToolRun，但证据不足时按设计返回 `partial/insufficient_evidence`。DeepFlow 同 marker span、真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
 
 ### 本轮修改与具体功能对应关系
 
@@ -128,7 +128,7 @@
 | Query Graph 错误边界回归 | `cd ai-apm-query-go && GOCACHE=/tmp/aiops-gocache go test ./internal/api -run 'TestGraphPublic' -count=1`；`test-production-architecture-contracts.sh` ARCH-346/347 | **通过**；HugeGraph URL、MySQL DSN、token 片段仅保留稳定 `GRAPH_UNAVAILABLE` + 通用消息，响应不含后端诊断原文。 |
 | Investigation/RCA 错误边界回归 | `cd ai-orchestrator && AIOPS_DEPLOYMENT_MODE=development AIOPS_ENV=development LLM_MOCK=true .venv314/bin/python -m pytest -q tests/test_investigation_runtime.py tests/test_investigation_worker_security.py tests/test_rca_engine_v2_contract.py tests/test_orchestrator_routing.py`；`python -m compileall -q apps rca_engine error_safety.py investigation_runtime.py` | **37 项边界测试通过，编译通过**；Runtime completion/event、RCA Graph/Evidence warning code、LLM/stream 错误出口均不再持久化异常原文；Worker/Gateway 探针和生产组合只接受精确边界。 |
 | 镜像构建与代码一致性 | `BUILD_IMAGES_DRY_RUN=1 IMAGE_TAG=git-a786ccb60e9 bash deploy/scripts/build-images.sh all`；实际 `IMAGE_TAG=git-a786ccb60e9e bash deploy/scripts/build-images.sh all`；`docker image inspect`；`kubectl get deploy` | **部分通过**；dry-run 通过，Query/Frontend/Ingest 镜像按功能代码标签构建，其他未改服务复用与功能代码一致的既有本地镜像；发布候选提交后所有自研工作负载重新标记为 `git-04cd7512698a`；完整 Python 镜像重建在基础镜像拉取处因 EOF 失败，未将失败隐藏为全量构建通过。 |
-| 当前发布证据与工作区审计 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-final.json`；`git check-ignore -v ':memory:.ses' 'ai-orchestrator/:memory:.ses'` | **本机脚本通过**；`git_commit=04cd7512698a72fdc3bbbabf5f7f6869569df8c4`、`working_tree_dirty=false`、`publishable=true`；`.ses` 是用户既有运行时 artifact，规则仅按精确文件名排除；registry immutable digest/signature 仍未提供。 |
+| 当前发布证据与工作区审计 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-final.json`；`git check-ignore -v ':memory:.ses' 'ai-orchestrator/:memory:.ses'` | **本机脚本通过**；执行时 `git_commit` 与当时 HEAD 一致、`working_tree_dirty=false`、`publishable=true`；`.ses` 是用户既有运行时 artifact，规则仅按精确文件名排除；registry immutable digest/signature 仍未提供。后续报告提交为文档-only，不改变该结论或运行镜像。 |
 | 本机干净重建与基础门禁 | `LLM_PROVIDER_KEYS=deepseek:sk-contract-only bash deploy/scripts/local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow`；随后 `RELEASE_TAG=git-19cd8f30c8f6 ... local-validation.sh --skip-build --skip-deepflow --reuse-k8s-secret aiops-secrets` | **基础门禁通过**；只重建本机 `observability`、`aiops-canary`、`deepflow` 命名空间及 PVC；MySQL 0001–0016、ClickHouse 0001–0009、RBAC、Worker 开关、Executor disabled、HTTPS readiness、Helm 部署均通过。无观测 marker 时 validator 按设计返回 `BLOCKED_BY_ENV`。 |
 | ClickHouse 密码参数故障与修复 | 修复前干净部署中生成的 Secret 密码以连字符开头，readiness/liveness 与 init/migrator 使用分离参数，Pod 日志出现 `UNRECOGNIZED_ARGUMENTS` 并重启；修复后重跑同一部署 | **已修复并通过**；全部客户端调用改为 `--password="$VAR"` 单参数，ClickHouse Ready，init/migrator Job Complete，部署契约通过。 |
 | 当前 Helm 运行态 | `helm status aiops -n observability`；`kubectl -n observability get deploy,ds,pods`；镜像标签/Pod imageID 核对 | **通过**；Helm revision 21 `STATUS=deployed`；所有自研 Deployment/DaemonSet/Job 引用 `git-04cd7512698a`，核心 Pod Ready，图谱迁移 Job Complete。 |
