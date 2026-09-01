@@ -1,14 +1,14 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
 **复审日期：** 2026-08-31 至 2026-09-01（Asia/Shanghai）
-**代码构建基线：** `main` / `110353c`（包含生产组合根隔离、精确探针限流白名单、公开 Graph 后端错误净化，以及本轮 Query-owned Graph alias 投影、MySQL 短暂死锁重试、真实容量门禁和资源采集修复）
-**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 9（2026-09-01，本轮代码同步）；未启动 DeepFlow、未执行 `graph-load-test.sh` 或压力测试；本轮仅执行一次真实 Graph 200k/1M 容量写入（关闭 benchmark 迭代）及单次只读操作门禁；12 个自研 Deployment/Job 统一标签 `git-110353c`，Helm 状态为 `deployed`。
-**报告文档提交：** 本报告在代码提交 `110353c` 后更新，代码、镜像与报告文档提交分离记录。报告提交不改变运行镜像。
+**代码构建基线：** `main` / `95d8489`（在 `110353c` 基础上接入 Investigation Worker 图谱同步生命周期、HugeGraph 按 scope 分页代际清理、边范围索引和实际 Query deployment 名称验证）
+**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 14（2026-09-01，本轮代码同步）；未执行 Graph 压测或 `graph-load-test.sh`。本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步与代际清理验证；运行态按变更范围使用 `query-api:local-graph-scope-20260901`、`graph-schema-migrator:local-graph-scope-20260901`、`ai-orchestrator:local-graph-reconcile-20260901`，其余未改服务保留已验证标签（主要为 `git-110353c`，Ingest 为 `git-9d7f5ca2c6fc`）。Helm 状态为 `deployed`。
+**报告文档提交：** 本报告在代码提交 `95d8489` 后更新，代码、镜像与报告文档提交分离记录。报告提交不改变运行镜像。
 **工作区：** 代码修复已提交；用户既有未跟踪文件 `:memory:.ses`、`ai-orchestrator/:memory:.ses` 保留不动，不纳入审查工具产物。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
 
-> **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以提交 `110353c`、自研镜像标签 `git-110353c`、Helm revision 9 为准；`7d9dec2`/revision 7–8 及更早 revision 仅保留为历史回归证据。新增的 Query-owned Graph alias 批量投影、1213/1205 短暂事务死锁有界重试、200k/1M 单次容量门禁、HugeGraph RSS/`-Xmx` 资源回退和 Chrome Long Task 采集已通过源码、契约、真实 OrbStack 验证；HugeGraph 镜像不含 jcmd/jstat，heap-used 仍需在报告中明确为未采集，不能把 RSS 当作 heap-used。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放均通过，但当前 `LLM_MOCK=true`；DeepFlow、真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
+> **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以提交 `95d8489` 和 Helm revision 14 为准；本轮修复镜像仅替换实际变更的 Query API、Graph migrator 和 Investigation Worker，未改服务继续使用其已验证镜像，不得将混合标签误写为统一版本。新增的 Worker GraphSyncRuntime 生命周期接线、HugeGraph scope 分页代际清理、19 个边范围索引和实际 `query-api-http` 验证已通过源码、测试、迁移和真实 OrbStack generation 1/2 运行证据；HugeGraph 镜像不含 jcmd/jstat，heap-used 仍明确未采集。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放均通过，但当前 `LLM_MOCK=true`；DeepFlow、真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
 
 ### 本轮修改与具体功能对应关系
 
@@ -25,6 +25,8 @@
 | `main.py`：生产组合根与限流旁路隔离；`graph_public.go`：后端错误净化 | 生产 Gateway 只构造 canonical owner；探针旁路不扩大到相似路径；Graph 后端故障只返回稳定码 | 生产导入会构造 legacy scheduler/shell/router；`startswith` 旁路可放行 `/healthz` 等相似路径；HugeGraph/DB 异常可能把 URL/凭据原文返回浏览器 | `7d9dec2` 历史代码的生产 import、精确路径和 Graph 错误脱敏回归；ARCH-341–347 契约通过；本轮未改动 Python 镜像 |
 | `graph_entity_alias.go:UpsertMany` + `graph-load-generator --project-query-aliases` | Graph loader 写入 HugeGraph 后同步写入 Query-owned `graph_entity_alias`，使公共 alias search 可读且不新增数据 owner | 200k/1M loader 只写 HugeGraph，`entities/search` 503，容量结果不能覆盖名称查询 | 真实 200k/1M 一次写入：`aliases_projected=200000`；alias search HTTP 200/count=1；批量事务、输入校验和 MySQL 1213 重试单测通过 |
 | `graph-capacity-gate.sh`、`test-graph-capacity-gate-contract.sh`、资源采集脚本 | 单次真实 200k/1M + 7 个只读 Graph 操作 + 资源快照形成机器可读门禁；禁止 benchmark/pressure loop | 原容量命令没有统一 alias、资源和操作判定，容易把部分通过误当完整通过 | `/tmp/aiops-graph-capacity-final.json` gate `PASS`，`pressure_test=false`、`benchmark_iterations=0`；资源项均 collected，但 HugeGraph heap-used 因镜像无诊断工具仍明确缺失 |
+| `apps/investigation.py`：Worker lifespan 启停 `GraphSyncRuntime`；`kg/runtime.py`→Query `reconcile_scope` | Investigation Worker 启动后必须按 source/tenant/cluster 获取真实 Kubernetes/KubeVirt 等事实，写入 HugeGraph 并完成 generation stale transition，RCA entity resolver 才能读取图谱 | Worker 之前只启动 dispatcher/recovery，没有运行 canonical GraphSyncRuntime；RCA 只能得到图工具失败或空图 | `GRAPH_BACKEND=hugegraph`、`GRAPH_SOURCE_RECONCILE_ENABLED=1`、`graph_sync_state`、`graph_reconcile_runs`、HugeGraph `Entity`/关系标签；新增生命周期单测；Python 定向 19 passed；本机 generation=1/2 Kubernetes 成功（297 vertices/204 edges；generation=2 标记 56 vertices/36 edges） |
+| `hugegraph_client.go`/`generation_marker.go`：按 tenant/cluster/source 的 offset 分页；schema 资源增加 `edgeByScope_<relation>` | 代际清理不能用 1.5 秒交互读超时做全图 `limit=100000` 扫描；必须只读取当前 scope、可分页、可在大图下完成 | 原实现全图扫描导致 298/204 写入后 Query 返回 `GRAPH_UNAVAILABLE`，Worker 将同步判为 failed | HugeGraph `Entity` 复合索引、19 个 edge scope index；维护读独立 30 秒 client；Query Go 全量/`go vet` 通过；真实顶点/边 scope query offset=0/1 成功；`verify-kubernetes-graph.sh` 通过；Kubernetes generation=2 success |
 | Query `ProxyChat` → Orchestrator `/internal/v1/chat` 真实闭环 | 浏览器登录会话、MySQL scope、签名 `ai.chat` context、SSE done、transcript replay | 仅单元测试无法证明两个自研模块真实接线或重试不重复调用 | 本机真实登录 + `LLM_MOCK=true`：首次 HTTP 200、20 个 SSE 事件含 done；同 `session_id+turn_id` 再次 HTTP 200 且仅 replay done；未使用 Provider 生产凭据 |
 
 ## 1. 审查结论摘要
@@ -34,7 +36,7 @@
 | 设计符合性 | **有限通过** | MySQL IAM/session/scope、HttpOnly Cookie、canonical UUID、签名 `TrustedRequestContext`、Query/Dispatcher/Alert/Worker 拆分、统一 Ingest、RCA V2、LLM Proxy 边界、AICHAT 脱敏错误边界和 Graph Query-owned alias 投影已接入真实调用链；生产 Secret、证书身份/SAN、API Server CIDR、真实数据源和多副本演练仍缺证据。 |
 | 功能完整性 | **有限通过** | AICHAT（Query `ProxyChat` → Orchestrator `/internal/v1/chat` → MySQL transcript）已用本机真实登录完成首次 SSE 与同 turn replay；Graph 200k/1M 写入、200k alias 投影、7 个只读操作和单次容量门禁通过；RCA 图增强可运行但本机证据不足时返回 `partial/insufficient_evidence`；真实 Provider、真实 TokenRequest mutation 仍未验证。 |
 | 架构合理性 | **有限通过** | 服务边界和 data owner 已明显收敛；Graph 验证工具通过 Query DAO 写 alias，未新增 owner；AICHAT 的重试身份和错误持久化边界由 Query/MySQL/Orchestrator 统一，Python `main.py` 仍保留重复 Chat/legacy 路由和兼容代码，细粒度 TLS SAN 配置与旧 scope 兼容路径仍有治理成本。 |
-| 生产就绪度 | **不通过** | revision 9 本机基础门禁和 Graph/AICHAT 冒烟通过，但 `collect-release-evidence.sh` 仍受工作区用户 `.ses` 与无 registry immutable digest/signature 影响；生产 Secret、真实 Provider、全域观测 marker、HA/备份/回滚仍无候选环境证据。 |
+| 生产就绪度 | **不通过** | revision 14 本机基础门禁、Graph reconcile 和 AICHAT 冒烟通过，但 `collect-release-evidence.sh` 仍受工作区用户 `.ses` 与无 registry immutable digest/signature 影响；生产 Secret、真实 Provider、全域观测 marker、HA/备份/回滚仍无候选环境证据。 |
 
 **当前不能发布到生产。** 最小阻断集合：
 
@@ -69,7 +71,7 @@
 
 ### 2.3 实际执行的命令与结果
 
-> **本轮证据勘误：** 下表中早期 revision 19 / `git-340286515c49` / `git-acc3606e102c` / revision 2 记录来自上一轮复审；revision 3–11 记录作为历史回归基线保留。本轮当前运行态以新增的 2.3.1 节为准：源码提交 `110353c`、12 个自研镜像标签 `git-110353c`、Helm revision 9，以及 MySQL 0001–0016、ClickHouse 0001–0009 运行态取证。旧 canary 结果仅作为历史代码证据，不冒充本轮 fresh install 的实时观测数据。
+> **本轮证据勘误：** 下表中早期 revision 19 / `git-340286515c49` / `git-acc3606e102c` / revision 2–13 记录来自上一轮复审或本轮中间步骤；本轮当前运行态以新增的 2.3.1 节为准：源码提交 `95d8489`、Helm revision 14，Query/Graph migrator/Worker 使用本轮修复镜像，其余未改服务保留各自已验证标签。旧 canary 结果仅作为历史代码证据，不冒充本轮 fresh install 的实时观测数据。
 
 > 下表中未明确标为“本轮”的项目是上一轮复审的回归基线；本轮实际重跑的命令、输出和未验证项集中列在新增的 2.3.1 节，避免把旧 canary 或旧测试环境误作当前运行证据。
 
@@ -108,9 +110,9 @@
 | 发布证据（历史 revision 8） | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-62829de.json` | 输出 `git_commit=5b38977adaaa36d609aa4234400ea85ec1d0c7ce`、`working_tree_dirty=true`、`publishable=false`；deployment/architecture/Helm lint/diff check 通过，唯一未跟踪项仍为用户既有 `.ses`，代码提交 `62829de126e6` 已提交并运行在 revision 8；尚无 registry immutable digest/signature。文档随后仅做报告追踪行更新，不改变运行镜像。 |
 | 生产镜像边界 | `docker run --rm ai-orchestrator:git-f35ef7dad3d9 ...` | **通过**；生产镜像不含测试/演示/会话文件，`import rca_engine` 成功且仅导出 V2 API。 |
 
-### 2.3.1 本轮 `110353c` 代码与运行证据（当前基线）
+### 2.3.1 本轮 `95d8489` 代码与运行证据（当前基线）
 
-以下是本轮在当前源码提交 `110353c` 上重新执行的证据；最终运行态为 12 个自研 Deployment/Job 使用 `git-110353c`、Helm release revision 9。此前 Query-only 验证短暂使用 revision 8，随后以内容等价本地重标记统一到 revision 9。未运行 Graph 压测或 `graph-load-test.sh`；已执行一次关闭 benchmark 迭代的真实 200k/1M Graph 容量门禁。
+以下是本轮在当前源码提交 `95d8489` 上重新执行的证据；最终运行态为 Helm revision 14。Query API、Graph migrator、Investigation Worker 使用本轮本地修复镜像，未改服务保留上一轮已验证镜像，不能把运行态描述为所有自研服务统一同一 tag。未运行 Graph 压测或 `graph-load-test.sh`；本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步和代际清理，Graph 200k/1M 容量门禁沿用上一轮已通过、且明确不属于压力测试的证据。
 
 | 检查 | 命令与实际结果 | 结论 |
 |---|---|---|
@@ -124,11 +126,14 @@
 | 镜像构建与代码一致性 | `IMAGE_TAG=git-7d9dec2 bash deploy/scripts/build-images.sh all`；Helm 使用 `--set-string global.imageTag=git-7d9dec2`；`kubectl get deploy,pods` 核对 tag/imageID | **通过**；12 个自研镜像全部构建成功，所有自研 Deployment/Job spec image 与运行 Pod tag 为 `git-7d9dec2`，无旧 tag 残留。 |
 | 本机干净重建与基础门禁 | `LLM_PROVIDER_KEYS=deepseek:sk-contract-only bash deploy/scripts/local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow`；随后 `RELEASE_TAG=git-19cd8f30c8f6 ... local-validation.sh --skip-build --skip-deepflow --reuse-k8s-secret aiops-secrets` | **基础门禁通过**；只重建本机 `observability`、`aiops-canary`、`deepflow` 命名空间及 PVC；MySQL 0001–0016、ClickHouse 0001–0009、RBAC、Worker 开关、Executor disabled、HTTPS readiness、Helm 部署均通过。无观测 marker 时 validator 按设计返回 `BLOCKED_BY_ENV`。 |
 | ClickHouse 密码参数故障与修复 | 修复前干净部署中生成的 Secret 密码以连字符开头，readiness/liveness 与 init/migrator 使用分离参数，Pod 日志出现 `UNRECOGNIZED_ARGUMENTS` 并重启；修复后重跑同一部署 | **已修复并通过**；全部客户端调用改为 `--password="$VAR"` 单参数，ClickHouse Ready，init/migrator Job Complete，部署契约通过。 |
-| 当前 Helm 运行态 | `helm status aiops -n observability`；`kubectl -n observability get deploy,pods`；镜像标签/Pod imageID 核对 | **通过**；Helm revision 9 `STATUS=deployed`，12 个自研 Deployment/迁移 Job 标签统一为 `git-110353c`，核心 Pod Ready、业务容器重启数为 0；ClickHouse/Graph/MySQL/Trace 初始化与迁移 Job 均成功。 |
+| 当前 Helm 运行态 | `helm status aiops -n observability`；`kubectl -n observability get deploy,pods`；镜像标签/Pod imageID 核对 | **通过**；Helm revision 14 `STATUS=deployed`；Query API/Graph migrator/Investigation Worker 使用本轮修复镜像，其余未改服务保留已验证标签；核心 Pod Ready，图谱迁移 Job Complete。 |
+| Worker GraphSyncRuntime 生命周期修复 | `AIOPS_ENV=development AIOPS_DEPLOYMENT_MODE=development LLM_MOCK=true .venv314/bin/python -m pytest -q tests/test_investigation_worker_security.py tests/test_graph_runtime.py tests/test_rca_engine_v2_contract.py tests/test_rca_runtime_envelope.py`；代码 `apps/investigation.py` lifespan | **19 passed**；新增生命周期测试在修复前按预期失败，修复后通过；Worker revision 11 使用 `ai-orchestrator:local-graph-reconcile-20260901`，启动后真实调用 Query `reconcile_scope`。 |
+| HugeGraph scope 分页与边索引修复 | `cd ai-apm-query-go && GOCACHE=/tmp/aiops-gocache go test ./... -count=1`；`go vet ./...`；Helm revision 14 migrator；只读 scope offset=0/1 查询 | **通过**；Query/Graph migrator 镜像为 `local-graph-scope-20260901`，19 个 `edgeByScope_<relation>` 索引存在；顶点/边 scope 查询 offset=0/1 返回成功，维护读不再使用 1.5 秒交互 client。 |
+| Kubernetes Graph 真实代际同步 | `bash deploy/scripts/verify-kubernetes-graph.sh --namespace observability --since 10m`；MySQL `graph_reconcile_runs` 仅查询状态/计数/hash | **通过**；脚本通过 `named_graph=DEFAULT/aiops`、投影 `k8s_node`、source reconcile success；generation=1 为 297 vertices/204 edges，generation=2 为 297/204 并标记 56 vertices/36 edges，error length=0。 |
 | 镜像内功能边界断言 | `kubectl -n observability exec <investigation-worker> -- python -c '...error_safety/_public_path_allowed...'`；Gateway 同类断言 | **历史 revision 7 基线通过**；本轮只重建 Query 镜像，Python Worker/Gateway 未改动，仍由历史 `git-7d9dec2` 断言覆盖；Query 新镜像以 Graph 冒烟和全量 Go 测试覆盖。 |
 | Graph 真实容量门禁（不压测） | `bash deploy/scripts/graph-capacity-gate.sh`（固定 200000/1000000，`--batch-benchmark-iterations 0 --project-query-aliases`；管理员 scope 后单次调用 health/entity/search/neighbors/candidate/impact/path，并采集资源） | **通过本机容量/功能门禁**；真实 loader `loaded=true`、精确 200,000 vertices/1,000,000 edges、`aliases_projected=200000`，17 类本体/11 类关系符合合同；7 个只读操作均 HTTP 200，alias count≥1；资源快照所有条目 `collected`，其中 HugeGraph heap-used 因生产镜像无 jcmd/jstat 明确缺失，保留 RSS 与 JVM `-Xmx`，未将 RSS 伪装为 heap-used；`pressure_test=false`、`benchmark_iterations=0`。候选 digest、跨节点恢复和 p95 仍未验证。 |
 | Graph alias 并发事务可靠性 | `go test ./internal/store ./cmd/graph-load-generator`；sqlmock 1213 重试测试；真实容量门禁首次触发 1213 后重跑 | **已修复并通过**；`GraphEntityAliasDAO.UpsertMany` 对 MySQL 1205/1213 回滚后最多 4 次退避重试；首次真实并行投影出现 1213（修复前阻断），修复后同一 4-worker 门禁成功，未扩大为无限重试。 |
-| Query 镜像部署后 Graph 冒烟 | `helm upgrade ... --set-string queryApi.image=query-api:git-110353c --wait`；登录/scope 后 health、alias search | **通过**；该 Query-only 步骤运行于 revision 8，Query 三个角色 Ready，Pod imageID 为 `query-api@sha256:883899...`；health HTTP 200/ready=true，alias search HTTP 200/count=1/UID=`loadtest:vertex:000000`。随后 revision 9 将全部自研 Deployment/Job 统一到 `git-110353c`。 |
+| Query 镜像部署后 Graph 冒烟（历史） | `helm upgrade ... --set-string queryApi.image=query-api:git-110353c --wait`；登录/scope 后 health、alias search | **通过（历史 revision 8）**；Query 三个角色 Ready，Pod imageID 为 `query-api@sha256:883899...`；health HTTP 200/ready=true，alias search HTTP 200/count=1/UID=`loadtest:vertex:000000`。当前 revision 14 已进一步部署 scope 分页修复镜像。 |
 | AICHAT 真实 SSE 与 replay | 本机真实 admin 登录 + `/api/v1/me/scope`；POST `/api/v1/ai/chat`（canonical cluster/session/turn）；同 body 重试一次 | **通过本机 mock-provider 闭环**；首次 HTTP 200，20 个 SSE 事件含 `done`，无 `CHAT_BACKEND_ERROR`；同 `session_id+turn_id` 第二次 HTTP 200 且仅返回 `done`（MySQL transcript replay），证明 Query→Orchestrator 接线和幂等；部署开关为 `LLM_MOCK=true`，不等价于真实 Provider 验收。 |
 | 资源快照与浏览器 Long Task | `bash deploy/scripts/graph-resource-snapshot.sh --namespace observability --browser-url 'http://[::1]:30253'`；Chrome CDP collector | **通过本机采集**；HugeGraph RSS/Xmx、RocksDB data/WAL、Query/Worker CPU/RSS、前端 bundle、browser long-task 均有机器可读条目；Long Task count=0/max=0；heap-used 字段不伪造，原因写入 report。 |
 | Graph 恢复观察 | `bash deploy/scripts/graph-recovery-test.sh --namespace observability`（只读） | **通过（观察型）**；返回 `recovery_test=observed`，HugeGraph Ready、schema Job 成功；不等价于 200k/1M 容量或跨节点恢复证据。 |
@@ -209,7 +214,7 @@
 
 ### 2.6 环境限制
 
-没有生产访问、生产凭据、真实外部 LLM key、真实多节点集群或企业 StorageClass；本轮在本机 OrbStack 用当前 HugeGraph Secret 真实写入 200k/1M Graph 数据，但 alias 投影、资源完整采集和候选环境证据仍缺失；未执行生产迁移、外部系统写入或生产动作。不能据此推断证书轮换、TokenRequest、ClickHouse 合并、候选环境 Graph 恢复/PITR 或真实 Provider 通过。
+没有生产访问、生产凭据、真实外部 LLM key、真实多节点集群或企业 StorageClass；本轮在本机 OrbStack 使用本地 Secret 完成 Query/Graph migrator/Worker 修复镜像部署、HugeGraph 19 个边索引迁移以及 Kubernetes generation 1/2 真实 reconcile。未执行生产迁移、外部系统写入或生产动作；Graph 200k/1M alias/资源证据沿用上一轮明确不压测的门禁结果。不能据此推断证书轮换、TokenRequest、ClickHouse 合并、候选环境 Graph 恢复/PITR 或真实 Provider 通过。
 
 ### 2.7 初始审查问题逐项核对
 
@@ -252,12 +257,15 @@ flowchart LR
 
 **数据所有权：** Query/MySQL 是 IAM、Run、Chat、Action 的 owner；Ingest 是 telemetry 唯一写入口；ClickHouse 是观测事实存储；HugeGraph 是可重建投影；Orchestrator 仅作编排/语言交互，Worker 不直接读数据库、Kubernetes 或 Provider key。
 
+**图谱实际调用链（本轮确认）：** Worker lifespan → `GraphSyncRuntime.start()` → Query `/internal/v1/query/graph` 的 `reconcile_scope(start)` → source builder（Kubernetes/KubeVirt 等）→ `batch_mutate`（Query 写 HugeGraph 并维护 alias）→ scoped `mark_stale_generation` → MySQL `graph_reconcile_runs`/`graph_sync_state`。代际 marker 现在通过 HugeGraph 的租户/集群/source 条件和 offset 分页读取，不再依赖交互查询超时的全图扫描；RCA entity resolver 仍只经 Query typed graph boundary 读取。
+
 ### 3.2 文档设计与代码实际差异
 
 | 设计 | 当前代码实际 | 结论 |
 |---|---|---|
 | Query HTTP、Dispatcher、Alert Evaluator 独立 | `cmd/api`、`cmd/run-dispatcher`、`cmd/alert-evaluator` 与 Helm 三 Deployment 均存在 | 已符合；API 扩容不会直接增加 outbox/evaluator 处理器。 |
 | Worker 独立组合根 | `ai-orchestrator/apps/investigation.py:1-37` 初始化 Tool Registry 后直接导入 `orchestrator`；`investigation_app.py:1-12` 只作兼容 ASGI wrapper，不导入 `main` | 已修复；旧报告“Worker 导入 main”已失效。仍需静态规则防止回归。 |
+| Worker 图谱同步生命周期 | `apps/investigation.py` lifespan 在 `GRAPH_BACKEND=shadow/hugegraph` 且 `GRAPH_SOURCE_RECONCILE_ENABLED=1` 时构造并停止 `kg.runtime.GraphSyncRuntime`；Runtime 只经签名 Query internal graph contract | 本轮已修复并以 generation=1/2 Kubernetes 真实运行证据确认；旧版仅启动 dispatcher、RCA 读取不到可靠图谱输入的问题已关闭。 |
 | Chat 与 Investigation 分离 | Query `ProxyChat` 走 Orchestrator `/internal/v1/chat`；Run dispatcher 走 Worker `/internal/v1/run-invocations` | 已符合；Gateway 的旧 `/api/v1/ai/chat` 在 production 返回 410。 |
 | 单一 RCA V2 | Worker 调 `RCAEngineV2`，Graph/evidence 统一经 Query internal tools；旧 `main.py` 仍保留 legacy helper | 运行时已符合；代码清理尚未完成。 |
 | mTLS 服务身份 | Go/Python TLS listener、client transport、Helm cert mount 和 `ssl-cert-reqs=2` 已实现 | `mtls_server.py` 从 TLS transport 读取 peer certificate，精确匹配 DNS/URI SAN，拒绝在 ASGI 前返回 403；本机真实 Gateway→Worker mTLS `/health` 返回 200；生产逐服务证书、轮换、跨副本握手未验证。 |
@@ -290,13 +298,13 @@ flowchart LR
 | 生产 egress 默认拒绝且按角色白名单 | `values-prod` 必须打开 default-deny；Query/Dispatcher/Alert/Frontend/Worker/Graph/Executor/Broker 只能到声明的内部目标；Kubernetes API 通过注入 CIDR 放行 | `deploy/helm/aiops/values-prod.yaml:86-88`；`templates/networkpolicy.yaml:1-1195`；`templates/graph-networkpolicy.yaml:1-97` | `networkPolicy.kubernetesApiCIDRs`、NetworkPolicy selectors/ports | production architecture contract、Helm render/PyYAML parse、workflow gate | **部分实现** | 代码/清单已修复并通过静态门禁；本机运行的是 local-validation（egress 未全局开启），生产 CNI、CIDR、NetworkPolicy 实际连通性尚未验证。 |
 | LLM 出站唯一经 Proxy | Orchestrator 只拿 provider metadata/Proxy token，不接 key/任意 URL；生产 Mock 必须 fail-closed；Provider 卡住必须有上游 deadline | `tools.py`；`orchestrator.py`；Proxy `main.go:92-163`；`main.py` 生产启动 guard | Proxy Secret/provider allowlist、60s upstream timeout | `test_llm_proxy_boundary.py`、`test_llm_mock.py`、Proxy `TestHandleProxyHonorsUpstreamTimeout`、Go race | **部分实现** | 代理 deadline 已修复并在本机验证；真实 Provider、限流、熔断和 key rotation 仍未验证。 |
 | DeepFlow OTLP 统一采集 | DeepFlow 只经 OTLP exporter 写入 Ingest 4317；固定 source/queue/tenant metadata；禁止 legacy CH 直写 | `deploy/helm/aiops/values-deepflow.yaml`；`test-deepflow-otlp-render.sh`；`verify-deepflow-otlp-cutover.sh` | DeepFlow chart 7.1.002；Ingest Service 4317；`x-tenant-id`；本机 `deepflow-clickhouse-evidence` Secret | rendered-chart/runtime boundary PASS；真实切换 PASS（`received=9955, accepted=314695`，平台 Trace `314877`，DeepFlow raw L7 `305459`，前后计数增长、20s observation PASS） | **本机完整实现/生产未验证** | 配置合同、官方运行态、原始数据与平台 OTLP 链路已在 OrbStack 真实验证；生产镜像/Secret/CNI/多节点与长窗口仍未验证。 |
-| 生产部署、回滚、观测达标 | Secret/render/image digest、PDB、health/SLO、故障和回滚 evidence 完整 | Helm templates、`runtime-slo.md`、`collect-release-evidence.sh` | Secret refs、PDB、WAL PVC、release JSON | Helm/contracts/evidence script；当前 revision 9 Ready；validator 基础设施/迁移/安全通过，真实观测和 HA 仍 BLOCKED | **未验证** | 本机 readiness 和合同通过不等于生产 HA、PITR、证书轮换、完整观测或 rollback 通过。 |
+| 生产部署、回滚、观测达标 | Secret/render/image digest、PDB、health/SLO、故障和回滚 evidence 完整 | Helm templates、`runtime-slo.md`、`collect-release-evidence.sh` | Secret refs、PDB、WAL PVC、release JSON | Helm/contracts/evidence script；当前 revision 14 Ready；validator 基础设施/迁移/安全通过，真实观测和 HA 仍 BLOCKED | **未验证** | 本机 readiness 和合同通过不等于生产 HA、PITR、证书轮换、完整观测或 rollback 通过。 |
 
 ## 5. AICHAT 两个自研模块复审与改进方案
 
 ### 5.1 是否真实可用
 
-结论：**Query `ProxyChat` 与 Orchestrator `/internal/v1/chat` 已通过本机真实登录的 SSE 和同 turn transcript replay，证明两个自研模块真实接线、scope/capability 签名、持久化和幂等可用；当前 revision 9 使用 `LLM_MOCK=true`，生产真实模型能力仍未验证。**
+结论：**Query `ProxyChat` 与 Orchestrator `/internal/v1/chat` 已通过本机真实登录的 SSE 和同 turn transcript replay，证明两个自研模块真实接线、scope/capability 签名、持久化和幂等可用；当前 revision 14 仍使用 `LLM_MOCK=true`，生产真实模型能力仍未验证。**
 
 真实调用链如下：
 
@@ -306,7 +314,7 @@ flowchart LR
 4. Orchestrator internal ingress 校验服务 token、JWS、audience、capability、scope、replay 后调用 `brain.stream_sync`，只读对话不会创建 Investigation Run（`main.py:1064-1132`）。
 5. Query 不缓冲 SSE，逐帧写入浏览器并只把 assistant done/suggestion 持久化到 MySQL（`settings.go:1080-1109,1131-1160`）。前端随后刷新会话列表并可调用 Query-owned final report。
 
-本轮本机证据是完成真实登录/scope 后 HTTP 200、20 个 SSE event（含 1 个 done、0 个 error）；同一 `session_id+turn_id` 重试 HTTP 200 且仅 replay `done`，证明不是“只有接口定义”。当前 revision 9 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；Query persistence failure、Orchestrator queue helper、AICHAT SSE 脱敏错误边界、Investigation/RCA 错误净化、ToolRun 最终围栏、commit-error 处理和 lease/dispatch fencing 已分别通过 Go/Python 与镜像内源码断言。
+本轮本机证据是完成真实登录/scope 后 HTTP 200、20 个 SSE event（含 1 个 done、0 个 error）；同一 `session_id+turn_id` 重试 HTTP 200 且仅 replay `done`，证明不是“只有接口定义”。当前 revision 14 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；Query persistence failure、Orchestrator queue helper、AICHAT SSE 脱敏错误边界、Investigation/RCA 错误净化、ToolRun 最终围栏、commit-error 处理和 lease/dispatch fencing 已分别通过 Go/Python 与镜像内源码断言。
 
 ### 5.2 真实缺口和可执行改进
 
@@ -345,12 +353,12 @@ flowchart LR
 
 ### P0：当前未确认未修复的 P0 级代码缺陷
 
-本轮复审确认并修复了 P0-TOOL-03 的降级分支及 commit-error 缺陷：事务/租约围栏或最终提交失败时旧代码会误返回或因 `quality=complete` 写入 `eligible_for_evidence=1`，存在迟到结果进入 Evidence 或审计丢失风险；该修复由历史 revision 9 回归基线持续保留，当前 revision 9 叠加 AICHAT 错误边界、Investigation/RCA 错误净化、Run lease/commit、Outbox fencing、生产组合隔离、精确探针旁路、Graph 公共错误净化和本轮 alias/容量修复。当前未发现仍由代码和本机证据共同证明的越权、跨租户写入、不可逆数据破坏或核心服务必现不可用。以下 P1 项仍足以阻断生产发布。
+本轮复审确认并修复了 P0-TOOL-03 的降级分支及 commit-error 缺陷：事务/租约围栏或最终提交失败时旧代码会误返回或因 `quality=complete` 写入 `eligible_for_evidence=1`，存在迟到结果进入 Evidence 或审计丢失风险；该修复由历史 revision 9 回归基线持续保留，当前 revision 14 叠加 AICHAT 错误边界、Investigation/RCA 错误净化、Run lease/commit、Outbox fencing、生产组合隔离、精确探针旁路、Graph 公共错误净化、Worker GraphSyncRuntime 和 scope 分页修复。当前未发现仍由代码和本机证据共同证明的越权、跨租户写入、不可逆数据破坏或核心服务必现不可用。以下 P1 项仍足以阻断生产发布。
 
 ### P1-01：发布证据不可发布，代码/镜像/部署不可复核
 
 - **类型/要求：** 发布流程缺陷；release manifest 必须绑定 commit、镜像 digest、rendered manifest、迁移/policy/data digest。
-- **证据：** 当前 revision 9 使用代码提交 `110353c`；12 个自研 Deployment/Job 均使用 `git-110353c`，Query Pod imageID 已核对，其他未改动服务采用内容等价的本地重标记；合同、架构、Helm lint、diff check 和基础 validator 门禁通过。`collect-release-evidence.sh` 仍按 fail-closed 规则要求工作区无未审计文件和 registry immutable digest/signature；用户既有未跟踪 `:memory:.ses` 文件使 `working_tree_dirty=true,publishable=false`，这些文件不纳入本报告或发布候选。
+- **证据：** 当前 revision 14 使用代码提交 `95d8489`；Query API、Graph migrator、Investigation Worker 已部署本轮修复镜像，其他未改服务保留已验证镜像；合同、架构、Helm lint、diff check 和基础 validator 门禁通过。`collect-release-evidence.sh` 仍按 fail-closed 规则要求工作区无未审计文件和 registry immutable digest/signature；用户既有未跟踪 `:memory:.ses` 文件使 `working_tree_dirty=true,publishable=false`，这些文件不纳入本报告或发布候选。
 - **触发/影响：** 将本机测试结果直接当生产候选，生产运行版本可能与报告代码不同，无法审计或安全回滚。
 - **根因：** 本轮代码已提交并完成本机候选部署，但仍未执行 registry digest 构建/签名；仓库还保留既有未跟踪运行时文件，发布证据脚本按 fail-closed 规则拒绝 publishable。
 - **整改实现：** 提交当前修复；构建所有自研镜像并记录 digest；`helm template` 固定 values/Secret 引用；在隔离 namespace 部署；采集测试、Pod digest、migration checksum、Graph/Provider/rollback 结果。
@@ -368,19 +376,19 @@ flowchart LR
 ### P1-03：RCA 观测数据源未达到可用证据门槛
 
 - **类型/要求：** 配置/数据可靠性阻断；RCA 必须读取真实 metrics/logs/traces/alerts/changes，数据源不可用要显式失败而不是空成功。
-- **证据：** Fresh Install 已按授权重建持久化存储，当前运行态没有此前 canary 的历史数据；本轮 DeepFlow 官方 7.1.002 已真实运行，独立切换门禁记录了前后增长的 OTLP counters、平台 Trace 行和 DeepFlow raw L7 行。全域 validator 仍没有同一 marker 下的 metrics/logs/events/dependency/RCA 汇总，因此不能把 DeepFlow 独立 PASS 或此前 canary 当作完整 RCA 数据质量证明；完整根因门禁仍要求跨域 alerts/changes/DeepFlow/依赖证据。
+- **证据：** Fresh Install 已按授权重建持久化存储，当前运行态没有此前 canary 的历史数据；本轮 DeepFlow 官方 7.1.002 已真实运行，独立切换门禁记录了前后增长的 OTLP counters、平台 Trace 行和 DeepFlow raw L7 行。Worker 图谱同步此前的生命周期/清理超时已由 P1-11 修复，当前 Kubernetes generation=1/2 reconcile success；但全域 validator 仍没有同一 marker 下的 metrics/logs/events/dependency/RCA 汇总，因此不能把 DeepFlow 独立 PASS 或图谱 success 当作完整 RCA 数据质量证明；完整根因门禁仍要求跨域 alerts/changes/DeepFlow/依赖证据。
 - **触发/影响：** 生产数据源认证或租户映射错误时，根因结果只能 partial；若 UI 忽略 quality，可能误导处置。
-- **根因：** Fresh Install 后本机没有保留历史 canary；本轮 DeepFlow 已真实运行并通过独立 OTLP 切换门禁，但全域 validator 仍没有同一 marker 下的 metrics/logs/events/dependency/RCA evidence。不能把 DeepFlow PASS 外推为完整 RCA 数据源健康。
+- **根因：** Fresh Install 后本机没有保留历史 canary；本轮 DeepFlow 已真实运行并通过独立 OTLP 切换门禁，Worker 图谱输入也已恢复，但全域 validator 仍没有同一 marker 下的 metrics/logs/events/dependency/RCA evidence。不能把 DeepFlow 或 Graph reconcile PASS 外推为完整 RCA 数据源健康。
 - **整改实现：** 已通过只读合同验证 Ingest→VM/VLogs/DeepFlow OTLP→Query 的配置边界，并保留 `NO_DATA` 与 `BACKEND_UNAVAILABLE` 的不同语义；本轮 `verify-deepflow-otlp-cutover.sh` 在真实基线、显式本机 Secret 和真实请求下 PASS，`validate-local-stack.sh` 仍因缺全域 marker 按设计 `BLOCKED_BY_ENV`。候选环境必须补 DeepFlow flow/span、alerts/changes、service dependency 和 RCA evidence URL，核对 `tenant_id/cluster_id`、migration checksum、reader mode，并以 `internal_query.go:288-299,337-346` 的 complete envelope 语义作为回归基线。
 - **验收标准：** 固定 tenant/cluster/time window 的 metrics/logs/traces/alerts/changes canary 全部返回 200 + 正确 quality；数据源故障返回明确 503/partial 且 UI 显示原因；RCA evidence count、provenance digest、tool error count 可在 MySQL/运行事件中关联；授权空数据必须是 `complete` 空结果，认证/连接故障必须保持 `BACKEND_UNAVAILABLE`，二者不可混淆。
 
 ### P1-04：真实 Graph 数据、负载和恢复未绑定候选版本
 
 - **类型/要求：** 功能/容量/恢复门禁；HugeGraph 必须是可重建投影，schema/source/load/recovery/tenant isolation 证据需绑定候选 commit/digest。
-- **证据：** `graph-networkpolicy.yaml:13-23` selector 已修为 `app=query-api-http`；本轮提交 `110353c` 的 `graph-capacity-gate.sh` 固定真实 200,000 vertices/1,000,000 edges、`--batch-benchmark-iterations 0` 和 `--project-query-aliases`。实际门禁 `PASS`：loader `loaded=true`、精确边/点计数、`aliases_projected=200000`，health/entity/alias-search/neighbors/candidate/impact/path 均 HTTP 200；首次 4-worker 投影触发 MySQL 1213，新增 1205/1213 有界重试后重跑通过。资源快照条目均已采集，其中 HugeGraph heap-used 因镜像无 jcmd/jstat 明确缺失，RSS/Xmx 仅作容量参考；本机此前 2,000 vertices/5,000 edges bounded recovery、六类 Graph 查询和 tenant/cluster 隔离通过，schema migrator 与 PVC 重建恢复通过；本轮未执行 `graph-load-test.sh` 或任何压测，候选环境 p95/跨节点演练仍未验证。
+- **证据：** `graph-networkpolicy.yaml:13-23` selector 已修为 `app=query-api-http`；提交 `95d8489` 的 Query 图谱客户端按 tenant/cluster/source offset 分页，schema migrator 已创建 19 个 `edgeByScope_<relation>` 索引；Worker generation=1/2 Kubernetes reconcile 分别成功（297/204，第二代标记 56/36），`verify-kubernetes-graph.sh` 通过。本轮之前提交 `110353c` 的 `graph-capacity-gate.sh` 已固定真实 200,000 vertices/1,000,000 edges、`--batch-benchmark-iterations 0` 和 `--project-query-aliases`，实际门禁 PASS；本轮未重复压测或 `graph-load-test.sh`。HugeGraph heap-used 因镜像无 jcmd/jstat 明确缺失，RSS/Xmx 仅作容量参考；候选环境 p95/跨节点演练仍未验证。
 - **触发/影响：** 图高扇出、重启或恢复后 RCA 查询超时/空图，根因排序和传播路径不可信。
-- **根因：** 原容量 loader 只写 HugeGraph，未构造 Query-owned alias projection；并发批量投影没有短暂死锁重试；本机/单节点无法证明候选 digest、跨节点恢复和生产 p95。
-- **整改实现：** `GraphEntityAliasDAO.UpsertMany` 统一拥有 alias 批量事务、输入校验和 1205/1213 有界退避重试；loader 只有显式 `--project-query-aliases` 才投影，容量门禁强制打开；保持 `RCA_GRAPH_MAX_DEPTH=1,MAX_VERTICES=50,MAX_EDGES=150` 安全默认；候选环境仍须绑定 schema/data/source/recovery digest、p95/timeout/error budget，Graph unavailable 时保持 `graph_partial/stale`，不推送动作。
+- **根因：** 原容量 loader 只写 HugeGraph，未构造 Query-owned alias projection；并发批量投影没有短暂死锁重试；代际 marker 又对全图执行 1.5 秒交互读，Worker 虽写入数据仍会把 reconcile 判为失败；本机/单节点无法证明候选 digest、跨节点恢复和生产 p95。
+- **整改实现：** `GraphEntityAliasDAO.UpsertMany` 统一拥有 alias 批量事务、输入校验和 1205/1213 有界退避重试；loader 只有显式 `--project-query-aliases` 才投影，容量门禁强制打开；`HugeGraphClient` 只按 scope 读取并分页，维护读独立超时，边按关系标签索引；保持 `RCA_GRAPH_MAX_DEPTH=1,MAX_VERTICES=50,MAX_EDGES=150` 安全默认；候选环境仍须绑定 schema/data/source/recovery digest、p95/timeout/error budget，Graph unavailable 时保持 `graph_partial/stale`，不推送动作。
 - **验收标准：** 固定 dataset 下 cold start、增量 reconcile、断点恢复、租户隔离和查询 p95/503 阈值全部通过；同一候选 digest 的 Graph evidence 可重放；超限请求返回受控错误，不拖垮 Query/Worker。
 
 ### P1-05：Credential Broker/真实 mutation 链路只能作为受控能力，尚未生产验收
@@ -437,6 +445,15 @@ flowchart LR
 - **状态与影响：** 当前生产 Investigation/RCA 运行路径不再把异常原文写入持久化 Run 事件或 Graph warning；正常 RCA evidence/report 内容仍保留，影响仅限错误信息表达。候选环境仍需真实 Provider/数据源故障矩阵验证，但不再阻断本机代码安全门禁。
 - **验收标准：** 注入包含 URL、SQL、密码、API key、token、堆栈的 Graph/Evidence/LLM/stream 异常，外部响应和 `ai_run_events`/Run completed payload/graph context 仅出现稳定 `error_code` 与通用消息；异常类型和 request/run ID 可在服务日志关联；Worker/Gateway 相似探针路径必须 401/404 而非匿名放行。
 
+### P1-11：Investigation Worker 未启动 canonical GraphSyncRuntime、代际清理超时（本轮已修复）
+
+- **类型/要求：** 功能/可靠性；RCA 的实体解析必须使用 Query-owned、可重建的 HugeGraph 投影。Worker 启动后必须运行 source reconcile；成功写入后只能在同一租户、集群和 source 范围内执行可分页的 generation stale transition。
+- **修复前代码证据：** `ai-orchestrator/apps/investigation.py` lifespan 只启动 dispatcher/recovery，没有构造 `kg.runtime.build_graph_sync_runtime`；Query `ai-apm-query-go/internal/graph/generation_marker.go` 调用 `ListVertices/ListEdges` 的全图 `limit=100000`，交互读超时为 `GRAPH_READ_TIMEOUT_MS=1500`。真实 Kubernetes run 已写入 297 vertices/204 edges，但随后返回 `GRAPH_UNAVAILABLE`，MySQL `graph_reconcile_runs` 为 failed。
+- **修复实现：** `apps/investigation.py` 在 `GRAPH_BACKEND` 为 `shadow/hugegraph` 且 `GRAPH_SOURCE_RECONCILE_ENABLED` 开启时启动/停止 canonical `GraphSyncRuntime`；`hugegraph_client.go` 增加租户/集群/source 条件与 offset 分页，代际维护读使用独立 30 秒 client；`schema_resources.go` 和 manifest 为 19 个冻结关系创建 `edgeByScope_<relation>` 复合索引；`verify-kubernetes-graph.sh` 默认使用真实部署名 `query-api-http`。
+- **验证证据：** `test_worker_lifespan_starts_canonical_graph_reconcile`、Query Go 图谱单测和全量 `go vet` 通过；Helm revision 14 的 graph-schema-migrator Job 成功创建 19 个边索引；真实 scope 顶点/边 offset=0/1 查询成功；`verify-kubernetes-graph.sh --since 10m` 通过；MySQL 真实记录显示 Kubernetes generation=1 成功（297/204）以及 generation=2 成功并标记 56 vertices/36 edges，错误长度为 0。修复已提交于 `95d8489`。
+- **状态与影响：** 本机 Worker 图谱同步和代际清理已恢复，RCA 图增强具备真实投影输入；P1-03 仍因缺少同一 marker 的全域观测证据而阻断，不能把本项本机通过外推为生产通过。
+- **验收标准：** Worker 启动日志/`graph_reconcile_runs` 对每个 source 有 success；同一 scope 的 generation>1 可完成 stale 标记且无 `GRAPH_UNAVAILABLE`；查询只带租户/集群/source 过滤，分页超过一页不漏项；无边索引或超时应 fail-closed 并记录稳定错误码；RCA run 能关联 graph generation/provenance，跨租户/集群仍拒绝。
+
 ### P2-01：Legacy Chat/编排/兼容代码仍造成重复建设（生产入口已隔离）
 
 - **类型/要求：** 架构债务；生产只保留 canonical Query→Worker/Orchestrator boundary，legacy 不能成为第二 owner/入口。
@@ -489,7 +506,7 @@ flowchart LR
 | 数据 owner/事务 | 有限通过 | MySQL owner、outbox/lease/event/evidence/action 事务和 Chat scope 已具备；本轮 Run 行锁、DB-time lease CAS、commit 幂等和数据库原子 dispatch epoch 已闭环；历史 CH migration、真实 datasource 和 backup 未验收。 |
 | 安全权限 | 有限通过 | JWT role 不授权、MySQL SoT、capability/scope/replay、credential_ref、禁写默认已实现；mTLS SAN/轮换及生产 Secret 缺证据。 |
 | 可靠性 | 有限通过 | WAL、outbox、DB-time lease fencing、bounded graph、timeouts、PDB、readiness 存在；跨副本 replay、HA/PITR、Provider fault injection 未完成。 |
-| 性能扩展 | 部分通过 | Query/Worker 可横向扩展；Graph 高扇出、Ingest 单写 PVC、Python SSE/LLM 资源仍需预算；前端已拆分 vendor chunk，G6 1.41MB 受 1.5MB 显式预算约束。 |
+| 性能扩展 | 部分通过 | Query/Worker 可横向扩展；Graph 查询仍受 bounded depth/vertex/edge 限制，代际维护已改为 scope 索引+offset 分页并使用独立维护超时；Ingest 单写 PVC、Python SSE/LLM 资源仍需预算；前端已拆分 vendor chunk，G6 1.41MB 受 1.5MB 显式预算约束。候选 p95/1M 增量 reconcile 未验证。 |
 | 可观测性/审计 | 部分通过 | request/run/session/tool/action/event ID、metrics、health、evidence JSON 已有；Datasource error 和证书/回滚/HA evidence 尚未集成 release gate。 |
 | 部署运维 | 不通过 | Helm 合同和禁写 fail-closed 通过，但生产 Secret、证书、StorageClass、镜像 digest、迁移/恢复/rollback 尚未齐全。 |
 | 可测试性 | 有限通过 | Python/Go race、前端和合同覆盖高；真实 CH/Graph/Provider/K8s TokenRequest/mTLS/多节点集成缺口明确。 |
@@ -507,7 +524,7 @@ flowchart LR
 
 ## 9. 生产发布门禁
 
-> **当前门禁基线：** 代码 `110353c`、12 个自研镜像 `git-110353c`、Helm revision 9。下列此前写作 revision 3–8 的代码/合同结论仍有效，但运行态以 revision 9 为准；本机未因此获得生产候选证据。
+> **当前门禁基线：** 代码 `95d8489`、Helm revision 14。Query API/Graph migrator/Investigation Worker 使用本轮修复镜像，其余未改服务沿用已验证镜像；下列此前写作 revision 3–11 的代码/合同结论仍有效，但运行态以 revision 14 为准；本机未因此获得生产候选证据。
 
 ### 已通过（代码或本机证据）
 
@@ -518,19 +535,21 @@ flowchart LR
 - mTLS required/SAN 配置已进入 Helm revision 3；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401；Python Gateway/Worker 以 `python -m mtls_server` 启动，错误 SAN 在 ASGI 前返回 403，真实 Gateway→Worker mTLS health 返回 200；默认非 TLS Worker profile 显式使用 `uvicorn investigation_app:app`。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations 0001–0009、quarantine/audit/identity gate；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
 - Helm 和合同脚本均通过；本轮 Query Go `go vet ./...` 与 `go test ./...` 全量通过；Orchestrator 源码编译和队列 helper 通过，Python 隔离全量 `1227 passed, 1 skipped, 3 deselected, 2 warnings`（3 个回环测试显式排除）；前端 25 个文件/39 个测试与 Vite 构建通过。
-- 本机 Helm revision 9 所有核心服务 Ready；12 个自研 Deployment/Job 实际使用 `git-110353c`，9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint；ClickHouse 以含前导连字符的随机密码完成探针、初始化和迁移。
+- 本机 Helm revision 14 所有核心服务 Ready；本轮变更的 Query API、Graph migrator、Investigation Worker 使用修复镜像，未改服务保留已验证镜像；9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint；ClickHouse 以含前导连字符的随机密码完成探针、初始化和迁移。
 - Run Lease claim/renew/resume、Runtime Commit 最终 lease CAS、Outbox dispatch epoch 原子递增和 Python lease-aware token 的代码/回归门槛通过；这些修复已进入当前自研镜像，但候选多副本故障注入仍归入 P1-06。
 - AICHAT canonical/legacy SSE 异常出口统一使用 `_chat_stream_error_event`，注入含密钥和内部地址的异常只返回 `CHAT_BACKEND_ERROR`；本轮 15 个定向回归测试通过，问题 P1-07 已关闭，不再作为当前发布阻断。
 - Investigation Worker/RCA 的错误边界已统一：`error_safety.py` 净化 Run event/result，Graph/Evidence warning 只保留稳定数据源码，LLM/stream catch 不返回异常原文；37 项定向测试、Python 全量 `1227 passed`、ARCH-333–347 合同及 revision 7 容器内断言通过，P1-10 已关闭，不再作为当前代码阻断。
 - Graph 200k/1M 单次容量门禁已通过：真实写入 200,000 vertices、1,000,000 edges，Query-owned alias 投影 200,000，7 个只读操作 HTTP 200；门禁显式 `pressure_test=false`、`benchmark_iterations=0`。资源快照采集 RSS/Xmx、RocksDB、Query/Worker、前端和 Long Task；HugeGraph heap-used 因 JRE 无 jcmd/jstat 明确未采集，不作为完整生产资源证明。
 - AICHAT 本机真实闭环已通过：首次 SSE HTTP 200/20 events/done，重复同一 `session_id+turn_id` HTTP 200 且仅 replay done；当前 `LLM_MOCK=true`，真实 Provider 仍是未验证发布项。
+- Investigation Worker GraphSyncRuntime 生命周期已真实接线：`GRAPH_BACKEND=hugegraph`、`GRAPH_SOURCE_RECONCILE_ENABLED=1` 时 Worker 启动/停止 canonical runtime；本机 MySQL `graph_reconcile_runs` 显示 Kubernetes generation=1、generation=2 均 success，generation=2 计数为 297 vertices/204 edges、staled=56/36、error length=0。
+- HugeGraph 代际清理已由全图 `limit=100000`/1.5 秒交互读取改为租户/集群/source scope offset 分页和独立维护 client；Helm revision 14 的 graph-schema-migrator 创建 19 个 `edgeByScope_<relation>` 索引，真实 offset=0/1 顶点/边查询及 `verify-kubernetes-graph.sh` 均通过。该代码修复提交为 `95d8489`，但候选 digest、p95 和跨节点恢复仍未验证。
 
 ### 未通过（明确阻断）
 
 - P1-01：release evidence 已绑定提交但仍 `publishable=false`（未跟踪运行时文件 + 尚无 registry immutable digest/signature）；
 - P1-02：生产 Secret、逐服务证书身份/SAN、错误证书拒绝、轮换和撤销材料未在候选环境验收；
 - P1-03：全域 validator 因无 `AIOPS_VALIDATION_DATA_MARKER` 返回 exit 2 `BLOCKED_BY_ENV`；DeepFlow 独立切换门禁已用真实基线和显式本机 Secret 返回 PASS，但同一 marker 下的 metrics/logs/events/dependency/RCA 汇总仍缺失；不得把独立 DeepFlow PASS、历史 canary、零计数或 fixture 外推为完整 RCA 证据；
-- P1-04：本机提交 `110353c` 已通过一次真实 200k/1M 写入、200k Query-owned alias 投影、7 个只读操作和资源门禁（不压测）；HugeGraph heap-used 在 JRE 镜像中仍未采集，且候选 digest、跨节点恢复、p95/回滚证据尚未绑定，因此候选环境容量与恢复仍阻断；
+- P1-04：本机提交 `110353c` 已通过一次真实 200k/1M 写入、200k Query-owned alias 投影、7 个只读操作和资源门禁（不压测）；本轮 `95d8489` 又修复并验证 Worker GraphSyncRuntime 及 scope 分页代际清理；HugeGraph heap-used 在 JRE 镜像中仍未采集，且候选 digest、跨节点恢复、p95/回滚证据尚未绑定，因此候选环境容量与恢复仍阻断；
 - P1-05：真实 mutation 若属于发布范围，Broker/TokenRequest/审计尚未验收；
 - P1-06：多节点/多副本 replay、MySQL/ClickHouse/PVC 故障恢复、备份/PITR、升级/回滚和 RPO/RTO 尚未在候选环境验收；
 - P2-03：本机 0008/0009 迁移和身份门禁已通过；候选生产的历史数据扫描/quarantine、ReplacingMergeTree merge、备份恢复和 checksum evidence 尚未执行，若发布包含历史数据必须纳入门禁。
@@ -572,4 +591,4 @@ flowchart LR
 
 本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机运行态不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。新增本轮 RED cluster 归属、Graph 快照入口、AICHAT 持久化错误、AICHAT SSE 脱敏错误边界、流队列背压、Investigation/RCA 错误事件净化、探针精确认证、Python 隔离全量测试、DeepFlow 官方运行态/真实 OTLP 切换、ToolRun 最终围栏和 commit-error 修复证据，并明确全域 marker、真实 Provider、HA、容量和生产凭据仍未验证。
 
-本轮修订覆盖上一轮 revision 19/早期 revision 2 的运行态描述：当前运行态以 Helm revision 9、12 个自研镜像 `git-110353c`、Helm `STATUS=deployed`、Pod 镜像标签和 MySQL 0001–0016/ClickHouse 0001–0009 证据为准；revision 3–8、9–11 及其旧标签仅作为历史基线，历史 canary、fixture 和零计数不作为当前真实观测证据。代码构建提交为 `110353c`；报告文档提交不改变运行镜像。Investigation/RCA 错误边界、Graph/Evidence warning code、Query Graph 公共错误净化、生产组合隔离和 Gateway/Worker 探针路径已通过代码、测试和合同；ClickHouse 前导连字符密码故障已真实复现并修复；Graph 本轮完成一次真实 200k/1M 写入、200k alias projection、7 个只读门禁和资源快照（heap-used 明确未采集），明确未执行压力/负载测试。
+本轮修订覆盖上一轮 revision 19/早期 revision 2 的运行态描述：当前运行态以 Helm revision 14、提交 `95d8489`、本轮 Query/Graph migrator/Worker 修复镜像、其余服务已验证镜像以及 MySQL 0001–0016/ClickHouse 0001–0009 证据为准；revision 3–13 及其旧标签仅作为历史基线，历史 canary、fixture 和零计数不作为当前真实观测证据。报告文档提交不改变运行镜像。Investigation Worker GraphSyncRuntime 生命周期、HugeGraph scope 分页/边索引、RCA 错误边界、Graph/Evidence warning code、Query Graph 公共错误净化、生产组合隔离和 Gateway/Worker 探针路径已通过代码、测试、迁移和真实运行验证；ClickHouse 前导连字符密码故障已真实复现并修复；Graph 200k/1M 写入、200k alias projection、7 个只读门禁和资源快照仍明确是不压测证据（heap-used 未采集），生产真实观测、Provider、HA/PITR、digest/signature 仍阻断发布。
