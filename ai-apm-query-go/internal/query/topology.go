@@ -328,8 +328,15 @@ func (r *TopologyRepository) GlobalEdgesWithTraceFallback(ctx context.Context, s
 			fallbackErr = derr
 			continue
 		}
-		if len(derived) > 0 {
-			return derived, nil
+		crossService := make([]TopologyEdge, 0, len(derived))
+		for _, edge := range derived {
+			if edge.Source == "" || edge.Target == "" || edge.Source == edge.Target {
+				continue
+			}
+			crossService = append(crossService, edge)
+		}
+		if len(crossService) > 0 {
+			return crossService, nil
 		}
 	}
 	if fallbackErr != nil {
@@ -358,7 +365,7 @@ func (r *TopologyRepository) ParentSpanEdges(ctx context.Context, scope Topology
 		"SELECT s1.service_name AS source_service, s2.service_name AS target_service, count() AS calls, 0 AS errs, avg(s2.duration_ns) AS avg_ns "+
 			"FROM observability.trace_spans AS s1 JOIN observability.trace_spans AS s2 "+
 			"ON s1.trace_id = s2.trace_id AND s1.span_id = s2.parent_span_id "+
-			"WHERE %s AND s1.start_time >= now() - INTERVAL %d MINUTE AND s1.%s AND s2.%s "+
+			"WHERE %s AND s1.start_time >= now() - INTERVAL %d MINUTE AND s1.%s AND s2.%s AND s1.service_name != s2.service_name "+
 			"GROUP BY s1.service_name, s2.service_name ORDER BY calls DESC LIMIT 200",
 		strings.Join(parts, " AND "), minutes, aliasDate, aliasDate)
 	rows, err := r.ch.QueryJSON(ctx, sql)
