@@ -543,11 +543,33 @@ func validateEventBatch(body []byte, tenantID, clusterID string) error {
 		if fields[0] != tenantID || fields[1] != clusterID {
 			return fmt.Errorf("event row scope does not match authenticated headers")
 		}
+		ts, err := parseEventTimestamp(fields[2])
+		if err != nil {
+			return fmt.Errorf("event row timestamp is invalid")
+		}
+		bucket, err := time.ParseInLocation("2006-01-02 15:04:05", fields[13], time.UTC)
+		if err != nil || !bucket.Equal(ts.UTC().Truncate(time.Minute)) {
+			return fmt.Errorf("event row time_bucket is invalid")
+		}
 		if !eventIDPattern.MatchString(fields[14]) {
 			return fmt.Errorf("event row event_id must be a 64-character SHA-256 hex digest")
 		}
 	}
 	return nil
+}
+
+// parseEventTimestamp accepts exactly the UTC, timezone-free representation
+// emitted by the event collector for ClickHouse DateTime64(9).  Ingest must
+// reject malformed rows before they enter the durable acceptance WAL: a bad
+// first row would otherwise block FIFO replay and cause every later event to
+// remain pending indefinitely.
+func parseEventTimestamp(value string) (time.Time, error) {
+	for _, layout := range []string{"2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
+		if parsed, err := time.ParseInLocation(layout, value, time.UTC); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("timestamp must be UTC ClickHouse format")
 }
 
 func countEventRows(body []byte) int {
