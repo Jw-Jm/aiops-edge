@@ -104,6 +104,51 @@ def test_rca_request_and_result_keep_frozen_window_and_actual_paths():
     assert path["edge_uids"] == ["edge:checkout-db"]
 
 
+def test_confirmed_result_exposes_publishable_evidence_contract():
+    graph = {
+        "vertices": [
+            {**_entity("service:db", "db"), "hops": 1},
+            {**_entity("service:checkout", "checkout"), "hops": 0},
+        ],
+        "edges": [{
+            "edge_uid": "edge:checkout-db", "source_uid": "service:checkout",
+            "target_uid": "service:db", "propagates_failure": True,
+            "confidence": 1.0, "candidate_direction": "OUT",
+        }],
+    }
+
+    def graph_client(**params):
+        if params["graph_operation"] == "get_vertex":
+            return {"entity": _entity("service:checkout", "checkout")}
+        return graph
+
+    evidence = [
+        {"entity_uid": "service:db", "category": "metric", "severity": 1.0,
+         "observed_at": "2026-08-27T00:25:00Z"},
+        {"entity_uid": "service:db", "category": "trace", "degraded": True,
+         "observed_at": "2026-08-27T00:25:00Z"},
+        {"entity_uid": "service:db", "category": "alert", "severity": 1.0,
+         "observed_at": "2026-08-27T00:25:00Z"},
+        {"entity_uid": "service:db", "category": "change", "same_entity": True},
+        {"entity_uid": "service:db", "category": "hardware_sensor", "severity": 1.0,
+         "observed_at": "2026-08-27T00:25:00Z"},
+    ]
+    request = RCARequest(
+        run_id="run-confirmed", tenant_id="tenant-1", cluster_id="cluster-1",
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z", entity_uid="service:checkout",
+        evidence=tuple(evidence),
+    )
+    result = RCAEngineV2(graph_client=graph_client).diagnose(request)
+
+    assert result.root_cause_status == "confirmed"
+    payload = result.to_dict()
+    assert payload["final_graph_context"]["final"] is True
+    assert payload["subgraph_node_count"] == 2
+    assert payload["propagation_path"]["edge_uids"] == ["edge:checkout-db"]
+    assert payload["root_score"] == payload["deterministic_root_score"]
+
+
 def test_graph_outage_persists_local_only_context_for_replay():
     persisted = []
 

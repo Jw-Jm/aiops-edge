@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from investigation_dispatcher import AcceptedInvocation
 from invocation_scope import current_execution_lease_token
@@ -75,6 +76,53 @@ class OutcomeBrain:
 
     async def investigate(self, item, lease):
         return self.outcome
+
+
+@pytest.mark.asyncio
+async def test_worker_brain_keeps_rca_payload_for_terminal_context(monkeypatch):
+    from apps.investigation import _WorkerBrain
+
+    class FakeRCAResult:
+        root_cause_status = "confirmed"
+        root_cause = "service:db"
+        confidence = 0.9
+        propagation_paths = [{"vertex_uids": ["service:db", "service:api"]}]
+        window_start = "2026-08-27T00:00:00Z"
+        window_end = "2026-08-27T01:00:00Z"
+        symptom_time = "2026-08-27T00:30:00Z"
+        graph_enhanced = True
+        graph_context = {"warning_codes": [], "partial": False, "stale": False}
+        explanation = "confirmed"
+
+        def to_dict(self):
+            return {"root_cause_status": self.root_cause_status,
+                    "root_cause": self.root_cause,
+                    "graph_context": self.graph_context}
+
+    class FakeEngine:
+        def __init__(self, **_kwargs):
+            pass
+
+        def diagnose(self, *_args):
+            return FakeRCAResult()
+
+    monkeypatch.setattr("rca_engine.engine.RCAEngineV2", FakeEngine)
+    monkeypatch.setattr("rca_engine.runtime.InvestigationGraphClient", lambda _item: object())
+    monkeypatch.setattr("rca_engine.runtime.InvestigationEvidenceProvider", lambda _item: object())
+    item = AcceptedInvocation(
+        run_id="22222222-2222-4222-8222-222222222222",
+        invocation_id="99999999-9999-4999-8999-999999999999",
+        request_id="11111111-1111-4111-8111-111111111111",
+        tenant_id="55555555-5555-4555-8555-555555555555",
+        cluster_id="66666666-6666-4666-8666-666666666666",
+        intent="diagnose", resource_id="service:api", service="service:api",
+        message="diagnose", action_mode="read_only", request_context=SimpleNamespace(),
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z",
+    )
+    result = await _WorkerBrain().investigate(item, Lease())
+
+    assert result["result"]["rca"]["root_cause_status"] == "confirmed"
 
 
 def item():

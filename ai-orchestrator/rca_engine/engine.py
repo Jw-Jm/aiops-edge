@@ -186,15 +186,33 @@ class RCAResult:
     context_evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"run_id": self.run_id, "root_cause": self.root_cause, "root_cause_status": self.root_cause_status,
-                "confidence": self.confidence, "root_cause_scope": self.root_cause_scope,
-                "graph_enhanced": self.graph_enhanced, "candidate_roots": self.candidate_roots,
-                "propagation_paths": self.propagation_paths, "evidence": self.evidence,
-                "missing_evidence": self.missing_evidence, "contradictions": self.contradictions,
-                "graph_context": self.graph_context, "explanation": self.explanation,
-                "window_start": self.window_start, "window_end": self.window_end,
-                "symptom_time": self.symptom_time, "policy_version": self.policy_version,
-                "policy_digest": self.policy_digest, "context_evidence": self.context_evidence}
+        payload = {"run_id": self.run_id, "root_cause": self.root_cause, "root_cause_status": self.root_cause_status,
+                   "confidence": self.confidence, "root_cause_scope": self.root_cause_scope,
+                   "graph_enhanced": self.graph_enhanced, "candidate_roots": self.candidate_roots,
+                   "propagation_paths": self.propagation_paths, "evidence": self.evidence,
+                   "missing_evidence": self.missing_evidence, "contradictions": self.contradictions,
+                   "graph_context": self.graph_context, "explanation": self.explanation,
+                   "window_start": self.window_start, "window_end": self.window_end,
+                   "symptom_time": self.symptom_time, "policy_version": self.policy_version,
+                   "policy_digest": self.policy_digest, "context_evidence": self.context_evidence}
+        # The evidence validator consumes the RCA result itself.  Expose the
+        # deterministic fields explicitly instead of requiring a second,
+        # lossy adapter to reconstruct them from ``confidence`` and graph
+        # internals.  A final context is emitted only for a genuinely
+        # confirmed, complete graph result; partial/probable results remain
+        # fail-closed and intentionally omit finality claims.
+        context = self.graph_context if isinstance(self.graph_context, dict) else {}
+        vertices = context.get("vertices") if isinstance(context.get("vertices"), list) else []
+        if self.root_cause_status == "confirmed" and not context.get("partial") and not context.get("stale"):
+            final_context = dict(context)
+            final_context["final"] = True
+            payload["final_graph_context"] = final_context
+            payload["propagation_path"] = dict(self.propagation_paths[0]) if self.propagation_paths else {}
+            payload["subgraph_node_count"] = len(vertices)
+            score = float(self.confidence)
+            payload["root_score"] = score
+            payload["deterministic_root_score"] = score
+        return payload
 
 
 class RCAEngineV2:

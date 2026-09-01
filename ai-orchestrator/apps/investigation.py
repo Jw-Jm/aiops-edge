@@ -95,6 +95,7 @@ class _WorkerBrain:
         error_code = ""
         final_text = ""
         saw_done = False
+        result: dict = {}
 
         if item.request_context is None:
             raise RuntimeError("RUN_CONTEXT_REQUIRED")
@@ -150,6 +151,12 @@ class _WorkerBrain:
                 request,
                 item.request_context,
             )
+            # Preserve the structured RCA payload for InvestigationRuntime.
+            # Without this field the canonical worker only emitted the compact
+            # rca.v2 event; Runtime could not perform its terminal
+            # is_final=true graph-context append, leaving replay consumers with
+            # an active (non-final) context even after a Run completed.
+            result["rca"] = rca_result.to_dict()
             events.append({
                 "type": "rca.v2",
                 "event_type": "rca.v2",
@@ -205,7 +212,10 @@ class _WorkerBrain:
 
         if status == "success" and (not saw_done or not final_text.strip()) and item.action_mode != "read_only":
             status, error_code = "partial", error_code or ("INCOMPLETE_STREAM" if not saw_done else "NO_DATA")
-        result = {"events": len(events)}
+        # Keep the structured RCA payload populated above; replacing the
+        # mapping here would silently prevent InvestigationRuntime from
+        # finalizing and replaying graph context.
+        result["events"] = len(events)
         if final_text:
             result["report"] = final_text
         if error_code:
