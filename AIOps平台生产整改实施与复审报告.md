@@ -1,6 +1,6 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
-**复审日期：** 2026-08-31（Asia/Shanghai）
+**复审日期：** 2026-08-31 至 2026-09-01（Asia/Shanghai）
 **代码构建基线：** `main` / `f35ef7dad3d9`（RED 指标保留 cluster_id、Graph 资源快照入口、AICHAT transcript 持久化失败语义、Orchestrator 有界断线感知队列、DeepFlow OTLP 渲染/切换合同修复提交及本轮证据修订）
 **本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 7（2026-08-31 22:07 +0800），DeepFlow official chart `7.1.002` revision 2（本机专用 `deepflow` namespace）；12 个自研镜像统一标签 `git-f35ef7dad3d9`；运行 Pod 均使用该标签，Helm upgrade 状态为 `deployed`。
 **报告文档提交：** 当前 HEAD 的 docs-only 提交；该提交只更新审查报告，不改变服务源码，因此运行镜像仍正确绑定服务代码提交 `f35ef7dad3d9`。
@@ -103,6 +103,7 @@
 | ClickHouse 迁移 | migrator 日志显示 0001–0009 全部 applied/skipped 且 checksum 一致；`event_id`/tenant/cluster 身份非法计数为 `0/0/0/0`，`event_id.default_kind` 为空。 |
 | 运行态 | Helm revision 7；Query、Orchestrator、2 个 Worker、Ingest、Collector、Proxy、Frontend、HugeGraph、MySQL、ClickHouse 及迁移 Job 就绪；核心容器重启数为 0。 |
 | 本机残留清理 | 按 Asia/Shanghai `2026-08-31` 为保留边界，旧自研镜像标签和 dangling layers 已清理；revision 7 仅使用当前 `git-f35ef7dad3d9` 标签；Fresh Install 后 MySQL 运行历史表（Chat/Run/Evidence/Tool/Audit/Reports）和 ClickHouse `alert_events`/`log_records`/`trace_spans` 今天之前行数均为 0；用户/角色/租户/集群配置未删除。第三方镜像、生产数据、外部系统未触碰。 |
+| 续审 Python 全量（2026-09-01） | `cd ai-orchestrator && env -u AIOPS_MTLS_REQUIRED -u AIOPS_TLS_CERT_FILE -u AIOPS_TLS_KEY_FILE -u AIOPS_TLS_CLIENT_CA_FILE -u LLM_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GRAPH_BACKEND AIOPS_ENV=local AIOPS_DATA_DIR=/tmp/aiops-test-final-clean PYTHONDONTWRITEBYTECODE=1 .venv314/bin/python -m pytest -q -p no:cacheprovider`（本机回环权限已授权） | **1220 passed, 1 skipped, 2 warnings in 18.16s**；清洁进程/隔离数据目录下无失败。warning 仍为 chromadb asyncio 弃用提示及 `test_node_collect_logs.py` 的临时文件 deallocator 警告，不改变退出码。 |
 | 发布门禁 | 基础安全/部署/迁移门禁通过；DeepFlow 官方 7.1.002 本机真实 OTLP 切换已 PASS；全域 validator 对无统一 marker 仍返回 `BLOCKED_BY_ENV`，多节点、PITR、生产 Secret/证书/registry 签名仍未验证，生产仍不可发布。 |
 
 ### 2.4 OrbStack 实际运行证据
