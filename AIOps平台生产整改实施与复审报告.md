@@ -1,9 +1,9 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
 **复审日期：** 2026-08-31 至 2026-09-01（Asia/Shanghai）
-**代码构建基线：** `main` / `62829de126e6`（在既有整改基础上修复 ToolRun 最终租约围栏：提交前校验 owner/epoch/token/未过期，围栏失败结果强制 `eligible_for_evidence=0`，并补充回归测试）
-**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 8（2026-09-01 08:49 +0800），DeepFlow official chart `7.1.002` revision 2（本机专用 `deepflow` namespace）；12 个自研镜像统一标签 `git-62829de126e6`；运行 Pod 均使用该标签，Helm upgrade 状态为 `deployed`。
-**报告文档提交：** 本轮代码修复提交 `62829de126e6` 后的文档更新提交；文档提交不改变服务源码，运行镜像已先在 revision 8 绑定代码提交。
+**代码构建基线：** `main` / `9c283b9f5fd8`（在既有整改基础上补齐 ToolRun 最终租约围栏的 commit-error 分支：提交失败不返回伪成功，降级结果强制 `eligible_for_evidence=0`，并补充回归测试）
+**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 9（2026-09-01 09:00 +0800），DeepFlow official chart `7.1.002` revision 2（本机专用 `deepflow` namespace）；12 个自研镜像统一标签 `git-9c283b9f5fd8`；运行 Pod 均使用该标签，Helm upgrade 状态为 `deployed`。
+**报告文档提交：** 本轮代码修复提交 `9c283b9f5fd8` 后的文档更新提交；文档提交不改变服务源码，运行镜像已先在 revision 9 绑定代码提交。
 **工作区：** 代码修复已提交；用户既有未跟踪文件 `ai-orchestrator/:memory:.ses` 保留不动，不纳入审查工具产物。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
@@ -74,6 +74,8 @@
 | 最终 validator（绑定当前运行镜像） | `RELEASE_TAG=git-f35ef7dad3d9 AIOPS_EVIDENCE_REPORT_OUTPUT=/tmp/aiops-evidence-f35ef7.json bash deploy/scripts/validate-local-stack.sh` | **exit 2 / BLOCKED_BY_ENV**；revision 7 核心工作负载、MySQL 0016、ClickHouse 0001–0009、Executor disabled、RBAC 和 HTTPS readiness 均通过；因未提供 `AIOPS_VALIDATION_DATA_MARKER`，真实 metrics/logs/events 证据门禁明确阻断。该结果不是代码失败，也没有用 fixture 代替生产观测。 |
 | revision 8 代码—镜像—运行态同步 | `IMAGE_TAG=git-62829de126e6 bash deploy/scripts/build-images.sh all`（ipmi 首次 registry TLS 瞬态失败，单次重试成功）；`helm upgrade aiops deploy/helm/aiops -n observability --reuse-values --set global.imageTag=git-62829de126e6 --wait --timeout 15m`；`kubectl ... get deploy/pods` | **通过**；12 个自研镜像构建成功，Helm revision 8 `STATUS=deployed`；所有自研 Deployment 标签均为 `git-62829de126e6`，Pod imageID 逐项一致，业务容器重启数为 0。 |
 | revision 8 最终 validator | `RELEASE_TAG=git-62829de126e6 AIOPS_EVIDENCE_REPORT_OUTPUT=/tmp/aiops-evidence-62829de.json bash deploy/scripts/validate-local-stack.sh` | **基础门禁通过，最终 exit 2 / BLOCKED_BY_ENV**；Query/Worker/Proxy/Ingest/Collector/Frontend/HugeGraph/MySQL readiness、MySQL 0001–0016、ClickHouse 0001–0009、事件身份、Executor disabled、RBAC、HTTPS readiness 和 canary 均通过；未提供真实 `AIOPS_VALIDATION_DATA_MARKER`，validator 明确阻断全域观测证据，未使用 fixture。 |
+| revision 9 代码—镜像—运行态同步 | `IMAGE_TAG=git-9c283b9f5fd8 bash deploy/scripts/build-images.sh all`；`helm upgrade aiops deploy/helm/aiops -n observability --reuse-values --set global.imageTag=git-9c283b9f5fd8 --wait --timeout 15m`；`kubectl ... get deploy/pods` | **通过**；12 个自研镜像构建成功，Helm revision 9 `STATUS=deployed`；所有自研 Deployment 标签、Pod imageID 均为 `git-9c283b9f5fd8`，业务容器重启数为 0。 |
+| revision 9 最终 validator | `RELEASE_TAG=git-9c283b9f5fd8 AIOPS_EVIDENCE_REPORT_OUTPUT=/tmp/aiops-evidence-9c283b9f5fd8.json bash deploy/scripts/validate-local-stack.sh` | **基础门禁通过，最终 exit 2 / BLOCKED_BY_ENV**；Query/Worker/Proxy/Ingest/Collector/Frontend/HugeGraph/MySQL readiness、MySQL 0001–0016、ClickHouse 0001–0009、事件身份、Executor disabled、RBAC、HTTPS readiness 和 canary 均通过；未提供真实 `AIOPS_VALIDATION_DATA_MARKER`，validator 明确阻断全域观测证据，未使用 fixture。 |
 | 启动竞态与 mTLS SAN 修复重跑 | `RELEASE_TAG=git-f35ef7dad3d9 ... local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow` | **通过基础设施与安全门禁**；revision 7 使用提交对应镜像部署完成，Gateway/Worker `python -m mtls_server` 启动、initContainer 成功且业务容器重启数为 0；无 marker 时观测证据按设计 `BLOCKED_BY_ENV`。 |
 | Worker 双 profile Helm 渲染 | `helm template ... -f deploy/helm/aiops/values.yaml --set investigationWorker.enabled=true ...`；`helm template ... -f deploy/helm/aiops/values-prod.yaml ...`（均使用临时非生产 Secret 覆盖） | **通过**；默认/非 TLS 输出 `command: ["uvicorn"]`、`args: ["investigation_app:app", ...]`；生产/TLS 输出 `command: ["python", "-m", "mtls_server"]`、`investigation_app:app` 与 `--ssl-cert-reqs 2`。 |
 | revision 7 部署后清单与镜像 digest | `kubectl -n observability get deploy ...`；`kubectl -n observability get pods ... imageID`；`docker image inspect ...:git-f35ef7dad3d9` | **通过**；全部自研 Deployment/Job 使用 `git-f35ef7dad3d9`，当前 Pod Ready，迁移 Job Complete。 |
@@ -98,7 +100,7 @@
 | 当前真实观测发布验证 | `RELEASE_TAG=git-f35ef7dad3d9 AIOPS_EVIDENCE_REPORT_OUTPUT=/tmp/aiops-evidence-f35ef7.json bash deploy/scripts/validate-local-stack.sh` | **exit 2 / BLOCKED_BY_ENV**；核心 workload、MySQL 0016、ClickHouse 0001–0009、RBAC、Executor disabled、HTTPS readiness 全通过；完整 DeepFlow OTLP 切换已有独立 PASS，但全域 metrics/logs/events/dependency/RCA 仍未提供同一 marker，validator 按设计阻断而非推测通过。 |
 | Helm/部署合同 | `bash deploy/scripts/test-graph-resource-snapshot-contract.sh`、`bash deploy/scripts/test-deepflow-otlp-render.sh`、`bash deploy/scripts/test-deepflow-runtime-boundary.sh`、`bash deploy/scripts/test-deployment-contracts.sh`、`helm lint --strict deploy/helm/aiops` | **全部通过**（Helm 仅有 icon recommendation）。 |
 
-### 2.3.3 本轮 ToolRun 围栏修复 / revision 8 实际证据
+### 2.3.3 上一轮 ToolRun 围栏修复 / revision 8 实际证据（历史基线）
 
 | 检查 | 命令与结果 | 结论 |
 |---|---|---|
@@ -121,11 +123,22 @@
 | 续审 Python 全量（2026-09-01） | `cd ai-orchestrator && env -u AIOPS_MTLS_REQUIRED -u AIOPS_TLS_CERT_FILE -u AIOPS_TLS_KEY_FILE -u AIOPS_TLS_CLIENT_CA_FILE -u LLM_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GRAPH_BACKEND AIOPS_ENV=local AIOPS_DATA_DIR=/tmp/aiops-test-final-clean PYTHONDONTWRITEBYTECODE=1 .venv314/bin/python -m pytest -q -p no:cacheprovider`（本机回环权限已授权） | **1220 passed, 1 skipped, 2 warnings in 18.16s**；清洁进程/隔离数据目录下无失败。warning 仍为 chromadb asyncio 弃用提示及 `test_node_collect_logs.py` 的临时文件 deallocator 警告，不改变退出码。 |
 | 发布门禁 | 基础安全/部署/迁移门禁通过；DeepFlow 官方 7.1.002 本机真实 OTLP 切换已 PASS；全域 validator 对无统一 marker 仍返回 `BLOCKED_BY_ENV`，多节点、PITR、生产 Secret/证书/registry 签名仍未验证，生产仍不可发布。 |
 
+### 2.3.5 本轮 commit-error 围栏修复 / revision 9 实际证据
+
+| 检查 | 命令与结果 | 结论 |
+|---|---|---|
+| 缺陷复现（修复前） | `go test ./internal/api -run TestFinishToolRunCommitFailureNeverEligibleForEvidence -count=1` | **按预期失败**；旧实现忽略 `tx.Commit()` 错误并直接返回，无法保证审计结果已落库，也没有进入不可入 Evidence 的降级路径。 |
+| 代码修复 | `ai-apm-query-go/internal/api/toolrun_wrapper.go:217-268`；`ai-apm-query-go/internal/store/ai_run_lease.go:453-474` | `tx.Commit()` 错误现在被记录并转入统一降级；最终围栏、事务完成或提交任一失败时，降级更新固定 `eligible_for_evidence=false`、`ErrorCode=TOOL_FENCING_FAILED`；成功提交后才追加迟到事件。 |
+| 修复后回归 | `go test ./internal/api -run 'TestFinishToolRun' -count=1`；`go test ./...`；`go test -race ./...`（`ai-apm-query-go`） | **全部通过**；事务启动失败、最终租约拒绝、commit-error 三条路径均由 SQL mock 覆盖，相关包全量和 race 全量通过。 |
+| 运行镜像验证 | `IMAGE_TAG=git-9c283b9f5fd8 bash deploy/scripts/build-images.sh all`；Helm revision 9；Pod imageID 核对 | **通过**；全部 12 个自研镜像和 Query/Dispatcher/Alert 三个进程均绑定 `git-9c283b9f5fd8`，核心容器 0 次重启。 |
+
+本轮代码修复提交为 `9c283b9f5fd8`。本轮发现的 P0-TOOL-03 事务降级缺陷和同一边界的 commit-error 缺陷均已由代码、回归测试和 revision 9 本机镜像验证；生产候选仍需外部 digest/signature、真实观测和 HA 证据。
+
 ### 2.4 OrbStack 实际运行证据
 
-当前本机 Helm revision 8 的非敏感摘要（revision 7 的历史证据保留在 2.3.2/2.3.4）：
+当前本机 Helm revision 9 的非敏感摘要（revision 7/8 的历史证据保留在 2.3.2–2.3.4）：
 
-- 12 个自研 Deployment/Job 均使用 `git-62829de126e6`；Query HTTP、Dispatcher、Alert Evaluator、Orchestrator、2 个 Investigation Worker、Ingest、Event Collector、LLM Proxy、Action Executor、Frontend 均 Ready，业务容器重启数为 0。Query/Dispatcher/Alert 三个进程实际共享包含本轮 ToolRun 围栏修复的 `query-api:git-62829de126e6`。
+- 12 个自研 Deployment/Job 均使用 `git-9c283b9f5fd8`；Query HTTP、Dispatcher、Alert Evaluator、Orchestrator、2 个 Investigation Worker、Ingest、Event Collector、LLM Proxy、Action Executor、Frontend 均 Ready，业务容器重启数为 0。Query/Dispatcher/Alert 三个进程实际共享包含本轮 ToolRun 最终围栏和 commit-error 修复的 `query-api:git-9c283b9f5fd8`。
 
 - Query HTTP、Dispatcher、Alert Evaluator、Orchestrator、Investigation Worker（2 副本）、Ingest、Event Collector、LLM Proxy、Action Executor、Frontend，以及 MySQL/ClickHouse/HugeGraph/VictoriaMetrics/VictoriaLogs 均为 Ready/Running；初始化与迁移 Job 为 Complete。
 - 所有 9 个需要内部身份的 Deployment 均实际注入非空 `AIOPS_TLS_CLIENT_SAN`；Go 服务以 `AIOPS_MTLS_REQUIRED=true` 启用证书校验，Query 的 HTTPS readiness 通过。临时本地证书由验证脚本生成，未写入仓库。
@@ -242,7 +255,7 @@ flowchart LR
 4. Orchestrator internal ingress 校验服务 token、JWS、audience、capability、scope、replay 后调用 `brain.stream_sync`，只读对话不会创建 Investigation Run（`main.py:1064-1132`）。
 5. Query 不缓冲 SSE，逐帧写入浏览器并只把 assistant done/suggestion 持久化到 MySQL（`settings.go:1080-1109,1131-1160`）。前端随后刷新会话列表并可调用 Query-owned final report。
 
-上一轮本机证据是完成真实登录/scope 后 HTTP 200、24 个 SSE event（含 1 个 done、0 个 error）和 Query-owned 会话接口 200；伪造 `X-Tenant-ID` 不改变服务端 active scope，因此不是“只有接口定义”。当前 revision 8 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；Query persistence failure、Orchestrator queue helper 和本轮 ToolRun 最终围栏已分别通过 Go/Python 与镜像内源码断言。
+上一轮本机证据是完成真实登录/scope 后 HTTP 200、24 个 SSE event（含 1 个 done、0 个 error）和 Query-owned 会话接口 200；伪造 `X-Tenant-ID` 不改变服务端 active scope，因此不是“只有接口定义”。当前 revision 9 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；Query persistence failure、Orchestrator queue helper、ToolRun 最终围栏和 commit-error 处理已分别通过 Go/Python 与镜像内源码断言。
 
 ### 5.2 真实缺口和可执行改进
 
@@ -272,16 +285,16 @@ flowchart LR
 - **DeepFlow OTLP 合同与真实切换门禁：** `test-deepflow-otlp-render.sh`（官方 7.1.002 chart）和 runtime boundary 扫描通过；本机官方 DeepFlow chart revision 2 已运行并创建业务库，显式密码认证成功；`verify-deepflow-otlp-cutover.sh` 带真实基线和显式 Secret 返回 exit 0 `PASS`（OTLP counters、平台 Trace 行、DeepFlow raw L7 行、20s observation 全部通过），未使用 fixture 或零计数。
 - **Query 作用域与硬编码租户回退：** `auth.go:317-366` 现在只读取 `auth_sessions` 的 MySQL active scope；`handler.go:300-312` 的后台指标租户未配置时返回空并跳过 ETT，不再使用固定 UUID；`main.py:1580-1625` 的 legacy mutation 也只接受签名 context。`TestRequestAuthorizationContextIgnoresClientTenantHeader`、`TestMetricsTenantIDFailsClosedWithoutConfiguredSystemTenant`、Query full/race 和 ARCH-105/106/107/108 均通过。
 - **生产 NetworkPolicy 默认拒绝与选择器：** `values-prod.yaml:86-88` 已将 `egressDefaultDeny` 设为 `true`；`templates/networkpolicy.yaml:177-357,603-630,1104-1195` 补齐 Dispatcher/Alert/Frontend/Executor/Broker 出站白名单，并将 Query 部署选择器统一为 `app=query-api-http`；`graph-networkpolicy.yaml:30-97` 补齐 HugeGraph/schema migrator 出站链路。Kubernetes API 不再伪装成 `kube-system` Pod，改为发布时注入 `kubernetesApiCIDRs`，缺失时 Helm fail-closed。架构契约、Helm 渲染 YAML 解析、部署契约和完整 workflow gate 均通过；生产 CNI 连通性仍未验证。
-- **ToolRun 最终租约围栏与 Evidence 资格：** `ai-apm-query-go/internal/api/toolrun_wrapper.go:217-264` 在 `FinishToolRunWithFencing` 前再次调用带行锁的 `FenceToolExecutionTx`；事务启动、owner/epoch/token/过期校验或完成事务任一失败时，降级结果固定 `eligible_for_evidence=false`、错误码 `TOOL_FENCING_FAILED`，且降级持久化错误写入日志。`internal/api/toolrun_wrapper_test.go:88-147` 的两个回归测试分别覆盖事务失败和最终租约拒绝；`go test ./...`、`go test -race ./...` 全部通过。
+- **ToolRun 最终租约围栏与 Evidence 资格：** `ai-apm-query-go/internal/api/toolrun_wrapper.go:217-268` 在 `FinishToolRunWithFencing` 前再次调用带行锁的 `FenceToolExecutionTx`，并显式处理 `tx.Commit()` 错误；事务启动、owner/epoch/token/过期校验、完成事务或提交任一失败时，降级结果固定 `eligible_for_evidence=false`、错误码 `TOOL_FENCING_FAILED`，且降级持久化错误写入日志。`internal/api/toolrun_wrapper_test.go` 的三个回归测试分别覆盖事务失败、最终租约拒绝和 commit-error；`go test ./...`、`go test -race ./...` 全部通过。
 
 ### P0：当前未确认未修复的 P0 级代码缺陷
 
-本轮复审确认并修复了 P0-TOOL-03 的降级分支缺陷：事务/租约围栏失败时旧代码会因 `quality=complete` 写入 `eligible_for_evidence=1`，存在迟到结果进入 Evidence 的风险；现已由 revision 8 代码、回归测试和本机运行镜像验证。当前未发现仍由代码和本机证据共同证明的越权、跨租户写入、不可逆数据破坏或核心服务必现不可用。以下 P1 项仍足以阻断生产发布。
+本轮复审确认并修复了 P0-TOOL-03 的降级分支及 commit-error 缺陷：事务/租约围栏或最终提交失败时旧代码会误返回或因 `quality=complete` 写入 `eligible_for_evidence=1`，存在迟到结果进入 Evidence 或审计丢失风险；现已由 revision 9 代码、回归测试和本机运行镜像验证。当前未发现仍由代码和本机证据共同证明的越权、跨租户写入、不可逆数据破坏或核心服务必现不可用。以下 P1 项仍足以阻断生产发布。
 
 ### P1-01：发布证据不可发布，代码/镜像/部署不可复核
 
 - **类型/要求：** 发布流程缺陷；release manifest 必须绑定 commit、镜像 digest、rendered manifest、迁移/policy/data digest。
-- **证据：** 本轮 `collect-release-evidence.sh /tmp/aiops-release-evidence-62829de.json` 已执行，输出 `git_commit=5b38977adaaa36d609aa4234400ea85ec1d0c7ce`，合同、架构、Helm lint、diff check 均通过；OrbStack revision 8 使用本轮代码提交 `62829de126e6` 构建的 `git-62829de126e6` 本地镜像标签；尚未生成 registry immutable digest/signature evidence；用户既有未跟踪运行时文件 `ai-orchestrator/:memory:.ses` 使工作区保持 dirty，脚本按 fail-closed 规则保持 `publishable=false`。该用户文件不纳入本报告或发布候选。
+- **证据：** revision 9 使用本轮代码提交 `9c283b9f5fd8` 构建的 `git-9c283b9f5fd8` 本地镜像标签，全部自研 Pod imageID 已核对；合同、架构、Helm lint、diff check 和基础 validator 门禁通过。`collect-release-evidence.sh` 仍按 fail-closed 规则将 `working_tree_dirty=true,publishable=false`（用户既有未跟踪 `ai-orchestrator/:memory:.ses`），尚未生成 registry immutable digest/signature evidence；该用户文件不纳入本报告或发布候选。
 - **触发/影响：** 将本机测试结果直接当生产候选，生产运行版本可能与报告代码不同，无法审计或安全回滚。
 - **根因：** 本轮代码已提交并完成本机候选部署，但仍未执行 registry digest 构建/签名；仓库还保留既有未跟踪运行时文件，发布证据脚本按 fail-closed 规则拒绝 publishable。
 - **整改实现：** 提交当前修复；构建所有自研镜像并记录 digest；`helm template` 固定 values/Secret 引用；在隔离 namespace 部署；采集测试、Pod digest、migration checksum、Graph/Provider/rollback 结果。
@@ -411,7 +424,7 @@ flowchart LR
 - mTLS required/SAN 配置已进入 Helm revision 7；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401；Python Gateway/Worker 以 `python -m mtls_server` 启动，错误 SAN 在 ASGI 前返回 403，真实 Gateway→Worker mTLS health 返回 200；默认非 TLS Worker profile 显式使用 `uvicorn investigation_app:app`。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations 0001–0009、quarantine/audit/identity gate；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
 - Helm 和合同脚本均通过；本轮 Ingest/Query Go full/race 通过，Orchestrator 源码编译和队列 helper 通过，Python 全量 `1220 passed, 1 skipped, 2 warnings`；前端既有 39 tests/build 结果为历史代码证据。
-- 本机 Helm revision 8 所有核心服务 Ready；12 个自研镜像实际使用 `git-62829de126e6`，9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
+- 本机 Helm revision 9 所有核心服务 Ready；12 个自研镜像实际使用 `git-9c283b9f5fd8`，9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功且业务容器重启数为 0；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint。
 
 ### 未通过（明确阻断）
 
@@ -457,6 +470,6 @@ flowchart LR
 - mTLS/部署：各服务 `mtls.go`、`ai-apm-query-go/internal/bootstrap/mtls_test.go`、`ai-orchestrator/mtls.py`、`deploy/helm/aiops/templates/`、`values-prod.yaml`、`values-local-validation.yaml`；
 - 验证脚本：`deploy/scripts/collect-release-evidence.sh`、`test-production-architecture-contracts.sh`、local/deployment/Graph/Observability contract scripts。
 
-本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机 revision 8 不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。新增本轮 RED cluster 归属、Graph 快照入口、AICHAT 持久化错误、流队列背压、Python 全量测试、DeepFlow 官方运行态/真实 OTLP 切换和 ToolRun 最终围栏修复证据，并明确全域 marker、真实 Provider、HA、容量和生产凭据仍未验证。
+本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机 revision 9 不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。新增本轮 RED cluster 归属、Graph 快照入口、AICHAT 持久化错误、流队列背压、Python 全量测试、DeepFlow 官方运行态/真实 OTLP 切换、ToolRun 最终围栏和 commit-error 修复证据，并明确全域 marker、真实 Provider、HA、容量和生产凭据仍未验证。
 
-本轮修订覆盖上一轮 revision 19/早期 revision 2 的运行态描述：当前运行态以 revision 8、`git-62829de126e6`、Helm `STATUS=deployed`、Pod 镜像标签和 MySQL 0001–0016/ClickHouse 0001–0009 证据为准；revision 7/`git-f35ef7dad3d9` 仅作为历史基线，历史 canary、fixture 和零计数不作为当前真实观测证据。
+本轮修订覆盖上一轮 revision 19/早期 revision 2 的运行态描述：当前运行态以 revision 9、`git-9c283b9f5fd8`、Helm `STATUS=deployed`、Pod 镜像标签和 MySQL 0001–0016/ClickHouse 0001–0009 证据为准；revision 7/8 及其旧标签仅作为历史基线，历史 canary、fixture 和零计数不作为当前真实观测证据。
