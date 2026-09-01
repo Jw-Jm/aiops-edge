@@ -377,7 +377,7 @@ flowchart LR
 - **触发/影响：** 将本机测试结果直接当生产候选，生产运行版本可能与报告代码不同，无法审计或安全回滚。
 - **根因：** 本轮代码已提交并完成本机候选部署；工作区审计缺口已通过忽略既有运行时 artifact 消除，但 registry 推送、不可变 digest、签名和完整重建仍依赖外部发布基础设施。
 - **整改实现：** 提交当前修复；构建所有自研镜像并记录 digest；`helm template` 固定 values/Secret 引用；在隔离 namespace 部署；采集测试、Pod digest、migration checksum、Graph/Provider/rollback 结果。
-- **验收标准：** release evidence 的 `git_commit` 必须与发布提交 HEAD 一致（本轮报告提交后为 `e01073fa...`），并在签名 manifest 中同时绑定运行时源码 commit `865de6a`、每个镜像 immutable digest 和渲染清单，且 `publishable=true`；Query 与 Worker 均从同一候选源码完成重建，回滚到上一 digest 和再次升级均成功；忽略规则只允许明确的本地运行时 artifact，不得隐藏源码或配置。
+- **验收标准：** release evidence 的 `git_commit` 必须与发布提交 HEAD 一致，并在签名 manifest 中同时绑定运行时源码 commit `865de6a`、每个镜像 immutable digest 和渲染清单，且 `publishable=true`；Query 与 Worker 均从同一候选源码完成重建，回滚到上一 digest 和再次升级均成功；忽略规则只允许明确的本地运行时 artifact，不得隐藏源码或配置。
 
 ### P1-02：生产 Secret、证书身份和轮换证据缺失
 
