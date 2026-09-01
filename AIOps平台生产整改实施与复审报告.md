@@ -1,14 +1,14 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
 **复审日期：** 2026-08-31 至 2026-09-01（Asia/Shanghai）
-**代码构建基线：** `main` / `a786ccb`（在 `29dfa8f` RCA 证据窗口闭区间修复基础上，补充发布工作区审计规则；运行时功能代码未被 `.gitignore` 改动）
-**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 19（2026-09-01，本轮代码同步）；未执行 Graph 压测或 `graph-load-test.sh`。本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步与代际清理验证，并用真实 mTLS/API-key OTLP marker 读回 ClickHouse `trace_spans` 和 `k8s_events`；当前运行态所有核心 Pod Ready，服务镜像引用统一为 `git-a786ccb60e9e`。其中 Query/Frontend/Ingest 镜像在本轮按该标签构建，其他标签为与当前源码提交一致的既有本地镜像复用；完整重建在 Python 基础镜像镜像源 EOF 处受环境限制，未伪称全部重建。Helm 状态为 `deployed`。
-**报告文档提交：** 本报告与代码、镜像分离提交；报告提交不改变运行镜像。代码基线为 `a786ccb`。
+**代码构建基线：** 功能代码 `a786ccb`；发布候选提交 `04cd751` 仅包含本报告基线修订和 `.gitignore`，未改变运行时功能代码。
+**本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 21（2026-09-01，本轮代码同步）；未执行 Graph 压测或 `graph-load-test.sh`。本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步与代际清理验证，并用真实 mTLS/API-key OTLP marker 读回 ClickHouse `trace_spans` 和 `k8s_events`；当前运行态所有核心 Pod Ready，所有自研工作负载镜像引用统一为 `git-04cd7512698a`。这些镜像内容与功能代码 `a786ccb` 一致；完整重建在 Python 基础镜像镜像源 EOF 处受环境限制，未伪称全部重建。Helm 状态为 `deployed`。
+**报告文档提交：** 本报告与功能代码、镜像分离提交；报告提交不改变运行时功能代码。
 **工作区：** 代码修复已提交；用户既有未跟踪文件 `:memory:.ses`、`ai-orchestrator/:memory:.ses` 保留不动，不纳入审查工具产物。
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
 
-> **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以提交 `a786ccb` 和 Helm revision 19 为准；运行时镜像引用统一为 `git-a786ccb60e9e`，但部分未改服务复用了与当前源码一致的既有本地镜像，完整 Python 镜像重建受基础镜像镜像源 EOF 限制。Worker GraphSyncRuntime 生命周期接线、HugeGraph scope 分页代际清理、19 个边范围索引、实际 `query-api-http` 验证、IntentEngine 动态时间窗、Ingest `time_bucket` 落盘和事件坏时间拒绝已通过源码、测试、迁移和真实 OrbStack 运行证据；HugeGraph 镜像不含 jcmd/jstat，heap-used 仍明确未采集。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放均通过，但当前 `LLM_MOCK=true`；真实 RCA Run 已完成图增强和有界 ToolRun，但证据不足时按设计返回 `partial/insufficient_evidence`。DeepFlow 同 marker span、真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
+> **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以功能代码 `a786ccb`、发布候选提交 `04cd751` 和 Helm revision 21 为准；运行时镜像引用统一为 `git-04cd7512698a`，镜像内容与 `a786ccb` 功能代码一致，完整 Python 镜像重建受基础镜像镜像源 EOF 限制。Worker GraphSyncRuntime 生命周期接线、HugeGraph scope 分页代际清理、19 个边范围索引、实际 `query-api-http` 验证、IntentEngine 动态时间窗、Ingest `time_bucket` 落盘和事件坏时间拒绝已通过源码、测试、迁移和真实 OrbStack 运行证据；HugeGraph 镜像不含 jcmd/jstat，heap-used 仍明确未采集。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放均通过，但当前 `LLM_MOCK=true`；真实 RCA Run 已完成图增强和有界 ToolRun，但证据不足时按设计返回 `partial/insufficient_evidence`。DeepFlow 同 marker span、真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
 
 ### 本轮修改与具体功能对应关系
 
@@ -40,7 +40,7 @@
 | 设计符合性 | **有限通过** | MySQL IAM/session/scope、HttpOnly Cookie、canonical UUID、签名 `TrustedRequestContext`、Query/Dispatcher/Alert/Worker 拆分、统一 Ingest、RCA V2、LLM Proxy 边界、AICHAT 脱敏错误边界和 Graph Query-owned alias 投影已接入真实调用链；生产 Secret、证书身份/SAN、API Server CIDR、真实数据源和多副本演练仍缺证据。 |
 | 功能完整性 | **有限通过** | AICHAT（Query `ProxyChat` → Orchestrator `/internal/v1/chat` → MySQL transcript）已用本机真实登录完成首次 SSE 与同 turn replay；Graph 200k/1M 写入、200k alias 投影、7 个只读操作和单次容量门禁通过；RCA 图增强可运行但本机证据不足时返回 `partial/insufficient_evidence`；真实 Provider、真实 TokenRequest mutation 仍未验证。 |
 | 架构合理性 | **有限通过** | 服务边界和 data owner 已明显收敛；Graph 验证工具通过 Query DAO 写 alias，未新增 owner；AICHAT 的重试身份和错误持久化边界由 Query/MySQL/Orchestrator 统一，Python `main.py` 仍保留重复 Chat/legacy 路由和兼容代码，细粒度 TLS SAN 配置与旧 scope 兼容路径仍有治理成本。 |
-| 生产就绪度 | **不通过** | revision 19 本机基础门禁、Graph reconcile、AICHAT 冒烟、IntentEngine 动态时间窗、Ingest Trace/Event marker 写入通过；`collect-release-evidence.sh` 现已因 `.gitignore` 排除既有 `.ses` 而返回 `working_tree_dirty=false,publishable=true`，但仅代表本机证据脚本通过，仍无 registry immutable digest/signature；生产 Secret、真实 Provider、全域观测 marker、HA/备份/回滚仍无候选环境证据。 |
+| 生产就绪度 | **不通过** | revision 21 本机基础门禁、Graph reconcile、AICHAT 冒烟、IntentEngine 动态时间窗、Ingest Trace/Event marker 写入通过；`collect-release-evidence.sh` 现已因 `.gitignore` 排除既有 `.ses` 而返回 `working_tree_dirty=false,publishable=true`，但仅代表本机证据脚本通过，仍无 registry immutable digest/signature；生产 Secret、真实 Provider、全域观测 marker、HA/备份/回滚仍无候选环境证据。 |
 
 **当前不能发布到生产。** 最小阻断集合：
 
@@ -75,7 +75,7 @@
 
 ### 2.3 实际执行的命令与结果
 
-> **本轮证据勘误：** 下表中早期 revision 19 / `git-340286515c49` / `git-acc3606e102c` / revision 2–18 记录来自上一轮复审或本轮中间步骤；本轮当前运行态以新增的 2.3.1 节为准：源码提交 `a786ccb`、Helm revision 19，所有自研 Deployment/Job 引用 `git-a786ccb60e9e`，未改服务复用与当前源码一致的本地镜像。旧 canary 结果仅作为历史代码证据，不冒充本轮 fresh install 的实时观测数据。
+> **本轮证据勘误：** 下表中早期 revision 19–20 / `git-340286515c49` / `git-acc3606e102c` / revision 2–18 记录来自上一轮复审或本轮中间步骤；本轮当前运行态以新增的 2.3.1 节为准：功能代码基线 `a786ccb`、发布候选提交 `04cd751`、Helm revision 21，所有自研 Deployment/DaemonSet/Job 引用 `git-04cd7512698a`。旧 canary 结果仅作为历史代码证据，不冒充本轮 fresh install 的实时观测数据。
 
 > 下表中未明确标为“本轮”的项目是上一轮复审的回归基线；本轮实际重跑的命令、输出和未验证项集中列在新增的 2.3.1 节，避免把旧 canary 或旧测试环境误作当前运行证据。
 
@@ -116,7 +116,7 @@
 
 ### 2.3.1 本轮 `a786ccb` 代码与运行证据（当前基线）
 
-以下是本轮在当前源码提交 `a786ccb` 上重新执行的证据；最终运行态为 Helm revision 19。所有自研 Deployment/Job 的镜像引用统一为 `git-a786ccb60e9e`；其中未改服务使用与该提交内容一致的既有本地镜像，完整镜像重建因 Python 基础镜像镜像源 EOF 未完成。未运行 Graph 压测或 `graph-load-test.sh`；本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步和代际清理，Graph 200k/1M 容量门禁沿用上一轮已通过、且明确不属于压力测试的证据，并在 Worker 容器内验证 IntentEngine 动态时间窗、Ingest→ClickHouse Trace SoT 和 Event WAL 边界。
+以下是本轮在功能代码基线 `a786ccb` 上重新执行的证据；发布候选提交 `04cd751` 仅包含本报告和 `.gitignore`，最终运行态为 Helm revision 21。所有自研 Deployment/DaemonSet/Job 的镜像引用统一为 `git-04cd7512698a`，镜像内容与 `a786ccb` 功能代码一致；完整镜像重建因 Python 基础镜像镜像源 EOF 未完成。未运行 Graph 压测或 `graph-load-test.sh`；本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步和代际清理，Graph 200k/1M 容量门禁沿用上一轮已通过、且明确不属于压力测试的证据，并在 Worker 容器内验证 IntentEngine 动态时间窗、Ingest→ClickHouse Trace SoT 和 Event WAL 边界。
 
 | 检查 | 命令与实际结果 | 结论 |
 |---|---|---|
@@ -127,15 +127,15 @@
 | 部署/架构契约 | `bash deploy/scripts/test-deployment-contracts.sh`；`AIOPS_CONTRACT_ALLOW_TEST_SECRETS=true bash deploy/scripts/test-production-architecture-contracts.sh`；`bash deploy/scripts/secret-format-test.sh` | **全部通过**；本轮 ClickHouse `--password="$VAR"` 单参数合同和 mTLS/SAN/路由/secret 格式合同均通过。 |
 | Query Graph 错误边界回归 | `cd ai-apm-query-go && GOCACHE=/tmp/aiops-gocache go test ./internal/api -run 'TestGraphPublic' -count=1`；`test-production-architecture-contracts.sh` ARCH-346/347 | **通过**；HugeGraph URL、MySQL DSN、token 片段仅保留稳定 `GRAPH_UNAVAILABLE` + 通用消息，响应不含后端诊断原文。 |
 | Investigation/RCA 错误边界回归 | `cd ai-orchestrator && AIOPS_DEPLOYMENT_MODE=development AIOPS_ENV=development LLM_MOCK=true .venv314/bin/python -m pytest -q tests/test_investigation_runtime.py tests/test_investigation_worker_security.py tests/test_rca_engine_v2_contract.py tests/test_orchestrator_routing.py`；`python -m compileall -q apps rca_engine error_safety.py investigation_runtime.py` | **37 项边界测试通过，编译通过**；Runtime completion/event、RCA Graph/Evidence warning code、LLM/stream 错误出口均不再持久化异常原文；Worker/Gateway 探针和生产组合只接受精确边界。 |
-| 镜像构建与代码一致性 | `BUILD_IMAGES_DRY_RUN=1 IMAGE_TAG=git-a786ccb60e9 bash deploy/scripts/build-images.sh all`；实际 `IMAGE_TAG=git-a786ccb60e9e bash deploy/scripts/build-images.sh all`；`docker image inspect`；`kubectl get deploy` | **部分通过**；dry-run 通过，Query/Frontend/Ingest 镜像按当前标签构建，其他未改服务复用与当前源码一致的既有本地镜像并统一重标记；完整构建在 `docker.m.daocloud.io/library/python:3.12-slim` 拉取处因 EOF 失败，未将失败隐藏为全量构建通过。 |
-| 当前发布证据与工作区审计 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-current.json`；`git check-ignore -v ':memory:.ses' 'ai-orchestrator/:memory:.ses'` | **本机脚本通过**；`git_commit=a786ccb60e9ecaff8c018ba69757c00f4e3d9530`、`working_tree_dirty=false`、`publishable=true`；`.ses` 是用户既有运行时 artifact，规则仅按精确文件名排除；registry immutable digest/signature 仍未提供。 |
+| 镜像构建与代码一致性 | `BUILD_IMAGES_DRY_RUN=1 IMAGE_TAG=git-a786ccb60e9 bash deploy/scripts/build-images.sh all`；实际 `IMAGE_TAG=git-a786ccb60e9e bash deploy/scripts/build-images.sh all`；`docker image inspect`；`kubectl get deploy` | **部分通过**；dry-run 通过，Query/Frontend/Ingest 镜像按功能代码标签构建，其他未改服务复用与功能代码一致的既有本地镜像；发布候选提交后所有自研工作负载重新标记为 `git-04cd7512698a`；完整 Python 镜像重建在基础镜像拉取处因 EOF 失败，未将失败隐藏为全量构建通过。 |
+| 当前发布证据与工作区审计 | `bash deploy/scripts/collect-release-evidence.sh /tmp/aiops-release-evidence-final.json`；`git check-ignore -v ':memory:.ses' 'ai-orchestrator/:memory:.ses'` | **本机脚本通过**；`git_commit=04cd7512698a72fdc3bbbabf5f7f6869569df8c4`、`working_tree_dirty=false`、`publishable=true`；`.ses` 是用户既有运行时 artifact，规则仅按精确文件名排除；registry immutable digest/signature 仍未提供。 |
 | 本机干净重建与基础门禁 | `LLM_PROVIDER_KEYS=deepseek:sk-contract-only bash deploy/scripts/local-validation.sh --destroy --confirm-destroy --skip-build --skip-deepflow`；随后 `RELEASE_TAG=git-19cd8f30c8f6 ... local-validation.sh --skip-build --skip-deepflow --reuse-k8s-secret aiops-secrets` | **基础门禁通过**；只重建本机 `observability`、`aiops-canary`、`deepflow` 命名空间及 PVC；MySQL 0001–0016、ClickHouse 0001–0009、RBAC、Worker 开关、Executor disabled、HTTPS readiness、Helm 部署均通过。无观测 marker 时 validator 按设计返回 `BLOCKED_BY_ENV`。 |
 | ClickHouse 密码参数故障与修复 | 修复前干净部署中生成的 Secret 密码以连字符开头，readiness/liveness 与 init/migrator 使用分离参数，Pod 日志出现 `UNRECOGNIZED_ARGUMENTS` 并重启；修复后重跑同一部署 | **已修复并通过**；全部客户端调用改为 `--password="$VAR"` 单参数，ClickHouse Ready，init/migrator Job Complete，部署契约通过。 |
-| 当前 Helm 运行态 | `helm status aiops -n observability`；`kubectl -n observability get deploy,pods`；镜像标签/Pod imageID 核对 | **通过**；Helm revision 19 `STATUS=deployed`；所有自研 Deployment/Job 引用 `git-a786ccb60e9e`，核心 Pod Ready，图谱迁移 Job Complete。 |
+| 当前 Helm 运行态 | `helm status aiops -n observability`；`kubectl -n observability get deploy,ds,pods`；镜像标签/Pod imageID 核对 | **通过**；Helm revision 21 `STATUS=deployed`；所有自研 Deployment/DaemonSet/Job 引用 `git-04cd7512698a`，核心 Pod Ready，图谱迁移 Job Complete。 |
 | Worker GraphSyncRuntime 生命周期修复 | `AIOPS_ENV=development AIOPS_DEPLOYMENT_MODE=development LLM_MOCK=true .venv314/bin/python -m pytest -q tests/test_investigation_worker_security.py tests/test_graph_runtime.py tests/test_rca_engine_v2_contract.py tests/test_rca_runtime_envelope.py`；代码 `apps/investigation.py` lifespan | **19 passed**；新增生命周期测试在修复前按预期失败，修复后通过；Worker revision 11 使用 `ai-orchestrator:local-graph-reconcile-20260901`，启动后真实调用 Query `reconcile_scope`。 |
-| HugeGraph scope 分页与边索引修复 | `cd ai-apm-query-go && GOCACHE=/tmp/aiops-gocache go test ./... -count=1`；`go vet ./...`；Helm revision 17 migrator；只读 scope offset=0/1 查询 | **通过**；Query/Graph migrator 镜像为 `local-graph-scope-20260901`，19 个 `edgeByScope_<relation>` 索引存在；顶点/边 scope 查询 offset=0/1 返回成功，维护读不再使用 1.5 秒交互 client。 |
+| HugeGraph scope 分页与边索引修复 | `cd ai-apm-query-go && GOCACHE=/tmp/aiops-gocache go test ./... -count=1`；`go vet ./...`；Helm revision 21 migrator；只读 scope offset=0/1 查询 | **通过**；revision 21 的 Query/Graph migrator 镜像与功能代码一致，19 个 `edgeByScope_<relation>` 索引存在；顶点/边 scope 查询 offset=0/1 返回成功，维护读不再使用 1.5 秒交互 client。 |
 | Ingest Trace SoT `time_bucket` 修复 | `GOCACHE=/tmp/aiops-go-cache go test ./...`（`ai-apm-ingest-go`）；Helm revision 16；真实 mTLS/API-key OTLP 请求和 ClickHouse marker 查询 | **通过**；修复前 JSONEachRow 因缺少必填 `time_bucket` 返回 400；提交 `dc5dfb4` 后 `ingest-pipeline:local-time-bucket-20260901` Ready 1/1，真实 marker HTTP 200，ClickHouse `trace_rows=1` 且 `time_bucket_present=true`、tenant/cluster 匹配；未打印响应正文或凭据。 |
-| Ingest Event 坏时间拒绝与 WAL 回放 | `GOCACHE=/tmp/aiops-go-cache go test ./...`、`go vet ./...`（`ai-apm-ingest-go`）；Helm revision 17；真实 mTLS/API-key 事件请求与 ClickHouse 查询 | **通过**；`TestValidateEventBatchRejectsMalformedTimestampBeforeWAL` 覆盖合法 UTC、ISO `T...Z` 和错误桶；`ingest-pipeline:local-event-validation-20260901` Ready 1/1；坏事件 HTTP 400、同 marker 合法事件 HTTP 202，ClickHouse `event_rows=1` 且 tenant/cluster/source/message 匹配，`events_backend_failed_total=0`；本机验证数据 WAL 已重建，未使用 fixture 冒充回放证据。 |
+| Ingest Event 坏时间拒绝与 WAL 回放 | `GOCACHE=/tmp/aiops-go-cache go test ./...`、`go vet ./...`（`ai-apm-ingest-go`）；Helm revision 21；真实 mTLS/API-key 事件请求与 ClickHouse 查询 | **通过**；`TestValidateEventBatchRejectsMalformedTimestampBeforeWAL` 覆盖合法 UTC、ISO `T...Z` 和错误桶；`ingest-pipeline:git-04cd7512698a` Ready 1/1；坏事件 HTTP 400、同 marker 合法事件 HTTP 202，ClickHouse `event_rows=1` 且 tenant/cluster/source/message 匹配，`events_backend_failed_total=0`；本机验证数据 WAL 已重建，未使用 fixture 冒充回放证据。 |
 | RCA V2 真实 Run 与证据边界 | 在冻结 `ai_runs` 窗口内，正式 outbox→Worker→RCAEngineV2 通过签名 InternalQueryClient 读取图和五类 ToolRun，并按证据质量返回终态 | 创建只读 Run `c3877c9f-0c0d-4f16-9a7d-8e6c5b4d3f20`（tenant/cluster 为本机 canonical scope，窗口 `2026-09-01T11:20:00Z/11:35:00Z`）；`ai_run_events` 的 `rca.v2` 显示 `graph_enhanced=true`、`graph_partial=false`、`graph_stale=false`，8 个 ToolRun 均 `success/complete`，证据类别含 metrics/traces/logs/alerts/changes；RCA 因确定性评分与当前 marker 数据不足返回 `status=insufficient_evidence`、Run `partial`，不是伪造 confirmed | `ai-orchestrator/apps/investigation.py:91-180`；`rca_engine/{engine.py,runtime.py}`；MySQL `ai_runs/ai_run_events/ai_tool_runs/ai_evidence/ai_run_graph_contexts` | **本机真实链路通过；完整 RCA 门禁未通过** | 证明图解析、签名查询、ToolRun 审计和 partial fail-closed 可用；当前仍缺同 marker 的 DeepFlow span、Kubernetes Event API 对象及 confirmed RCA 证据，不能把 `insufficient_evidence` 改写成发布通过。 |
 | RCA 证据窗口验证器闭区间 | 验证器必须接受 canonical 默认 `symptom_time=window_end`，同时仍要求至少两个 evidence category、非空 final graph context、bounded propagation path 和 root score 与 deterministic score 相等 | `deploy/scripts/test-observability-evidence-contract.sh` 新增 endpoint-symptom fixture；修复前该 fixture 必失败，修复后 gate `PASS`；代码提交 `29dfa8f` | `deploy/scripts/validate-observability-evidence.sh`；`test-observability-evidence-contract.sh` | **通过** | 只修正设计与验证器边界偏差，不改变真实 RCA Run 的证据完整性门禁。 |
 | Kubernetes Graph 真实代际同步 | `bash deploy/scripts/verify-kubernetes-graph.sh --namespace observability --since 10m`；MySQL `graph_reconcile_runs` 仅查询状态/计数/hash | **通过**；脚本通过 `named_graph=DEFAULT/aiops`、投影 `k8s_node`、source reconcile success；generation=1 为 297 vertices/204 edges，generation=2 为 297/204 并标记 56 vertices/36 edges，error length=0。 |
@@ -307,13 +307,13 @@ flowchart LR
 | 生产 egress 默认拒绝且按角色白名单 | `values-prod` 必须打开 default-deny；Query/Dispatcher/Alert/Frontend/Worker/Graph/Executor/Broker 只能到声明的内部目标；Kubernetes API 通过注入 CIDR 放行 | `deploy/helm/aiops/values-prod.yaml:86-88`；`templates/networkpolicy.yaml:1-1195`；`templates/graph-networkpolicy.yaml:1-97` | `networkPolicy.kubernetesApiCIDRs`、NetworkPolicy selectors/ports | production architecture contract、Helm render/PyYAML parse、workflow gate | **部分实现** | 代码/清单已修复并通过静态门禁；本机运行的是 local-validation（egress 未全局开启），生产 CNI、CIDR、NetworkPolicy 实际连通性尚未验证。 |
 | LLM 出站唯一经 Proxy | Orchestrator 只拿 provider metadata/Proxy token，不接 key/任意 URL；生产 Mock 必须 fail-closed；Provider 卡住必须有上游 deadline | `tools.py`；`orchestrator.py`；Proxy `main.go:92-163`；`main.py` 生产启动 guard | Proxy Secret/provider allowlist、60s upstream timeout | `test_llm_proxy_boundary.py`、`test_llm_mock.py`、Proxy `TestHandleProxyHonorsUpstreamTimeout`、Go race | **部分实现** | 代理 deadline 已修复并在本机验证；真实 Provider、限流、熔断和 key rotation 仍未验证。 |
 | DeepFlow OTLP 统一采集 | DeepFlow 只经 OTLP exporter 写入 Ingest 4317；固定 source/queue/tenant metadata；禁止 legacy CH 直写 | `deploy/helm/aiops/values-deepflow.yaml`；`test-deepflow-otlp-render.sh`；`verify-deepflow-otlp-cutover.sh` | DeepFlow chart 7.1.002；Ingest Service 4317；`x-tenant-id`；本机 `deepflow-clickhouse-evidence` Secret | rendered-chart/runtime boundary PASS；真实切换 PASS（`received=9955, accepted=314695`，平台 Trace `314877`，DeepFlow raw L7 `305459`，前后计数增长、20s observation PASS） | **本机完整实现/生产未验证** | 配置合同、官方运行态、原始数据与平台 OTLP 链路已在 OrbStack 真实验证；生产镜像/Secret/CNI/多节点与长窗口仍未验证。 |
-| 生产部署、回滚、观测达标 | Secret/render/image digest、PDB、health/SLO、故障和回滚 evidence 完整 | Helm templates、`runtime-slo.md`、`collect-release-evidence.sh` | Secret refs、PDB、WAL PVC、release JSON | Helm/contracts/evidence script；当前 revision 19 Ready，工作区证据脚本 `publishable=true`；真实观测、registry 签名和 HA 仍 BLOCKED | **未验证** | 本机 readiness 和合同通过不等于生产 HA、PITR、证书轮换、完整观测或 rollback 通过。 |
+| 生产部署、回滚、观测达标 | Secret/render/image digest、PDB、health/SLO、故障和回滚 evidence 完整 | Helm templates、`runtime-slo.md`、`collect-release-evidence.sh` | Secret refs、PDB、WAL PVC、release JSON | Helm/contracts/evidence script；当前 revision 21 Ready，工作区证据脚本 `publishable=true`；真实观测、registry 签名和 HA 仍 BLOCKED | **未验证** | 本机 readiness 和合同通过不等于生产 HA、PITR、证书轮换、完整观测或 rollback 通过。 |
 
 ## 5. AICHAT 两个自研模块复审与改进方案
 
 ### 5.1 是否真实可用
 
-结论：**Query `ProxyChat` 与 Orchestrator `/internal/v1/chat` 已通过本机真实登录的 SSE 和同 turn transcript replay，证明两个自研模块真实接线、scope/capability 签名、持久化和幂等可用；当前 revision 19 仍使用 `LLM_MOCK=true`，生产真实模型能力仍未验证。**
+结论：**Query `ProxyChat` 与 Orchestrator `/internal/v1/chat` 已通过本机真实登录的 SSE 和同 turn transcript replay，证明两个自研模块真实接线、scope/capability 签名、持久化和幂等可用；当前 revision 21 仍使用 `LLM_MOCK=true`，生产真实模型能力仍未验证。**
 
 真实调用链如下：
 
@@ -323,7 +323,7 @@ flowchart LR
 4. Orchestrator internal ingress 校验服务 token、JWS、audience、capability、scope、replay 后调用 `brain.stream_sync`，只读对话不会创建 Investigation Run（`main.py:1064-1132`）。
 5. Query 不缓冲 SSE，逐帧写入浏览器并只把 assistant done/suggestion 持久化到 MySQL（`settings.go:1080-1109,1131-1160`）。前端随后刷新会话列表并可调用 Query-owned final report。
 
-本轮本机证据是完成真实登录/scope 后 HTTP 200、20 个 SSE event（含 1 个 done、0 个 error）；同一 `session_id+turn_id` 重试 HTTP 200 且仅 replay `done`，证明不是“只有接口定义”。当前 revision 19 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；Query persistence failure、Orchestrator queue helper、AICHAT SSE 脱敏错误边界、Investigation/RCA 错误净化、ToolRun 最终围栏、commit-error 处理和 lease/dispatch fencing 已分别通过 Go/Python 与镜像内源码断言。
+本轮本机证据是完成真实登录/scope 后 HTTP 200、20 个 SSE event（含 1 个 done、0 个 error）；同一 `session_id+turn_id` 重试 HTTP 200 且仅 replay `done`，证明不是“只有接口定义”。当前 revision 21 deployment 的 `LLM_MOCK=true`，且没有真实 Provider key，不能把 deterministic/mock 输出认定为真实模型可用；Query persistence failure、Orchestrator queue helper、AICHAT SSE 脱敏错误边界、Investigation/RCA 错误净化、ToolRun 最终围栏、commit-error 处理和 lease/dispatch fencing 已分别通过 Go/Python 与镜像内源码断言。
 
 模块边界补充：`intent_engine.py` 和 `dual_agent.py` 是自研的意图/双层 Agent 组件，但不是当前 canonical AICHAT 的两个生产入口。`intent_engine.py` 当前由 Planner/SecurityGate 测试与内存 MVP 使用，`dual_agent.py` 仅在显式 `dual_agent` 模式下由旧 Chat 图引用；生产 canonical `/internal/v1/chat` 固定走 `mode="chat"`，不依赖这两个模块。它们的存在不能作为“生产 AICHAT 已具备结构化调查/双层 Agent”证据；若要启用，必须先定义持久化 Intent/Plan、ChatTool 审计和跨副本状态恢复契约。本轮还修复了 `intent_engine.py:135-142` 的时间窗缺陷：缺省窗口现在按当前 UTC 动态生成最近 1 小时，而不是查询固定历史日期。
 
@@ -364,12 +364,12 @@ flowchart LR
 
 ### P0：当前未确认未修复的 P0 级代码缺陷
 
-本轮复审确认并修复了 P0-TOOL-03 的降级分支及 commit-error 缺陷：事务/租约围栏或最终提交失败时旧代码会误返回或因 `quality=complete` 写入 `eligible_for_evidence=1`，存在迟到结果进入 Evidence 或审计丢失风险；该修复由历史 revision 9 回归基线持续保留，当前 revision 19 叠加 AICHAT 错误边界、Investigation/RCA 错误净化、Run lease/commit、Outbox fencing、生产组合隔离、精确探针旁路、Graph 公共错误净化、Worker GraphSyncRuntime、scope 分页、IntentEngine 动态时间窗、Ingest Trace/Event 校验、RCA 证据窗口边界和发布工作区审计规则。当前未发现仍由代码和本机证据共同证明的越权、跨租户写入、不可逆数据破坏或核心服务必现不可用。以下 P1 项仍足以阻断生产发布。
+本轮复审确认并修复了 P0-TOOL-03 的降级分支及 commit-error 缺陷：事务/租约围栏或最终提交失败时旧代码会误返回或因 `quality=complete` 写入 `eligible_for_evidence=1`，存在迟到结果进入 Evidence 或审计丢失风险；该修复由历史 revision 9 回归基线持续保留，当前 revision 21 叠加 AICHAT 错误边界、Investigation/RCA 错误净化、Run lease/commit、Outbox fencing、生产组合隔离、精确探针旁路、Graph 公共错误净化、Worker GraphSyncRuntime、scope 分页、IntentEngine 动态时间窗、Ingest Trace/Event 校验、RCA 证据窗口边界和发布工作区审计规则。当前未发现仍由代码和本机证据共同证明的越权、跨租户写入、不可逆数据破坏或核心服务必现不可用。以下 P1 项仍足以阻断生产发布。
 
 ### P1-01：发布证据尚缺不可变 registry digest/signature，代码/镜像/部署不可外部复核
 
 - **类型/要求：** 发布流程缺陷；release manifest 必须绑定 commit、镜像 digest、rendered manifest、迁移/policy/data digest。
-- **证据：** 当前 revision 19 使用代码提交 `a786ccb`；所有自研 Deployment/Job 引用 `git-a786ccb60e9e`，核心 Pod Ready；合同、架构、Helm lint、diff check 和基础 validator 门禁通过。新增 `.gitignore` 仅排除用户既有 `*:memory:.ses` 运行时文件，`collect-release-evidence.sh /tmp/aiops-release-evidence-current.json` 实际返回 `working_tree_dirty=false,publishable=true`。但是完整镜像重建受 Python 基础镜像镜像源 EOF 限制，且本机没有 registry immutable digest/signature，不能把本机 tag 视为可审计发布物。
+- **证据：** 当前 revision 21 使用发布候选提交 `04cd751`；所有自研 Deployment/DaemonSet/Job 引用 `git-04cd7512698a`，核心 Pod Ready；合同、架构、Helm lint、diff check 和基础 validator 门禁通过。新增 `.gitignore` 仅排除用户既有 `*:memory:.ses` 运行时文件，`collect-release-evidence.sh /tmp/aiops-release-evidence-final.json` 实际返回 `working_tree_dirty=false,publishable=true`。但是完整镜像重建受 Python 基础镜像镜像源 EOF 限制，且本机没有 registry immutable digest/signature，不能把本机 tag 视为可审计发布物。
 - **触发/影响：** 将本机测试结果直接当生产候选，生产运行版本可能与报告代码不同，无法审计或安全回滚。
 - **根因：** 本轮代码已提交并完成本机候选部署；工作区审计缺口已通过忽略既有运行时 artifact 消除，但 registry 推送、不可变 digest、签名和完整重建仍依赖外部发布基础设施。
 - **整改实现：** 提交当前修复；构建所有自研镜像并记录 digest；`helm template` 固定 values/Secret 引用；在隔离 namespace 部署；采集测试、Pod digest、migration checksum、Graph/Provider/rollback 结果。
@@ -461,7 +461,7 @@ flowchart LR
 - **类型/要求：** 功能/可靠性；RCA 的实体解析必须使用 Query-owned、可重建的 HugeGraph 投影。Worker 启动后必须运行 source reconcile；成功写入后只能在同一租户、集群和 source 范围内执行可分页的 generation stale transition。
 - **修复前代码证据：** `ai-orchestrator/apps/investigation.py` lifespan 只启动 dispatcher/recovery，没有构造 `kg.runtime.build_graph_sync_runtime`；Query `ai-apm-query-go/internal/graph/generation_marker.go` 调用 `ListVertices/ListEdges` 的全图 `limit=100000`，交互读超时为 `GRAPH_READ_TIMEOUT_MS=1500`。真实 Kubernetes run 已写入 297 vertices/204 edges，但随后返回 `GRAPH_UNAVAILABLE`，MySQL `graph_reconcile_runs` 为 failed。
 - **修复实现：** `apps/investigation.py` 在 `GRAPH_BACKEND` 为 `shadow/hugegraph` 且 `GRAPH_SOURCE_RECONCILE_ENABLED` 开启时启动/停止 canonical `GraphSyncRuntime`；`hugegraph_client.go` 增加租户/集群/source 条件与 offset 分页，代际维护读使用独立 30 秒 client；`schema_resources.go` 和 manifest 为 19 个冻结关系创建 `edgeByScope_<relation>` 复合索引；`verify-kubernetes-graph.sh` 默认使用真实部署名 `query-api-http`。
-- **验证证据：** `test_worker_lifespan_starts_canonical_graph_reconcile`、Query Go 图谱单测和全量 `go vet` 通过；Helm revision 17 的 graph-schema-migrator Job 成功创建 19 个边索引；真实 scope 顶点/边 offset=0/1 查询成功；`verify-kubernetes-graph.sh --since 10m` 通过；MySQL 真实记录显示 Kubernetes generation=1 成功（297/204）以及 generation=2 成功并标记 56 vertices/36 edges，错误长度为 0。图谱修复已提交于 `95d8489`，当前运行基线为 `29dfa8f`。
+- **验证证据：** `test_worker_lifespan_starts_canonical_graph_reconcile`、Query Go 图谱单测和全量 `go vet` 通过；Helm revision 21 的 graph-schema-migrator Job 成功创建 19 个边索引；真实 scope 顶点/边 offset=0/1 查询成功；`verify-kubernetes-graph.sh --since 10m` 通过；MySQL 真实记录显示 Kubernetes generation=1 成功（297/204）以及 generation=2 成功并标记 56 vertices/36 edges，错误长度为 0。图谱修复已提交于 `95d8489`，功能代码包含在当前候选中。
 - **状态与影响：** 本机 Worker 图谱同步和代际清理已恢复，RCA 图增强具备真实投影输入；P1-03 仍因缺少同一 marker 的全域观测证据而阻断，不能把本项本机通过外推为生产通过。
 - **验收标准：** Worker 启动日志/`graph_reconcile_runs` 对每个 source 有 success；同一 scope 的 generation>1 可完成 stale 标记且无 `GRAPH_UNAVAILABLE`；查询只带租户/集群/source 过滤，分页超过一页不漏项；无边索引或超时应 fail-closed 并记录稳定错误码；RCA run 能关联 graph generation/provenance，跨租户/集群仍拒绝。
 
@@ -535,7 +535,7 @@ flowchart LR
 
 ## 9. 生产发布门禁
 
-> **当前门禁基线：** 代码 `a786ccb`、Helm revision 19。所有自研 Deployment/Job 引用 `git-a786ccb60e9e`；下列此前写作 revision 3–18 的代码/合同结论仍有效，但运行态以 revision 19 为准；本机未因此获得生产候选证据。
+> **当前门禁基线：** 功能代码 `a786ccb`、发布候选提交 `04cd751`、Helm revision 21。所有自研 Deployment/DaemonSet/Job 引用 `git-04cd7512698a`；下列此前写作 revision 3–20 的代码/合同结论仍有效，但运行态以 revision 21 为准；本机未因此获得生产候选证据。
 
 ### 已通过（代码或本机证据）
 
@@ -546,7 +546,7 @@ flowchart LR
 - mTLS required/SAN 配置已进入 Helm revision 3；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401；Python Gateway/Worker 以 `python -m mtls_server` 启动，错误 SAN 在 ASGI 前返回 403，真实 Gateway→Worker mTLS health 返回 200；默认非 TLS Worker profile 显式使用 `uvicorn investigation_app:app`。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations 0001–0009、quarantine/audit/identity gate；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
 - Helm 和合同脚本均通过；本轮 Query Go `go vet ./...` 与 `go test ./...` 全量通过；Orchestrator 源码编译和队列 helper 通过，Python 隔离全量 `1227 passed, 1 skipped, 3 deselected, 2 warnings`（3 个回环测试显式排除）；前端 25 个文件/39 个测试与 Vite 构建通过。
-- 本机 Helm revision 19 所有核心服务 Ready；所有自研 Deployment/Job 引用 `git-a786ccb60e9e`（部分未改服务为与当前源码一致的既有本地镜像）；9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint；ClickHouse 以含前导连字符的随机密码完成探针、初始化和迁移。
+- 本机 Helm revision 21 所有核心服务 Ready；所有自研 Deployment/DaemonSet/Job 引用 `git-04cd7512698a`（镜像内容与功能代码 `a786ccb` 一致）；9 个内部服务实际注入 `AIOPS_TLS_CLIENT_SAN`；Gateway/Worker `wait-for-query-api` initContainer 成功；运行态 Query NetworkPolicy 选择器已核对为 `app=query-api-http`；Action Executor 保持 `disabled/realMutation=false`，未调用任何 mutation endpoint；ClickHouse 以含前导连字符的随机密码完成探针、初始化和迁移。
 - Run Lease claim/renew/resume、Runtime Commit 最终 lease CAS、Outbox dispatch epoch 原子递增和 Python lease-aware token 的代码/回归门槛通过；这些修复已进入当前自研镜像，但候选多副本故障注入仍归入 P1-06。
 - AICHAT canonical/legacy SSE 异常出口统一使用 `_chat_stream_error_event`，注入含密钥和内部地址的异常只返回 `CHAT_BACKEND_ERROR`；本轮 15 个定向回归测试通过，问题 P1-07 已关闭，不再作为当前发布阻断。
 - Investigation Worker/RCA 的错误边界已统一：`error_safety.py` 净化 Run event/result，Graph/Evidence warning 只保留稳定数据源码，LLM/stream catch 不返回异常原文；37 项定向测试、Python 全量 `1227 passed`、ARCH-333–347 合同及 revision 7 容器内断言通过，P1-10 已关闭，不再作为当前代码阻断。
@@ -554,10 +554,10 @@ flowchart LR
 - AICHAT 本机真实闭环已通过：首次 SSE HTTP 200/20 events/done，重复同一 `session_id+turn_id` HTTP 200 且仅 replay done；当前 `LLM_MOCK=true`，真实 Provider 仍是未验证发布项。
 - Ingest Trace SoT 真实写入已通过：修复 `trace_spans.time_bucket` 缺列导致的 ClickHouse 400；revision 17 继续运行已验证的 Trace sink，并以 mTLS/API key 接收唯一 OTLP marker HTTP 200，ClickHouse 读回 1 行且 `time_bucket`/`date` 存在、tenant/cluster 匹配；Ingest 全量 Go 测试通过。该项只证明 Trace 明细写入恢复，不替代 metrics/logs/events/dependency/RCA 同 marker 全域门禁。
 - Investigation Worker GraphSyncRuntime 生命周期已真实接线：`GRAPH_BACKEND=hugegraph`、`GRAPH_SOURCE_RECONCILE_ENABLED=1` 时 Worker 启动/停止 canonical runtime；本机 MySQL `graph_reconcile_runs` 显示 Kubernetes generation=1、generation=2 均 success，generation=2 计数为 297 vertices/204 edges、staled=56/36、error length=0。
-- HugeGraph 代际清理已由全图 `limit=100000`/1.5 秒交互读取改为租户/集群/source scope offset 分页和独立维护 client；当前 revision 19 的 graph-schema-migrator 创建 19 个 `edgeByScope_<relation>` 索引，真实 offset=0/1 顶点/边查询、只读 Graph 恢复观察及 `verify-kubernetes-graph.sh` 均通过。该代码修复提交为 `95d8489`，但候选 digest、p95 和跨节点恢复仍未验证。
+- HugeGraph 代际清理已由全图 `limit=100000`/1.5 秒交互读取改为租户/集群/source scope offset 分页和独立维护 client；当前 revision 21 的 graph-schema-migrator 创建 19 个 `edgeByScope_<relation>` 索引，真实 offset=0/1 顶点/边查询、只读 Graph 恢复观察及 `verify-kubernetes-graph.sh` 均通过。该代码修复提交为 `95d8489`，但候选 digest、p95 和跨节点恢复仍未验证。
 - IntentEngine 缺省时间窗已修复：`ai-orchestrator/intent_engine.py:135-142` 现在以当前 UTC 计算 `[now-1h, now]`，`tests/test_p75_intent_engine.py::test_missing_time_range_defaults` 校验 ISO 时间窗长度和新鲜度；35 个 AICHAT/意图/入口测试通过。该修复直接影响自然语言调查的时间范围正确性，但不改变 canonical Chat 与结构化 Investigation 的边界。
-- Ingest Trace SoT `time_bucket` 已修复：`ai-apm-ingest-go/internal/tracesink/clickhouse_span_sink.go:242-270` 现在为每个 span 序列化 UTC 五分钟桶，避免 ClickHouse `trace_spans` 必填列缺失导致 400；`GOCACHE=/tmp/aiops-go-cache go test ./...` 全量通过，revision 19 真实 mTLS/API-key marker HTTP 200，ClickHouse 读回 1 行且时间桶、date、tenant、cluster 均匹配。
-- Ingest Event WAL 阻塞已修复：revision 19 使用 `ingest-pipeline:git-a786ccb60e9e`；非法 ISO `T...Z` 事件在进入 WAL 前 HTTP 400，合法 15 列事件 HTTP 202 并在 ClickHouse `k8s_events` 读回，tenant/cluster/source/message 均匹配，`ai_ingest_events_backend_failed_total=0`。`go test ./...`、`go vet ./...` 与新增回归测试通过。
+- Ingest Trace SoT `time_bucket` 已修复：`ai-apm-ingest-go/internal/tracesink/clickhouse_span_sink.go:242-270` 现在为每个 span 序列化 UTC 五分钟桶，避免 ClickHouse `trace_spans` 必填列缺失导致 400；`GOCACHE=/tmp/aiops-go-cache go test ./...` 全量通过，revision 21 真实 mTLS/API-key marker HTTP 200，ClickHouse 读回 1 行且时间桶、date、tenant、cluster 均匹配。
+- Ingest Event WAL 阻塞已修复：revision 21 使用 `ingest-pipeline:git-04cd7512698a`；非法 ISO `T...Z` 事件在进入 WAL 前 HTTP 400，合法 15 列事件 HTTP 202 并在 ClickHouse `k8s_events` 读回，tenant/cluster/source/message 均匹配，`ai_ingest_events_backend_failed_total=0`。`go test ./...`、`go vet ./...` 与新增回归测试通过。
 - RCA 真实链路已复核：Run `c3877c9f-0c0d-4f16-9a7d-8e6c5b4d3f20` 由正式 outbox 派发，图解析和 8 个 ToolRun 均成功，证据类别已持久化；因真实 marker 数据不足，终态是 `partial/insufficient_evidence`，没有伪造 confirmed 根因。DeepFlow marker 只有真实 flow、无 span 标识；这和 Kubernetes Event API 缺证据、RCA score 不足共同保持 P1-03 阻断。
 - RCA 验证器边界已修复：`29dfa8f` 将 `symptom_time=window_end` 的 canonical 默认语义按闭区间验证，并新增 endpoint fixture 回归；独立证据类别、图上下文、bounded path 和确定性分数门禁保持不变。
 
@@ -608,4 +608,4 @@ flowchart LR
 
 本报告已删除旧版“mTLS 未实现”“Worker 仍导入 main”“本机运行旧镜像”“NO_DATA 必然导致 ToolRun failed”“Query 仍信任 caller X-Tenant-ID”等与当前代码/本机运行态不一致的结论；同时保留了真实未验证项和导致生产阻断的最小问题集合。新增本轮 RED cluster 归属、Graph 快照入口、AICHAT 持久化错误、AICHAT SSE 脱敏错误边界、流队列背压、Investigation/RCA 错误事件净化、探针精确认证、Python 隔离全量测试、DeepFlow 官方运行态/真实 OTLP 切换、ToolRun 最终围栏和 commit-error 修复证据，并明确全域 marker、真实 Provider、HA、容量和生产凭据仍未验证。
 
-本轮修订覆盖上一轮 revision 19/早期 revision 2 的运行态描述：当前运行态以 Helm revision 19、提交 `a786ccb`、所有自研 Deployment/Job 的 `git-a786ccb60e9e` 镜像引用以及 MySQL 0001–0016/ClickHouse 0001–0010 证据为准；revision 3–18 及其旧标签仅作为历史基线，历史 canary、fixture 和零计数不作为当前真实观测证据。报告文档提交不改变运行镜像。Investigation Worker GraphSyncRuntime 生命周期、HugeGraph scope 分页/边索引、RCA 错误边界、Graph/Evidence warning code、Query Graph 公共错误净化、生产组合隔离、Gateway/Worker 探针路径、IntentEngine 动态时间窗、Ingest Trace SoT `time_bucket`、事件坏时间拒绝、RCA 证据窗口闭区间和发布工作区审计规则已通过代码、测试、迁移和真实运行验证；ClickHouse 前导连字符密码故障已真实复现并修复；Graph 200k/1M 写入、200k alias projection、7 个只读门禁和资源快照仍明确是不压测证据（heap-used 未采集），生产真实观测全域门禁（DeepFlow span/Kubernetes Event/RCA confirmed）、Provider、HA/PITR、digest/signature 仍阻断发布。
+本轮修订覆盖上一轮 revision 19/早期 revision 2 的运行态描述：当前运行态以 Helm revision 21、功能代码 `a786ccb`、发布候选提交 `04cd751`、所有自研 Deployment/DaemonSet/Job 的 `git-04cd7512698a` 镜像引用以及 MySQL 0001–0016/ClickHouse 0001–0010 证据为准；revision 3–20 及其旧标签仅作为历史基线，历史 canary、fixture 和零计数不作为当前真实观测证据。报告文档提交不改变运行镜像。Investigation Worker GraphSyncRuntime 生命周期、HugeGraph scope 分页/边索引、RCA 错误边界、Graph/Evidence warning code、Query Graph 公共错误净化、生产组合隔离、Gateway/Worker 探针路径、IntentEngine 动态时间窗、Ingest Trace SoT `time_bucket`、事件坏时间拒绝、RCA 证据窗口闭区间和发布工作区审计规则已通过代码、测试、迁移和真实运行验证；ClickHouse 前导连字符密码故障已真实复现并修复；Graph 200k/1M 写入、200k alias projection、7 个只读门禁和资源快照仍明确是不压测证据（heap-used 未采集），生产真实观测全域门禁（DeepFlow span/Kubernetes Event/RCA confirmed）、Provider、HA/PITR、digest/signature 仍阻断发布。
