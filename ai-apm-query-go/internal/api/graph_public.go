@@ -376,6 +376,23 @@ func respondGraphErrorFromGo(w http.ResponseWriter, err error) {
 	respondGraphError(w, graphpkg.ErrGraphUnavailable, err.Error())
 }
 
+// publicGraphErrorMessage keeps backend diagnostics out of browser responses.
+// Graph adapters may wrap HTTP bodies, URLs or datastore errors in the
+// GRAPH_UNAVAILABLE/SCHEMA/FEATURE codes; those details belong in service
+// logs, while the public contract exposes only a stable code and generic text.
+func publicGraphErrorMessage(code, message string) string {
+	switch code {
+	case graphpkg.ErrGraphUnavailable:
+		return "knowledge graph is unavailable"
+	case graphpkg.ErrGraphSchemaMismatch:
+		return "knowledge graph schema is incompatible"
+	case graphpkg.ErrGraphFeatureUnavailable:
+		return "graph operation is unavailable"
+	default:
+		return message
+	}
+}
+
 func respondGraphError(w http.ResponseWriter, code, message string) {
 	status := http.StatusBadRequest
 	switch code {
@@ -390,7 +407,7 @@ func respondGraphError(w http.ResponseWriter, code, message string) {
 	case graphpkg.ErrGraphUnavailable, graphpkg.ErrGraphSchemaMismatch, graphpkg.ErrGraphFeatureUnavailable:
 		status = http.StatusServiceUnavailable
 	}
-	respondJSON(w, status, map[string]interface{}{"error": map[string]interface{}{"code": code, "message": message, "request_id": store.NewUUIDv4()}})
+	respondJSON(w, status, map[string]interface{}{"error": map[string]interface{}{"code": code, "message": publicGraphErrorMessage(code, message), "request_id": store.NewUUIDv4()}})
 }
 
 func respondGraphParamError(w http.ResponseWriter, err error) {

@@ -128,6 +128,8 @@ required 'scheduler = AsyncIOScheduler() if not _PRODUCTION_COMPOSITION else Non
 required 'shell_policy = ShellPolicy() if not _PRODUCTION_COMPOSITION else None' "$repo_root/ai-orchestrator/main.py" 'ARCH-343 production shell policy owner is constructed at import';
 required 'def _rate_limit_bypass_path_allowed' "$repo_root/ai-orchestrator/main.py" 'ARCH-344 rate-limit probe boundary helper missing';
 forbidden 'request.url.path.startswith(p)' "$repo_root/ai-orchestrator/main.py" 'ARCH-345 rate-limit bypass uses prefix matching';
+required 'func publicGraphErrorMessage' "$repo_root/ai-apm-query-go/internal/api/graph_public.go" 'ARCH-346 public graph backend error sanitizer missing';
+required 'knowledge graph is unavailable' "$repo_root/ai-apm-query-go/internal/api/graph_public.go" 'ARCH-347 public graph backend error leaks diagnostics';
 if rg -n 'app: query-api[[:space:]]*$' "$tmp" >/dev/null; then
   fail 'ARCH-311 stale exact query-api selector remains; deployment label is query-api-http'
 fi

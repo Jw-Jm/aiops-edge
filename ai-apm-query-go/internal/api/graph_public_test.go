@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	graphpkg "github.com/observability-platform/ai-apm-query-go/internal/graph"
@@ -85,5 +87,27 @@ func TestGraphPublicRejectsRawGraphLanguageAndTraversalAboveLimit(t *testing.T) 
 	h.GraphPublicRouter(deepRec, tooDeep)
 	if deepRec.Code != http.StatusBadRequest && deepRec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("too deep status=%d body=%s", deepRec.Code, deepRec.Body.String())
+	}
+}
+
+func TestGraphPublicErrorDoesNotExposeBackendDiagnostics(t *testing.T) {
+	for name, input := range map[string]error{
+		"typed":   graphpkg.NewError(graphpkg.ErrGraphUnavailable, "HugeGraph HTTP 500 https://internal.example/?token=secret-token"),
+		"wrapped": errors.New("mysql://user:password@internal.example graph backend failed"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			respondGraphErrorFromGo(rec, input)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if strings.Contains(body, "secret-token") || strings.Contains(body, "password") || strings.Contains(body, "internal.example") {
+				t.Fatalf("backend diagnostic leaked: %s", body)
+			}
+			if !strings.Contains(body, "knowledge graph is unavailable") {
+				t.Fatalf("generic graph error missing: %s", body)
+			}
+		})
 	}
 }
