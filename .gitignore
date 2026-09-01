@@ -67,6 +67,9 @@ deploy/tools/object-store-bootstrap/object-store-bootstrap
 # playwright-cli 临时 snapshot 文件（测试产物，不入库）
 .playwright-cli/
 
+# Codex/本地会话运行产物（不属于发布候选，不删除用户已有文件）
+*:memory:.ses
+
 # subagent-driven-development 流程产物（brief/report/ledger/diff，可重建，不入库）
 .superpowers/
 
