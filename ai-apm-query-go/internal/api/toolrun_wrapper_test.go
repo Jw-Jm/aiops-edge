@@ -145,3 +145,39 @@ func TestFinishToolRunChecksLeaseBeforeCommit(t *testing.T) {
 		t.Fatalf("final lease fencing must run before commit and force ineligible fallback: %v", err)
 	}
 }
+
+func TestFinishToolRunCommitFailureNeverEligibleForEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := store.GetDB()
+	store.SetDB(db)
+	defer store.SetDB(previous)
+
+	runID := "22222222-2222-4222-8222-222222222222"
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status, lease_epoch FROM ai_runs").
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "lease_epoch"}).AddRow("running", int64(7)))
+	mock.ExpectQuery("SELECT lease_epoch_at_start FROM ai_tool_runs").
+		WithArgs("tool-1").
+		WillReturnRows(sqlmock.NewRows([]string{"lease_epoch_at_start"}).AddRow(int64(7)))
+	mock.ExpectExec("UPDATE ai_tool_runs SET status").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit().WillReturnError(sqlmock.ErrCancelled)
+	mock.ExpectExec(".*").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			int64Argument{want: 0}, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	h := &Handler{toolDAO: &store.AIToolRunDAO{}}
+	h.finishToolRun(&toolRunContext{ToolRunID: "tool-1", RunID: runID},
+		"success", "complete", nil, 0, "")
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("commit failure must force ineligible fallback: %v", err)
+	}
+}

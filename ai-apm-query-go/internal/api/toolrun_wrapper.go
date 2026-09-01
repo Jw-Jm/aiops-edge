@@ -234,19 +234,22 @@ func (h *Handler) finishToolRun(trc *toolRunContext, status, quality string, res
 				})
 			}
 			if ferr == nil {
-				_ = tx.Commit()
-				if late && h.eventDAO != nil {
-					// late/fencing：append TOOL_RESULT_LATE event（审计，独立事务）。
-					etx, eerr := conn.Begin()
-					if eerr == nil {
-						_, _, _ = h.eventDAO.AppendTx(etx, store.AIRunEvent{
-							RunID: trc.RunID, EventID: newUUID(), EventType: "tool_result.late",
-							Payload: json.RawMessage(`{"tool_run_id":"` + trc.ToolRunID + `","late":true}`),
-						})
-						_ = etx.Commit()
+				if commitErr := tx.Commit(); commitErr != nil {
+					log.Printf("toolrun fenced commit failed (tool_run_id=%s): %v", trc.ToolRunID, commitErr)
+				} else {
+					if late && h.eventDAO != nil {
+						// late/fencing：append TOOL_RESULT_LATE event（审计，独立事务）。
+						etx, eerr := conn.Begin()
+						if eerr == nil {
+							_, _, _ = h.eventDAO.AppendTx(etx, store.AIRunEvent{
+								RunID: trc.RunID, EventID: newUUID(), EventType: "tool_result.late",
+								Payload: json.RawMessage(`{"tool_run_id":"` + trc.ToolRunID + `","late":true}`),
+							})
+							_ = etx.Commit()
+						}
 					}
+					return
 				}
-				return
 			}
 			_ = tx.Rollback()
 		}
