@@ -151,6 +151,10 @@ llmEgressProxy:
 # 密钥（占位，实际用 values 文件 / --set 注入，不提交真实值，不入 git）
 # ---------------------------------------------------------------------------
 secrets:
+  # Production may set this to "aiops-secrets" when an ExternalSecret/Vault
+  # controller owns the Secret.  In that mode the chart emits no Secret
+  # object and all workloads consume the pre-provisioned keys fail-closed.
+  existingSecretName: ""
   # 生产必须注入强随机值（至少 32 字符/字节）。query-api 缺失 JWT_SECRET / LLM_ENCRYPTION_KEY
   # 时启动即失败（panic），杜绝弱密钥。
   jwtSecret: ""

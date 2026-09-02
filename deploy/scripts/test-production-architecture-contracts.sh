@@ -63,6 +63,14 @@ forbidden() {
 }
 required() { contains "$1" "$2" || fail "$3"; }
 
+external_secret_tmp="${tmp}.external-secret"
+helm template aiops "$chart" -f "$values" "${helm_secret_args[@]}" \
+  --set-string secrets.existingSecretName=aiops-secrets >"${external_secret_tmp}"
+if rg -n '^kind: Secret$' "${external_secret_tmp}" >/dev/null; then
+  fail 'ARCH-009 external Secret mode still renders plaintext Secret objects'
+fi
+required 'secretKeyRef: { name: aiops-secrets' "${external_secret_tmp}" 'ARCH-010 workloads do not consume the pre-provisioned Secret'
+
 # Browser and deployment identity invariants.
 forbidden 'X-Tenant-ID' "$repo_root/observability-frontend/src" 'ARCH-101 browser tenant header';
 forbidden 'Header.Get("X-Tenant-ID")' "$repo_root/ai-apm-query-go/internal/api/auth.go" 'ARCH-105 Query API caller-controlled tenant header';

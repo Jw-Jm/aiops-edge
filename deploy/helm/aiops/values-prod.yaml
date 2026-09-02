@@ -97,6 +97,11 @@ networkPolicy:
 #   ingestApiKey:     openssl rand -hex 24
 #   clickhousePassword / mysqlRootPassword: openssl rand -hex 16
 secrets:
+  # Secret Manager/ExternalSecret must materialize this exact Secret before
+  # Helm applies workloads.  The chart will not render plaintext credentials
+  # when this is set; missing keys then make Pods unready instead of falling
+  # back to defaults.
+  existingSecretName: "aiops-secrets"
   jwtSecret: "CHANGE_ME"
   llmEncryptionKey: "CHANGE_ME"
   internalToken: "CHANGE_ME"
