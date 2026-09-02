@@ -19,6 +19,8 @@ const (
 	UnavailableCode ErrorCode = ErrorCode(contract.ErrorCodeBackendUnavailable)
 	// TimeoutCode 查询超时。
 	TimeoutCode ErrorCode = ErrorCode(contract.ErrorCodeToolTimeout)
+	// ValidationFailedCode 请求缺少冻结窗口或包含非法筛选参数。
+	ValidationFailedCode ErrorCode = ErrorCode(contract.ErrorCodeValidationFailed)
 )
 
 // QueryError 统一查询层错误。满足 error 接口，并携带稳定错误码与是否可重试。
@@ -36,6 +38,7 @@ func (e *QueryError) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Mes
 //   - PERMISSION_DENIED → 403
 //   - BACKEND_UNAVAILABLE → 503
 //   - TOOL_TIMEOUT   → 504
+//
 // 不依赖 contract.HTTPStatusCode 的 default(500)，确保四语义不被模糊成 generic 500。
 func (e *QueryError) HTTPStatus() int {
 	switch e.Code {
@@ -47,6 +50,8 @@ func (e *QueryError) HTTPStatus() int {
 		return 503
 	case TimeoutCode:
 		return 504
+	case ValidationFailedCode:
+		return 400
 	default:
 		return 500
 	}
@@ -68,4 +73,9 @@ func Unavailable(msg string) error {
 // Timeout 返回超时错误（504，可重试）。
 func Timeout(msg string) error {
 	return &QueryError{Code: TimeoutCode, Message: msg, Retryable: true}
+}
+
+// ValidationFailed 返回请求校验失败（400），与后端不可用严格区分。
+func ValidationFailed(msg string) error {
+	return &QueryError{Code: ValidationFailedCode, Message: msg, Retryable: false}
 }

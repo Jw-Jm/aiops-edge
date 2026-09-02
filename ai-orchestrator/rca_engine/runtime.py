@@ -148,7 +148,8 @@ def _candidate_uids_for_row(item: Mapping[str, Any], candidates: list[dict[str, 
         return [uid for uid, _ in candidate_pairs if uid == explicit_uid]
 
     aliases: list[str] = []
-    for key in ("service_name", "ServiceName", "service", "Service", "service_names", "ServiceNames"):
+    for key in ("service_name", "ServiceName", "service", "Service", "service_names", "ServiceNames",
+                "involved_object", "InvolvedObject", "resource_name", "node"):
         aliases.extend(_text_values(item.get(key)))
     normalized = {_service_identity(alias).lower() for alias in aliases if _service_identity(alias)}
     matches: list[str] = []
@@ -215,13 +216,22 @@ class InvestigationEvidenceProvider:
         rows = _items(body, category, "points", "traces", "logs", "alerts", "changes", "events", "items")
         for row in rows:
             item = dict(row)
+            # The unified event table carries the collector source identity.
+            # Preserve Kubernetes Warning/Error as anomaly evidence, while
+            # classifying only explicit IPMI SEL rows as hardware evidence;
+            # generic event severity must never be promoted implicitly.
+            effective_category = category
+            if category == "kubernetes_event":
+                source = str(item.get("source") or item.get("Source") or "").strip().lower()
+                if source in {"ipmi-sel", "ipmi_sel", "ipmi"}:
+                    effective_category = "hardware_sel"
             # Preserve provider timestamps only when present.  The RCA scorer
             # computes temporal score from these fields and ignores any
             # provider-supplied ``temporal_score``.
-            item["category"] = category
+            item["category"] = effective_category
             matched_uids = _candidate_uids_for_row(item, candidates)
             if not matched_uids and len(candidates) == 1 and not any(
-                str(item.get(key) or "").strip() for key in ("entity_uid", "resource_id", "service_name", "ServiceName", "service", "Service", "service_names", "ServiceNames")
+                str(item.get(key) or "").strip() for key in ("entity_uid", "resource_id", "service_name", "ServiceName", "service", "Service", "service_names", "ServiceNames", "involved_object", "InvolvedObject", "resource_name", "node")
             ):
                 # A backend row with no identity can be assigned only when
                 # the query itself was scoped to exactly one candidate.
@@ -229,14 +239,14 @@ class InvestigationEvidenceProvider:
             observed = next((item.get(key) for key in ("observed_at", "timestamp", "occurred_at", "event_time", "detected_at", "t", "T", "Timestamp", "Start", "StartTime", "LastTS", "last_timestamp") if item.get(key) is not None), None)
             if observed is not None:
                 item["observed_at"] = str(observed)
-            if category == "metric" and "severity" not in item:
+            if effective_category == "metric" and "severity" not in item:
                 calls = item.get("call_count", item.get("CallCount", 0)) or 0
                 errors = item.get("error_count", item.get("ErrorCount", 0)) or 0
                 try:
                     item["severity"] = min(1.0, max(0.0, float(errors) / max(float(calls), 1.0)))
                 except (TypeError, ValueError):
                     item["severity"] = 0.0
-            if category == "alert" and "severity" in item and isinstance(item["severity"], str):
+            if effective_category in {"alert", "hardware_sel"} and "severity" in item and isinstance(item["severity"], str):
                 item["severity"] = {"critical": 1.0, "fatal": 1.0, "error": 1.0, "warning": .6, "warn": .6, "info": .2}.get(item["severity"].lower(), 0.0)
             if matched_uids:
                 for uid in matched_uids:
@@ -273,6 +283,7 @@ class InvestigationEvidenceProvider:
             ("query_logs.v1", "logs", {"services": names, "limit": 100}, "log"),
             ("query_alerts.v1", "alerts", {"services": names, "limit": 100}, "alert"),
             ("query_changes.v1", "changes", {"services": names}, "change"),
+            ("query_k8s_events.v1", "events", {"services": names, "limit": 100}, "kubernetes_event"),
         ]
         for tool_id, operation, params, category in calls:
             try:

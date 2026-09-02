@@ -286,7 +286,7 @@ def minimum_tool_ids() -> list[str]:
     return list(REGISTRY_TOOL_IDS)
 
 
-# 只读查询 Tool（§30，9 个）
+# 只读查询 Tool（§30，含统一 Kubernetes/IPMI 事件事实读取）
 _READONLY_TOOLS = [
     dict(tool_id="query_metrics.v1", name="query_metrics", domain="observability",
          description="查询服务指标 RED", capability="observability.metrics.read",
@@ -303,6 +303,10 @@ _READONLY_TOOLS = [
     dict(tool_id="query_alerts.v1", name="query_alerts", domain="observability",
          description="查询告警", capability="observability.alerts.read",
          required_capability="observability.alerts.read", read_only=True,
+         baseline_risk="R0", risk_level="R0", backend="query-api", category="query"),
+    dict(tool_id="query_k8s_events.v1", name="query_k8s_events", domain="kubernetes",
+         description="查询冻结时间窗内的 Kubernetes/IPMI 事件", capability="kubernetes.events.read",
+         required_capability="kubernetes.events.read", read_only=True,
          baseline_risk="R0", risk_level="R0", backend="query-api", category="query"),
     dict(tool_id="query_topology.v1", name="query_topology", domain="observability",
          description="查询服务拓扑", capability="observability.topology.read",

@@ -149,6 +149,10 @@ type Handler struct {
 	// alertRepo 是 alerts 资源域 domain repository（P6.2b），SQL ownership 在 repository。
 	alertRepo *query.AlertRepository
 
+	// eventRepo 是统一 Kubernetes/IPMI 事件事实的只读 repository；事件写入
+	// 仍由 ingest/event-collector 所有，RCA 不得读取旧 orchestrator 端点。
+	eventRepo *query.KubernetesEventRepository
+
 	// topoRepo 是 topology 资源域 domain repository（P6.2c），SQL ownership 在 repository。
 	// topology SoT 固定 ClickHouse（service_topology / trace_spans）。
 	topoRepo *query.TopologyRepository
@@ -246,6 +250,7 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.logRepo = query.NewLogRepository(&h.repo, newVLogsReaderFromEnv(), query.NewSourceRouter(readerMode))
 	h.traceRepo = query.NewTraceRepository(&h.repo)
 	h.alertRepo = query.NewAlertRepository(&h.repo)
+	h.eventRepo = query.NewKubernetesEventRepository(&h.repo)
 	h.topoRepo = query.NewTopologyRepository(&h.repo)
 	h.resourceRepo = query.NewResourceRepository(&h.repo)
 	// P6.2d：Kubernetes 走既有 K8s Access Boundary（k8sboundary），复用而非重建底层访问。

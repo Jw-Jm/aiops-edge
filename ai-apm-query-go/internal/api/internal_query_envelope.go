@@ -12,7 +12,7 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════
 // P6.2e Canonical Internal Query Boundary
 //
-// 统一 strict internal envelope，供 8 个 /internal/v1/query/* 端点复用：
+// 统一 strict internal envelope，供所有 /internal/v1/query/* 端点复用：
 //   - service authentication（X-Internal-Token）
 //   - EdDSA TrustedRequestContext V2（orchestrator → query-api）——ONLY，无 JWT fallback
 //   - nonce / replay / expiry / audience 校验
@@ -30,6 +30,7 @@ var routeCapability = map[string]string{
 	"/internal/v1/query/logs":               "observability.logs.read",
 	"/internal/v1/query/traces":             "observability.traces.read",
 	"/internal/v1/query/alerts":             "observability.alerts.read",
+	"/internal/v1/query/events":             "observability.events.read",
 	"/internal/v1/query/topology":           "observability.topology.read",
 	"/internal/v1/query/kubernetes":         "kubernetes.resources.read",
 	"/internal/v1/query/changes":            "changes.read",

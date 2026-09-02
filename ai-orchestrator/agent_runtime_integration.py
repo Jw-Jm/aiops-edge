@@ -20,6 +20,7 @@ _TOOL_OPERATION = {
     "query_logs.v1": "logs",
     "query_traces.v1": "traces",
     "query_alerts.v1": "alerts",
+    "query_k8s_events.v1": "events",
     "query_topology.v1": "topology",
     "query_k8s.v1": "kubernetes",
     "query_changes.v1": "changes",

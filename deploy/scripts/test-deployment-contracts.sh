@@ -95,6 +95,10 @@ echo "[contract] Helm lint"
 helm lint "${chart_dir}"
 
 echo "[contract] unified image tag"
+if ! rg -n 'org\.opencontainers\.image\.revision' "${repo_root}/deploy/scripts/build-images.sh" >/dev/null; then
+  echo "build script must stamp org.opencontainers.image.revision" >&2
+  exit 1
+fi
 render "${tmp_dir}/validation.yaml"
 for image in \
   observability-frontend query-api ingest-pipeline ai-orchestrator \

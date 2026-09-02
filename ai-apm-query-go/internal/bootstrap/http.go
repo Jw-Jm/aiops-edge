@@ -246,6 +246,7 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	mux.HandleFunc("/internal/v1/query/logs", handler.InternalQueryLogs)
 	mux.HandleFunc("/internal/v1/query/traces", handler.InternalQueryTraces)
 	mux.HandleFunc("/internal/v1/query/alerts", handler.InternalQueryAlerts)
+	mux.HandleFunc("/internal/v1/query/events", handler.InternalQueryEvents)
 	mux.HandleFunc("/internal/v1/query/topology", handler.InternalQueryTopology)
 	mux.HandleFunc("/internal/v1/query/topology/middleware", handler.InternalQueryTopologyMiddleware)
 	mux.HandleFunc("/internal/v1/query/kubernetes", handler.InternalQueryKubernetes)

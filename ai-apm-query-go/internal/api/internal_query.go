@@ -433,6 +433,36 @@ func (h *Handler) InternalQueryAlerts(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// InternalQueryEvents handles POST /internal/v1/query/events.  It is the
+// canonical investigation read path for Kubernetes/IPMI events persisted by
+// the unified ingest service.
+func (h *Handler) InternalQueryEvents(w http.ResponseWriter, r *http.Request) {
+	rctx, req, err := decodeInternalRequest(r, "observability.events.read")
+	if err != nil {
+		respondInternalQueryError(w, err)
+		return
+	}
+	h.execToolQuery(w, rctx, req, func() ([]byte, error) {
+		if h.eventRepo == nil {
+			return nil, query.Unavailable("kubernetes events repository unavailable")
+		}
+		windowStart, windowEnd := investigationWindow(req)
+		if windowStart == nil || windowEnd == nil {
+			return nil, query.ValidationFailed("kubernetes events query requires frozen window")
+		}
+		services := append([]string(nil), req.Services...)
+		if req.Service != "" {
+			services = append(services, req.Service)
+		}
+		events, err := h.eventRepo.List(r.Context(), rctx.TenantID, rctx.ClusterID,
+			services, windowStart, windowEnd, req.Limit, req.Offset)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]interface{}{"events": events, "total": len(events)})
+	})
+}
+
 // InternalQueryTopology handles POST /internal/v1/query/topology → observability.topology.read。
 func (h *Handler) InternalQueryTopology(w http.ResponseWriter, r *http.Request) {
 	rctx, req, err := decodeInternalRequest(r, "observability.topology.read")

@@ -22,6 +22,16 @@ REGISTRY="${IMAGE_REGISTRY:-}"
 # 默认版本由 version.sh 根据当前 Git SHA 生成；手工发布可用 IMAGE_TAG/RELEASE_TAG 覆盖。
 TAG="${IMAGE_TAG:-$(resolve_image_tag)}"
 PLATFORM="${BUILD_PLATFORM:-}"
+SOURCE_REV="$(git -C "$ROOT" rev-parse HEAD)"
+
+# Every image must carry the exact source revision it was built from.  Tags
+# remain convenient for local Kubernetes, but are mutable names and therefore
+# cannot be the release identity used by the evidence gate.
+BUILD_LABEL_ARGS=(
+  --label "org.opencontainers.image.revision=${SOURCE_REV}"
+  --label "org.opencontainers.image.version=${TAG}"
+  --label "org.opencontainers.image.source=https://github.com/observability-platform/aiops"
+)
 
 # 本地镜像时（无 registry）不加前缀，K8s 直接用本地镜像；有 registry 时拼前缀
 prefix() {
@@ -39,9 +49,9 @@ build() {
   echo ">>> building $full from $dir"
   if [[ "${BUILD_IMAGES_DRY_RUN:-0}" == "1" ]]; then
     if [[ "$dockerfile" != "Dockerfile" ]]; then
-      echo "docker build ${PLATFORM:+--platform ${PLATFORM}} -f ${dockerfile} -t ${full} ${ROOT}/${dir}"
+      echo "docker build ${PLATFORM:+--platform ${PLATFORM}} ${BUILD_LABEL_ARGS[*]} -f ${dockerfile} -t ${full} ${ROOT}/${dir}"
     else
-      echo "docker build ${PLATFORM:+--platform ${PLATFORM}} -t ${full} ${ROOT}/${dir}"
+      echo "docker build ${PLATFORM:+--platform ${PLATFORM}} ${BUILD_LABEL_ARGS[*]} -t ${full} ${ROOT}/${dir}"
     fi
     return 0
   fi
@@ -50,9 +60,9 @@ build() {
     exit 1
   fi
   if [ -n "$PLATFORM" ]; then
-    (cd "$ROOT/$dir" && docker build --platform "$PLATFORM" -f "$dockerfile" -t "$full" .)
+    (cd "$ROOT/$dir" && docker build --platform "$PLATFORM" "${BUILD_LABEL_ARGS[@]}" -f "$dockerfile" -t "$full" .)
   else
-    (cd "$ROOT/$dir" && docker build -f "$dockerfile" -t "$full" .)
+    (cd "$ROOT/$dir" && docker build "${BUILD_LABEL_ARGS[@]}" -f "$dockerfile" -t "$full" .)
   fi
   docker image inspect "$full" >/dev/null
   echo ">>> built $full"
@@ -63,7 +73,7 @@ build_clickhouse_migrator() {
   full="$(prefix clickhouse-migrator):${TAG}"
   echo ">>> building ${full} from deploy/tools/clickhouse-migrator"
   if [[ "${BUILD_IMAGES_DRY_RUN:-0}" == "1" ]]; then
-    echo "docker build ${PLATFORM:+--platform ${PLATFORM}} -t ${full} ${ROOT}/deploy/tools/clickhouse-migrator"
+    echo "docker build ${PLATFORM:+--platform ${PLATFORM}} ${BUILD_LABEL_ARGS[*]} -t ${full} ${ROOT}/deploy/tools/clickhouse-migrator"
     return 0
   fi
   if [[ "${TAG}" == "latest" ]]; then
@@ -71,9 +81,9 @@ build_clickhouse_migrator() {
     exit 1
   fi
   if [ -n "${PLATFORM}" ]; then
-    docker build --platform "${PLATFORM}" -t "${full}" "${ROOT}/deploy/tools/clickhouse-migrator"
+    docker build --platform "${PLATFORM}" "${BUILD_LABEL_ARGS[@]}" -t "${full}" "${ROOT}/deploy/tools/clickhouse-migrator"
   else
-    docker build -t "${full}" "${ROOT}/deploy/tools/clickhouse-migrator"
+    docker build "${BUILD_LABEL_ARGS[@]}" -t "${full}" "${ROOT}/deploy/tools/clickhouse-migrator"
   fi
   docker image inspect "${full}" >/dev/null
   echo ">>> built ${full}"

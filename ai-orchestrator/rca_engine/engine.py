@@ -207,11 +207,29 @@ class RCAResult:
             final_context = dict(context)
             final_context["final"] = True
             payload["final_graph_context"] = final_context
-            payload["propagation_path"] = dict(self.propagation_paths[0]) if self.propagation_paths else {}
+            # The validator and the public RCA contract consume a bounded
+            # sequence of path vertices.  Keep the rich path object in the
+            # existing ``propagation_paths`` field (and expose it under an
+            # explicit detail alias) so callers that need edge identities do
+            # not lose information while the canonical field remains JSON
+            # schema-compatible.
+            path = self.propagation_paths[0] if self.propagation_paths else {}
+            vertices_in_path = path.get("vertices") if isinstance(path, dict) else []
+            if not isinstance(vertices_in_path, list) or not vertices_in_path:
+                vertex_uids = path.get("vertex_uids", []) if isinstance(path, dict) else []
+                vertices_in_path = [{"entity_uid": str(uid)} for uid in vertex_uids if str(uid)]
+            payload["propagation_path"] = list(vertices_in_path)
+            payload["propagation_path_detail"] = dict(path) if isinstance(path, dict) else {}
             payload["subgraph_node_count"] = len(vertices)
             score = float(self.confidence)
             payload["root_score"] = score
             payload["deterministic_root_score"] = score
+            # These aliases are part of the evidence-gate contract.  The
+            # internal names remain in the payload above for backward
+            # compatibility with existing Run/event consumers.
+            payload["status"] = self.root_cause_status
+            payload["time_range_start"] = self.window_start
+            payload["time_range_end"] = self.window_end
         return payload
 
 

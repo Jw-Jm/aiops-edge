@@ -149,7 +149,11 @@ def test_confirmed_result_exposes_publishable_evidence_contract():
     payload = result.to_dict()
     assert payload["final_graph_context"]["final"] is True
     assert payload["subgraph_node_count"] == 2
-    assert payload["propagation_path"]["edge_uids"] == ["edge:checkout-db"]
+    assert payload["status"] == "confirmed"
+    assert payload["time_range_start"] == "2026-08-27T00:00:00Z"
+    assert payload["time_range_end"] == "2026-08-27T01:00:00Z"
+    assert [item["entity_uid"] for item in payload["propagation_path"]] == ["service:db", "service:checkout"]
+    assert payload["propagation_path_detail"]["edge_uids"] == ["edge:checkout-db"]
     assert payload["root_score"] == payload["deterministic_root_score"]
 
 

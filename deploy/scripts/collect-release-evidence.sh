@@ -34,14 +34,114 @@ run_check diff_check git diff --check
 
 git_commit="$(git -C "${repo_root}" rev-parse HEAD)"
 tree_digest="$(git -C "${repo_root}" diff --binary HEAD | shasum -a 256 | awk '{print $1}')"
-python3 - "${repo_root}" "${out}" "${git_commit}" "${tree_digest}" "${tmp_dir}/commands.jsonl" <<'PY'
+if [[ -n "${AIOPS_RELEASE_UNIT_TESTS_COMMAND:-}" ]]; then
+  run_check unit_tests bash -lc "${AIOPS_RELEASE_UNIT_TESTS_COMMAND}"
+else
+  # A release record must never imply that unit tests ran merely because the
+  # static contracts passed.  CI can provide the exact locked test command.
+  printf '%s\n' '{"name":"unit_tests","command":"<not supplied>","exit_code":null,"output_sha256":null,"status":"unverified"}' >>"${tmp_dir}/commands.jsonl"
+fi
+
+image_tag="${AIOPS_RELEASE_IMAGE_TAG:-${RELEASE_TAG:-git-${git_commit:0:12}}}"
+image_registry="${AIOPS_IMAGE_REGISTRY:-${IMAGE_REGISTRY:-}}"
+image_evidence="${tmp_dir}/images.json"
+python3 - "${image_tag}" "${image_registry}" "${git_commit}" "${image_evidence}" \
+  query-api ingest-pipeline event-collector ai-orchestrator observability-frontend \
+  ai-action-executor ai-credential-broker ai-llm-egress-proxy schema-migrator \
+  graph-schema-migrator clickhouse-migrator ipmi-exporter <<'PY'
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+tag, registry, commit, output, *names = sys.argv[1:]
+docker = shutil.which("docker")
+records = []
+for name in names:
+    ref = f"{registry.rstrip('/')}/{name}:{tag}" if registry else f"{name}:{tag}"
+    record = {
+        "name": name,
+        "ref": ref,
+        "status": "unverified",
+        "content_digest": None,
+        "registry_digests": [],
+        "revision_label": None,
+        "revision_matches": False,
+    }
+    if docker:
+        result = subprocess.run(
+            [docker, "image", "inspect", ref, "--format", "{{json .}}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                image = json.loads(result.stdout)
+                content_digest = image.get("Id")
+                repo_digests = [
+                    value for value in (image.get("RepoDigests") or [])
+                    if "@sha256:" in value
+                ]
+                labels = (image.get("Config") or {}).get("Labels") or {}
+                revision = labels.get("org.opencontainers.image.revision")
+                record.update(
+                    status="present",
+                    content_digest=content_digest,
+                    registry_digests=repo_digests,
+                    revision_label=revision,
+                    revision_matches=revision == commit,
+                )
+            except (json.JSONDecodeError, TypeError):
+                record["status"] = "unverified"
+    records.append(record)
+
+all_present = all(item["status"] == "present" for item in records)
+all_revision_matches = all(item["revision_matches"] for item in records)
+all_registry_digests = all(bool(item["registry_digests"]) for item in records)
+json.dump(
+    {
+        "tag": tag,
+        "registry": registry or None,
+        "registry_bound": bool(registry),
+        "images": records,
+        "all_present": all_present,
+        "all_revision_labels_match": all_revision_matches,
+        "all_registry_digests": all_registry_digests,
+    },
+    open(output, "w", encoding="utf-8"),
+    ensure_ascii=False,
+    indent=2,
+)
+PY
+
+rendered_manifest="${AIOPS_RELEASE_RENDERED_MANIFEST:-}"
+signature_file="${AIOPS_RELEASE_SIGNATURE_FILE:-}"
+python3 - "${repo_root}" "${out}" "${git_commit}" "${tree_digest}" "${tmp_dir}/commands.jsonl" \
+  "${image_evidence}" "${rendered_manifest}" "${signature_file}" <<'PY'
 import json, pathlib, sys, datetime, hashlib
-root, out, commit, tree_digest, commands_path = sys.argv[1:]
+root, out, commit, tree_digest, commands_path, image_path, rendered_path, signature_path = sys.argv[1:]
 commands = [json.loads(line) for line in pathlib.Path(commands_path).read_text().splitlines() if line.strip()]
 checks = {}
 for item in commands:
-    checks[item["name"]] = "pass" if item["exit_code"] == 0 else "fail"
+    if item.get("status") == "unverified" or item.get("exit_code") is None:
+        checks[item["name"]] = "unverified"
+    else:
+        checks[item["name"]] = "pass" if item["exit_code"] == 0 else "fail"
 dirty = bool(__import__("subprocess").run(["git", "-C", root, "status", "--porcelain"], capture_output=True, text=True).stdout.strip())
+images = json.load(open(image_path, encoding="utf-8"))
+def file_digest(path):
+    if not path:
+        return None
+    candidate = pathlib.Path(path)
+    if not candidate.is_file():
+        return None
+    return hashlib.sha256(candidate.read_bytes()).hexdigest()
+
+rendered_digest = file_digest(rendered_path)
+signature_digest = file_digest(signature_path)
+signature_status = "verified" if signature_digest and __import__("os").environ.get("AIOPS_RELEASE_SIGNATURE_VERIFIED") == "true" else ("present_unverified" if signature_digest else "missing")
+required_checks_pass = bool(checks) and all(value == "pass" for value in checks.values())
 doc = {
     "schema_version": 1,
     "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -50,7 +150,24 @@ doc = {
     "working_tree_dirty": dirty,
     "commands": commands,
     "checks": checks,
-    "publishable": (not dirty and all(v == "pass" for v in checks.values())),
+    "images": images,
+    "release_materials": {
+        "rendered_manifest": {"path": rendered_path or None, "sha256": rendered_digest, "status": "present" if rendered_digest else "unverified"},
+        "signature": {"path": signature_path or None, "sha256": signature_digest, "status": signature_status},
+    },
+    # A local tag or BuildKit content digest is not a registry identity.  A
+    # release is publishable only when CI supplies registry-bound digests,
+    # a rendered manifest and a separately verified signature.
+    "publishable": (
+        not dirty
+        and required_checks_pass
+        and images.get("all_present") is True
+        and images.get("all_revision_labels_match") is True
+        and images.get("registry_bound") is True
+        and images.get("all_registry_digests") is True
+        and rendered_digest is not None
+        and signature_status == "verified"
+    ),
 }
 pathlib.Path(out).write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
 print(json.dumps({"output": out, "git_commit": commit, "working_tree_dirty": dirty, "publishable": doc["publishable"]}, ensure_ascii=False))
