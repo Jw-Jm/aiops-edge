@@ -24,7 +24,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: schema-migrator
-          image: {{ tpl .Values.mysql.migratorImage . }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.mysql.migratorImage .) "tag" .Values.global.imageTag) | quote }}
           command: ["/schema-migrator"]
           env:
             - name: MYSQL_HOST

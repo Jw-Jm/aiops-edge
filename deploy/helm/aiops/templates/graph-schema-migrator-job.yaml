@@ -36,7 +36,7 @@ spec:
               do sleep 2; done
       containers:
         - name: graph-schema-migrator
-          image: {{ tpl .Values.hugeGraph.schemaMigratorImage . | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.hugeGraph.schemaMigratorImage .) "tag" .Values.global.imageTag) | quote }}
           env:
             - name: HUGEGRAPH_URL
               value: "http://hugegraph:8080"

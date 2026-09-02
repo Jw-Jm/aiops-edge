@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: {{ tpl .Values.frontend.image . }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.frontend.image .) "tag" .Values.global.imageTag) | quote }}
           imagePullPolicy: IfNotPresent
           env:
             - name: DEEPFLOW_ENABLED

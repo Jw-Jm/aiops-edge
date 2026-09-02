@@ -27,12 +27,13 @@ type TraceQuery struct {
 
 // TraceSummary 一条 trace 的摘要（list 行）。
 type TraceSummary struct {
-	TraceID  string
-	Start    time.Time
-	End      time.Time
-	Spans    int
-	Services int
-	MaxMS    float64
+	TraceID      string    `json:"TraceID"`
+	Start        time.Time `json:"Start"`
+	End          time.Time `json:"End"`
+	Spans        int       `json:"Spans"`
+	Services     int       `json:"Services"`
+	MaxMS        float64   `json:"MaxMS"`
+	ServiceNames []string  `json:"ServiceNames,omitempty"`
 }
 
 // Span 一条 span 详情。
@@ -245,7 +246,8 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 		sql := "SELECT trace_id, min(trace_start) AS start, max(trace_end) AS end, " +
 			"sum(span_count) AS spans, " +
 			"length(arrayDistinct(arrayFlatten(groupArray(service_names)))) AS services, " +
-			"max(max_ms) AS max_ms " +
+			"max(max_ms) AS max_ms, " +
+			"arrayStringConcat(arrayDistinct(arrayFlatten(groupArray(service_names))), ',') AS service_names " +
 			"FROM (SELECT trace_id, " +
 			"finalizeAggregation(start_state) AS trace_start, " +
 			"finalizeAggregation(end_state) AS trace_end, " +
@@ -441,6 +443,13 @@ func parseTraceSummaries(body []byte) []TraceSummary {
 		fmt.Sscanf(cols[3], "%d", &ts.Spans)
 		fmt.Sscanf(cols[4], "%d", &ts.Services)
 		fmt.Sscanf(cols[5], "%f", &ts.MaxMS)
+		if len(cols) >= 7 && strings.TrimSpace(cols[6]) != "" {
+			for _, name := range strings.Split(cols[6], ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					ts.ServiceNames = append(ts.ServiceNames, name)
+				}
+			}
+		}
 		out = append(out, ts)
 	}
 	return out

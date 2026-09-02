@@ -35,6 +35,22 @@ func TestTraceRepoFindTraces(t *testing.T) {
 	}
 }
 
+func TestTraceRepoFindTracesParsesServiceNamesForEvidenceAttribution(t *testing.T) {
+	srv := chSrv(t, "trace-1\t2026-08-20 10:00:00\t2026-08-20 10:00:05\t3\t2\t150.5\tai-orchestrator,victoria-metrics\n")
+	defer srv.Close()
+
+	repo := &TraceRepository{ch: NewClickHouseRepo(srv.URL, nil)}
+	traces, err := repo.FindTraces(context.Background(), TraceQuery{
+		TenantID: "tenant-1", ClusterID: "cluster-1", Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("FindTraces: %v", err)
+	}
+	if len(traces) != 1 || len(traces[0].ServiceNames) != 2 || traces[0].ServiceNames[0] != "ai-orchestrator" || traces[0].ServiceNames[1] != "victoria-metrics" {
+		t.Fatalf("service names = %+v", traces)
+	}
+}
+
 func TestTraceRepoTraceRuleValue(t *testing.T) {
 	// TraceRuleValue 用 QueryJSON（GET + JSONEachRow），按关键字分发。
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

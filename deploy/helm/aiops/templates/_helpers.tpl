@@ -54,6 +54,32 @@ securityContext:
 {{- end -}}
 
 {{/*
+aiops.imageWithGlobalTag: render a self-owned image with the release tag.
+
+Component-level image values are kept for backwards-compatible registry
+overrides, but their historical tag must never win over global.imageTag.
+This is important during `helm upgrade --reuse-values`: Helm retains old
+component values and would otherwise silently run a mixed release.
+*/}}
+{{- define "aiops.imageWithGlobalTag" -}}
+{{- $image := .image | toString | trim -}}
+{{- $tag := .tag | toString | trim -}}
+{{- if eq $image "" -}}
+{{- fail "self-owned image repository must not be empty" -}}
+{{- end -}}
+{{- if eq $tag "" -}}
+{{- fail "global.imageTag must not be empty" -}}
+{{- end -}}
+{{- if contains "@" $image -}}
+{{- fail (printf "self-owned image %s must use global.imageTag instead of a digest" $image) -}}
+{{- else if regexMatch ":[^/:]+$" $image -}}
+{{- regexReplaceAll ":[^/:]+$" $image (printf ":%s" $tag) -}}
+{{- else -}}
+{{- printf "%s:%s" $image $tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 aiops.queryApiCommonEnv: shared query runtime env for http, run-dispatch, and alert-eval.
 */}}
 {{- define "aiops.queryApiCommonEnv" -}}

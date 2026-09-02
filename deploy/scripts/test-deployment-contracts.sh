@@ -105,6 +105,38 @@ do
     exit 1
   fi
 done
+# A `helm upgrade --reuse-values` retains historical component-level image
+# values.  They are accepted as registry/repository overrides, but the
+# release tag must still come exclusively from global.imageTag.  Render with
+# deliberately stale values to prevent mixed-version deployments from
+# regressing silently.
+render "${tmp_dir}/stale-component-images.yaml" \
+  --set queryApi.image="query-api:git-stale" \
+  --set investigationWorker.image.repository="ai-orchestrator" \
+  --set investigationWorker.image.tag="git-stale" \
+  --set aiOrchestrator.image="ai-orchestrator:git-stale" \
+  --set frontend.image="observability-frontend:git-stale" \
+  --set ingest.image="ingest-pipeline:git-stale" \
+  --set eventCollector.image="event-collector:git-stale" \
+  --set aiActionExecutor.image.tag="git-stale" \
+  --set credentialBroker.image.tag="git-stale" \
+  --set llmEgressProxy.image.tag="git-stale" \
+  --set mysql.migratorImage="schema-migrator:git-stale" \
+  --set clickhouse.migratorImage="clickhouse-migrator:git-stale" \
+  --set hugeGraph.schemaMigratorImage="graph-schema-migrator:git-stale" \
+  --set ipmiExporter.image="ipmi-exporter:git-stale"
+fail_if_contains 'git-stale' "${tmp_dir}/stale-component-images.yaml" \
+  'historical component image tags override global.imageTag'
+for image in \
+  observability-frontend query-api ingest-pipeline ai-orchestrator \
+  event-collector ai-action-executor ai-llm-egress-proxy schema-migrator \
+  graph-schema-migrator clickhouse-migrator ipmi-exporter
+do
+  if ! rg -n "image:.*${image}:${tag}" "${tmp_dir}/stale-component-images.yaml" >/dev/null; then
+    echo "contract failed: stale override did not converge ${image} to ${tag}" >&2
+    exit 1
+  fi
+done
 fail_if_contains ':latest' "${tmp_dir}/validation.yaml" 'self-built images may not use latest'
 fail_if_contains 'v1.2.0-p20-24b157a0' "${tmp_dir}/validation.yaml" 'historical fixed image tags remain'
 require_contains 'MYSQL_APP_PASSWORD:' "${tmp_dir}/validation.yaml" 'app database password is not rendered'

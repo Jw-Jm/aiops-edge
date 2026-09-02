@@ -33,7 +33,7 @@ spec:
                 secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
       containers:
         - name: clickhouse-migrator
-          image: {{ tpl .Values.clickhouse.migratorImage . | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.clickhouse.migratorImage .) "tag" .Values.global.imageTag) | quote }}
           command: ["/clickhouse-migrator"]
           env:
             - name: CLICKHOUSE_MIGRATIONS_DIR

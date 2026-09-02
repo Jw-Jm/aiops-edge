@@ -22,7 +22,7 @@ spec:
         - operator: Exists
       containers:
         - name: ipmi-exporter
-          image: {{ tpl .Values.ipmiExporter.image . }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.ipmiExporter.image .) "tag" .Values.global.imageTag) | quote }}
           imagePullPolicy: {{ .Values.ipmiExporter.imagePullPolicy | default "IfNotPresent" }}
           securityContext:
             privileged: true

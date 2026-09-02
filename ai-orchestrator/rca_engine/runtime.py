@@ -106,6 +106,63 @@ def _candidate_names(context: Any) -> list[str]:
     return names[:12]
 
 
+def _text_values(value: Any) -> list[str]:
+    """Return non-empty textual identity values from scalar/list fields."""
+    if isinstance(value, (list, tuple, set)):
+        values: list[str] = []
+        for item in value:
+            values.extend(_text_values(item))
+        return values
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _service_identity(value: Any) -> str:
+    """Normalize a backend service identity without dropping its scope.
+
+    VictoriaLogs commonly returns Kubernetes workload names such as
+    ``observability/ai-orchestrator-56ddf4c54c-t5xm2`` while the graph uses
+    the stable service name ``ai-orchestrator``.  Removing only the namespace
+    prefix lets us match a workload prefix to a graph vertex; arbitrary
+    strings are never assigned to a candidate by substring search.
+    """
+    text = str(value or "").strip()
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    return text
+
+
+def _candidate_uids_for_row(item: Mapping[str, Any], candidates: list[dict[str, Any]]) -> list[str]:
+    """Resolve row identities to candidate UIDs, fail-closed on ambiguity."""
+    candidate_pairs = []
+    for candidate in candidates:
+        uid = str(candidate.get("entity_uid") or "").strip()
+        name = str(candidate.get("name") or uid).strip()
+        if uid:
+            candidate_pairs.append((uid, name))
+    if not candidate_pairs:
+        return []
+
+    explicit_uid = str(item.get("entity_uid") or item.get("resource_id") or "").strip()
+    if explicit_uid:
+        return [uid for uid, _ in candidate_pairs if uid == explicit_uid]
+
+    aliases: list[str] = []
+    for key in ("service_name", "ServiceName", "service", "Service", "service_names", "ServiceNames"):
+        aliases.extend(_text_values(item.get(key)))
+    normalized = {_service_identity(alias).lower() for alias in aliases if _service_identity(alias)}
+    matches: list[str] = []
+    for uid, name in candidate_pairs:
+        candidate_name = _service_identity(name).lower()
+        if not candidate_name:
+            continue
+        # Exact service names are preferred.  Workload/pod names are accepted
+        # only when the stable candidate is a complete prefix separated by '-'.
+        if candidate_name in normalized or any(value.startswith(candidate_name + "-") for value in normalized):
+            matches.append(uid)
+    return list(dict.fromkeys(matches))
+
+
 class InvestigationEvidenceProvider:
     """Collect bounded, typed evidence through query-api internal tools.
 
@@ -162,19 +219,13 @@ class InvestigationEvidenceProvider:
             # computes temporal score from these fields and ignores any
             # provider-supplied ``temporal_score``.
             item["category"] = category
-            uid = str(item.get("entity_uid") or item.get("resource_id") or "")
-            service_name = str(item.get("service_name") or item.get("ServiceName") or item.get("service") or item.get("Service") or "")
-            if not uid and service_name:
-                for candidate in candidates:
-                    candidate_uid = str(candidate.get("entity_uid") or "")
-                    candidate_name = str(candidate.get("name") or candidate_uid)
-                    if service_name in {candidate_uid, candidate_name}:
-                        uid = candidate_uid
-                        break
-            if not uid and len(candidates) == 1:
-                uid = str(candidates[0].get("entity_uid") or "")
-            if uid:
-                item["entity_uid"] = uid
+            matched_uids = _candidate_uids_for_row(item, candidates)
+            if not matched_uids and len(candidates) == 1 and not any(
+                str(item.get(key) or "").strip() for key in ("entity_uid", "resource_id", "service_name", "ServiceName", "service", "Service", "service_names", "ServiceNames")
+            ):
+                # A backend row with no identity can be assigned only when
+                # the query itself was scoped to exactly one candidate.
+                matched_uids = [str(candidates[0].get("entity_uid") or "")]
             observed = next((item.get(key) for key in ("observed_at", "timestamp", "occurred_at", "event_time", "detected_at", "t", "T", "Timestamp", "Start", "StartTime", "LastTS", "last_timestamp") if item.get(key) is not None), None)
             if observed is not None:
                 item["observed_at"] = str(observed)
@@ -187,7 +238,15 @@ class InvestigationEvidenceProvider:
                     item["severity"] = 0.0
             if category == "alert" and "severity" in item and isinstance(item["severity"], str):
                 item["severity"] = {"critical": 1.0, "fatal": 1.0, "error": 1.0, "warning": .6, "warn": .6, "info": .2}.get(item["severity"].lower(), 0.0)
-            output.append(item)
+            if matched_uids:
+                for uid in matched_uids:
+                    bound = dict(item)
+                    bound["entity_uid"] = uid
+                    output.append(bound)
+            else:
+                # Keep unbound rows as investigative context, but they never
+                # contribute to a candidate score (evidence_for_candidate).
+                output.append(item)
 
     def __call__(self, request: Any, context: Any) -> list[dict[str, Any]]:
         names = _candidate_names(context)

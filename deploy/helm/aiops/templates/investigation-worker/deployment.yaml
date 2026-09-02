@@ -1,4 +1,6 @@
 {{- if .Values.investigationWorker.enabled }}
+{{- $workerRepository := tpl .Values.investigationWorker.image.repository . -}}
+{{- $workerImage := include "aiops.imageWithGlobalTag" (dict "image" $workerRepository "tag" .Values.global.imageTag) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,7 +28,7 @@ spec:
       # to avoid rollout-time crash loops while preserving fail-closed startup.
       initContainers:
         - name: wait-for-query-api
-          image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ tpl .Values.investigationWorker.image.tag . }}
+          image: {{ $workerImage | quote }}
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
           args:
@@ -41,7 +43,7 @@ spec:
           {{- end }}
       containers:
         - name: investigation-worker
-          image: {{ tpl .Values.investigationWorker.image.repository . }}:{{ tpl .Values.investigationWorker.image.tag . }}
+          image: {{ $workerImage | quote }}
           imagePullPolicy: IfNotPresent
           {{- if .Values.internalTLS.enabled }}
           command: ["python", "-m", "mtls_server"]

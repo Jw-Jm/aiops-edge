@@ -21,7 +21,7 @@ spec:
       {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
       containers:
         - name: ingest
-          image: {{ tpl .Values.ingest.image . }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.ingest.image .) "tag" .Values.global.imageTag) | quote }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
