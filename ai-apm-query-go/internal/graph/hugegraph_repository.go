@@ -144,8 +144,7 @@ func (r *HugeGraphRepository) neighborsFromIndexedEdges(ctx context.Context, sco
 		edges = append(edges, edge)
 	}
 	return Subgraph{CenterEntityUID: center.EntityUID, Vertices: vertices, Edges: edges,
-		Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion,
-			GeneratedAt: nowRFC3339(), WarningCodes: []string{}}}, nil
+		Meta: graphMeta(vertices, edges, false, []string{}, nowRFC3339())}, nil
 }
 
 func (r *HugeGraphRepository) ShortestPath(ctx context.Context, scope GraphScope, query PathQuery) (Subgraph, error) {
@@ -499,7 +498,8 @@ func (r *HugeGraphRepository) subgraphFromTraverser(ctx context.Context, scope G
 	if len(edges) > maxEdges {
 		edges = edges[:maxEdges]
 	}
-	return Subgraph{CenterEntityUID: center, Vertices: vertices, Edges: edges, Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion, GeneratedAt: nowRFC3339(), WarningCodes: []string{}}}, nil
+	return Subgraph{CenterEntityUID: center, Vertices: vertices, Edges: edges,
+		Meta: graphMeta(vertices, edges, false, []string{}, nowRFC3339())}, nil
 }
 
 func stringSlice(value interface{}) []string {

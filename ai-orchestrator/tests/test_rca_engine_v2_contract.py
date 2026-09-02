@@ -66,7 +66,10 @@ def test_request_accepts_documented_canonical_constructor_fields():
 
 def test_rca_request_and_result_keep_frozen_window_and_actual_paths():
     graph = {
-        "vertices": [_entity("service:db", "db"), _entity("service:checkout", "checkout"), _entity("service:noise", "noise")],
+        "vertices": [{**_entity("service:db", "db"), "generation": 7},
+                     {**_entity("service:checkout", "checkout"), "generation": 7},
+                     {**_entity("service:noise", "noise"), "generation": 6}],
+        "meta": {"graph_generation": 7},
         "edges": [
             {"edge_uid": "edge:checkout-db", "source_uid": "service:checkout", "target_uid": "service:db", "propagates_failure": True, "confidence": 1.0, "candidate_direction": "OUT"},
             {"edge_uid": "edge:checkout-noise", "source_uid": "service:checkout", "target_uid": "service:noise", "propagates_failure": True, "confidence": 0.7, "candidate_direction": "OUT"},
@@ -97,6 +100,7 @@ def test_rca_request_and_result_keep_frozen_window_and_actual_paths():
     assert seen["request"].window_start == "2026-08-27T00:00:00Z"
     assert result.window_end == "2026-08-27T01:00:00Z"
     assert result.graph_context["symptom_time"] == "2026-08-27T00:30:00Z"
+    assert result.graph_context["graph_generation"] == 7
     assert result.root_cause == "service:db"
     assert len(result.propagation_paths) == 1
     path = result.propagation_paths[0]
@@ -147,6 +151,24 @@ def test_confirmed_result_exposes_publishable_evidence_contract():
     assert payload["subgraph_node_count"] == 2
     assert payload["propagation_path"]["edge_uids"] == ["edge:checkout-db"]
     assert payload["root_score"] == payload["deterministic_root_score"]
+
+
+def test_graph_generation_defaults_to_zero_when_adapter_omits_meta():
+    graph = {
+        "vertices": [_entity("service:checkout", "checkout")],
+        "edges": [],
+    }
+
+    def graph_client(**params):
+        if params["graph_operation"] == "get_vertex":
+            return {"entity": _entity("service:checkout", "checkout")}
+        return graph
+
+    request = RCARequest(run_id="run-generation-legacy", tenant_id="tenant-1", cluster_id="cluster-1",
+                         window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+                         symptom_time="2026-08-27T00:30:00Z", entity_uid="service:checkout")
+    result = RCAEngineV2(graph_client=graph_client).diagnose(request)
+    assert result.graph_context["graph_generation"] == 0
 
 
 def test_graph_outage_persists_local_only_context_for_replay():

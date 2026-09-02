@@ -445,9 +445,13 @@ func (r *MemoryRepository) walk(ctx context.Context, scope GraphScope, center st
 	}
 	r.mu.RUnlock()
 	if len(edges) >= maxEdges || len(vertices) >= maxVertices {
-		return Subgraph{CenterEntityUID: center, Vertices: mapEntities(vertices), Edges: mapEdges(edges), Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion, Partial: true, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano), WarningCodes: []string{ErrGraphQueryLimitExceeded}}}, nil
+		vertexList, edgeList := mapEntities(vertices), mapEdges(edges)
+		return Subgraph{CenterEntityUID: center, Vertices: vertexList, Edges: edgeList,
+			Meta: graphMeta(vertexList, edgeList, true, []string{ErrGraphQueryLimitExceeded}, time.Now().UTC().Format(time.RFC3339Nano))}, nil
 	}
-	return Subgraph{CenterEntityUID: center, Vertices: mapEntities(vertices), Edges: mapEdges(edges), Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano), WarningCodes: []string{}}}, nil
+	vertexList, edgeList := mapEntities(vertices), mapEdges(edges)
+	return Subgraph{CenterEntityUID: center, Vertices: vertexList, Edges: edgeList,
+		Meta: graphMeta(vertexList, edgeList, false, []string{}, time.Now().UTC().Format(time.RFC3339Nano))}, nil
 }
 
 func traversalNext(edge Edge, current, direction string, policy map[string]string) (string, bool) {
@@ -479,7 +483,8 @@ func traversalNext(edge Edge, current, direction string, policy map[string]strin
 }
 
 func (r *MemoryRepository) subgraph(center string, vertices []Entity, edges []Edge) Subgraph {
-	return Subgraph{CenterEntityUID: center, Vertices: vertices, Edges: edges, Meta: GraphMeta{ContractVersion: GraphDTOContractVersion, SchemaVersion: GraphSchemaVersion, GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano), WarningCodes: []string{}}}
+	return Subgraph{CenterEntityUID: center, Vertices: vertices, Edges: edges,
+		Meta: graphMeta(vertices, edges, false, []string{}, time.Now().UTC().Format(time.RFC3339Nano))}
 }
 
 func relationAllowed(relation string, allowed []string) bool {

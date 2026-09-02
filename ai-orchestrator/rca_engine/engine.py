@@ -243,6 +243,17 @@ class RCAEngineV2:
             subgraph = graph_candidates(entity, self._graph_call)
             context.vertices = list(subgraph.get("vertices") or [])
             context.edges = list(subgraph.get("edges") or [])
+            # Query-owned graph reads carry the projection generation in the
+            # typed graph meta envelope. Persist it with the RCA context so a
+            # replay can identify the exact graph generation consumed. Older
+            # adapters may not emit meta; keep the value at zero rather than
+            # inventing provenance.
+            graph_meta = subgraph.get("meta") if isinstance(subgraph, Mapping) else None
+            if isinstance(graph_meta, Mapping):
+                try:
+                    context.graph_generation = max(0, int(graph_meta.get("graph_generation") or 0))
+                except (TypeError, ValueError):
+                    context.graph_generation = 0
             context.record("rca_candidates_ranked")
         except Exception as exc:  # Graph down must become explicit local-only RCA.
             evidence = [dict(item) for item in request.evidence]

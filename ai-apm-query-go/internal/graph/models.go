@@ -46,8 +46,12 @@ type Edge struct {
 }
 
 type GraphMeta struct {
-	ContractVersion string   `json:"contract_version"`
-	SchemaVersion   int      `json:"schema_version"`
+	ContractVersion string `json:"contract_version"`
+	SchemaVersion   int    `json:"schema_version"`
+	// GraphGeneration binds a read snapshot to the newest source generation
+	// represented by its returned vertices/edges.  RCA persists this value so
+	// a replay can prove which graph projection generation it consumed.
+	GraphGeneration int64    `json:"graph_generation"`
 	Partial         bool     `json:"partial"`
 	Stale           bool     `json:"stale"`
 	GeneratedAt     string   `json:"generated_at"`
@@ -59,6 +63,32 @@ type Subgraph struct {
 	Vertices        []Entity  `json:"vertices"`
 	Edges           []Edge    `json:"edges"`
 	Meta            GraphMeta `json:"meta"`
+}
+
+func graphGeneration(vertices []Entity, edges []Edge) int64 {
+	var generation int64
+	for _, vertex := range vertices {
+		if vertex.Generation > generation {
+			generation = vertex.Generation
+		}
+	}
+	for _, edge := range edges {
+		if edge.Generation > generation {
+			generation = edge.Generation
+		}
+	}
+	return generation
+}
+
+func graphMeta(vertices []Entity, edges []Edge, partial bool, warningCodes []string, generatedAt string) GraphMeta {
+	return GraphMeta{
+		ContractVersion: GraphDTOContractVersion,
+		SchemaVersion:   GraphSchemaVersion,
+		GraphGeneration: graphGeneration(vertices, edges),
+		Partial:         partial,
+		GeneratedAt:     generatedAt,
+		WarningCodes:    warningCodes,
+	}
 }
 
 type MutationBatch struct {
