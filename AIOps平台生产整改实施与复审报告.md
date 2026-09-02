@@ -8,6 +8,18 @@
 
 > 本报告是“代码整改后”的架构+功能复审，不把注释、路由定义或测试名称当成功能证据。结论只依据真实入口、调用链、配置/数据结构、测试输出和本机运行结果。生产环境未被连接，未使用生产凭据。
 
+> **本轮权威增补（2026-09-02，优先于下文历史记录）：** 当前代码提交为 `d3167a8a7b71958d6296f39caa07dfa5861708d5`，Helm release `aiops` revision 43；12 个自研镜像均以 `git-d3167a8` 构建并部署，运行时 Pod 全部 Ready，MySQL/ClickHouse/Graph 迁移 Job 全部 Complete。新增修复：`apps/investigation.py` 不再在导入时永久污染 `INVESTIGATION_WORKER_MODE`，仅在导入无状态编排器期间临时设置并恢复，避免同进程后续 Gateway `BrainOrchestrator` 错误降级为 `MemorySaver`；目标检查点跨实例、跨 event loop、同步读取及结构化 Chat 消息测试由 4 个失败恢复为通过。此前 `59170bb` 的 RCA 事件修复仍生效：`rca.v2` 持久化完整 `RCAResult.to_dict()` 证据，异常事件只保留稳定错误码，不落原始异常文本。定向生产边界、RCA、AICHAT、检查点和安全回归共 **102 passed**（1 个非阻断 DeprecationWarning）。当前发布证据 `/tmp/aiops-release-evidence-d3167a8.json`：`working_tree_dirty=false`、12 个本机 registry digest、Ed25519 signed binding、Helm lint、部署契约、生产架构契约、diff check 和上述单测均 PASS，`publishable=true`；该签名密钥和 registry 仅为本机候选材料，不等价于生产 KMS/正式 registry。固定 200k/1M Graph 真实容量门禁沿用本轮 Graph 代码未变更前已通过的 `/tmp/aiops-graph-capacity-5d2803f-rerun.json`（200,000 vertices、1,000,000 edges、200,000 aliases、7 个只读操作、资源门禁 PASS，`pressure_test=false`、`benchmark_iterations=0`），其结果已纳入当前绑定的数据摘要；未执行压测。无 fixture 的全栈验证 `/tmp/aiops-evidence-d3167a8.json` 明确为 `gate_status=BLOCKED_BY_ENV`，唯一阻断是未提供真实 `AIOPS_VALIDATION_DATA_MARKER`，未以 fixture 冒充生产观测证据。生产仍不可发布：真实观测/RCA confirmed 合同、生产 Secret/证书及轮换、Credential Broker/TokenRequest、HA/PITR/回滚和正式 registry/KMS 验证仍未完成。下文出现的 `865de6a`、`5d2803f`、Helm revision 25/42 等均为历史证据，不得解释为当前运行版本。
+
+### 2026-09-02 本轮修复与验证摘要
+
+| 修复 | 触发条件/根因 | 当前证据与结论 |
+|---|---|---|
+| Worker 导入环境隔离 | `apps.investigation` 导入时永久写入 `INVESTIGATION_WORKER_MODE=true`，污染同进程 Gateway/测试，后续 `BrainOrchestrator` 误用 `MemorySaver` | `ai-orchestrator/apps/investigation.py` 临时设置并在 `finally` 恢复；`tests/test_checkpointer.py` 相关 4 项及 Worker 安全/入口测试通过；不改变独立 Worker 的无状态构造 |
+| 检查点持久化与读取回归恢复 | 上述污染使 `AsyncSqliteSaver` 未初始化、跨实例 checkpoint 为空、同步 session state 为空 | 检查点、RCA、AICHAT、生产导入边界等定向集合 **102 passed**；当前 12 镜像已部署到 revision 43 |
+| RCA 事件证据完整性 | 旧事件投影只保留摘要字段，丢失证据、最终图上下文、传播路径和确定性分数 | `apps/investigation.py` 与 `main.py` 均从完整 `RCAResult.to_dict()` 构造 `rca.v2`；异常只记录 `RCA_V2_UNAVAILABLE`；单测验证完整字段保留 |
+
+本轮没有修复或放宽真实观测门禁；由于环境没有新的真实 marker，`validate-local-stack.sh` 仍按设计返回 `BLOCKED_BY_ENV`。因此“测试/发布候选可复核”与“生产发布已批准”必须严格区分。
+
 > **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以 Query/Graph 功能代码 `865de6a`、Query 镜像 `query-api:git-865de6a` 和 Helm revision 25 为准。`GlobalEdgesWithTraceFallback`、HugeGraph CUSTOMIZE_STRING 索引边回退及 Query/TraceBuilder 自环过滤均已通过代码、单测和 Query 镜像运行验证；Worker 自环过滤源码已提交但镜像重建受 Python 基础镜像 EOF 限制。真实 marker 在 DeepFlow 有 80 条 flow 行（1 个 trace ID、1 个唯一 span ID），AIOps Trace SoT 有 80 行/80 个唯一 span ID/2 个服务；VM、VLogs、Kubernetes Event、依赖边均有同 marker 证据。真实 RCA Run 图上下文现为 3 vertices/2 edges/1 propagation path，9 个 ToolRun 成功、7 条 evidence，但 Run 仍按证据不足返回 `partial/insufficient_evidence`；全域 validator 的 RCA 合同仍失败。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放通过，但当前 `LLM_MOCK=true`；真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
 
 ### 本轮修改与具体功能对应关系
