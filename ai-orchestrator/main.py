@@ -58,7 +58,13 @@ from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCAReque
 from contracts import RequestContext
 from invocation_scope import LegacyScopeAdapter
 from internal_ingress import build_invocation_scope, verify_run_control_ingress, verify_run_invocation_ingress
-from store import _task_store
+if not _PRODUCTION_COMPOSITION:
+    # Legacy approval/task views are kept for local migration compatibility.
+    # Production action state is Query API/MySQL-owned and must not construct a
+    # second in-memory owner during module import.
+    from store import _task_store
+else:
+    _task_store = None
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check, _llm_async
 
@@ -3935,12 +3941,18 @@ async def toggle_rule(rule_key: str):
 #  NL→ClickHouse SQL（生成-确认-执行 + 安全护栏）
 # ═══════════════════════════════════════════════════════════════
 
-from nl2sql import (validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore,
-                    new_item, is_destructive_request, READ_ONLY_NOTICE)
-from shell_ws import shell_ws
-import hardware_tools  # noqa: F401  注册 IPMI/部件查询工具
-
-_nl2sql_store = Nl2SqlStore()
+if not _PRODUCTION_COMPOSITION:
+    from nl2sql import (validate_sql, normalize_sql, extract_sql_from_markdown, Nl2SqlStore,
+                        new_item, is_destructive_request, READ_ONLY_NOTICE)
+    from shell_ws import shell_ws
+    import hardware_tools  # noqa: F401  注册 IPMI/部件查询工具
+    _nl2sql_store = Nl2SqlStore()
+else:
+    # These names are referenced only by retired development routes.  Keeping
+    # sentinels avoids accidental import-time construction; production route
+    # filtering removes those handlers before serving.
+    shell_ws = None
+    _nl2sql_store = None
 _NL2SQL_SYSTEM = (
     "你是 ClickHouse SQL 专家。根据用户的中文查询意图，生成一条查询 AIOps 可观测性数据的 SQL。"
     "只能 SELECT，禁止 INSERT/UPDATE/DELETE/DROP/ALTER/CREATE。"
@@ -4324,8 +4336,14 @@ async def list_change_events(
 #  IPMI（本地 /dev/ipmi0 上报）+ 部件可用性
 # ═══════════════════════════════════════════════════════════════
 
-from ipmi_ingest import IPMIStore
-from node_health import NodeHealthAggregator
+if not _PRODUCTION_COMPOSITION:
+    from ipmi_ingest import IPMIStore
+    from node_health import NodeHealthAggregator
+else:
+    # Hardware compatibility routes are removed from the production route
+    # table; do not import their local stores as a side effect of startup.
+    IPMIStore = None
+    NodeHealthAggregator = None
 
 
 @app.post("/api/v1/ipmi/ingest")
@@ -4389,8 +4407,9 @@ async def aggregate_node_health(body: dict = None):
             "aggregated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"), "health": results}
 
 
-# WebShell WebSocket 端点
-app.add_api_websocket_route("/api/v1/shell/ws", shell_ws)
+# WebShell WebSocket 端点（仅开发/迁移兼容；生产不注册 handler）。
+if shell_ws is not None:
+    app.add_api_websocket_route("/api/v1/shell/ws", shell_ws)
 
 
 def _apply_production_route_surface() -> None:
