@@ -170,6 +170,8 @@ require_contains 'AIOPS_INTERNAL_TLS_ENABLED' "${tmp_dir}/validation.yaml" 'fron
 require_contains 'name: internal-tls-ca' "${tmp_dir}/validation.yaml" 'frontend/metrics scraper do not mount the internal CA in TLS mode'
 require_contains 'scheme: https' "${tmp_dir}/validation.yaml" 'internal TLS scrape jobs do not switch to HTTPS'
 require_contains 'ca_file: /etc/vm/tls/ca.crt' "${tmp_dir}/validation.yaml" 'internal TLS scrape jobs do not verify the platform CA'
+require_contains 'cert_file: /etc/vm/tls/tls.crt' "${tmp_dir}/validation.yaml" 'internal TLS scrape jobs do not present a client certificate'
+require_contains 'key_file: /etc/vm/tls/tls.key' "${tmp_dir}/validation.yaml" 'internal TLS scrape jobs do not present a client key'
 require_contains 'server_name: ingest.observability.svc.cluster.local' "${tmp_dir}/validation.yaml" 'ingest scrape job does not use the certificate SAN'
 require_contains 'server_name: ai-orchestrator.observability.svc.cluster.local' "${tmp_dir}/validation.yaml" 'orchestrator scrape job does not use the certificate SAN'
 require_contains 'server_name: query-api.observability.svc.cluster.local' "${tmp_dir}/validation.yaml" 'query-api scrape job does not use the certificate SAN'
