@@ -9,7 +9,7 @@ import uuid as _uuid
 from uuid import UUID
 
 from contracts import RequestContext
-from invocation_scope import ScopeView
+from invocation_scope import LegacyScopeAdapter, ScopeView
 from internal_query import signed_query_api_request
 from skill_registry import ToolRegistry
 from kg_tools import kg_evidence_tool
@@ -173,6 +173,27 @@ def _context_for_cluster(
     return request_context
 
 
+def _chat_context_ready(context: ScopeView | None) -> bool:
+    """Return whether the canonical ChatTool audit identity is present."""
+    if not isinstance(context, ScopeView) or getattr(context, "workload_kind", "") != "chat":
+        return False
+    try:
+        UUID(str(context.principal_id))
+        UUID(str(context.session_id))
+        UUID(str(context.tenant_id))
+        UUID(str(context.cluster_id))
+        UUID(str(getattr(context, "chat_session_id", "")))
+        UUID(str(getattr(context, "chat_turn_id", "")))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return str(getattr(context, "principal_type", "")) == "user"
+
+
+def _chat_compatibility_allowed(context: ScopeView) -> bool:
+    """Legacy public reads remain only for the explicitly retired local seam."""
+    return isinstance(context, LegacyScopeAdapter) and not _is_production()
+
+
 def _internal_investigation_query(*, tool_id: str, operation: str,
                                   params: dict, context: ScopeView) -> dict:
     """Run an Investigation read through the ToolRun-owned query boundary."""
@@ -221,6 +242,61 @@ def _internal_investigation_query(*, tool_id: str, operation: str,
     return body
 
 
+def _internal_chat_query(*, tool_id: str, operation: str,
+                         params: dict, context: ScopeView) -> dict:
+    """Run one narrowly-scoped read through the durable ChatTool boundary.
+
+    Unlike Investigation queries this path never consumes evidence and never
+    creates an ``ai_runs``/``ai_tool_runs`` record.  Query API creates the
+    ``ai_chat_tool_runs`` audit row before touching a repository.  A missing or
+    malformed transcript identity therefore fails closed instead of falling
+    back to the public compatibility routes or local knowledge stores.
+    """
+    from internal_query import _load_private_key
+    from internal_query_client import InternalQueryClient
+    from tool_execution_context import ToolExecutionContext
+    from trusted_context_issuer import TrustedContextIssuer
+
+    if getattr(context, "workload_kind", "") != "chat":
+        raise TrustedContextError("invalid_context")
+    chat_session_id = str(getattr(context, "chat_session_id", "") or "")
+    chat_turn_id = str(getattr(context, "chat_turn_id", "") or "")
+    if not chat_session_id or not chat_turn_id:
+        raise TrustedContextError("invalid_context")
+    try:
+        turn_namespace = _uuid.UUID(chat_turn_id)
+    except (ValueError, AttributeError):
+        raise TrustedContextError("invalid_context") from None
+    # One Chat turn may invoke several read tools.  Derive a deterministic
+    # call id from the signed turn and canonical operation/arguments so retries
+    # of the same tool call replay the same durable audit row.
+    raw_params = json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    call_id = str(getattr(context, "chat_tool_call_id", "") or "")
+    if not call_id:
+        call_id = str(_uuid.uuid5(turn_namespace, f"{tool_id}:{operation}:{raw_params}"))
+    execution = {
+        "workload_kind": "chat",
+        "principal_type": str(getattr(context, "principal_type", "") or ""),
+        "principal_id": str(getattr(context, "principal_id", "") or ""),
+        "session_id": str(getattr(context, "session_id", "") or ""),
+        "tenant_id": str(context.tenant_id),
+        "cluster_id": str(context.cluster_id),
+        "chat_session_id": chat_session_id,
+        "chat_turn_id": chat_turn_id,
+        "chat_tool_call_id": call_id,
+        "chat_tool_name": tool_id,
+    }
+    private_key = _load_private_key(os.environ.get("TRUSTED_CONTEXT_PRIVATE_KEY", ""))
+    client = InternalQueryClient(issuer=TrustedContextIssuer(private_key=private_key))
+    result = client.query(
+        tool_id=tool_id, operation=operation,
+        tenant_id=str(context.tenant_id), cluster_id=str(context.cluster_id),
+        params=params, context_ref=str(context.request_id),
+        execution_context=ToolExecutionContext.from_mapping(execution, tool_id=tool_id, params=params),
+    )
+    return result.body
+
+
 def _unwrap_internal_query_result(result: object) -> tuple[dict | None, str | None]:
     """Unwrap the canonical query-api ToolResultEnvelope.
 
@@ -248,6 +324,13 @@ def query_metrics(service: str, tenant_id: str = "", cluster_id: str = "", *, re
     context = _context_for_cluster(cluster_id, request_context)
     if context is None:
         return "查询失败: invalid_context"
+    if getattr(context, "workload_kind", "") == "chat" and _chat_context_ready(context):
+        try:
+            return json.dumps(_internal_chat_query(
+                tool_id="query_metrics.v1", operation="metrics", params={"service": service}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
     if getattr(context, "workload_kind", "") == "investigation":
         try:
             return json.dumps(_internal_investigation_query(
@@ -255,6 +338,8 @@ def query_metrics(service: str, tenant_id: str = "", cluster_id: str = "", *, re
             ), ensure_ascii=False)
         except Exception as exc:
             return f"查询失败: {str(exc)[:200]}"
+    if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
+        return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(f"{QUERY_API}/services/{service}?{cp}", request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
@@ -268,6 +353,13 @@ def query_traces(service: str = "", tenant_id: str = "", cluster_id: str = "", *
     context = _context_for_cluster(cluster_id, request_context)
     if context is None:
         return "查询失败: invalid_context"
+    if getattr(context, "workload_kind", "") == "chat" and _chat_context_ready(context):
+        try:
+            return json.dumps(_internal_chat_query(
+                tool_id="query_traces.v1", operation="traces", params={"service": service, "limit": 5}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
     if getattr(context, "workload_kind", "") == "investigation":
         try:
             return json.dumps(_internal_investigation_query(
@@ -275,6 +367,8 @@ def query_traces(service: str = "", tenant_id: str = "", cluster_id: str = "", *
             ), ensure_ascii=False)
         except Exception as exc:
             return f"查询失败: {str(exc)[:200]}"
+    if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
+        return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(url, request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
@@ -295,6 +389,14 @@ def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "", *, re
     context = _context_for_cluster(cluster_id, request_context)
     if context is None:
         return "日志查询失败: invalid_context"
+    if getattr(context, "workload_kind", "") == "chat" and _chat_context_ready(context):
+        try:
+            return json.dumps(_internal_chat_query(
+                tool_id="query_logs.v1", operation="logs",
+                params={"service": service, "minutes": minutes}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"日志查询失败: {str(exc)[:200]}"
     if getattr(context, "workload_kind", "") == "investigation":
         try:
             return json.dumps(_internal_investigation_query(
@@ -303,6 +405,8 @@ def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "", *, re
             ), ensure_ascii=False)
         except Exception as exc:
             return f"日志查询失败: {str(exc)[:200]}"
+    if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
+        return "日志查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(url, request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"日志查询失败: {data['error']}"
@@ -322,6 +426,22 @@ def query_topology(tenant_id: str = "", cluster_id: str = "", *, request_context
     context = _context_for_cluster(cluster_id, request_context)
     if context is None:
         return "查询失败: invalid_context"
+    if getattr(context, "workload_kind", "") == "chat" and _chat_context_ready(context):
+        try:
+            return json.dumps(_internal_chat_query(
+                tool_id="query_topology.v1", operation="topology", params={}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
+    if getattr(context, "workload_kind", "") == "investigation":
+        try:
+            return json.dumps(_internal_investigation_query(
+                tool_id="query_topology.v1", operation="topology", params={}, context=context,
+            ), ensure_ascii=False)
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
+    if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
+        return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(f"{QUERY_API}/topology/global?{cp}", request_context=context)
     if isinstance(data, dict) and "error" in data:
         return f"查询失败: {data['error']}"
@@ -343,6 +463,22 @@ def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_conte
             return "服务数 " + str(len(services)) + "：\n" + "\n".join(services[:50])
         except Exception as exc:
             return f"查询失败: {str(exc)[:200]}"
+    if getattr(request_context, "workload_kind", "") == "chat" and _chat_context_ready(request_context):
+        try:
+            data = _internal_chat_query(
+                tool_id="query_topology.v1", operation="topology", params={}, context=request_context,
+            )
+            payload, unwrap_error = _unwrap_internal_query_result(data)
+            if unwrap_error or payload is None:
+                return f"查询失败: {unwrap_error or 'query failed'}"
+            nodes = payload.get("nodes", [])
+            services = sorted({str(n.get("name") or n.get("service_name")) for n in nodes
+                               if isinstance(n, dict) and n.get("type") == "service"})
+            return "服务数 " + str(len(services)) + "：\n" + "\n".join(services[:50])
+        except Exception as exc:
+            return f"查询失败: {str(exc)[:200]}"
+    if getattr(request_context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(request_context):
+        return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     # The legacy MySQL graph snapshot is compatibility-only.  It must be
     # explicitly selected in a non-production process; an unset backend never
     # silently becomes a second production data owner.
@@ -523,6 +659,12 @@ def k8sgpt_diagnose(namespace: str = "observability") -> str:
 
 
 def deepflow_status(*, request_context: RequestContext | None = None) -> str:
+    # DeepFlow status has no canonical typed internal route yet.  It is not
+    # eligible for the ChatTool read surface; callers must use Investigation
+    # (or an explicitly authorized legacy local route) instead of bypassing the
+    # durable Chat audit boundary.
+    if getattr(request_context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(request_context):
+        return json.dumps({"error": "CHAT_TOOL_AUDIT_REQUIRED"}, ensure_ascii=False)
     data = _get_json(f"{QUERY_API}/deepflow/status", request_context=request_context)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
@@ -556,6 +698,24 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
             return f"运行中 Pods: {len(pods)} 个\n节点: {len(nodes)} 个"
         except Exception as exc:
             return f"K8s 基础设施数据不可用（查询失败: {str(exc)[:200]}）"
+    if getattr(context, "workload_kind", "") == "chat" and _chat_context_ready(context):
+        try:
+            body = _internal_chat_query(
+                tool_id="query_k8s.v1", operation="kubernetes", params={"namespace": "all"}, context=context,
+            )
+            data, unwrap_error = _unwrap_internal_query_result(body)
+            if unwrap_error or data is None or data.get("error"):
+                detail = unwrap_error or data.get("error")
+                return f"K8s 基础设施数据不可用（数据源错误: {detail}）"
+            pods = data.get("pods") or []
+            nodes = data.get("node_details") or data.get("nodes") or []
+            if not nodes:
+                return "K8s 基础设施数据不可用（未获取到节点信息，无法据此判断健康）"
+            return f"运行中 Pods: {len(pods)} 个\n节点: {len(nodes)} 个"
+        except Exception as exc:
+            return f"K8s 基础设施数据不可用（查询失败: {str(exc)[:200]}）"
+    if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
+        return "K8s 基础设施数据不可用（CHAT_TOOL_AUDIT_REQUIRED）"
     # 内部边界端点 /internal/v1/query/kubernetes 是 POST + body(cluster_id)。
     # QUERY_API 常含 /api/v1 前缀（公共 API），内部端点必须用 origin 基址（不含 /api/v1），
     # 否则会拼出 .../api/v1/internal/v1/... 错误路径（P19 真实环境暴露的 URL 接线缺陷）。
@@ -659,7 +819,26 @@ def _query_knowledge(query: str = "", path_prefix: str = "", tags: str = "",
         return json.dumps({"error": "INVALID_CONTEXT"}, ensure_ascii=False)
     if request_context is not None:
         if _knowledge_scope_ready(request_context):
-            if getattr(request_context, "workload_kind", "chat") != "investigation":
+            workload = getattr(request_context, "workload_kind", "chat")
+            if workload == "chat":
+                if not _chat_context_ready(request_context):
+                    return json.dumps({"error": "CHAT_KNOWLEDGE_AUDIT_REQUIRED"}, ensure_ascii=False)
+                if path_prefix.strip() or tags.strip():
+                    return json.dumps({"error": "KNOWLEDGE_FILTER_UNSUPPORTED"}, ensure_ascii=False)
+                top_k = max(1, min(int(max_results or 5), 50))
+                try:
+                    body = _internal_chat_query(
+                        tool_id="knowledge_search.v1", operation="knowledge",
+                        params={"query": str(query or "").strip(), "top_k": top_k}, context=request_context,
+                    )
+                    payload, error = _unwrap_internal_query_result(body)
+                    if error or payload is None:
+                        return json.dumps({"error": error or "KNOWLEDGE_QUERY_FAILED"}, ensure_ascii=False)
+                    return json.dumps(payload, ensure_ascii=False, default=str)[:6000]
+                except Exception as exc:
+                    code = str(getattr(exc, "error_code", "") or "KNOWLEDGE_QUERY_FAILED")
+                    return json.dumps({"error": code[:120]}, ensure_ascii=False)
+            if workload != "investigation":
                 return json.dumps({"error": "CHAT_KNOWLEDGE_AUDIT_REQUIRED"}, ensure_ascii=False)
             if path_prefix.strip() or tags.strip():
                 # The canonical internal contract currently supports semantic

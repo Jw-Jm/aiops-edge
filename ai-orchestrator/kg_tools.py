@@ -39,10 +39,20 @@ def graph_query_tool(
     return result.body
 
 
-def kg_evidence_tool(service: str, cluster_id: str = "") -> str:
+def kg_evidence_tool(
+    service: str, cluster_id: str = "", *, request_context: Any = None
+) -> str:
     """查询服务在运维知识图谱中的证据链：
     服务节点信息 + 上游/下游依赖 + 关联变更 + 所属 pod/node（RUNS_ON 边）。"""
     # Legacy compatibility only.  New RCA and graph tools use graph_query_tool.
+    # This function predates the signed Query API graph contract and performs
+    # direct local graph I/O.  It must never be reachable from a production
+    # Chat request (which requires a durable ChatTool audit before every read).
+    workload = str(getattr(request_context, "workload_kind", "") or "").strip().lower()
+    if workload == "chat":
+        return "CHAT_TOOL_AUDIT_REQUIRED"
+    if os.environ.get("AIOPS_ENV", "").strip().lower() == "production":
+        return "KNOWLEDGE_GRAPH_INVESTIGATION_REQUIRED"
     import kg_graph
 
     service = (service or "").strip()

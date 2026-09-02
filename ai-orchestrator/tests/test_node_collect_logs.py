@@ -78,7 +78,11 @@ def test_node_collect_includes_logs_and_k8sgpt(monkeypatch):
         # 与真实环境「用户显式要求 k8sgpt 诊断」一致。
         state = {"service": "order-svc", "llm_config": None,
                  "intent": "diagnosis", "user_message": "用 k8sgpt 诊断 order-svc 错误率升高的根因",
-                 "cluster_id": str(_context().cluster_id), "request_context": _context()}
+                 # An unscoped development helper is intentionally not a
+                 # canonical Chat request.  Canonical Chat must refuse direct
+                 # K8sGPT and route through the Investigation CTA; this test
+                 # keeps coverage for the legacy explicit-tool seam only.
+                 "cluster_id": str(_context().cluster_id), "request_context": None}
         res = await node_collect(state)
         assert "logs_data" in res
         assert calls["k8sgpt"] >= 1

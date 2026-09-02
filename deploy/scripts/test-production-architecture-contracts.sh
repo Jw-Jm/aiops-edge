@@ -161,5 +161,8 @@ forbidden 'cluster_id` String DEFAULT '\''default'\''' "$repo_root/deploy/helm/a
 [[ -f "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0016_ai_chat_turn_id.sql" ]] || fail 'ARCH-504 AICHAT turn idempotency migration missing';
 required 'ADD COLUMN turn_id CHAR(36) NULL' "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0016_ai_chat_turn_id.sql" 'ARCH-505 AICHAT turn_id column missing';
 required 'uq_ai_chat_message_turn' "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0016_ai_chat_turn_id.sql" 'ARCH-506 AICHAT turn uniqueness constraint missing';
+[[ -f "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0017_ai_chat_tool_runs.sql" ]] || fail 'ARCH-507 ChatTool audit migration missing';
+required 'uq_ai_chat_tool_call' "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0017_ai_chat_tool_runs.sql" 'ARCH-508 ChatTool idempotency constraint missing';
+required 'fk_ai_chat_tool_chat_session' "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0017_ai_chat_tool_runs.sql" 'ARCH-509 ChatTool chat-session ownership FK missing';
 
 echo "production architecture contracts passed"

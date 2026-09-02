@@ -168,17 +168,32 @@ class InternalQueryClient:
         body = self._build_body(raw_params)
         tool_context = execution_context
         if tool_context is None and isinstance(params, Mapping) and context_ref:
-            # Investigation callers pass identity in the trusted in-process
-            # context; chat keeps the legacy read-only envelope for now.
+            # Investigation and Chat callers pass identity in the trusted
+            # in-process context; Chat uses the durable ChatTool envelope.
             context_mapping = params.get("_execution_context") if isinstance(params.get("_execution_context"), Mapping) else None
-            if context_mapping and context_mapping.get("workload_kind") == "investigation":
+            if context_mapping and context_mapping.get("workload_kind") in {"investigation", "chat"}:
                 tool_context = ToolExecutionContext.from_mapping(
                     context_mapping, tool_id=tool_id, params=raw_params,
                 )
+        principal_type = "system"
+        principal_id = self._principal_id(context_ref)
+        session_id = None
         if tool_context is not None and tool_context.workload_kind == "investigation":
             body.update(tool_context.to_body())
             run_id = tool_context.run_id
             workload_kind = tool_context.workload_kind
+        elif tool_context is not None and tool_context.workload_kind == "chat":
+            if tool_context.tenant_id != str(tenant_id) or tool_context.cluster_id != str(cluster_id):
+                raise TrustedContextError("invalid_context")
+            body.update(tool_context.to_body())
+            # Chat has no Investigation Run.  The signed run_id is only a
+            # short-lived correlation value required by the wire contract; it
+            # must never be used to create ai_runs/ai_tool_runs.
+            run_id = self._run_id(f"chat::{context_ref}")
+            workload_kind = "chat"
+            principal_type = tool_context.principal_type
+            principal_id = tool_context.principal_id
+            session_id = tool_context.session_id
         else:
             run_id = self._run_id(context_ref)
             workload_kind = "platform"
@@ -187,11 +202,9 @@ class InternalQueryClient:
             cluster_id=cluster_id,
             capability=tool.capability,
             run_id=run_id,
-            # 审计 P0-1：InternalQueryClient 是系统调查运行的查询代理（Planner DAG 驱动），
-            # 非真实用户会话。必须使用 system principal（session_id 为空），
-            # 不得伪造 user session，也不得自动生成非空 session。
-            principal_type="system",
-            principal_id=self._principal_id(context_ref),
+            principal_type=principal_type,
+            principal_id=principal_id,
+            session_id=session_id,
             workload_kind=workload_kind,
         )
         headers = {"Content-Type": "application/json", "X-Context-Ref": context_ref}

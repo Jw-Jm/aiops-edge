@@ -78,6 +78,22 @@ func TestAIChatTurnMigrationContainsIdempotencyConstraint(t *testing.T) {
 	}
 }
 
+func TestAIChatToolRunMigrationContainsDurableAuditSchema(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0017_ai_chat_tool_runs.sql")
+	if err != nil {
+		t.Fatalf("read 0017 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{
+		"ai_chat_tool_runs", "chat_session_id", "turn_id", "tool_call_id",
+		"args_hash", "result_digest_sha256", "uq_ai_chat_tool_call",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0017 migration missing %q", required)
+		}
+	}
+}
+
 // TestAIRuntimeSchemaManifest 在可用 MySQL 上跑 schema-migrator 后，逐表核对
 // V9.2 冻结 AI Runtime 表的列 / nullability / PK / unique（P1-1：字段来源
 // docs/AIOPS_DATA_MODEL_REDESIGN.md）。无 MySQL 时跳过。
@@ -138,6 +154,14 @@ func TestAIRuntimeSchemaManifest(t *testing.T) {
 	// ai_run_events PK(run_id, sequence)
 	if !primaryKeyIs(t, db, "ai_run_events", []string{"run_id", "sequence"}) {
 		t.Errorf("ai_run_events PK must be (run_id, sequence)")
+	}
+	for _, c := range []string{"chat_tool_run_id", "principal_id", "session_id", "chat_session_id", "turn_id", "tool_call_id", "tenant_id", "cluster_id", "tool_name", "operation", "capability", "args_hash", "status", "result_digest_sha256", "result_count", "error_code", "started_at", "completed_at"} {
+		if !columnExists(t, db, "ai_chat_tool_runs", c) {
+			t.Errorf("ai_chat_tool_runs missing required column %s", c)
+		}
+	}
+	if !primaryKeyIs(t, db, "ai_chat_tool_runs", []string{"chat_tool_run_id"}) {
+		t.Errorf("ai_chat_tool_runs PK must be chat_tool_run_id")
 	}
 }
 

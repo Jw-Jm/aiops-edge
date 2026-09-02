@@ -58,6 +58,9 @@ func TestWorkloadKindMatchRejectsUnsignedInvestigation(t *testing.T) {
 	if err := checkWorkloadKindMatch("", "investigation"); err == nil {
 		t.Fatal("missing signed workload must not authorize investigation")
 	}
+	if err := checkWorkloadKindMatch("", "chat"); err == nil {
+		t.Fatal("missing signed workload must not authorize chat")
+	}
 }
 
 func TestWorkloadKindMatchRejectsInvestigationDowngrade(t *testing.T) {

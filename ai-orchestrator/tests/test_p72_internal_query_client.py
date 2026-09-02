@@ -195,6 +195,53 @@ class TestT1SignAndQuery:
         assert transport.calls[0]["context_claims"]["cluster_id"] == "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
         assert transport.calls[0]["context_claims"]["workload_kind"] == "platform"
 
+    def test_chat_context_preserves_user_session_and_chat_tool_identity(self, client, transport):
+        from tool_execution_context import ToolExecutionContext
+
+        chat = ToolExecutionContext.from_mapping(
+            {
+                "workload_kind": "chat",
+                "principal_type": "user",
+                "principal_id": "33333333-3333-4333-8333-333333333333",
+                "session_id": "44444444-4444-4444-8444-444444444444",
+                "tenant_id": "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+                "cluster_id": "91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+                "chat_session_id": "55555555-5555-4555-8555-555555555555",
+                "chat_turn_id": "66666666-6666-4666-8666-666666666666",
+                "chat_tool_call_id": "77777777-7777-4777-8777-777777777777",
+                "chat_tool_name": "query_metrics.v1",
+            },
+            tool_id="query_metrics.v1", params={"service": "checkout"},
+        )
+        res = client.query(
+            tool_id="query_metrics.v1", operation="metrics",
+            tenant_id="7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+            cluster_id="91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+            params={"service": "checkout"}, context_ref="chat-turn",
+            execution_context=chat,
+        )
+        assert res.http_status == 200
+        call = transport.calls[0]
+        assert call["context_claims"]["workload_kind"] == "chat"
+        assert call["context_claims"]["principal_type"] == "user"
+        assert call["context_claims"]["principal_id"] == "33333333-3333-4333-8333-333333333333"
+        assert call["context_claims"]["session_id"] == "44444444-4444-4444-8444-444444444444"
+        body = json.loads(call["data"])
+        assert body["chat_session_id"] == "55555555-5555-4555-8555-555555555555"
+        assert body["chat_turn_id"] == "66666666-6666-4666-8666-666666666666"
+        assert body["chat_tool_call_id"] == "77777777-7777-4777-8777-777777777777"
+        assert body["chat_tool_name"] == "query_metrics.v1"
+        assert body["workload_kind"] == "chat"
+
+    def test_chat_context_requires_durable_identity(self):
+        from tool_execution_context import ToolExecutionContext
+
+        with pytest.raises(ValueError, match="chat.*identity"):
+            ToolExecutionContext.from_mapping(
+                {"workload_kind": "chat", "principal_type": "user"},
+                tool_id="query_metrics.v1", params={},
+            )
+
 
 # ═══════════════════════════════════════════════════════
 #  T2 禁旁路

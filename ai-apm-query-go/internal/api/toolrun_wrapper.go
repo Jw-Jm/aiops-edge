@@ -33,12 +33,14 @@ const MaxToolResultBytes = 2 << 20 // 2MB
 type ToolResultEnvelope struct {
 	Quality          string          `json:"quality"` // complete | partial | failed
 	ToolRunID        string          `json:"tool_run_id,omitempty"`
+	ChatToolRunID    string          `json:"chat_tool_run_id,omitempty"`
 	Truncated        bool            `json:"truncated"`
 	Count            int             `json:"count"`
 	Digest           string          `json:"digest"`
 	QueryWindowStart string          `json:"query_window_start,omitempty"`
 	QueryWindowEnd   string          `json:"query_window_end,omitempty"`
 	SourceErrors     []string        `json:"source_errors,omitempty"`
+	Replay           bool            `json:"replay,omitempty"`
 	Data             json.RawMessage `json:"data"`
 }
 
@@ -68,6 +70,7 @@ type toolRunContext struct {
 	ClusterID      string
 	ArgsHash       string           // P0-TOOL-04：幂等域 (run_id, idempotency_key, args_hash)
 	Existing       *store.AIToolRun // durable replay record, when idempotency matches
+	ChatAudit      *store.AIChatToolRun
 }
 
 // newToolRunFromRequest 从 internalQueryRequest + rctx 构造 toolRunContext（无 tool_run_id 则 nil）。
@@ -299,6 +302,24 @@ func buildEnvelope(trc *toolRunContext, quality string, data []byte, errMsg stri
 // duplicate request.  A duplicate must never fall through to the data source,
 // and returning only {idempotent:true} loses the original result for clients.
 func toolReplayEnvelope(trc *toolRunContext) ToolResultEnvelope {
+	if trc != nil && trc.ChatAudit != nil {
+		audit := trc.ChatAudit
+		quality := "complete"
+		if audit.Status == "running" || audit.Status == "partial" {
+			quality = "partial"
+		} else if audit.Status == "failed" || audit.Status == "unavailable" {
+			quality = "failed"
+		}
+		env := ToolResultEnvelope{Quality: quality, ChatToolRunID: audit.ChatToolRunID,
+			Replay: true, Data: json.RawMessage(`{}`), Count: int(audit.ResultCount),
+			Digest: audit.ResultDigestSHA256}
+		if audit.ErrorCode != "" {
+			env.SourceErrors = []string{audit.ErrorCode}
+		} else if audit.Status == "running" {
+			env.SourceErrors = []string{"TOOL_RUNNING"}
+		}
+		return env
+	}
 	if trc == nil || trc.Existing == nil {
 		return ToolResultEnvelope{Quality: "failed", Data: json.RawMessage(`null`)}
 	}

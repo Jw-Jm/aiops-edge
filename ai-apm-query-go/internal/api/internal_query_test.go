@@ -325,6 +325,20 @@ func TestInternalQuerySignedInvestigationCannotBeDowngraded(t *testing.T) {
 	}
 }
 
+func TestInternalQuerySignedChatDefaultsOmittedBodyWorkload(t *testing.T) {
+	c := newInternalQueryTestHandler(t, nil)
+	req := c.signedRequest(t, http.MethodPost, "/internal/v1/query/metrics", `{"service":"checkout"}`, func(ctx *contract.TrustedRequestContext) {
+		ctx.WorkloadKind = "chat"
+	})
+	rctx, decoded, err := decodeInternalRequest(req, "observability.metrics.read")
+	if err != nil {
+		t.Fatalf("signed chat with omitted body workload rejected: %v", err)
+	}
+	if rctx.WorkloadKind != "chat" || decoded.WorkloadKind != "chat" {
+		t.Fatalf("signed workload was not propagated: rctx=%#v req=%#v", rctx, decoded)
+	}
+}
+
 func TestInternalQueryMetricsSuccess(t *testing.T) {
 	rows := `{"t":"2026-08-20 10:00:00","call_count":10,"error_count":1,"avg_ms":5.5}` + "\n"
 	c := newInternalQueryTestHandler(t, map[string]string{"FROM observability.trace_spans": rows})

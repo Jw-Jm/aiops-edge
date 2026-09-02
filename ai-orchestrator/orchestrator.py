@@ -445,6 +445,33 @@ def _collect_alerts(
             return "\n".join(lines)
         except Exception as exc:
             return f"活跃告警事件: 采集失败（{str(exc)[:120]}）"
+    if getattr(request_context, "workload_kind", "") == "chat":
+        try:
+            from tools import _chat_compatibility_allowed, _chat_context_ready, _internal_chat_query, _unwrap_internal_query_result
+            if not _chat_context_ready(request_context):
+                if _chat_compatibility_allowed(request_context):
+                    raise LookupError("legacy chat compatibility")
+                return "活跃告警事件: CHAT_TOOL_AUDIT_REQUIRED"
+            body = _internal_chat_query(
+                tool_id="query_alerts.v1", operation="alerts", params={"limit": 15}, context=request_context,
+            )
+            payload, error = _unwrap_internal_query_result(body)
+            if error or payload is None:
+                return f"活跃告警事件: 采集失败（{error or 'query failed'}）"
+            events = payload.get("alerts", [])
+            if not events:
+                return "活跃告警事件: 无"
+            lines = ["活跃告警事件:"]
+            for event in events:
+                lines.append(
+                    f"- [{event.get('severity', '')}] {event.get('rule_name', '?')} "
+                    f"服务={event.get('service', '?')} 触发次数={event.get('count', 1)}"
+                )
+            return "\n".join(lines)
+        except LookupError:
+            pass
+        except Exception as exc:
+            return f"活跃告警事件: 采集失败（{str(exc)[:120]}）"
     qa = _os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
     out = []
 
@@ -779,13 +806,23 @@ async def node_collect(state: AgentState) -> dict:
     api_key = _LLM_KEY_HOLDER.get("api_key", "")
     result = {"messages": [f"[{_now()}] 数据采集开始"]}
     # P-fix: state 中 request_context 是纯 dict 投影，还原为满足 ScopeView 协议的对象
-    request_context = ScopeViewSnapshot.from_projection(state.get("request_context"))
+    # An absent projection is an unscoped development/test invocation, not a
+    # Chat request.  Do not let ScopeViewSnapshot's safe default workload_kind
+    # ("chat") accidentally turn legacy helper tests or maintenance calls into
+    # an audited Chat path without durable transcript identity.
+    context_projection = state.get("request_context")
+    request_context = (
+        ScopeViewSnapshot.from_projection(context_projection)
+        if context_projection
+        else None
+    )
     cid = str(request_context.cluster_id) if isinstance(request_context, ScopeView) else ""
     # Services — 全局服务概览（含错误率，供巡检/诊断分析）
     try:
-        data = _parse(await asyncio.to_thread(
+        service_raw = await asyncio.to_thread(
             get_service_list, cluster_id=cid, request_context=request_context
-        ))
+        )
+        data = _parse(service_raw)
         if isinstance(data, list):
             lines = []
             for s in data:
@@ -800,6 +837,12 @@ async def node_collect(state: AgentState) -> dict:
                     line += f" 错误数={errs} 错误率={rate:.2f}%"
                 lines.append(line)
             result["services_data"] = "\n".join(lines)
+        else:
+            # Chat/Investigation helper may return a bounded human-readable
+            # summary when the canonical topology payload is not a service
+            # list.  Keep that evidence instead of silently dropping it.
+            if service_raw:
+                result["services_data"] = str(service_raw)[:12000]
     except: pass
     # Infra
     try:
@@ -823,8 +866,12 @@ async def node_collect(state: AgentState) -> dict:
                 query_metrics, svc, cluster_id=cid, request_context=request_context
             )
             data = _parse(raw)
-            if data and isinstance(data.get("data"), list):
+            items = []
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
                 items = data["data"]
+            elif isinstance(data, dict) and isinstance(data.get("data"), dict):
+                items = data["data"].get("points") or data["data"].get("data") or []
+            if items:
                 total_calls = sum(int(i.get("calls", 0)) for i in items)
                 total_errors = sum(int(i.get("errors", 0)) for i in items)
                 avg_lat = sum(float(i.get("avg_ms", 0)) for i in items) / max(len(items), 1)
@@ -852,7 +899,14 @@ async def node_collect(state: AgentState) -> dict:
     is_diag = (state.get("intent") or "").lower() == "diagnosis"
     explicit_tools = _explicit_tool_routes(state.get("user_message", ""))
     investigation_workload = getattr(request_context, "workload_kind", "") == "investigation"
-    if "k8sgpt_diagnose" in explicit_tools and not investigation_workload:
+    chat_workload = getattr(request_context, "workload_kind", "") == "chat"
+    if chat_workload:
+        # K8sGPT talks to the Kubernetes API directly and has no ChatTool audit
+        # record.  It is therefore not part of the ordinary Chat read surface;
+        # a user asking for it must take the Investigation CTA.
+        if "k8sgpt_diagnose" in explicit_tools or (is_diag and not _is_info_query(state.get("user_message", ""))):
+            result["k8sgpt_error"] = "CHAT_TOOL_AUDIT_REQUIRED"
+    elif "k8sgpt_diagnose" in explicit_tools and not investigation_workload:
         try:
             # Use the registered read-only tool so an explicit request is
             # observable and gets the same fallback text as MCP callers.
@@ -882,7 +936,9 @@ async def node_collect(state: AgentState) -> dict:
 
 
 _INVESTIGATION_CTA_KEYWORDS = (
-    "发起调查", "创建调查", "完整根因分析", "结构化调查", "investigation",
+    "发起调查", "创建调查", "完整根因分析", "结构化调查", "根因分析",
+    "跨服务", "影响面", "调用链分析", "变更关联", "知识图谱", "依赖关系",
+    "上下游", "拓扑关联", "图谱", "k8sgpt", "investigation",
 )
 # 纯闲聊/信息查询（无数据采集需求）→ chat_pure 跳过 heavy collect（B2-03/F-07：Chat 不做固定实时采集）。
 _PURE_CONVERSATION_KEYWORDS = (
@@ -894,9 +950,9 @@ _PURE_CONVERSATION_KEYWORDS = (
 def _needs_investigation_cta(message: str) -> bool:
     """判断 Chat 消息是否需显式结构化调查（B2-03 / F-07）。
 
-    仅当用户明确要求"发起/创建调查"或"完整根因分析"等结构化 Run 时返回 CTA；
-    普通诊断类问题（诊断/错误率/告警等）仍走正常 Chat 分析（保留 exec_context/处置分析），
-    由 node_collect 的轻量按需采集支撑，不做固定全量实时采集。
+    结构化 RCA、跨服务/图谱关联和 K8sGPT 等能力必须返回 CTA；普通
+    诊断类问题（诊断/错误率/告警等）仍走受限 Chat 只读分析，由
+    node_collect 通过已审计的 Query API 工具支撑，不做固定全量实时采集。
     """
     m = (message or "").lower()
     return any(kw in m for kw in _INVESTIGATION_CTA_KEYWORDS)
@@ -1803,10 +1859,17 @@ def build_graph(checkpointer=None, mode: str = "full"):
 
         # P1-5: 轻量意图分流——信息查询跳过深度 RCA/RAG/CrewAI，走 summarize。
         def route_light(state: AgentState) -> str:
+            # Ordinary Chat may perform the bounded read-only collection above,
+            # but correlation/RCA is an Investigation capability.  The explicit
+            # CTA branch is handled by chat_classify; reaching clean here means
+            # the user did not request a durable Investigation Run.
+            request_context = ScopeViewSnapshot.from_projection(state.get("request_context"))
+            if getattr(request_context, "workload_kind", "") == "chat":
+                return "summarize" if state.get("light_query") else "rag"
             return "summarize" if state.get("light_query") else "rca"
 
         builder.add_conditional_edges("clean", route_light,
-                                      {"summarize": "summarize", "rca": "rca"})
+                                      {"summarize": "summarize", "rag": "rag", "rca": "rca"})
     else:
         builder.set_entry_point("collect")
         builder.add_edge("collect", "clean")
@@ -1815,8 +1878,9 @@ def build_graph(checkpointer=None, mode: str = "full"):
     builder.add_edge("rca", "rag")
 
     if mode == "chat":
-        # Chat 精简路径: collect→clean→rca→rag→crewai→summarize
-        # 只做 1 次 LLM 分析，script 操作建议在 stream_sync 中从分析结果提取
+        # Chat 精简路径: collect→clean→rag→crewai→summarize
+        # 普通 Chat 不运行结构化 RCA/跨源关联；需完整根因分析时由
+        # chat_classify 返回 Investigation CTA。只做 1 次 LLM 分析。
         builder.add_edge("rag", "crewai")
         builder.add_edge("crewai", "summarize")
     elif mode == "dual":
@@ -2200,6 +2264,12 @@ class BrainOrchestrator:
                 step_num += 1
                 label = step_names.get(node_name, node_name)
                 yield {"type": "progress", "node": node_name, "text": f"{label}", "step": min(step_num, 7), "total": 8}
+                # A CTA intentionally terminates the Chat graph before
+                # ``summarize``. Preserve the classifier's final response so
+                # the SSE stream emits the Investigation CTA instead of an
+                # empty ``done`` frame.
+                if node_name == "chat_classify" and node_data.get("investigation_required"):
+                    suggestion.update(node_data)
                 # 工具级事件（节点级推断；真实工具级采集为独立后续）
                 explicit_tools = _explicit_tool_routes(message)
                 explicit_tool = explicit_tools[0] if explicit_tools else None
@@ -2421,6 +2491,41 @@ class BrainOrchestrator:
         仅在能明确匹配时才返回，否则返回空让 RCA 跳过。
         """
         try:
+            workload = str(getattr(request_context, "workload_kind", "") or "")
+            if workload in {"investigation", "chat"}:
+                from tools import (
+                    _chat_context_ready,
+                    _internal_chat_query,
+                    _internal_investigation_query,
+                    _unwrap_internal_query_result,
+                )
+                if workload == "chat":
+                    if not _chat_context_ready(request_context):
+                        return ""
+                    body = _internal_chat_query(
+                        tool_id="query_topology.v1", operation="topology", params={}, context=request_context,
+                    )
+                else:
+                    body = _internal_investigation_query(
+                        tool_id="query_topology.v1", operation="topology", params={}, context=request_context,
+                    )
+                payload, error = _unwrap_internal_query_result(body)
+                if error or payload is None:
+                    return ""
+                nodes = payload.get("nodes") or []
+                services = [
+                    str(item.get("name") or item.get("service_name"))
+                    for item in nodes
+                    if isinstance(item, dict) and (item.get("name") or item.get("service_name"))
+                ]
+                if not services:
+                    return ""
+                if message:
+                    msg_lower = message.lower()
+                    for svc in sorted(services, key=len, reverse=True):
+                        if svc.lower() in msg_lower:
+                            return svc
+                return ""
             # P0-1 补充修复：get_service_list 摘要截断前 10 个服务会漏掉目标服务，
             # 此处直接拉全量服务名列表做匹配。
             query_api = os.environ.get(

@@ -30,7 +30,7 @@ var routeCapability = map[string]string{
 	"/internal/v1/query/logs":               "observability.logs.read",
 	"/internal/v1/query/traces":             "observability.traces.read",
 	"/internal/v1/query/alerts":             "observability.alerts.read",
-	"/internal/v1/query/events":             "observability.events.read",
+	"/internal/v1/query/events":             "kubernetes.events.read",
 	"/internal/v1/query/topology":           "observability.topology.read",
 	"/internal/v1/query/kubernetes":         "kubernetes.resources.read",
 	"/internal/v1/query/changes":            "changes.read",
@@ -45,11 +45,14 @@ var routeCapability = map[string]string{
 
 // internalQueryCtx 是 internal query 的可信作用域（服务端注入，body 不得覆盖）。
 type internalQueryCtx struct {
-	TenantID     string
-	ClusterID    string
-	Capability   string
-	RunID        string
-	WorkloadKind string
+	TenantID      string
+	ClusterID     string
+	Capability    string
+	RunID         string
+	WorkloadKind  string
+	PrincipalType string
+	PrincipalID   string
+	SessionID     string
 }
 
 // internalQueryError 是 internal query 边界的结构化错误（对齐契约 §58 错误码）。
@@ -94,11 +97,14 @@ func authorizeInternalQuery(r *http.Request, capability string) (*internalQueryC
 		return nil, &internalQueryError{Code: contract.ErrorCodeTenantAccessDenied, Message: "unauthorized tenant/cluster scope"}
 	}
 	return &internalQueryCtx{
-		TenantID:     ctx.TenantID,
-		ClusterID:    ctx.ClusterID,
-		Capability:   ctx.Capability,
-		RunID:        ctx.RunID,
-		WorkloadKind: ctx.WorkloadKind,
+		TenantID:      ctx.TenantID,
+		ClusterID:     ctx.ClusterID,
+		Capability:    ctx.Capability,
+		RunID:         ctx.RunID,
+		WorkloadKind:  ctx.WorkloadKind,
+		PrincipalType: ctx.PrincipalType,
+		PrincipalID:   ctx.PrincipalID,
+		SessionID:     ctx.SessionID,
 	}, nil
 }
 

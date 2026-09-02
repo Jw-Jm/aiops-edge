@@ -10,6 +10,12 @@
 
 > **本轮权威增补（2026-09-02，优先于下文历史记录）：** 当前代码提交为 `d3167a8a7b71958d6296f39caa07dfa5861708d5`，Helm release `aiops` revision 43；12 个自研镜像均以 `git-d3167a8` 构建并部署，运行时 Pod 全部 Ready，MySQL/ClickHouse/Graph 迁移 Job 全部 Complete。新增修复：`apps/investigation.py` 不再在导入时永久污染 `INVESTIGATION_WORKER_MODE`，仅在导入无状态编排器期间临时设置并恢复，避免同进程后续 Gateway `BrainOrchestrator` 错误降级为 `MemorySaver`；目标检查点跨实例、跨 event loop、同步读取及结构化 Chat 消息测试由 4 个失败恢复为通过。此前 `59170bb` 的 RCA 事件修复仍生效：`rca.v2` 持久化完整 `RCAResult.to_dict()` 证据，异常事件只保留稳定错误码，不落原始异常文本。定向生产边界、RCA、AICHAT、检查点和安全回归共 **102 passed**（1 个非阻断 DeprecationWarning）。当前发布证据 `/tmp/aiops-release-evidence-d3167a8.json`：`working_tree_dirty=false`、12 个本机 registry digest、Ed25519 signed binding、Helm lint、部署契约、生产架构契约、diff check 和上述单测均 PASS，`publishable=true`；该签名密钥和 registry 仅为本机候选材料，不等价于生产 KMS/正式 registry。固定 200k/1M Graph 真实容量门禁沿用本轮 Graph 代码未变更前已通过的 `/tmp/aiops-graph-capacity-5d2803f-rerun.json`（200,000 vertices、1,000,000 edges、200,000 aliases、7 个只读操作、资源门禁 PASS，`pressure_test=false`、`benchmark_iterations=0`），其结果已纳入当前绑定的数据摘要；未执行压测。无 fixture 的全栈验证 `/tmp/aiops-evidence-d3167a8.json` 明确为 `gate_status=BLOCKED_BY_ENV`，唯一阻断是未提供真实 `AIOPS_VALIDATION_DATA_MARKER`，未以 fixture 冒充生产观测证据。生产仍不可发布：真实观测/RCA confirmed 合同、生产 Secret/证书及轮换、Credential Broker/TokenRequest、HA/PITR/回滚和正式 registry/KMS 验证仍未完成。下文出现的 `865de6a`、`5d2803f`、Helm revision 25/42 等均为历史证据，不得解释为当前运行版本。
 
+> **本轮最终方案修订（2026-09-02，优先于历史 Chat CTA-only 描述）：** 普通 Chat 不再被强制改成“只能 CTA”；在满足持久化 ChatTool 审计条件时允许受限、只读、按 capability 的实时诊断。Query API 新增 `ai_chat_tool_runs`（迁移 `0017_ai_chat_tool_runs.sql`），由 `AIChatToolRunDAO.Start/Finish` 以 `(chat_session_id,turn_id,tool_call_id)` 幂等，并在数据源调用前创建审计行；只保存身份、操作、参数摘要、状态、结果摘要和计数，不保存原始观测正文。`/internal/v1/query/*` 从签名 `TrustedRequestContext` 注入用户/登录会话身份；`workload_kind=chat`、缺少规范化身份或审计完成失败均 fail-closed，不返回观测数据。Orchestrator 的 `ToolExecutionContext`、`InternalQueryClient`、`InvocationScope`/checkpoint projection 与 `tools.py` 已接入 Chat 会话/回合/工具调用身份，metrics/logs/traces/alerts/topology/kubernetes/knowledge 等普通只读工具统一走内部签名查询；旧 public/本地知识兼容路径仅限非生产 LegacyScopeAdapter，生产入口已退休。Chat 图跳过结构化 RCA/跨服务关联；“根因分析、跨服务、影响面、调用链分析、变更关联、K8sGPT、发起调查”等请求返回 Investigation CTA，继续走持久化 Run/Evidence/Plan 闭环。Task 1/2/3 focused RED→GREEN 证据为 Query store/API 定向测试通过、Orchestrator Chat identity/boundary 定向测试通过；本轮工作区全量回归已复跑：Python **1250 passed, 1 skipped, 3 deselected, 2 warnings**，Go `go test ./...` 与 `go vet ./...` 通过。验收门槛：迁移 `0017` 在候选 MySQL 成功并校验列/PK/唯一键；首次 ChatTool 审计插入发生在 repository I/O 前；同一工具调用只产生一条审计且重试不读数据源；审计 Finish 失败返回 `TOOL_UNAVAILABLE` 且响应正文为空；Chat claims 必须是 `principal_type=user`、真实 `session_id`、canonical chat session/turn/tool-call UUID；结构化 RCA 只能由 Investigation 路径执行。
+
+> **本轮工作区状态覆盖：** 上述 `d3167a8`、revision 43 和 `publishable=true` 是本轮 ChatTool 改动前的历史候选证据；当前工作区已新增未提交的 ChatTool 代码、迁移、测试及图谱兼容边界修复，故本轮完成提交并重新生成 release evidence 前，不得继续引用历史 `publishable=true` 作为当前发布结论。
+
+> **真实观测与 RCA confirmed 验证增补（2026-09-02，当前 OrbStack 运行态）：** 本次验证使用新生成的唯一 marker `aiops-real-20260902T083802Z-15849`，未使用 `--fixture`，未连接生产。通过真实 Ingest mTLS/API-key 写入并读回 2-span/2-service/1-error Trace（平台 `observability.trace_spans` 在固定窗口内为 4 行、2 个 trace、4 个 span、2 个 error）、VictoriaLogs marker 日志、Kubernetes Event `aiops-validation-5121`（Warning，`2026-09-02T08:43:13Z`）、VictoriaMetrics `query_range` marker 时序（1 个样本）及 DeepFlow `flow_log.l7_flow_log`（4 行、1 个 trace、1 个 span）；Query 图上下文读回 1 条真实 `DEPENDS_ON` 边。第一次真实 RCA Run `efc6f4fb-a3bd-46d7-b5db-d1b84cd7aee8` 使用非唯一资源名 `aiops-validation`，2 个 `internal_query` 均真实失败为 `ENTITY_AMBIGUOUS`；第二次 Run `1365c163-1348-4af7-ae71-46c452318cc4` 改用实际服务名 `aiops-validation-backend`，8 个 ToolRun 成功、6 条 evidence 持久化，图增强为非空但 `partial=true`，RCA V2 实际输出 `root_cause_status=insufficient_evidence`、confidence `0.45`、`missing_evidence=[independent_evidence,evidence_source_unavailable]`，候选根因未形成 bounded root→symptom path，Run 终态为 `partial`，没有 `confirmed`。不带 fixture 的 `validate-observability-evidence.sh` 重跑结果：metrics/logs/Kubernetes events/DeepFlow/service dependency 均 `PASS`，RCA `FAIL`（缺少 confirmed 所需的 `time_range_*` 别名、`final_graph_context`、bounded propagation path 和 deterministic root score），整体 `gate_status=FAIL`。证据产物为 `/tmp/aiops-current-real-evidence-report.json`、`/tmp/aiops-live-evidence/deepflow.json`、`/tmp/aiops-live-evidence/dependency.json`、`/tmp/aiops-live-evidence/rca.json`；这些文件是由本机实时查询结果物化的验证快照，不是生产数据或 fixture。该结果确认“观测链路可读”不等于“RCA confirmed”，当前 RCA confirmed 发布门禁仍未解除；且当前 Pod 镜像为 `git-12973e7`，不能据此证明未部署的工作区代码已经在运行态生效。
+
 ### 2026-09-02 本轮修复与验证摘要
 
 | 修复 | 触发条件/根因 | 当前证据与结论 |
@@ -17,8 +23,9 @@
 | Worker 导入环境隔离 | `apps.investigation` 导入时永久写入 `INVESTIGATION_WORKER_MODE=true`，污染同进程 Gateway/测试，后续 `BrainOrchestrator` 误用 `MemorySaver` | `ai-orchestrator/apps/investigation.py` 临时设置并在 `finally` 恢复；`tests/test_checkpointer.py` 相关 4 项及 Worker 安全/入口测试通过；不改变独立 Worker 的无状态构造 |
 | 检查点持久化与读取回归恢复 | 上述污染使 `AsyncSqliteSaver` 未初始化、跨实例 checkpoint 为空、同步 session state 为空 | 检查点、RCA、AICHAT、生产导入边界等定向集合 **102 passed**；当前 12 镜像已部署到 revision 43 |
 | RCA 事件证据完整性 | 旧事件投影只保留摘要字段，丢失证据、最终图上下文、传播路径和确定性分数 | `apps/investigation.py` 与 `main.py` 均从完整 `RCAResult.to_dict()` 构造 `rca.v2`；异常只记录 `RCA_V2_UNAVAILABLE`；单测验证完整字段保留 |
+| Chat Investigation CTA SSE 保真 | `chat_classify` 直接结束 Chat 图时，流式汇总只读取 `summarize`，可能发送空 `done` 丢失 CTA | `orchestrator.py:stream_sync` 现在在 `chat_classify` 的 Investigation 分支保留 `final_response`；新增回归测试验证 SSE `done` 含 `__investigation_required__` |
 
-本轮没有修复或放宽真实观测门禁；由于环境没有新的真实 marker，`validate-local-stack.sh` 仍按设计返回 `BLOCKED_BY_ENV`。因此“测试/发布候选可复核”与“生产发布已批准”必须严格区分。
+此前 ChatTool 修复阶段没有修复或放宽真实观测门禁，且当时环境没有新的真实 marker，`validate-local-stack.sh` 按设计返回 `BLOCKED_BY_ENV`；本报告上方的最新增补已单独使用新 marker 完成实时观测与 RCA 验证。因此“测试/发布候选可复核”与“生产发布已批准”必须严格区分。
 
 > **本轮权威增补（2026-09-01，最新）：** 本节之后凡出现“当前运行态/当前镜像/本轮代码”均以 Query/Graph 功能代码 `865de6a`、Query 镜像 `query-api:git-865de6a` 和 Helm revision 25 为准。`GlobalEdgesWithTraceFallback`、HugeGraph CUSTOMIZE_STRING 索引边回退及 Query/TraceBuilder 自环过滤均已通过代码、单测和 Query 镜像运行验证；Worker 自环过滤源码已提交但镜像重建受 Python 基础镜像 EOF 限制。真实 marker 在 DeepFlow 有 80 条 flow 行（1 个 trace ID、1 个唯一 span ID），AIOps Trace SoT 有 80 行/80 个唯一 span ID/2 个服务；VM、VLogs、Kubernetes Event、依赖边均有同 marker 证据。真实 RCA Run 图上下文现为 3 vertices/2 edges/1 propagation path，9 个 ToolRun 成功、7 条 evidence，但 Run 仍按证据不足返回 `partial/insufficient_evidence`；全域 validator 的 RCA 合同仍失败。AICHAT Query→Orchestrator 首次 SSE 与同 turn MySQL 重放通过，但当前 `LLM_MOCK=true`；真实 Provider、HA/PITR、生产 Secret 和 registry 签名仍未验证，生产发布不放行。
 
@@ -261,6 +268,7 @@ flowchart LR
     B[Browser\nHttpOnly Cookie + active scope] --> Q[query-api-http\nHTTP/Auth/Query/Run/Chat/Action]
     Q --> M[(MySQL\nIAM/session/scope\nRun/Chat/Action SoT)]
     Q -->|ai.chat signed context| O[ai-orchestrator gateway\n/internal/v1/chat]
+    O -->|ordinary Chat read: ChatTool Start before I/O / Finish before response| M
     Q --> D[query-run-dispatch\noutbox lease/dispatch]
     D -->|ai.investigate JWS + nonce| W[investigation-worker\nstateless RCA/runtime]
     W -->|strict internal query| Q
@@ -278,7 +286,7 @@ flowchart LR
     X --> CB
 ```
 
-**信任边界：** 浏览器只持 HttpOnly Cookie；Query 从 MySQL 读取用户/会话/租户/集群，再签发短时 `TrustedRequestContext`。内部路由还要求服务 token、JWS、audience/capability/scope、nonce/expiry；TLS 配置已加入所有内部服务，但 SAN allowlist 和轮换仍须候选环境验证。
+**信任边界：** 浏览器只持 HttpOnly Cookie；Query 从 MySQL 读取用户/会话/租户/集群，再签发短时 `TrustedRequestContext`。普通 Chat 的每次实时只读必须先由 Query 持久化 `ai_chat_tool_runs` 审计（身份、scope、能力、参数摘要），完成审计后才向观测源返回数据；审计完成失败则 fail-closed。内部路由还要求服务 token、JWS、audience/capability/scope、nonce/expiry；TLS 配置已加入所有内部服务，但 SAN allowlist 和轮换仍须候选环境验证。
 
 **数据所有权：** Query/MySQL 是 IAM、Run、Chat、Action 的 owner；Ingest 是 telemetry 唯一写入口；ClickHouse 是观测事实存储；HugeGraph 是可重建投影；Orchestrator 仅作编排/语言交互，Worker 不直接读数据库、Kubernetes 或 Provider key。
 
@@ -291,7 +299,7 @@ flowchart LR
 | Query HTTP、Dispatcher、Alert Evaluator 独立 | `cmd/api`、`cmd/run-dispatcher`、`cmd/alert-evaluator` 与 Helm 三 Deployment 均存在 | 已符合；API 扩容不会直接增加 outbox/evaluator 处理器。 |
 | Worker 独立组合根 | `ai-orchestrator/apps/investigation.py:1-37` 初始化 Tool Registry 后直接导入 `orchestrator`；`investigation_app.py:1-12` 只作兼容 ASGI wrapper，不导入 `main` | 已修复；旧报告“Worker 导入 main”已失效。仍需静态规则防止回归。 |
 | Worker 图谱同步生命周期 | `apps/investigation.py` lifespan 在 `GRAPH_BACKEND=shadow/hugegraph` 且 `GRAPH_SOURCE_RECONCILE_ENABLED=1` 时构造并停止 `kg.runtime.GraphSyncRuntime`；Runtime 只经签名 Query internal graph contract | 本轮已修复并以 generation=1/2 Kubernetes 真实运行证据确认；旧版仅启动 dispatcher、RCA 读取不到可靠图谱输入的问题已关闭。 |
-| Chat 与 Investigation 分离 | Query `ProxyChat` 走 Orchestrator `/internal/v1/chat`；Run dispatcher 走 Worker `/internal/v1/run-invocations` | 已符合；Gateway 的旧 `/api/v1/ai/chat` 在 production 返回 410。 |
+| Chat 与 Investigation 分离 | Query `ProxyChat` 走 Orchestrator `/internal/v1/chat`；普通 Chat 只读必须经 ChatTool 审计；Run dispatcher 走 Worker `/internal/v1/run-invocations`；结构化 RCA/图谱关联走 Investigation CTA | 已符合代码边界；Gateway 的旧 `/api/v1/ai/chat` 在 production 返回 410；0017/真实候选审计闭环仍未验证。 |
 | 单一 RCA V2 | Worker 调 `RCAEngineV2`，Graph/evidence 统一经 Query internal tools；旧 `main.py` 仍保留 legacy helper | 运行时已符合；代码清理尚未完成。 |
 | mTLS 服务身份 | Go/Python TLS listener、client transport、Helm cert mount 和 `ssl-cert-reqs=2` 已实现 | `mtls_server.py` 从 TLS transport 读取 peer certificate，精确匹配 DNS/URI SAN，拒绝在 ASGI 前返回 403；本机真实 Gateway→Worker mTLS `/health` 返回 200；生产逐服务证书、轮换、跨副本握手未验证。 |
 
@@ -311,7 +319,8 @@ flowchart LR
 | 内部服务身份认证、短签名、防重放、审计 | 服务证书、方向 token、唯一 nonce、TTL、审计 ID 可关联 | `bootstrap/mtls.go:13-88`；各 Go 服务 `mtls.go`；`ai-orchestrator/mtls.py:8-84`、`mtls_server.py:1-99`；`mysql_replay_cache.go` | TLS Secret、`AIOPS_TLS_CLIENT_SAN`、nonce/replay、audit tables | Go/Python replay tests、`tests/test_mtls_server.py` 真实 TLS、Helm render、revision 3 实际 env、无证书 HTTP 401、Gateway→Worker mTLS 200 | **部分实现** | Go 与 Python listener 均执行 SAN allowlist；Python 拒绝分支记录脱敏 peer SAN 审计字段；生产逐服务证书、跨副本 replay、轮换和撤销未验证。 |
 | 授权落实到 tenant/cluster/namespace/resource/action | Internal tools 固定 capability；Action/Broker 重新校验 target、namespace、operation、credential_ref | `internal_query_envelope.go:27-43`；`ai-action-executor/main.go:289-337`；Broker `main.go:164-177` | `tool_runs`、`ai_actions`、Broker profiles | action/boundary tests | **部分实现** | 只读 Query 已闭环；真实 mutation 因本机/生产 disabled 或未提供 K8s evidence。 |
 | Query/领域代理/Run/Chat 数据所有权一致 | 浏览器只通过 Query；Run/Chat/Action 落 MySQL；Worker 不做 owner | `ai_chat_sessions.go:18-216`；`store/ai_chat_sessions.go:10-255`；`runs_public.go` | `ai_chat_sessions/messages`、`ai_runs/outbox/events`、migration 0016 | Go chat/run tests、Python full | **完整实现（canonical 路径）** | Gateway 仍保留仅迁移用途的 SQLite helper，未被 canonical browser path 使用；turn 重放由 Query/MySQL 完成。 |
-| AICHAT 两个自研模块真实可用 | 前端登录/scope/SSE/会话/报告与 Query→Orchestrator 真实链路闭环；turn 重试不重复调用；持久化失败不得伪造 done；Provider/SQL 异常不泄露；生产队列有界且响应断开可停止 | `observability-frontend/src/pages/ai/AiChat.tsx:163-193`；`settings.go:920-1215`；`main.py:80-97,1138-1260,1387`、`_put_chat_stream_event` | MySQL chat tables + 0016 `turn_id` 唯一键；`ai.chat` signed context；`CHAT_STREAM_QUEUE_MAXSIZE=64` | Query AICHAT 定向 Go 测试、真实登录/scope 后首次 SSE 20 events/done、同 turn replay 仅 done、`TestPersistChatSSEFramesReturnsPersistenceError`、Python 隔离全量 `1229 passed, 1 skipped, 3 deselected, 2 warnings`、orchestrator queue helper/source compile | **部分实现** | Query/Orchestrator canonical 边界、幂等、显式持久化失败、稳定错误码和有界队列已由真实代码/本机运行闭环；本机使用 `LLM_MOCK=true`，真实 Provider、双副本 resume、并发矩阵仍需候选环境验收。 |
+| 普通 Chat 实时读取必须有持久化 ChatTool 审计 | 每次只读工具在数据源 I/O 前创建审计行；同一 session/turn/tool-call 幂等；完成审计后才返回数据；Finish 失败不返回数据 | `internal/api/chat_tool_wrapper.go:35-117`；`internal/api/internal_query.go:313-380,410-438,680-690`；`ai-orchestrator/tools.py:258-302,320-874`；`main.py:1243-1259` | `ai_chat_tool_runs`、迁移 `0017_ai_chat_tool_runs.sql`；Chat session/turn/call UUID | `ai_chat_tool_runs_test.go`、`chat_tool_audit_test.go`、`test_chat_tool_boundary.py`、`test_p72_internal_query_client.py` | **代码闭环/候选未验证** | 审计表只存身份、参数摘要、状态、结果摘要/计数，不存原始观测；旧 public/本地知识和直接图谱兼容路径仅非生产可用，生产 Chat 缺身份或审计失败拒绝。 |
+| AICHAT 两个自研模块真实可用 | 前端登录/scope/SSE/会话/报告与 Query→Orchestrator 真实链路闭环；turn 重试不重复调用；持久化失败不得伪造 done；Provider/SQL 异常不泄露；生产队列有界且响应断开可停止 | `observability-frontend/src/pages/ai/AiChat.tsx:163-193`；`settings.go:920-1215`；`main.py:80-97,1138-1260,1387`、`_put_chat_stream_event` | MySQL chat tables + 0016 `turn_id` 唯一键；`ai.chat` signed context；`CHAT_STREAM_QUEUE_MAXSIZE=64` | Query AICHAT 定向 Go 测试、ChatTool 审计定向 Go/Python 测试、`TestPersistChatSSEFramesReturnsPersistenceError`、Python 隔离全量 `1250 passed, 1 skipped, 3 deselected, 2 warnings`、orchestrator queue helper/source compile | **部分实现** | Query/Orchestrator canonical 边界、幂等、显式持久化失败、ChatTool Start/Finish、稳定错误码和有界队列已由真实代码/本机运行闭环；本机使用 `LLM_MOCK=true`，真实 Provider、0017 候选 migration/审计检索、双副本 resume、并发矩阵仍需候选环境验收。 |
 | RCA V2、实体、证据、矛盾与 policy digest | Graph candidate + typed evidence + provenance + contradiction；数据不足返回 partial | `rca_engine/candidates.py:7-33`；`entity_resolver.py`；`runtime.py:54-154`；`contradictions.py` | `ai_run_graph_contexts`、`ai_evidence`、`ai_hypotheses`、policy JSON | 20 个 RCA targeted tests、Python 隔离全量 1227 passed、本机 partial Run | **部分实现** | 图增强成功；全域统一 marker、alerts/changes/依赖闭环在本机仍 unavailable，不能声称根因完整。 |
 | 固定 Run 时间窗口和 target_type | 创建时冻结 `[start,end]`，最长 24h；worker 不以自身时钟重锚 | `runs_public.go:76-138`；`run_dispatch.go:113-141`；Worker `apps/investigation.py:91-108` | `ai_runs.time_range_start/end,target_type` | Go run/dispatch tests；本机 Run persisted node/window | **完整实现** | 明确窗口错误返回 422；默认窗口可用 `AI_RUN_DEFAULT_WINDOW_MINUTES` 调整。 |
 | Collector 不建表、不直写 ClickHouse | Collector→Ingest，WAL fsync 后 receipt；Ingest 是唯一事件写入口 | `ai-event-collector/clickhouse.go`、`wal.go`；`ai-apm-ingest-go/cmd/ingest/event_wal.go` | ClickHouse `k8s_events.event_id`、migration 0006/0007 | Go race/WAL tests、contract scripts | **完整实现** | 历史旧 writer/空 event_id 行仍需受控迁移。 |
@@ -350,6 +359,20 @@ flowchart LR
 - **并发幂等：** `AIChatSessionDAO.EnsureSession` 当前已由 MySQL session 表和唯一 session 标识承载，但本轮没有跨副本并发 20 首轮的运行证据。应补充唯一约束/幂等 upsert 压测，确保同一用户/tenant/cluster 只有一个 session owner，其他请求复用且不返回 500。
 - **SSE 可靠性：** 保持 5 分钟 upstream deadline，增加 request/session/event sequence、heartbeat、断线取消和跨副本 resume 的集成测试；禁止把 progress/tool telemetry 写成永久 transcript。
 - **数据边界：** final report 继续只读 Query/MySQL transcript；Action suggestion 只能创建 canonical Action proposal，不得重新启用 Orchestrator shell/K8s 直执行。
+
+### 5.3 本轮最终 ChatTool 信任边界实现方案（以此替代旧 CTA-only 方案）
+
+普通 Chat 可以访问实时数据，但只能访问“受限只读工具”，且每次访问必须留下可关联的持久化审计。纯对话不访问实时数据，是因为该请求没有工具调用、ChatTool 身份或可审计的 capability；若在无审计上下文时自动读取，无法证明用户、租户、集群、回合和工具调用的对应关系，也无法在重试时阻止重复数据源访问。用户需要实时诊断时，Chat 入口应创建规范化 `thread_id/session_id + turn_id`，由 Query 依据 MySQL 会话和权限签发 `workload_kind=chat` 的短时签名上下文；结构化 RCA、跨服务/图谱关联、K8sGPT 和动作请求则返回 Investigation CTA，不在 Chat 图内执行。
+
+实施约束（其他智能体必须逐项遵守）：
+
+1. **Query/MySQL 审计 owner：** 执行 `internal_query.go` 的 Chat 分支时先调用 `AIChatToolRunDAO.Start`，校验 `principal_type=user`、登录 `session_id`、`ai_chat_sessions` 的 user/tenant/cluster 归属和 canonical UUID；插入 `ai_chat_tool_runs` 成功后才允许 repository I/O。唯一键为 `(chat_session_id,turn_id,tool_call_id)`，同 key 同参数只重放，不再次读源；不同参数返回冲突。
+2. **审计内容最小化：** 仅保存 `tool_name/operation/capability/args_hash/status/result_digest_sha256/result_count/error_code` 及身份和时间，不写原始观测正文、查询语句、令牌或密钥。`Finish` 必须在响应前写入终态；Finish 失败统一返回 `TOOL_UNAVAILABLE`，响应正文不得包含观测数据。
+3. **编排调用边界：** `ToolExecutionContext`、`InvocationScope` checkpoint projection 和 `InternalQueryClient` 必须保留 principal/login session/chat session/turn/tool-call 身份；`tools.py` 的 metrics/logs/traces/alerts/topology/kubernetes/knowledge 只经签名 `/internal/v1/query/*`，禁止 `_get_json`、本地 Chroma、`kg_graph` 或 K8s 客户端作为 Chat fallback。旧 `LegacyScopeAdapter` 和 `kg_evidence_tool` 只能在非生产兼容测试使用，生产直接返回稳定拒绝码。
+4. **路由分流：** `node_chat_classify` 仅将纯闲聊路由到 `summarize`；普通诊断/查询走 `collect→clean→rag→crewai→summarize`，其中采集工具均带 ChatTool 审计；含“根因分析、跨服务、影响面、调用链、变更关联、知识图谱/上下游/拓扑关联、K8sGPT、investigation”等意图返回 `investigation_required`，由前端显式 `createRun`。
+5. **回放与可观测性：** ChatTool running 重试返回 202 和空数据 envelope；terminal 重试返回 200、摘要/计数/错误码，不回放未持久化的原始观测。Transcript 仍只由 Query 持久化用户消息和 assistant done/suggestion，ChatTool 审计单独保留并以 request/session/turn/tool-call ID 关联。
+
+本机代码验收已覆盖：DAO Start/Finish、幂等冲突、审计先于 I/O、Finish 失败 fail-closed、Chat identity projection、Chat 工具不得调用 public Query、signed workload 缺省继承与无签名 Chat 拒绝、图谱兼容工具生产拒绝。候选环境发布前还必须执行 `0017` migration/schema/unique/FK 校验、真实 Query→观测源 Chat canary、跨副本重试/断线和审计检索核对。
 
 ## 6. 问题清单（按 P0–P3）
 
@@ -481,6 +504,15 @@ flowchart LR
 - **状态与影响：** 本机 Worker 图谱同步和代际清理已恢复，RCA 图增强具备真实投影输入；P1-03 仍因缺少同一 marker 的全域观测证据而阻断，不能把本项本机通过外推为生产通过。
 - **验收标准：** Worker 启动日志/`graph_reconcile_runs` 对每个 source 有 success；同一 scope 的 generation>1 可完成 stale 标记且无 `GRAPH_UNAVAILABLE`；查询只带租户/集群/source 过滤，分页超过一页不漏项；无边索引或超时应 fail-closed 并记录稳定错误码；RCA run 能关联 graph generation/provenance，跨租户/集群仍拒绝。
 
+### P1-12：ChatTool 审计迁移与候选环境闭环尚未验证
+
+- **类型/要求：** 安全/数据审计/发布阻断；普通 Chat 任何实时只读必须在数据源 I/O 前写入持久化 ChatTool 审计，并能以用户、登录会话、Chat session、turn、tool-call、tenant、cluster 关联和幂等重放。
+- **代码证据：** `ai-apm-query-go/internal/store/migrations/versions/0017_ai_chat_tool_runs.sql` 新增 `ai_chat_tool_runs`、唯一键 `uq_ai_chat_tool_call` 及 users/auth_sessions/ai_chat_sessions 外键；`internal/store/ai_chat_tool_runs.go:49-143` 实现 Start/Finish、owner 校验和 terminal 状态；`internal/api/chat_tool_wrapper.go:35-117` 与 `internal/api/internal_query.go:313-380,410-438,680-690` 在 Query repository 调用前创建审计、完成失败时不返回数据；Orchestrator `tool_execution_context.py`、`internal_query_client.py`、`invocation_scope.py`、`tools.py` 传递身份并禁止 Chat public/local fallback。
+- **触发/影响：** 若候选 MySQL 未执行 0017，或审计表写入/Finish 失败仍允许返回 metrics/logs/traces/alerts/topology/kubernetes/knowledge，则 Chat 会出现无持久化审计的实时读取、重试重复访问或无法追责；旧 `kg_evidence_tool`/本地知识路径若被误接线会绕过 Query owner。
+- **根因：** 本轮改动尚未提交到候选镜像/数据库；历史 Chat 设计只验证 transcript replay，未验证每次工具调用的独立审计生命周期。`kg_evidence_tool` 和旧 public/local fallback 仍作为非生产兼容源码存在，需持续隔离。
+- **整改实现：** 部署迁移 0017；固定 `workload_kind=chat` 和 canonical UUID；Start→repository I/O→Finish 三段式闭环；同 `(chat_session_id,turn_id,tool_call_id,args_hash)` 只重放，running 返回 202 空数据，terminal 只返回摘要/计数；Finish 失败统一 `TOOL_UNAVAILABLE`；生产图谱/K8sGPT/跨服务 RCA 只走 Investigation CTA；直接图谱兼容工具在生产返回 `KNOWLEDGE_GRAPH_INVESTIGATION_REQUIRED`。
+- **验收标准：** 候选 MySQL 迁移 checksum、列/PK/唯一键/FK 全部通过；同一工具调用并发/重试只产生一条审计且数据源调用次数为 1；审计插入时间早于 datasource I/O；Finish 失败 HTTP 5xx/`TOOL_UNAVAILABLE` 且响应正文无观测；Chat 缺 principal/session/chat session/turn/call 或 signed workload 时 4xx；普通诊断可读、结构化 RCA/图谱请求返回 CTA；审计查询可按用户/tenant/cluster/session/turn/tool-call 关联。上述候选证据完成前，本项保持发布阻断。
+
 ### P2-01：Legacy Chat/编排/兼容代码仍造成重复建设（生产入口已隔离）
 
 - **类型/要求：** 架构债务；生产只保留 canonical Query→Worker/Orchestrator boundary，legacy 不能成为第二 owner/入口。
@@ -508,14 +540,14 @@ flowchart LR
 - **根因：** 旧行未必具有可信 UID，不能凭空回填；ClickHouse `MODIFY COLUMN ... String` 不会移除已有 DEFAULT，必须有显式 0009 及幂等状态检查。
 - **验收标准：** 候选生产以同一镜像/迁移 checksum 执行 0008/0009；audit 给出 scanned/quarantined/remaining_invalid；`system.columns.default_kind` 为空且身份计数全为 0；同一 event_id 重放/重启 replay 后唯一计数不变；14 列旧 writer 被拒绝；迁移、quarantine 和 merge 统计写入 release evidence。未完成这些候选环境证据前，本项仍是生产发布门禁，不得标记为全局完成。
 
-### P2-04：AICHAT 的真实 Provider、跨副本 resume 和并发首轮仍缺候选环境证据（本机代码闭环已验证）
+### P2-04：AICHAT 的真实 Provider、ChatTool 审计、跨副本 resume 和并发首轮仍缺候选环境证据（本机代码闭环已验证）
 
 - **类型/要求：** 功能/测试缺口；两个自研模块应在真实 Provider、断线、并发和降级下保持一致。
-- **证据：** 本机 AICHAT 使用 `LLM_MOCK=true`；`ai_chat_sessions.go` 已以 MySQL 原子 upsert 消除首轮 SELECT→INSERT 竞争，`0016_ai_chat_turn_id.sql` 为每个 canonical turn 建立唯一约束，`ProxyChat` 在下游调用前检查完成 turn 并重放持久化 suggestion/done，transcript 持久化失败和 Provider 异常均通过稳定 SSE 错误边界返回；Query store/API、Orchestrator ingress/队列 helper、前端既有契约测试和本轮 Python 隔离全量测试（`1229 passed, 1 skipped, 3 deselected, 2 warnings`）通过，所有 Go module 全量与 `go vet` 通过。真实 Provider canary、跨 Worker/Query 副本恢复和真实流量并发仍未验证。
+- **证据：** 本机 AICHAT 使用 `LLM_MOCK=true`；`ai_chat_sessions.go` 已以 MySQL 原子 upsert 消除首轮 SELECT→INSERT 竞争，`0016_ai_chat_turn_id.sql` 为每个 canonical turn 建立唯一约束，`ProxyChat` 在下游调用前检查完成 turn 并重放持久化 suggestion/done，transcript 持久化失败和 Provider 异常均通过稳定 SSE 错误边界返回。本轮新增 `0017_ai_chat_tool_runs.sql`、`AIChatToolRunDAO`、签名 Chat identity 和 audited internal query；定向 Query/Orchestrator 测试已通过，但没有候选 MySQL migration/真实 ChatTool 审计检索证据。真实 Provider canary、跨 Worker/Query 副本恢复和真实流量并发仍未验证。
 - **触发/影响：** Provider 429/超时、网络断开或同一 session 并发请求时，可能出现重复消息、悬挂 SSE 或错误降级。
 - **根因：** 真实 key/外部网络不在本次授权范围；Chat transcript 已迁移 MySQL，但候选环境 Provider、跨副本和故障证据尚未补齐。
-- **整改实现：** 已落地 Proxy `turn_id`、heartbeat/deadline、原子 session upsert、完成 turn replay、transcript 持久化失败 fail-closed、有界断线感知队列、脱敏错误边界和 LLM Proxy 上游 deadline；见 `settings.go`、`ai_chat_sessions.go`、`main.py`、`ai-llm-egress-proxy/main.go`、迁移 0016。候选环境仍需执行真实 Provider canary、跨副本 resume 和并发矩阵。
-- **验收标准：** 真实候选环境 200/SSE/done、Provider failure 状态、断线重连（重试不重复调用）、并发 20 首轮（session/turn 唯一）、token/key rotation 全部有机器可读 evidence；任何失败均显示明确原因，不伪造 assistant success。Python 本机测试已满足代码门槛，但不替代真实 Provider/多副本证据。
+- **整改实现：** 已落地 Proxy `turn_id`、heartbeat/deadline、原子 session upsert、完成 turn replay、transcript 持久化失败 fail-closed、有界断线感知队列、脱敏错误边界、LLM Proxy 上游 deadline，以及 ChatTool Start-before-I/O/Finish-before-response、审计幂等和生产 Chat fallback 隔离；见 `settings.go`、`ai_chat_sessions.go`、`main.py`、`ai-llm-egress-proxy/main.go`、`internal/api/chat_tool_wrapper.go`、`internal/store/ai_chat_tool_runs.go`、迁移 0017。候选环境仍需执行真实 Provider canary、0017 schema/审计查询、跨副本 resume 和并发矩阵。
+- **验收标准：** 真实候选环境 200/SSE/done、每次 ChatTool 有一条可关联审计、审计 Finish 失败不返回数据、Provider failure 状态、断线重连（重试不重复调用）、并发 20 首轮（session/turn/tool-call 唯一）、token/key rotation 全部有机器可读 evidence；任何失败均显示明确原因，不伪造 assistant success。Python/Go 本机测试满足代码门槛，但不替代真实 Provider、0017 migration 或多副本证据。
 
 ### P3-01：前端 bundle 和依赖弃用警告（本机已关闭，保留显式预算例外）
 
@@ -530,11 +562,11 @@ flowchart LR
 | 服务拆分 | 有限通过 | Query HTTP/Run/Alert/Worker/Collector/Ingest/Proxy/Broker/Executor 边界清晰；Orchestrator 源码仍含 legacy 兼容职责，但 production route surface 已收敛为 8 个端点。 |
 | 分层与依赖方向 | 有限通过 | Worker/Orchestrator 通过 Query internal client 读取事实，Collector→Ingest 已统一；生产 Gateway 不启动 legacy scheduler/recovery，懒加载清理适配器避免启动时获取 SQLite；源码 import graph 仍待最终删除。 |
 | 接口契约 | 有限通过 | Go/Python/TS 的 UUID、Run window、target_type、ToolResultEnvelope、SSE 和 signed context 已对齐；`production_surface.py` 精确约束生产 path/method，旧路由数量仅存在于非生产兼容源码。 |
-| 数据 owner/事务 | 有限通过 | MySQL owner、outbox/lease/event/evidence/action 事务和 Chat scope 已具备；本轮 Run 行锁、DB-time lease CAS、commit 幂等和数据库原子 dispatch epoch 已闭环；历史 CH migration、真实 datasource 和 backup 未验收。 |
+| 数据 owner/事务 | 有限通过 | MySQL owner、outbox/lease/event/evidence/action 事务和 Chat scope 已具备；本轮新增 Query-owned `ai_chat_tool_runs`，将普通 Chat 工具审计与 transcript 分离，并以 Start-before-I/O/Finish-before-response 和唯一键保证幂等；历史 CH migration、候选 0017、真实 datasource 和 backup 未验收。 |
 | 安全权限 | 有限通过 | JWT role 不授权、MySQL SoT、capability/scope/replay、credential_ref、禁写默认已实现；mTLS SAN/轮换及生产 Secret 缺证据。 |
 | 可靠性 | 有限通过 | WAL、outbox、DB-time lease fencing、bounded graph、timeouts、PDB、readiness 存在；跨副本 replay、HA/PITR、Provider fault injection 未完成。 |
 | 性能扩展 | 部分通过 | Query/Worker 可横向扩展；Graph 查询仍受 bounded depth/vertex/edge 限制，代际维护已改为 scope 索引+offset 分页并使用独立维护超时；Ingest 单写 PVC、Python SSE/LLM 资源仍需预算；前端已拆分 vendor chunk，G6 1.41MB 受 1.5MB 显式预算约束。候选 p95/1M 增量 reconcile 未验证。 |
-| 可观测性/审计 | 部分通过 | request/run/session/tool/action/event ID、metrics、health、evidence JSON 已有；Datasource error 和证书/回滚/HA evidence 尚未集成 release gate。 |
+| 可观测性/审计 | 部分通过 | request/run/session/tool/action/event ID、metrics、health、evidence JSON 和 ChatTool 身份/摘要审计已具备；ChatTool 只存 digest/count 不存原始观测，候选审计检索、Datasource error、证书/回滚/HA evidence 尚未集成 release gate。 |
 | 部署运维 | 不通过 | Helm 合同和禁写 fail-closed 通过，但生产 Secret、证书、StorageClass、镜像 digest、迁移/恢复/rollback 尚未齐全。 |
 | 可测试性 | 有限通过 | Python/Go race、前端和合同覆盖高；真实 CH/Graph/Provider/K8s TokenRequest/mTLS/多节点集成缺口明确。 |
 
@@ -544,7 +576,7 @@ flowchart LR
 2. **R1 身份与证书**：接入 ExternalSecret/cert-manager 或 SPIFFE；为 service SAN、CA、轮换和 client transport 固化配置；执行证书拒绝矩阵和跨副本 nonce。门槛：无证书/错误 SAN/过期/重放均失败，有效请求可关联审计。
 3. **R2 数据源与迁移**：核对 Query→CH/VM/VLogs/K8s 的凭据、schema、租户映射；候选环境执行 ClickHouse 0008/0009 历史 event_id 受控迁移和 quarantine；验证 CH 去重、merge 与恢复。门槛：固定 canary 全部 quality 正确，RCA 无 backend unavailable。
 4. **R3 Graph 容量与恢复**：用候选 digest 执行 schema/source/load/reconcile/recovery/tenant isolation；从深度 1/50/150 开始按 p95/资源预算提升。门槛：Graph evidence 与 commit/dataset/recovery digest 一致，超限受控拒绝。
-5. **R4 AICHAT 生产化**：Proxy provider canary、SSE heartbeat/resume、session upsert/并发、真实错误映射、脱敏审计。门槛：真实 Provider 与故障矩阵通过；不能把 mock 结果当生产通过。
+5. **R4 AICHAT/ChatTool 生产化**：先执行 migration 0017 并校验列、PK、唯一键、FK；再验证 Query `ProxyChat` 签发 `workload_kind=chat`、真实 `session_id`、Chat session/turn/tool-call UUID，普通只读按 Start-before-I/O→Finish-before-response 闭环，审计失败不返回观测；最后执行真实 Provider canary、SSE heartbeat/resume、跨副本重试和并发 20 首轮。结构化 RCA/图谱/K8sGPT 只能验证 Investigation CTA→Run/Evidence/Plan。门槛：每个 ChatTool 调用恰有一条可检索审计，同 key 重试不读源，Finish 失败 `TOOL_UNAVAILABLE` 且空数据，真实 Provider 与故障矩阵通过；不能把 mock 或 transcript replay 结果当生产通过。
 6. **R5 受控动作（按需）**：仅在动作产品范围明确后启用 Broker profiles、TokenRequest、最小 RBAC、TOCTOU/post-verify/reconcile/audit；否则保持 disabled。门槛：所有 scope/profile/replay/broker-down 测试通过。
 7. **R6 HA/运维**：MySQL PITR、CH/Graph 重建、WAL/Worker/Query failover、NetworkPolicy、PDB、升级/回滚和 SLO 证据。门槛：RPO/RTO、故障注入、回滚和当前 digest 全部写入 release manifest。
 8. **R7 清理债务**：删除 legacy Chat/SQLite/scope fallback、统一 SSE adapter、前端 chunk/deprecation；门槛：生产路由/依赖静态 contract 无旧 owner，前端 chunk budget 通过。
@@ -558,6 +590,7 @@ flowchart LR
 - Query/Dispatcher/Alert/Worker 的真实 Deployment 和调用边界；Worker 不再 import `main`；Tool Registry 和 evidence provider 初始化问题已修复。
 - MySQL IAM/session/scope、HttpOnly Cookie、JWT role 不授权、canonical cluster UUID、Run window/target_type、Chat scope ownership。
 - TrustedRequestContext、capability、nonce/replay、ToolResultEnvelope、RCA entity/provenance/partial 输出；无签名 internal graph 请求返回 401。
+- ChatTool 代码边界已通过定向验证：签名 `workload_kind=chat` 才能进入 Chat 分支；Chat identity 缺失、签名 workload 缺失/降级、审计 Start/Finish 失败均 fail-closed；`ai_chat_tool_runs` 以 `(chat_session_id,turn_id,tool_call_id)` 幂等，结果只保留 digest/count，重放不读数据源。候选 MySQL migration 0017、真实审计检索和跨副本行为尚未验证。
 - `NO_DATA` ToolRun 持久化语义已修复并有 Go 回归测试；本机历史 RCA Run 的 8/8 工具为 `success/complete`、6 条证据，但 Fresh Install 后不作为当前观测证据。
 - mTLS required/SAN 配置已进入 Helm revision 3；9 个服务注入 SAN，Query 无客户端证书内部请求返回 401；Python Gateway/Worker 以 `python -m mtls_server` 启动，错误 SAN 在 ASGI 前返回 403，真实 Gateway→Worker mTLS health 返回 200；默认非 TLS Worker profile 显式使用 `uvicorn investigation_app:app`。
 - Collector→Ingest WAL/15 列/event_id、ClickHouse migrations 0001–0009、quarantine/audit/identity gate；Graph NetworkPolicy selector 修复；RCA bounded candidate limits。
@@ -586,6 +619,7 @@ flowchart LR
 - P1-04：本机已通过一次真实 200k/1M 写入、200k Query-owned alias 投影、7 个只读操作和资源门禁（不压测）；本轮 `95d8489` 又修复并验证 Worker GraphSyncRuntime 及 scope 分页代际清理；HugeGraph heap-used 在 JRE 镜像中仍未采集，且候选 digest、跨节点恢复、p95/回滚证据尚未绑定，因此候选环境容量与恢复仍阻断；
 - P1-05：真实 mutation 若属于发布范围，Broker/TokenRequest/审计尚未验收；
 - P1-06：多节点/多副本 replay、MySQL/ClickHouse/PVC 故障恢复、备份/PITR、升级/回滚和 RPO/RTO 尚未在候选环境验收；
+- P1-12：ChatTool 审计迁移 0017、候选真实 ChatTool Start/Finish、审计检索和并发重试尚未验收；本机只完成代码/sqlmock/隔离测试，不能替代候选数据库和运行态证据；
 - P2-03：本机 0008/0009 迁移和身份门禁已通过；候选生产的历史数据扫描/quarantine、ReplacingMergeTree merge、备份恢复和 checksum evidence 尚未执行，若发布包含历史数据必须纳入门禁。
 
 ### 未验证（必须补充环境证据）
@@ -593,13 +627,14 @@ flowchart LR
 - 生产 mTLS client SAN、证书轮换/撤销、跨副本 replay；
 - 生产 MySQL/ClickHouse/HugeGraph migration、merge、备份/PITR/恢复；
 - 真实 LLM Provider canary、429/5xx/timeout、限流/熔断、key rotation；
+- 候选 MySQL migration 0017 的 checksum、`ai_chat_tool_runs` 列/PK/unique/FK、审计 Start-before-I/O/Finish-before-response、同 key 重试不读源和审计查询关联；
 - Kubernetes TokenRequest、Broker profile、Action post-verify/reconcile、K8s audit；
 - 多节点/多 AZ、NetworkPolicy/CNI、PDB、StorageClass、升级/回滚和 RPO/RTO；
 - 当前候选镜像的完整 rendered manifest、immutable digest、Graph/data/policy/migration evidence。
 
 **发布判定：不允许发布。**
 
-若产品只发布只读 AIOps/AICHAT，不开放 mutation，最小解除集合是 **P1-01、P1-02、P1-03、P1-04、P1-06 + P2-03（历史数据被纳入发布范围时）**。若包含变更动作，再加 **P1-05**。任何一项缺证据只能保持“未验证/阻断”，不能用单元测试或 Helm lint 代替。
+若产品只发布只读 AIOps/AICHAT，不开放 mutation，最小解除集合是 **P1-01、P1-02、P1-03、P1-04、P1-06、P1-12 + P2-03（历史数据被纳入发布范围时）**。若包含变更动作，再加 **P1-05**。任何一项缺证据只能保持“未验证/阻断”，不能用单元测试或 Helm lint 代替。
 
 ## 10. 未决事项与证据索引
 
@@ -608,15 +643,16 @@ flowchart LR
 1. ExternalSecret/Vault/KMS 配置、证书 CA/SAN/轮换记录和渲染后脱敏 manifest；
 2. 候选镜像 registry digest、signed release manifest、迁移/policy/Graph dataset checksum 和 rollback 结果；
 3. Query→ClickHouse/VM/VLogs 的真实凭据绑定、表版本、tenant/cluster 数据抽样和故障演练；
-4. Graph schema/source/recovery/load 版本、节点/边计数、p95/503/资源快照、租户隔离；
-5. Provider profile/canary、Broker profile/TokenRequest、动作审批/执行/回写/K8s audit；
-6. 多副本 replay/nonce、MySQL PITR、WAL/Worker/Query failover 和 RPO/RTO 报告。
+4. ChatTool migration 0017 checksum、审计表 schema/unique/FK、真实 ChatTool 调用次数与审计检索结果、Finish 失败和跨副本重试证据；
+5. Graph schema/source/recovery/load 版本、节点/边计数、p95/503/资源快照、租户隔离；
+6. Provider profile/canary、Broker profile/TokenRequest、动作审批/执行/回写/K8s audit；
+7. 多副本 replay/nonce、MySQL PITR、WAL/Worker/Query failover 和 RPO/RTO 报告。
 
 ### 10.2 代码与配置证据索引
 
 - 架构/所有权：`README.md`、`docs/architecture/`、`docs/ownership/data-owners.md`、`docs/runtime-slo.md`；
 - 身份/授权：`ai-apm-query-go/internal/api/auth.go`、`internal_query_envelope.go`、`store/authorization.go`、`ai-orchestrator/trusted_context_issuer.py`、`internal_ingress.py`；
-- AICHAT：`ai-apm-query-go/internal/api/settings.go`、`internal/api/ai_chat_sessions.go`、`internal/store/ai_chat_sessions.go`、`observability-frontend/src/pages/ai/AiChat.tsx`、`ai-orchestrator/main.py`；
+- AICHAT：`ai-apm-query-go/internal/api/settings.go`、`ai-apm-query-go/internal/api/ai_chat_sessions.go`、`ai-apm-query-go/internal/store/ai_chat_sessions.go`、`ai-apm-query-go/internal/store/ai_chat_tool_runs.go`、`ai-apm-query-go/internal/store/migrations/versions/0017_ai_chat_tool_runs.sql`、`ai-apm-query-go/internal/api/chat_tool_wrapper.go`、`observability-frontend/src/pages/ai/AiChat.tsx`、`ai-orchestrator/main.py`、`ai-orchestrator/internal_query_client.py`、`ai-orchestrator/tool_execution_context.py`、`ai-orchestrator/invocation_scope.py`、`ai-orchestrator/tools.py`、`ai-orchestrator/kg_tools.py`；
 - Worker/RCA：`ai-orchestrator/apps/investigation.py`、`investigation_app.py`、`rca_engine/{engine.py,runtime.py,candidates.py,entity_resolver.py,contradictions.py}`；
 - 采集/数据：`ai-event-collector/{clickhouse.go,wal.go}`、`ai-apm-ingest-go/cmd/ingest/{main.go,event_wal.go}`、ClickHouse migrations `0005–0009`、`deploy/tools/clickhouse-migrator/{main.go,main_test.go}`、`deploy/helm/aiops/templates/clickhouse/{migrator-job.yaml,migrations-configmap.yaml}`；
 - 动作/凭据：`ai-action-executor/main.go`、`ai-credential-broker/main.go`、`ai-orchestrator/{credential_broker.py,execution_adapter.py}`；

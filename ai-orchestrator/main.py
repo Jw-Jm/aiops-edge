@@ -12,6 +12,7 @@ import asyncio
 import queue
 import secrets
 import logging
+from dataclasses import replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -1251,6 +1252,10 @@ async def internal_chat(request: Request):
     turn_id = str(body.get("turn_id") or "")
     if not _CANONICAL_UUID_RE.fullmatch(turn_id):
         raise HTTPException(status_code=400, detail="INVALID_TURN_ID")
+    # Bind transcript identity into the in-process scope before the graph is
+    # built.  Every Chat read tool derives its ChatTool audit key from this
+    # immutable pair; no tool may invent a second session/turn.
+    scope = dataclass_replace(scope, chat_session_id=thread_id, chat_turn_id=turn_id)
     exec_context = body.get("exec_result", "")
     history_context = str(body.get("history_context", "") or "")[:4000]
 

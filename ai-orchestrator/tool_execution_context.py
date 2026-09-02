@@ -30,6 +30,16 @@ class ToolExecutionContext:
     idempotency_key: str
     query_window_start: str = ""
     query_window_end: str = ""
+    # ChatTool identity is deliberately separate from Investigation Run/ToolRun
+    # identity.  These fields are propagated only for workload_kind=chat and are
+    # persisted by query-api in ai_chat_tool_runs before any data-source I/O.
+    principal_type: str = ""
+    principal_id: str = ""
+    session_id: str = ""
+    chat_session_id: str = ""
+    chat_turn_id: str = ""
+    chat_tool_call_id: str = ""
+    chat_tool_name: str = ""
 
     @classmethod
     def from_mapping(cls, context: Mapping[str, Any], *, tool_id: str,
@@ -37,6 +47,34 @@ class ToolExecutionContext:
         kind = str(context.get("workload_kind") or "chat")
         if kind not in {"investigation", "chat", "platform"}:
             raise ValueError("invalid workload_kind")
+        if kind == "chat":
+            principal_type = str(context.get("principal_type") or "")
+            if principal_type != "user":
+                raise ValueError("chat tool identity requires user principal")
+            try:
+                principal_id = _uuid(context.get("principal_id"), "principal_id")
+                session_id = _uuid(context.get("session_id"), "session_id")
+                tenant_id = _uuid(context.get("tenant_id"), "tenant_id")
+                cluster_id = _uuid(context.get("cluster_id"), "cluster_id")
+                chat_session_id = _uuid(context.get("chat_session_id"), "chat_session_id")
+                chat_turn_id = _uuid(context.get("chat_turn_id"), "chat_turn_id")
+                chat_tool_call_id = _uuid(context.get("chat_tool_call_id"), "chat_tool_call_id")
+            except ValueError as exc:
+                raise ValueError(f"chat tool identity invalid: {exc}") from exc
+            chat_tool_name = str(context.get("chat_tool_name") or "").strip()
+            if not chat_tool_name or len(chat_tool_name) > 128:
+                raise ValueError("chat tool identity requires chat_tool_name")
+            return cls(
+                workload_kind=kind, run_id="", invocation_id="", tenant_id=tenant_id,
+                cluster_id=cluster_id, executor_id="", lease_epoch=0, lease_token="",
+                tool_run_id="", idempotency_key="",
+                query_window_start=str(context.get("query_window_start") or ""),
+                query_window_end=str(context.get("query_window_end") or ""),
+                principal_type=principal_type, principal_id=principal_id,
+                session_id=session_id, chat_session_id=chat_session_id,
+                chat_turn_id=chat_turn_id, chat_tool_call_id=chat_tool_call_id,
+                chat_tool_name=chat_tool_name,
+            )
         if kind != "investigation":
             # Chat/platform are not allowed to silently masquerade as an
             # Investigation; they carry no lease-bound fields.
@@ -62,12 +100,25 @@ class ToolExecutionContext:
                          separators=(",", ":"), default=str).encode()
         digest = hashlib.sha256(raw).hexdigest()
         idempotency_key = str(context.get("idempotency_key") or f"{invocation_id}:{tool_id}:{digest}")
-        return cls(kind, run_id, invocation_id, tenant_id, cluster_id, executor_id,
-                   lease_epoch, lease_token, tool_run_id, idempotency_key,
-                   str(context.get("query_window_start") or ""),
-                   str(context.get("query_window_end") or ""))
+        return cls(workload_kind=kind, run_id=run_id, invocation_id=invocation_id,
+                   tenant_id=tenant_id, cluster_id=cluster_id, executor_id=executor_id,
+                   lease_epoch=lease_epoch, lease_token=lease_token, tool_run_id=tool_run_id,
+                   idempotency_key=idempotency_key,
+                   query_window_start=str(context.get("query_window_start") or ""),
+                   query_window_end=str(context.get("query_window_end") or ""),
+                   principal_type=str(context.get("principal_type") or "system"),
+                   principal_id=str(context.get("principal_id") or ""),
+                   session_id=str(context.get("session_id") or ""))
 
     def to_body(self) -> dict[str, Any]:
+        if self.workload_kind == "chat":
+            return {
+                "workload_kind": "chat",
+                "chat_session_id": self.chat_session_id,
+                "chat_turn_id": self.chat_turn_id,
+                "chat_tool_call_id": self.chat_tool_call_id,
+                "chat_tool_name": self.chat_tool_name,
+            }
         if self.workload_kind != "investigation":
             return {"workload_kind": self.workload_kind}
         return {

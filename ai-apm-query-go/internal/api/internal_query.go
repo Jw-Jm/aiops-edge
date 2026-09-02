@@ -50,6 +50,18 @@ type internalQueryRequest struct {
 	ExecutorID     string `json:"executor_id"`
 	LeaseEpoch     int64  `json:"lease_epoch"`
 	WorkloadKind   string `json:"workload_kind"` // investigation | chat | platform
+	// ChatTool audit identity. Required only for a signed workload_kind=chat.
+	ChatToolRunID  string `json:"chat_tool_run_id"`
+	ChatSessionID  string `json:"chat_session_id"`
+	ChatTurnID     string `json:"chat_turn_id"`
+	ChatToolCallID string `json:"chat_tool_call_id"`
+	ChatToolName   string `json:"chat_tool_name"`
+	// Trusted identity and route capability are injected after JWS verification;
+	// they are never accepted from the JSON body.
+	PrincipalID     string `json:"-"`
+	PrincipalType   string `json:"-"`
+	SessionID       string `json:"-"`
+	RouteCapability string `json:"-"`
 	// P0-TOOL-02：Lease token（明文）——Tool 执行前 server-side fencing 用。
 	//   缺失则不做 ToolRun 包装（无 Lease 保护的查询不写 ToolRun，避免无审计数据面访问）。
 	LeaseToken string `json:"lease_token"`
@@ -92,9 +104,16 @@ func decodeInternalRequest(r *http.Request, capability string) (*internalQueryCt
 	if err := checkWorkloadKindMatch(rctx.WorkloadKind, req.WorkloadKind); err != nil {
 		return nil, nil, err
 	}
+	if req.WorkloadKind == "" {
+		// The signed workload is authoritative.  In particular a signed Chat
+		// request must not become an unwrapped legacy/platform query merely
+		// because the body omitted workload_kind.
+		req.WorkloadKind = rctx.WorkloadKind
+	}
 	if req.WorkloadKind == "investigation" && req.RunID != rctx.RunID {
 		return nil, nil, &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "run scope mismatch"}
 	}
+	req.PrincipalID, req.PrincipalType, req.SessionID, req.RouteCapability = rctx.PrincipalID, rctx.PrincipalType, rctx.SessionID, capability
 	return rctx, &req, nil
 }
 
@@ -103,6 +122,9 @@ func decodeInternalRequest(r *http.Request, capability string) (*internalQueryCt
 // signed investigation cannot be omitted or downgraded by the body.
 func checkWorkloadKindMatch(signed, body string) error {
 	if body == "investigation" && signed != "investigation" {
+		return &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "workload kind mismatch"}
+	}
+	if body == "chat" && signed != "chat" {
 		return &internalQueryError{Code: contract.ErrorCodeContextScopeMismatch, Message: "workload kind mismatch"}
 	}
 	if signed == "investigation" && body != "investigation" {
@@ -120,6 +142,9 @@ func checkWorkloadKindMatch(signed, body string) error {
 func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID string) (*toolRunContext, bool, error) {
 	if err := validateToolRunRequest(req); err != nil {
 		return nil, false, err
+	}
+	if req != nil && req.WorkloadKind == "chat" {
+		return h.beginChatToolRun(req, tenantID, clusterID)
 	}
 	trc := newToolRunFromRequest(req, tenantID, clusterID)
 	if trc == nil {
@@ -223,7 +248,13 @@ func (h *Handler) beginToolRun(req *internalQueryRequest, tenantID, clusterID st
 
 func (h *Handler) respondToolReplay(w http.ResponseWriter, trc *toolRunContext) {
 	status := http.StatusOK
-	if trc == nil || trc.Existing == nil || trc.Existing.Status == "running" {
+	if trc != nil && trc.ChatAudit != nil {
+		// ChatTool replay has no ToolRun lease record.  Preserve the same
+		// running-vs-terminal HTTP contract using the durable ChatTool status.
+		if trc.ChatAudit.Status == "running" {
+			status = http.StatusAccepted
+		}
+	} else if trc == nil || trc.Existing == nil || trc.Existing.Status == "running" {
 		status = http.StatusAccepted
 	}
 	respondJSON(w, status, toolReplayEnvelope(trc))
@@ -242,11 +273,36 @@ func investigationWindow(req *internalQueryRequest) (*time.Time, *time.Time) {
 }
 
 // endToolRun 包装 internal query 的 ToolRun 结束并返回 ToolResultEnvelope。
-func (h *Handler) endToolRun(trc *toolRunContext, quality string, data []byte, errMsg string) ToolResultEnvelope {
-	if trc != nil {
-		h.finishToolRun(trc, qualityStatus(quality), quality, data, len(data), errMsg)
+func (h *Handler) endToolRun(trc *toolRunContext, quality string, data []byte, errMsg string) (ToolResultEnvelope, error) {
+	if err := h.finishExecutionToolRun(trc, quality, data, errMsg); err != nil {
+		return ToolResultEnvelope{}, err
 	}
-	return buildEnvelope(trc, quality, data, errMsg)
+	env := buildEnvelope(trc, quality, data, errMsg)
+	if trc != nil && trc.ChatAudit != nil {
+		env.ChatToolRunID = trc.ChatAudit.ChatToolRunID
+	}
+	return env, nil
+}
+
+// finishExecutionToolRun completes the durable audit record before any result
+// bytes are returned.  ChatTool persistence is fail-closed; Investigation
+// keeps its existing fencing-aware best-effort persistence semantics.
+func (h *Handler) finishExecutionToolRun(trc *toolRunContext, quality string, data []byte, errMsg string) error {
+	if trc == nil {
+		return nil
+	}
+	if trc.ChatAudit != nil {
+		return h.finishChatToolRun(trc, quality, data, errMsg)
+	}
+	h.finishToolRun(trc, qualityStatus(quality), quality, data, len(data), errMsg)
+	return nil
+}
+
+func chatAuditUnavailableError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "ChatTool audit completion unavailable"}
 }
 
 func qualityStatus(q string) string {
@@ -294,12 +350,19 @@ func (h *Handler) execToolQuery(w http.ResponseWriter, rctx *internalQueryCtx, r
 		var qe *query.QueryError
 		if errors.As(err, &qe) && qe.Code == query.NoDataCode {
 			empty := []byte(`{}`)
-			env := h.endToolRun(trc, "complete", empty, "")
+			env, finishErr := h.endToolRun(trc, "complete", empty, "")
+			if finishErr != nil {
+				respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+				return
+			}
 			respondJSON(w, http.StatusOK, env)
 			return
 		}
 		if trc != nil {
-			h.finishToolRun(trc, "failed", "failed", nil, 0, err.Error())
+			if finishErr := h.finishExecutionToolRun(trc, "failed", nil, err.Error()); finishErr != nil {
+				respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+				return
+			}
 		}
 		var graphErr *graphpkg.Error
 		if errors.As(err, &graphErr) {
@@ -309,7 +372,11 @@ func (h *Handler) execToolQuery(w http.ResponseWriter, rctx *internalQueryCtx, r
 		respondQueryError(w, err)
 		return
 	}
-	env := h.endToolRun(trc, "complete", data, "")
+	env, finishErr := h.endToolRun(trc, "complete", data, "")
+	if finishErr != nil {
+		respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+		return
+	}
 	respondJSON(w, 200, env)
 }
 
@@ -341,18 +408,29 @@ func (h *Handler) InternalQueryMetrics(w http.ResponseWriter, r *http.Request) {
 		var qe *query.QueryError
 		if errors.As(err, &qe) && qe.Code == query.NoDataCode {
 			data := []byte(`{"points":[],"total":0}`)
-			env := h.endToolRun(trc, "complete", data, "")
+			env, finishErr := h.endToolRun(trc, "complete", data, "")
+			if finishErr != nil {
+				respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+				return
+			}
 			respondJSON(w, http.StatusOK, env)
 			return
 		}
 		if trc != nil {
-			h.finishToolRun(trc, "failed", "failed", nil, 0, err.Error())
+			if finishErr := h.finishExecutionToolRun(trc, "failed", nil, err.Error()); finishErr != nil {
+				respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+				return
+			}
 		}
 		respondQueryError(w, err)
 		return
 	}
 	data, _ := json.Marshal(map[string]interface{}{"points": pts, "total": len(pts)})
-	env := h.endToolRun(trc, "complete", data, "")
+	env, finishErr := h.endToolRun(trc, "complete", data, "")
+	if finishErr != nil {
+		respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+		return
+	}
 	respondJSON(w, 200, env)
 }
 
@@ -437,7 +515,7 @@ func (h *Handler) InternalQueryAlerts(w http.ResponseWriter, r *http.Request) {
 // canonical investigation read path for Kubernetes/IPMI events persisted by
 // the unified ingest service.
 func (h *Handler) InternalQueryEvents(w http.ResponseWriter, r *http.Request) {
-	rctx, req, err := decodeInternalRequest(r, "observability.events.read")
+	rctx, req, err := decodeInternalRequest(r, "kubernetes.events.read")
 	if err != nil {
 		respondInternalQueryError(w, err)
 		return
@@ -563,7 +641,10 @@ func (h *Handler) InternalQueryKubernetes(w http.ResponseWriter, r *http.Request
 	// 全部子查询失败 → 不伪装成"没有 K8s 数据"，返回 unavailable（fail-closed）。
 	if partial && len(errs) == 3 {
 		if trc != nil {
-			h.finishToolRun(trc, "failed", "failed", nil, 0, errs[0])
+			if finishErr := h.finishExecutionToolRun(trc, "failed", nil, errs[0]); finishErr != nil {
+				respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+				return
+			}
 		}
 		respondInternalQueryError(w, &internalQueryError{
 			Code: contract.ErrorCodeBackendUnavailable, Message: "kubernetes backend unavailable: " + errs[0],
@@ -600,7 +681,11 @@ func (h *Handler) InternalQueryKubernetes(w http.ResponseWriter, r *http.Request
 		}
 	}
 	data, _ := json.Marshal(resp)
-	env := h.endToolRun(trc, quality, data, "")
+	env, finishErr := h.endToolRun(trc, quality, data, "")
+	if finishErr != nil {
+		respondInternalQueryError(w, chatAuditUnavailableError(finishErr))
+		return
+	}
 	respondJSON(w, 200, env)
 }
 

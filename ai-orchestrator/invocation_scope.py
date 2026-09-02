@@ -52,6 +52,15 @@ class ScopeView(Protocol):
     @property
     def source(self) -> str: ...
 
+    @property
+    def chat_session_id(self) -> str: ...
+
+    @property
+    def chat_turn_id(self) -> str: ...
+
+    @property
+    def chat_tool_call_id(self) -> str: ...
+
 
 @dataclass(frozen=True)
 class InvocationScope:
@@ -76,6 +85,12 @@ class InvocationScope:
     executor_id: str = ""
     lease_epoch: int = 0
     lease_token: str = ""
+    # Chat transcript identity is distinct from authenticated session_id and
+    # from Investigation Run/ToolRun identity.  It is populated only by the
+    # canonical chat ingress before read-only tools are invoked.
+    chat_session_id: str = ""
+    chat_turn_id: str = ""
+    chat_tool_call_id: str = ""
 
     @classmethod
     def from_run_invocation_context(cls, claims: dict) -> "InvocationScope":
@@ -123,9 +138,11 @@ class LegacyScopeAdapter:
     It is removed with the old AI Chat path in Phase 14.
     """
 
-    def __init__(self, legacy_context):
+    def __init__(self, legacy_context, *, chat_session_id: str = "", chat_turn_id: str = ""):
         # legacy_context is the orchestrator's internal RequestContext model.
         self._ctx = legacy_context
+        self._chat_session_id = str(chat_session_id or "")
+        self._chat_turn_id = str(chat_turn_id or "")
 
     @property
     def principal_id(self) -> str:
@@ -152,6 +169,18 @@ class LegacyScopeAdapter:
     @property
     def source(self) -> str:
         return str(getattr(self._ctx, "source", "planner"))
+
+    @property
+    def chat_session_id(self) -> str:
+        return self._chat_session_id
+
+    @property
+    def chat_turn_id(self) -> str:
+        return self._chat_turn_id
+
+    @property
+    def chat_tool_call_id(self) -> str:
+        return ""
 
     # Legacy-compatible aliases so existing callers that read user_id/capability
     # keep working during the Phase 3-13 transition. Not part of ScopeView.
@@ -187,7 +216,8 @@ class LegacyScopeAdapter:
 _SNAPSHOT_FIELDS = (
     "principal_id", "session_id", "tenant_id", "cluster_id",
     "request_id", "source", "run_id", "invocation_id", "principal_type", "capability",
-    "workload_kind", "executor_id", "lease_epoch",
+    "workload_kind", "executor_id", "lease_epoch", "chat_session_id", "chat_turn_id",
+    "chat_tool_call_id",
 )
 
 # Lease tokens are short-lived secrets.  They are bound to the worker task while
@@ -222,7 +252,8 @@ class ScopeViewSnapshot:
 
     def __init__(self, principal_id="", session_id=None, tenant_id="", cluster_id="",
                  request_id="", source="", run_id="", invocation_id="", principal_type="user",
-                 capability="", workload_kind="chat", executor_id="", lease_epoch=0):
+                 capability="", workload_kind="chat", executor_id="", lease_epoch=0,
+                 chat_session_id="", chat_turn_id="", chat_tool_call_id=""):
         self.principal_id = str(principal_id)
         self.session_id = str(session_id) if session_id is not None else None
         self.tenant_id = str(tenant_id)
@@ -236,6 +267,9 @@ class ScopeViewSnapshot:
         self.workload_kind = str(workload_kind or "chat")
         self.executor_id = str(executor_id or "")
         self.lease_epoch = int(lease_epoch or 0)
+        self.chat_session_id = str(chat_session_id or "")
+        self.chat_turn_id = str(chat_turn_id or "")
+        self.chat_tool_call_id = str(chat_tool_call_id or "")
 
     @classmethod
     def to_projection(cls, view: ScopeView | None) -> dict:
@@ -277,4 +311,7 @@ class ScopeViewSnapshot:
             workload_kind=data.get("workload_kind") or "chat",
             executor_id=data.get("executor_id") or "",
             lease_epoch=data.get("lease_epoch") or 0,
+            chat_session_id=data.get("chat_session_id") or "",
+            chat_turn_id=data.get("chat_turn_id") or "",
+            chat_tool_call_id=data.get("chat_tool_call_id") or "",
         )
