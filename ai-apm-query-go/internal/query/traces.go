@@ -243,11 +243,16 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 		// FINAL is applied only after the index has reduced the candidate set.
 		// The inner query finalizes bounded Summary rows; the outer GROUP BY merges
 		// date partitions into one logical Trace without touching raw trace_spans.
+		// ClickHouse 24.x rejects groupArray(Array(...)) when the resulting
+		// array is wrapped by arrayFlatten/arrayDistinct (ILLEGAL_AGGREGATION).
+		// groupUniqArrayArray is the native array aggregate; flattening its
+		// result gives the same logical distinct service/operation/url values.
+		serviceNamesExpr := "arrayDistinct(arrayFlatten(groupUniqArrayArray(service_names)))"
 		sql := "SELECT trace_id, min(trace_start) AS start, max(trace_end) AS end, " +
 			"sum(span_count) AS spans, " +
-			"length(arrayDistinct(arrayFlatten(groupArray(service_names)))) AS services, " +
+			"length(" + serviceNamesExpr + ") AS services, " +
 			"max(max_ms) AS max_ms, " +
-			"arrayStringConcat(arrayDistinct(arrayFlatten(groupArray(service_names))), ',') AS service_names " +
+			"arrayStringConcat(" + serviceNamesExpr + ", ',') AS service_names " +
 			"FROM (SELECT trace_id, " +
 			"finalizeAggregation(start_state) AS trace_start, " +
 			"finalizeAggregation(end_state) AS trace_end, " +
@@ -259,7 +264,7 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 			"FROM observability.trace_summary_state FINAL WHERE " + strings.Join(conds, " AND ") +
 			") GROUP BY trace_id"
 		var having []string
-		serviceNames := "arrayDistinct(arrayFlatten(groupArray(service_names)))"
+		serviceNames := serviceNamesExpr
 		if q.Service != "" {
 			having = append(having, "has("+serviceNames+", "+sqlStr(q.Service)+")")
 		}
@@ -272,8 +277,8 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 		}
 		if q.Keyword != "" {
 			kw := sqlStr(q.Keyword)
-			operations := "arrayDistinct(arrayFlatten(groupArray(operation_names)))"
-			urls := "arrayDistinct(arrayFlatten(groupArray(http_urls)))"
+			operations := "arrayDistinct(arrayFlatten(groupUniqArrayArray(operation_names)))"
+			urls := "arrayDistinct(arrayFlatten(groupUniqArrayArray(http_urls)))"
 			having = append(having, "(trace_id LIKE concat('%', "+kw+", '%') OR "+
 				"arrayExists(x -> positionCaseInsensitive(x, "+kw+") > 0, "+operations+") OR "+
 				"arrayExists(x -> positionCaseInsensitive(x, "+kw+") > 0, "+urls+"))")
