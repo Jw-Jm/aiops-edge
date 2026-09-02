@@ -65,6 +65,21 @@ def _expected_service_token() -> str:
     return os.environ.get("QUERY_TO_ORCHESTRATOR_TOKEN") or os.environ.get("INTERNAL_TOKEN", "")
 
 
+def _normalize_run_invocation_claims(claims: dict) -> dict:
+    """Normalize the cross-language empty system-session sentinel.
+
+    The Go internal contract represents a system principal's absent session as
+    ``session_id: ""`` because its wire struct uses strings.  Pydantic's
+    ``Optional[UUID]`` correctly rejects that empty string, so normalize only
+    this exact, already-signed system-principal case before model validation.
+    User sessions and every other malformed value remain fail-closed.
+    """
+    normalized = dict(claims)
+    if normalized.get("principal_type") == "system" and normalized.get("session_id") == "":
+        normalized["session_id"] = None
+    return normalized
+
+
 def verify_run_invocation_ingress(request: Request) -> dict:
     """Verify service credential + RunInvocationContext and return the claims.
 
@@ -93,7 +108,9 @@ def verify_run_invocation_ingress(request: Request) -> dict:
         clock_skew_seconds=_CLOCK_SKEW_SECONDS,
     )
     try:
-        claims = verify_run_invocation_context(ctx_header, cfg, _now_utc())
+        claims = _normalize_run_invocation_claims(
+            verify_run_invocation_context(ctx_header, cfg, _now_utc())
+        )
         # Signature verification alone checks transport claims; Pydantic enforces
         # the capability-specific Run identity invariant on the wire.
         from contracts import RunInvocationContext

@@ -140,6 +140,38 @@ def test_valid_run_invocation_accepted_and_downstream_called_once(monkeypatch, c
     assert client._stub_brain.calls == 1
 
 
+def test_system_run_invocation_empty_session_sentinel_is_normalized(monkeypatch):
+    """The Go dispatcher uses an empty string for a system principal's null session."""
+    from internal_ingress import verify_run_invocation_ingress
+
+    private_key = _keypair()
+    _configure(monkeypatch, private_key)
+    claims = _run_invocation_claims()
+    claims.update({
+        "principal_type": "system",
+        "principal_id": "f4a4b8c2-3d5e-4f6a-8b9c-0d1e2f3a4b5c",
+        "session_id": "",
+        "capability": "ai.investigate",
+        "run_id": "22222222-2222-4222-8222-222222222222",
+        "invocation_id": "99999999-9999-4999-8999-999999999999",
+    })
+    jws = _sign_run_invocation(claims, private_key)
+    from starlette.requests import Request
+    request = Request({
+        "type": "http", "method": "POST", "path": "/internal/v1/run-invocations",
+        "headers": [
+            (b"x-internal-token", b"svc-token"),
+            (b"x-trusted-request-context", jws.encode()),
+        ],
+        "query_string": b"", "scheme": "http", "server": ("test", 80),
+        "client": ("127.0.0.1", 1), "root_path": "",
+    })
+    verified = verify_run_invocation_ingress(request)
+    assert verified["principal_type"] == "system"
+    assert verified["session_id"] is None
+    assert verified["capability"] == "ai.investigate"
+
+
 # ── service credential ─────────────────────────────────────────────────
 
 def test_missing_service_credential_rejected(monkeypatch, client):
