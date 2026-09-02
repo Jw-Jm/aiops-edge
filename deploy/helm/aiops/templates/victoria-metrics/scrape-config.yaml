@@ -33,6 +33,7 @@ data:
         {{- if .Values.internalTLS.enabled }}
         tls_config:
           ca_file: /etc/vm/tls/ca.crt
+          server_name: ingest.{{ .Values.namespace.observability }}.svc.cluster.local
           insecure_skip_verify: false
         {{- end }}
         static_configs:
@@ -44,6 +45,7 @@ data:
         {{- if .Values.internalTLS.enabled }}
         tls_config:
           ca_file: /etc/vm/tls/ca.crt
+          server_name: ai-orchestrator.{{ .Values.namespace.observability }}.svc.cluster.local
           insecure_skip_verify: false
         {{- end }}
         static_configs:
@@ -56,6 +58,7 @@ data:
         {{- if .Values.internalTLS.enabled }}
         tls_config:
           ca_file: /etc/vm/tls/ca.crt
+          server_name: query-api.{{ .Values.namespace.observability }}.svc.cluster.local
           insecure_skip_verify: false
         {{- end }}
         static_configs:
