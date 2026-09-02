@@ -149,8 +149,7 @@ func main() {
 	// 失败仅记日志（可观测），不回退 ClickHouse，也不伪装成功。
 	if telRT.Enabled() {
 		pl.SetREDSink(func(m *model.ServiceMetric) {
-			ts := m.TimeBucket
-			if res := telRT.WriteRED(m.TenantID, m.ClusterID, m.ServiceName, float64(m.CallCount), ts); res.Status != "ok" {
+			if res := telRT.WriteServiceRED(m); res.Status != "ok" {
 				log.Printf("VM RED write failed (tenant=%s service=%s): code=%s msg=%s", m.TenantID, m.ServiceName, res.ErrorCode, res.Message)
 			}
 		})

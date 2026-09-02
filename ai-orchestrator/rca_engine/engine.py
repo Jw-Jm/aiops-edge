@@ -310,6 +310,26 @@ class RCAEngineV2:
         provider_failures = list(getattr(self.evidence_provider, "failures", []) or [])
         if provider_failures:
             context.partial = True
+        symptom_uid = str(entity.get("entity_uid") or "")
+        candidate_paths: dict[str, list[dict[str, Any]]] = {}
+
+        def has_valid_path(paths_for_candidate: list[dict[str, Any]]) -> bool:
+            return any(isinstance(path, Mapping)
+                       and len(path.get("vertex_uids") or []) >= 2
+                       and len(path.get("edge_uids") or []) >= 1
+                       for path in paths_for_candidate)
+
+        # Build the causal path before ranking.  A candidate subgraph is a
+        # search space, not proof of causality; when a score ties, a distinct
+        # candidate with a real failure-propagating path must outrank the
+        # symptom itself.  This prevents lexical UID ordering from publishing
+        # the observed symptom as its own root and preserves deterministic
+        # replay semantics.
+        for candidate in candidate_rows(subgraph):
+            uid = str(candidate.get("entity_uid") or "")
+            if uid:
+                candidate_paths[uid] = propagation_paths(subgraph, uid, symptom_uid)
+
         ranked = []
         for candidate in candidate_rows(subgraph):
             uid = str(candidate.get("entity_uid") or "")
@@ -320,8 +340,10 @@ class RCAEngineV2:
             ranked.append({"entity_uid": uid, "name": candidate.get("name", uid), "entity_type": candidate.get("entity_type", ""),
                            "score": breakdown.score, "score_breakdown": breakdown.to_dict(),
                            "evidence_categories": independent_categories(candidate_evidence),
+                           "causal_path_available": has_valid_path(candidate_paths.get(uid, [])),
                            "evidence": candidate_evidence})
-        ranked.sort(key=lambda row: (-row["score"], row["entity_uid"]))
+        ranked.sort(key=lambda row: (-row["score"], -row["evidence_categories"],
+                                    -int(bool(row.get("causal_path_available"))), row["entity_uid"]))
         top = ranked[0] if ranked else None
         second = ranked[1] if len(ranked) > 1 else None
         contradictions = evaluate_contradictions(top, top.get("evidence", []), symptom_time=request.symptom_time,
@@ -332,7 +354,7 @@ class RCAEngineV2:
         if top and second and top["score"] - second["score"] < .05 and status == "confirmed":
             status = "multiple_probable_roots"
         context.record("root_cause_selected") if top else None
-        paths = propagation_paths(subgraph, top["entity_uid"], str(entity.get("entity_uid") or "")) if top else []
+        paths = candidate_paths.get(top["entity_uid"], []) if top else []
         context.propagation_paths = paths
         context.record("propagation_paths_built") if paths else None
         missing_evidence = [] if top and top["evidence_categories"] >= 2 else ["independent_evidence"]

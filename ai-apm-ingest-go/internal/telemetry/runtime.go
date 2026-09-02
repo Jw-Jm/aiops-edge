@@ -3,7 +3,10 @@ package telemetry
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
+
+	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
 )
 
 // Runtime 是 new 后端（VictoriaMetrics / VictoriaLogs）的生产接线层（V9.2 P6.5）。
@@ -18,6 +21,15 @@ type Runtime struct {
 	Mode  Mode
 	VM    *VictoriaMetricsWriter
 	VLogs *VictoriaLogsWriter
+	redMu sync.Mutex
+	red   map[string]redCounter
+}
+
+type redCounter struct {
+	calls    uint64
+	errors   uint64
+	durSumS  float64
+	durCount uint64
 }
 
 // NewRuntime 以显式模式构造 new 链（供测试/受控隔离环境直接启用）。
@@ -26,6 +38,7 @@ func NewRuntime(mode Mode, vmURL, vlogsURL string) *Runtime {
 		Mode:  mode,
 		VM:    NewVictoriaMetricsWriterMode(vmURL, mode),
 		VLogs: NewVictoriaLogsWriterMode(vlogsURL, mode),
+		red:   make(map[string]redCounter),
 	}
 }
 
@@ -61,10 +74,10 @@ func (r *Runtime) Enabled() bool { return r.Mode == ModeNew }
 // vlogsRecord 解析 service_name / level）。三字段 contract 由 writer 内部校验。
 func (r *Runtime) WriteLog(tenantID, clusterID, service, level, body string, ts time.Time) WriteResult {
 	labels := map[string]string{
-		"tenant_id":   tenantID,
-		"cluster_id":  clusterID,
+		"tenant_id":    tenantID,
+		"cluster_id":   clusterID,
 		"service_name": service,
-		"level":       level,
+		"level":        level,
 	}
 	return r.VLogs.WriteLogScope(labels, ScopeCluster, body, ts)
 }
@@ -80,4 +93,48 @@ func (r *Runtime) WriteRED(tenantID, clusterID, service string, value float64, t
 		"service_name": service,
 	}
 	return r.VM.Write(labels, value, ts)
+}
+
+// WriteServiceRED publishes canonical, tenant/cluster-scoped cumulative RED
+// counters.  Pipeline flushes provide bucket deltas; the runtime accumulates
+// them before writing so the query side can use Prometheus rate semantics.
+func (r *Runtime) WriteServiceRED(metric *model.ServiceMetric) WriteResult {
+	if metric == nil || metric.TenantID == "" || metric.ClusterID == "" || metric.ServiceName == "" {
+		return invalidScopeResult()
+	}
+	key := metric.TenantID + "\x00" + metric.ClusterID + "\x00" + metric.ServiceName
+	r.redMu.Lock()
+	counter := r.red[key]
+	counter.calls += metric.CallCount
+	counter.errors += metric.ErrorCount
+	counter.durSumS += float64(metric.DurationSumNs) / 1e9
+	counter.durCount += metric.DurationCount
+	r.red[key] = counter
+	r.redMu.Unlock()
+
+	ts := metric.TimeBucket
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	base := map[string]string{
+		"tenant_id":    metric.TenantID,
+		"cluster_id":   metric.ClusterID,
+		"service_name": metric.ServiceName,
+	}
+	points := []MetricPoint{
+		{Labels: withMetricName(base, "call_total"), Value: float64(counter.calls), TS: ts},
+		{Labels: withMetricName(base, "error_total"), Value: float64(counter.errors), TS: ts},
+		{Labels: withMetricName(base, "duration_seconds_sum"), Value: counter.durSumS, TS: ts},
+		{Labels: withMetricName(base, "duration_seconds_count"), Value: float64(counter.durCount), TS: ts},
+	}
+	return r.VM.WriteBatch(points)
+}
+
+func withMetricName(base map[string]string, name string) map[string]string {
+	labels := make(map[string]string, len(base)+1)
+	for key, value := range base {
+		labels[key] = value
+	}
+	labels["__name__"] = name
+	return labels
 }

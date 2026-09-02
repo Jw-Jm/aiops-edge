@@ -93,6 +93,37 @@ func (w *VictoriaMetricsWriter) WriteScope(labels map[string]string, scope strin
 	return okResult()
 }
 
+// WriteBatch validates and writes a group of samples in one import request.
+// A RED flush is a single logical observation; sending its call, error and
+// duration counters together avoids partially publishing a batch where the
+// RCA reader could observe only one component of the signal.
+func (w *VictoriaMetricsWriter) WriteBatch(points []MetricPoint) WriteResult {
+	if len(points) == 0 {
+		return okResult()
+	}
+	lines := make([]string, 0, len(points))
+	for _, point := range points {
+		scope := ScopeCluster
+		if point.Labels["resource_id"] != "" {
+			scope = ScopeResource
+		}
+		if err := telemetrylabels.ValidateScopeLabels(point.Labels, scope); err != nil {
+			return invalidScopeResult()
+		}
+		if point.Labels["__name__"] == "" {
+			return WriteResult{Status: "error", ErrorCode: "MISSING_NAME", Retryable: false}
+		}
+		lines = append(lines, w.serializeLine(point.Labels, point.Value, point.TS))
+	}
+	if w.mode != ModeNew {
+		return okResult()
+	}
+	if err := w.post(strings.Join(lines, "\n")); err != nil {
+		return WriteResult{Status: "error", ErrorCode: "WRITE_FAILED", Retryable: true, Message: err.Error()}
+	}
+	return okResult()
+}
+
 // serializeLine 将单条 metric 序列化为 VM plaintext line（仅用于单测/调试，不发送）。
 // 格式：<name>{<k>="<v>",...} <value> <unix_ms>
 func (w *VictoriaMetricsWriter) serializeLine(labels map[string]string, value float64, ts time.Time) string {

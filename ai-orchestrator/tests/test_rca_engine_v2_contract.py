@@ -191,8 +191,48 @@ def test_symptom_candidate_cannot_be_confirmed_without_a_non_self_propagation_pa
     result = RCAEngineV2(graph_client=graph_client).diagnose(request)
 
     assert result.root_cause_status != "confirmed"
+    assert result.root_cause == "service:checkout"
     assert "propagation_path" in result.missing_evidence
     assert result.propagation_paths == []
+
+
+def test_causal_candidate_wins_score_tie_over_symptom_candidate():
+    gateway = _entity("service:gateway", "gateway")
+    backend = _entity("service:backend", "backend")
+    graph = {
+        "vertices": [gateway, backend],
+        "edges": [{
+            "edge_uid": "edge:gateway-backend", "source_uid": gateway["entity_uid"],
+            "target_uid": backend["entity_uid"], "propagates_failure": True,
+            "confidence": 1.0, "candidate_direction": "BOTH",
+        }],
+    }
+
+    def graph_client(**params):
+        if params["graph_operation"] == "get_vertex":
+            return {"entity": backend}
+        return graph
+
+    def evidence_provider(_request, _context):
+        return [
+            {"entity_uid": backend["entity_uid"], "category": "trace", "degraded": True,
+             "observed_at": "2026-08-27T00:25:00Z"},
+            {"entity_uid": gateway["entity_uid"], "category": "metric", "severity": 0.0,
+             "observed_at": "2026-08-27T00:25:00Z"},
+            {"entity_uid": gateway["entity_uid"], "category": "trace", "degraded": True,
+             "observed_at": "2026-08-27T00:25:00Z"},
+        ]
+
+    request = RCARequest(
+        run_id="run-causal-tie", tenant_id="tenant-1", cluster_id="cluster-1",
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z", entity_uid=backend["entity_uid"],
+    )
+    result = RCAEngineV2(graph_client=graph_client, evidence_provider=evidence_provider).diagnose(request)
+
+    assert result.root_cause == gateway["entity_uid"]
+    assert result.propagation_paths
+    assert result.propagation_paths[0]["vertex_uids"] == [gateway["entity_uid"], backend["entity_uid"]]
 
 
 def test_graph_generation_defaults_to_zero_when_adapter_omits_meta():

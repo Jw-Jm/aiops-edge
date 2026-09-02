@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,11 +44,8 @@ func NewVictoriaMetricsReader(endpoint string, client *http.Client) *VictoriaMet
 type vmQueryRangeResp struct {
 	Status string `json:"status"`
 	Data   struct {
-		ResultType string `json:"resultType"`
-		Result     []struct {
-			Metric map[string]string `json:"metric"`
-			Values [][2]interface{}  `json:"values"`
-		} `json:"result"`
+		ResultType string          `json:"resultType"`
+		Result     []vmQuerySeries `json:"result"`
 	} `json:"data"`
 }
 
@@ -83,22 +82,104 @@ func (r *VictoriaMetricsReader) ServiceRED(ctx context.Context, q VMQuery) ([]RE
 	step := int64(60)
 	sel := vmLabelSelectors(q)
 
-	// 一次取调用量与错误量（误差联合），VM 支持多表达式仅需 query_range 一次 per series。
-	// 用 call_total 的 rate 作为主序列；错误量/耗时从同 series 派生需要多个查询。
-	// 此处实现调用量序列（call_rate）；错误率/耗时可经同 reader 扩展（P6.3 scope 最小）。
-	expr := fmt.Sprintf(`sum(rate(call_total%s[5m]))`, sel)
-	pts, err := r.queryRange(ctx, expr, start, end, step)
+	// Return all RED components in one bounded query.  Each component is
+	// labelled before the set union so the response remains attributable after
+	// PromQL aggregation; absent error/duration series remain zero rather than
+	// being inferred from latency or a missing field.
+	expr := strings.Join([]string{
+		fmt.Sprintf(`label_replace(sum(rate(call_total%s[5m])), "red_kind", "calls", "", "")`, sel),
+		fmt.Sprintf(`label_replace(sum(rate(error_total%s[5m])), "red_kind", "errors", "", "")`, sel),
+		fmt.Sprintf(`label_replace(sum(rate(duration_seconds_sum%s[5m])), "red_kind", "duration_sum", "", "")`, sel),
+		fmt.Sprintf(`label_replace(sum(rate(duration_seconds_count%s[5m])), "red_kind", "duration_count", "", "")`, sel),
+	}, " or ")
+	series, err := r.queryRangeSeries(ctx, expr, start, end, step)
 	if err != nil {
 		return nil, err
 	}
-	if len(pts) == 0 {
+	if len(series) == 0 {
 		return nil, NoData()
 	}
-	return pts, nil
+	type aggregate struct {
+		calls, errors, durationCount float64
+		durationSum                  float64
+	}
+	aggregates := make(map[int64]*aggregate)
+	for _, item := range series {
+		kind := item.Metric["red_kind"]
+		if kind == "" {
+			// Compatibility with pre-RED envelopes that returned only call_total.
+			kind = "calls"
+		}
+		for _, value := range item.Values {
+			if len(value) != 2 {
+				continue
+			}
+			ts := int64(toFloat64(value[0]))
+			if ts == 0 {
+				continue
+			}
+			agg := aggregates[ts]
+			if agg == nil {
+				agg = &aggregate{}
+				aggregates[ts] = agg
+			}
+			n := toFloat64(value[1])
+			switch kind {
+			case "calls":
+				agg.calls += n
+			case "errors":
+				agg.errors += n
+			case "duration_sum":
+				agg.durationSum += n
+			case "duration_count":
+				agg.durationCount += n
+			}
+		}
+	}
+	timestamps := make([]int64, 0, len(aggregates))
+	for ts := range aggregates {
+		timestamps = append(timestamps, ts)
+	}
+	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i] < timestamps[j] })
+	points := make([]REDPoint, 0, len(timestamps))
+	for _, ts := range timestamps {
+		agg := aggregates[ts]
+		avgMS := 0.0
+		if agg.calls > 0 && agg.durationSum > 0 {
+			avgMS = agg.durationSum / agg.calls * 1000
+		}
+		points = append(points, REDPoint{T: time.Unix(ts, 0).UTC(), CallCount: int(math.Round(agg.calls)), ErrorCount: int(math.Round(agg.errors)), AvgMS: avgMS})
+	}
+	if len(points) == 0 {
+		return nil, NoData()
+	}
+	return points, nil
 }
 
 // queryRange 调 VM /api/v1/query_range，返回时间序列采样点。
 func (r *VictoriaMetricsReader) queryRange(ctx context.Context, expr string, start, end, step int64) ([]REDPoint, error) {
+	series, err := r.queryRangeSeries(ctx, expr, start, end, step)
+	if err != nil {
+		return nil, err
+	}
+	var out []REDPoint
+	for _, item := range series {
+		for _, v := range item.Values {
+			if len(v) != 2 {
+				continue
+			}
+			out = append(out, REDPoint{T: time.Unix(int64(toFloat64(v[0])), 0).UTC(), CallCount: int(toFloat64(v[1]))})
+		}
+	}
+	return out, nil
+}
+
+type vmQuerySeries struct {
+	Metric map[string]string `json:"metric"`
+	Values [][2]interface{}  `json:"values"`
+}
+
+func (r *VictoriaMetricsReader) queryRangeSeries(ctx context.Context, expr string, start, end, step int64) ([]vmQuerySeries, error) {
 	u := r.endpoint + "/api/v1/query_range"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -129,18 +210,7 @@ func (r *VictoriaMetricsReader) queryRange(ctx context.Context, expr string, sta
 	if vr.Status != "success" {
 		return nil, Unavailable("victoriametrics: status " + vr.Status)
 	}
-	var out []REDPoint
-	for _, series := range vr.Data.Result {
-		for _, v := range series.Values {
-			ts := toInt64(v[0])
-			val := toFloat64(v[1])
-			out = append(out, REDPoint{
-				T:         time.Unix(ts, 0).UTC(),
-				CallCount: int(val),
-			})
-		}
-	}
-	return out, nil
+	return vr.Data.Result, nil
 }
 
 func toInt64(v interface{}) int64 {

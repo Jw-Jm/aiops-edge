@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/observability-platform/ai-apm-ingest-go/internal/model"
 )
 
 // canonicalTestTenant / canonicalTestCluster 满足 telemetrylabels canonical UUID 约束。
@@ -231,5 +233,42 @@ func TestRuntime_WriteRED_UsesCallTotal(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `service_name="checkout"`) {
 		t.Fatalf("expected service_name label, got: %s", gotBody)
+	}
+}
+
+func TestRuntime_WriteServiceREDPublishesCanonicalCounters(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		bodies = append(bodies, string(buf))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	rt := NewRuntime(ModeNew, srv.URL, srv.URL)
+	ts := time.Date(2026, 9, 2, 8, 45, 0, 0, time.UTC)
+	if res := rt.WriteServiceRED(&model.ServiceMetric{
+		TenantID: canonicalTestTenant, ClusterID: canonicalTestCluster, ServiceName: "checkout",
+		CallCount: 5, ErrorCount: 2, DurationSumNs: 5_000_000_000, DurationCount: 5, TimeBucket: ts,
+	}); res.Status != "ok" {
+		t.Fatalf("first WriteServiceRED: %+v", res)
+	}
+	if res := rt.WriteServiceRED(&model.ServiceMetric{
+		TenantID: canonicalTestTenant, ClusterID: canonicalTestCluster, ServiceName: "checkout",
+		CallCount: 3, ErrorCount: 1, DurationSumNs: 3_000_000_000, DurationCount: 3, TimeBucket: ts.Add(time.Minute),
+	}); res.Status != "ok" {
+		t.Fatalf("second WriteServiceRED: %+v", res)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected one VM request per RED batch, got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[1], "call_total{") || !strings.Contains(bodies[1], " 8 ") {
+		t.Fatalf("second batch must carry cumulative calls: %q", bodies[1])
+	}
+	for _, name := range []string{"error_total", "duration_seconds_sum", "duration_seconds_count"} {
+		if !strings.Contains(bodies[1], name+"{") {
+			t.Fatalf("second batch missing %s: %q", name, bodies[1])
+		}
 	}
 }
