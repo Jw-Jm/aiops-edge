@@ -21,6 +21,7 @@ def test_production_import_does_not_construct_legacy_runtime_owners():
         }
     )
     code = """
+import sys
 import run_store_factory
 run_store_factory.check_control_plane_reachable = lambda *args, **kwargs: None
 import main
@@ -29,6 +30,8 @@ assert main.shell_policy is None
 assert main.flow_router is None
 assert main.kg_router is None
 assert main.agent_tool is None
+assert "ops_action_api" not in sys.modules
+assert "phase11_execution" not in sys.modules
 print('production-import-boundary-ok')
 """
     result = subprocess.run(

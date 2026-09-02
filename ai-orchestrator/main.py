@@ -458,9 +458,13 @@ if kg_router is not None:
 # P12：Run API 端点（/api/v1/ai/runs，前端调查中心数据源）
 from ai_runs_api import router as _ai_runs_router
 app.include_router(_ai_runs_router)
-# P11 只读接线：结构化动作提案/确认（执行冻结）
-import ops_action_api as _ops_action_api
-app.include_router(_ops_action_api.router)
+# P11 只读接线：结构化动作提案/确认（执行冻结）。
+# The legacy hub owns an in-memory action registry and is intentionally not
+# constructed by the production composition root. Production action state is
+# Query API/MySQL-owned; the public route is retired by production_surface.py.
+if not _PRODUCTION_COMPOSITION:
+    import ops_action_api as _ops_action_api
+    app.include_router(_ops_action_api.router)
 # Internal query-api-owned historical session cleanup; browser callers never
 # reach this router because auth_middleware requires the directional token.
 from data_cleanup_api import router as _data_cleanup_router
