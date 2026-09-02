@@ -117,13 +117,15 @@ json.dump(
 PY
 
 rendered_manifest="${AIOPS_RELEASE_RENDERED_MANIFEST:-}"
+release_binding="${AIOPS_RELEASE_BINDING_FILE:-}"
 signature_file="${AIOPS_RELEASE_SIGNATURE_FILE:-}"
 signature_public_key="${AIOPS_RELEASE_SIGNATURE_PUBLIC_KEY:-}"
 python3 - "${repo_root}" "${out}" "${git_commit}" "${tree_digest}" "${tmp_dir}/commands.jsonl" \
-  "${image_evidence}" "${rendered_manifest}" "${signature_file}" "${signature_public_key}" "${repo_root}/deploy/scripts/verify-release-signature.sh" <<'PY'
+  "${image_evidence}" "${rendered_manifest}" "${release_binding}" "${signature_file}" "${signature_public_key}" \
+  "${repo_root}/deploy/scripts/verify-release-signature.sh" "${repo_root}/deploy/scripts/verify-release-binding.sh" <<'PY'
 import json, pathlib, sys, datetime, hashlib
 import subprocess
-root, out, commit, tree_digest, commands_path, image_path, rendered_path, signature_path, public_key_path, verifier = sys.argv[1:]
+root, out, commit, tree_digest, commands_path, image_path, rendered_path, binding_path, signature_path, public_key_path, verifier, binding_verifier = sys.argv[1:]
 commands = [json.loads(line) for line in pathlib.Path(commands_path).read_text().splitlines() if line.strip()]
 checks = {}
 for item in commands:
@@ -142,24 +144,41 @@ def file_digest(path):
     return hashlib.sha256(candidate.read_bytes()).hexdigest()
 
 rendered_digest = file_digest(rendered_path)
+binding_digest = file_digest(binding_path)
 signature_digest = file_digest(signature_path)
 public_key_digest = file_digest(public_key_path)
 signature_status = "missing"
-signature_reason = "signature, rendered manifest, or public key is missing"
-if signature_digest and rendered_digest and public_key_digest:
+signature_reason = "signature, signed binding, or public key is missing"
+binding_status = "unverified"
+binding_reason = "signed release binding is missing"
+if signature_digest and binding_digest and public_key_digest:
     verify = subprocess.run(
-        [verifier, rendered_path, signature_path, public_key_path],
+        [verifier, binding_path, signature_path, public_key_path],
         capture_output=True,
         text=True,
     )
     if verify.returncode == 0:
-        signature_status = "verified"
-        signature_reason = "detached Ed25519 signature verified"
+        binding_check = subprocess.run(
+            [binding_verifier, binding_path, commit, images.get("tag", ""), rendered_digest or "", image_path],
+            capture_output=True,
+            text=True,
+        )
+        if binding_check.returncode == 0:
+            signature_status = "verified"
+            signature_reason = "detached Ed25519 signature verified over a version-bound release binding"
+            binding_status = "verified"
+            binding_reason = "commit, image registry digests, rendered manifest digest, and evidence digests match"
+        else:
+            signature_status = "invalid"
+            signature_reason = "signature verified but signed release binding does not match collected evidence"
+            binding_status = "invalid"
+            binding_reason = binding_check.stderr.strip() or "signed release binding mismatch"
     else:
         signature_status = "invalid"
         signature_reason = "detached signature verification failed"
 elif signature_digest:
     signature_status = "present_unverified"
+    signature_reason = "signature is present but no version-bound release binding was supplied"
 required_checks_pass = bool(checks) and all(value == "pass" for value in checks.values())
 doc = {
     "schema_version": 1,
@@ -172,6 +191,12 @@ doc = {
     "images": images,
     "release_materials": {
         "rendered_manifest": {"path": rendered_path or None, "sha256": rendered_digest, "status": "present" if rendered_digest else "unverified"},
+        "signed_binding": {
+            "path": binding_path or None,
+            "sha256": binding_digest,
+            "status": binding_status,
+            "reason": binding_reason,
+        },
         "signature": {
             "path": signature_path or None,
             "sha256": signature_digest,
@@ -183,7 +208,8 @@ doc = {
     },
     # A local tag or BuildKit content digest is not a registry identity.  A
     # release is publishable only when CI supplies registry-bound digests,
-    # a rendered manifest and a separately verified signature.
+    # a version-bound signed binding which includes the rendered manifest
+    # digest, each registry digest, and migration/policy/data digests.
     "publishable": (
         not dirty
         and required_checks_pass
@@ -193,6 +219,7 @@ doc = {
         and images.get("all_registry_digests") is True
         and rendered_digest is not None
         and signature_status == "verified"
+        and binding_status == "verified"
     ),
 }
 pathlib.Path(out).write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")

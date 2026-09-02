@@ -83,6 +83,25 @@ query-api → executor 的 signed context 用**独立** Ed25519 私钥（不复�
 ### 2.2 K8s TLS
 生产 `K8S_INSECURE_SKIP_VERIFY` **默认 false**（模板 fail-closed）。query-api 的 log-shipper 显式加载 in-cluster CA（`/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`）验证 API Server 证书。仅本地验证 profile 可显式设 `true`。
 
+### 2.3 发布证据签名绑定（生产必需）
+
+`collect-release-evidence.sh` 不把本地 tag、Docker content digest 或环境变量当作发布身份。
+生产流水线必须额外提供一个由受控签名密钥签名的 `release-binding.json`，并设置：
+
+```bash
+export AIOPS_RELEASE_RENDERED_MANIFEST=/path/to/rendered-manifest.yaml
+export AIOPS_RELEASE_BINDING_FILE=/path/to/release-binding.json
+export AIOPS_RELEASE_SIGNATURE_FILE=/path/to/release-binding.json.sig
+export AIOPS_RELEASE_SIGNATURE_PUBLIC_KEY=/path/to/release-signing-public.pem
+```
+
+绑定文件的 `schema_version` 必须为 `1`，并包含与当前候选完全一致的 `git_commit`、`image_tag`、
+`rendered_manifest_sha256`、每个服务的 `images[].immutable_digest`，以及非空的
+`migration_digests`、`policy_digests`、`data_digests`（每项均为 SHA-256）。采集器会先对绑定
+原始字节执行 Ed25519 验签，再将绑定内容与当前 HEAD、Docker/registry 证据和 rendered manifest
+摘要逐项比较；任意错配、缺项或重放都会保持 `publishable=false`。只有绑定验证成功才允许进入
+生产发布门禁。
+
 ## 3. 本机全量验证清单
 
 部署后逐一验证（本仓库所有验证均在真实本机环境跑通）：
