@@ -23,6 +23,14 @@ spec:
           env:
             - name: DEEPFLOW_ENABLED
               value: {{ .Values.deepflow.enabled | quote }}
+            - name: AIOPS_INTERNAL_TLS_ENABLED
+              value: {{ .Values.internalTLS.enabled | quote }}
+          {{- if .Values.internalTLS.enabled }}
+          volumeMounts:
+            - name: internal-tls-ca
+              mountPath: /etc/nginx/tls
+              readOnly: true
+          {{- end }}
           ports:
             - containerPort: 80
           readinessProbe:
@@ -33,6 +41,16 @@ spec:
             initialDelaySeconds: 15
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
+      {{- if .Values.internalTLS.enabled }}
+      volumes:
+        - name: internal-tls-ca
+          secret:
+            secretName: {{ .Values.internalTLS.secretName }}
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

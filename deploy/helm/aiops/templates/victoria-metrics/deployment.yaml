@@ -44,6 +44,11 @@ spec:
             - name: scrape-config
               mountPath: /etc/vm
               readOnly: true
+            {{- if .Values.internalTLS.enabled }}
+            - name: internal-tls-ca
+              mountPath: /etc/vm/tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -51,6 +56,15 @@ spec:
         - name: scrape-config
           configMap:
             name: vm-scrape-config
+        {{- if .Values.internalTLS.enabled }}
+        - name: internal-tls-ca
+          secret:
+            secretName: {{ .Values.internalTLS.secretName }}
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
