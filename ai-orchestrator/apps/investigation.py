@@ -33,10 +33,21 @@ from tool_registry import init_default_tool_registry
 # query-api.  Registration is idempotent and does not execute a tool.
 init_default_tool_registry()
 
-# Set before importing orchestrator.  BrainOrchestrator uses this flag to
-# disable its SQLite checkpoint/session store during module construction.
+# Set the worker flag only while importing the orchestrator composition root.
+# BrainOrchestrator uses it when constructing the module-level ``brain`` so the
+# worker never opens the legacy SQLite session store.  Do not leave the flag in
+# the process environment: this module is also imported by in-process tooling
+# and tests, and a leaked value would make later gateway BrainOrchestrator
+# instances silently switch to the stateless MemorySaver path.
+_previous_worker_mode = os.environ.get("INVESTIGATION_WORKER_MODE")
 os.environ["INVESTIGATION_WORKER_MODE"] = "true"
-from orchestrator import brain  # noqa: E402
+try:
+    from orchestrator import brain  # noqa: E402
+finally:
+    if _previous_worker_mode is None:
+        os.environ.pop("INVESTIGATION_WORKER_MODE", None)
+    else:
+        os.environ["INVESTIGATION_WORKER_MODE"] = _previous_worker_mode
 
 
 _AUTH_ALLOWLIST = ("/health", "/readyz", "/metrics")
