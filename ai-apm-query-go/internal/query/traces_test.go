@@ -216,11 +216,11 @@ func TestTraceRepoFindTracesSQLOwnership(t *testing.T) {
 	for _, want := range []string{
 		"tenant_id='3f3c3b3a-0000-4000-8000-000000000001'",
 		"cluster_id='3f3c3b3a-0000-4000-8000-000000000002'",
-		"has(arrayDistinct(arrayFlatten(groupUniqArrayArray(service_names))), 'checkout')",
+		"has(arrayDistinct(arrayFlatten(groupUniqArrayArray(service_name_list))), 'checkout')",
 		"FROM observability.trace_summary_state FINAL",
 		"finalizeAggregation(start_state)",
 		"sum(span_count)",
-		"arrayDistinct(arrayFlatten(groupUniqArrayArray(service_names)))",
+		"arrayDistinct(arrayFlatten(groupUniqArrayArray(service_name_list)))",
 		"GROUP BY trace_id",
 		"ORDER BY start DESC",
 		"LIMIT 20 OFFSET 0",
@@ -276,7 +276,7 @@ func TestTraceRepoFindTracesMergesCandidateSummaryRows(t *testing.T) {
 		"min(trace_start) AS start",
 		"max(trace_end) AS end",
 		"sum(span_count) AS spans",
-		"length(arrayDistinct(arrayFlatten(groupUniqArrayArray(service_names)))) AS services",
+		"length(arrayDistinct(arrayFlatten(groupUniqArrayArray(service_name_list)))) AS services",
 		"GROUP BY trace_id",
 	} {
 		if !strings.Contains(summarySQL, want) {

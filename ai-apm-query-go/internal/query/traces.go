@@ -247,7 +247,10 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 		// array is wrapped by arrayFlatten/arrayDistinct (ILLEGAL_AGGREGATION).
 		// groupUniqArrayArray is the native array aggregate; flattening its
 		// result gives the same logical distinct service/operation/url values.
-		serviceNamesExpr := "arrayDistinct(arrayFlatten(groupUniqArrayArray(service_names)))"
+		// Do not call the inner array alias `service_names`: ClickHouse performs
+		// SELECT-alias substitution before type checking and would substitute the
+		// outer `AS service_names` expression into groupUniqArrayArray(...).
+		serviceNamesExpr := "arrayDistinct(arrayFlatten(groupUniqArrayArray(service_name_list)))"
 		sql := "SELECT trace_id, min(trace_start) AS start, max(trace_end) AS end, " +
 			"sum(span_count) AS spans, " +
 			"length(" + serviceNamesExpr + ") AS services, " +
@@ -257,7 +260,7 @@ func (r *TraceRepository) FindTraces(ctx context.Context, q TraceQuery) ([]Trace
 			"finalizeAggregation(start_state) AS trace_start, " +
 			"finalizeAggregation(end_state) AS trace_end, " +
 			"finalizeAggregation(span_count_state) AS span_count, " +
-			"finalizeAggregation(service_names_state) AS service_names, " +
+			"finalizeAggregation(service_names_state) AS service_name_list, " +
 			"finalizeAggregation(operation_names_state) AS operation_names, " +
 			"finalizeAggregation(http_urls_state) AS http_urls, " +
 			"finalizeAggregation(max_duration_state)/1000000 AS max_ms " +
