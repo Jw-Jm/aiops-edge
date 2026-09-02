@@ -29,6 +29,7 @@ PY
 
 run_check deployment_contract bash deploy/scripts/test-deployment-contracts.sh
 run_check production_architecture env AIOPS_CONTRACT_ALLOW_TEST_SECRETS=true bash deploy/scripts/test-production-architecture-contracts.sh
+run_check release_signature_contract bash deploy/scripts/test-release-evidence-contract.sh
 run_check helm_lint helm lint --strict deploy/helm/aiops
 run_check diff_check git diff --check
 
@@ -117,10 +118,12 @@ PY
 
 rendered_manifest="${AIOPS_RELEASE_RENDERED_MANIFEST:-}"
 signature_file="${AIOPS_RELEASE_SIGNATURE_FILE:-}"
+signature_public_key="${AIOPS_RELEASE_SIGNATURE_PUBLIC_KEY:-}"
 python3 - "${repo_root}" "${out}" "${git_commit}" "${tree_digest}" "${tmp_dir}/commands.jsonl" \
-  "${image_evidence}" "${rendered_manifest}" "${signature_file}" <<'PY'
+  "${image_evidence}" "${rendered_manifest}" "${signature_file}" "${signature_public_key}" "${repo_root}/deploy/scripts/verify-release-signature.sh" <<'PY'
 import json, pathlib, sys, datetime, hashlib
-root, out, commit, tree_digest, commands_path, image_path, rendered_path, signature_path = sys.argv[1:]
+import subprocess
+root, out, commit, tree_digest, commands_path, image_path, rendered_path, signature_path, public_key_path, verifier = sys.argv[1:]
 commands = [json.loads(line) for line in pathlib.Path(commands_path).read_text().splitlines() if line.strip()]
 checks = {}
 for item in commands:
@@ -140,7 +143,23 @@ def file_digest(path):
 
 rendered_digest = file_digest(rendered_path)
 signature_digest = file_digest(signature_path)
-signature_status = "verified" if signature_digest and __import__("os").environ.get("AIOPS_RELEASE_SIGNATURE_VERIFIED") == "true" else ("present_unverified" if signature_digest else "missing")
+public_key_digest = file_digest(public_key_path)
+signature_status = "missing"
+signature_reason = "signature, rendered manifest, or public key is missing"
+if signature_digest and rendered_digest and public_key_digest:
+    verify = subprocess.run(
+        [verifier, rendered_path, signature_path, public_key_path],
+        capture_output=True,
+        text=True,
+    )
+    if verify.returncode == 0:
+        signature_status = "verified"
+        signature_reason = "detached Ed25519 signature verified"
+    else:
+        signature_status = "invalid"
+        signature_reason = "detached signature verification failed"
+elif signature_digest:
+    signature_status = "present_unverified"
 required_checks_pass = bool(checks) and all(value == "pass" for value in checks.values())
 doc = {
     "schema_version": 1,
@@ -153,7 +172,14 @@ doc = {
     "images": images,
     "release_materials": {
         "rendered_manifest": {"path": rendered_path or None, "sha256": rendered_digest, "status": "present" if rendered_digest else "unverified"},
-        "signature": {"path": signature_path or None, "sha256": signature_digest, "status": signature_status},
+        "signature": {
+            "path": signature_path or None,
+            "sha256": signature_digest,
+            "public_key_path": public_key_path or None,
+            "public_key_sha256": public_key_digest,
+            "status": signature_status,
+            "reason": signature_reason,
+        },
     },
     # A local tag or BuildKit content digest is not a registry identity.  A
     # release is publishable only when CI supplies registry-bound digests,
