@@ -157,6 +157,44 @@ def test_confirmed_result_exposes_publishable_evidence_contract():
     assert payload["root_score"] == payload["deterministic_root_score"]
 
 
+def test_symptom_candidate_cannot_be_confirmed_without_a_non_self_propagation_path():
+    graph = {
+        "vertices": [
+            # Deliberately give the symptom a strong topology score so this
+            # exercises the self-root guard rather than the score floor.
+            {**_entity("service:checkout", "checkout"), "hops": 1},
+            {**_entity("service:db", "db"), "hops": 1},
+        ],
+        "edges": [{
+            "edge_uid": "edge:checkout-db", "source_uid": "service:checkout",
+            "target_uid": "service:db", "propagates_failure": True,
+            "confidence": 1.0, "candidate_direction": "OUT",
+        }],
+    }
+
+    def graph_client(**params):
+        if params["graph_operation"] == "get_vertex":
+            return {"entity": _entity("service:checkout", "checkout")}
+        return graph
+
+    evidence = tuple({"entity_uid": "service:checkout", "category": category,
+                      "severity": 1.0, "degraded": True,
+                      "observed_at": "2026-08-27T00:25:00Z"}
+                     for category in ("metric", "trace", "alert", "hardware_sensor"))
+    request = RCARequest(
+        run_id="run-self-root", tenant_id="tenant-1", cluster_id="cluster-1",
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z", entity_uid="service:checkout",
+        evidence=evidence,
+    )
+
+    result = RCAEngineV2(graph_client=graph_client).diagnose(request)
+
+    assert result.root_cause_status != "confirmed"
+    assert "propagation_path" in result.missing_evidence
+    assert result.propagation_paths == []
+
+
 def test_graph_generation_defaults_to_zero_when_adapter_omits_meta():
     graph = {
         "vertices": [_entity("service:checkout", "checkout")],
@@ -227,6 +265,50 @@ def test_evidence_source_failures_are_stable_warning_codes():
     result = RCAEngineV2(graph_client=graph_client, evidence_provider=provider).diagnose(request)
     assert all("api_key" not in code and "10.0.0.7" not in code
                for code in result.graph_context["warning_codes"])
+
+
+def test_evidence_source_failure_cannot_leave_confirmed_status():
+    graph = {
+        "vertices": [
+            {**_entity("service:db", "db"), "hops": 1},
+            {**_entity("service:checkout", "checkout"), "hops": 0},
+        ],
+        "edges": [{
+            "edge_uid": "edge:checkout-db", "source_uid": "service:checkout",
+            "target_uid": "service:db", "propagates_failure": True,
+            "confidence": 1.0, "candidate_direction": "OUT",
+        }],
+    }
+
+    def graph_client(**params):
+        if params["graph_operation"] == "get_vertex":
+            return {"entity": _entity("service:checkout", "checkout")}
+        return graph
+
+    class FailingEvidence:
+        failures = ["EVIDENCE_EVENTS_UNAVAILABLE"]
+
+        def __call__(self, _request, _context):
+            return [
+                {"entity_uid": "service:db", "category": "metric", "severity": 1.0,
+                 "observed_at": "2026-08-27T00:25:00Z"},
+                {"entity_uid": "service:db", "category": "trace", "degraded": True,
+                 "observed_at": "2026-08-27T00:25:00Z"},
+                {"entity_uid": "service:db", "category": "alert", "severity": 1.0,
+                 "observed_at": "2026-08-27T00:25:00Z"},
+                {"entity_uid": "service:db", "category": "hardware_sensor", "severity": 1.0,
+                 "observed_at": "2026-08-27T00:25:00Z"},
+            ]
+
+    request = RCARequest(
+        run_id="run-partial-confirmed", tenant_id="tenant-1", cluster_id="cluster-1",
+        window_start="2026-08-27T00:00:00Z", window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z", entity_uid="service:checkout",
+    )
+    result = RCAEngineV2(graph_client=graph_client, evidence_provider=FailingEvidence()).diagnose(request)
+
+    assert result.root_cause_status != "confirmed"
+    assert "evidence_source_unavailable" in result.missing_evidence
 
 
 def test_unbound_evidence_is_context_only_and_never_scores_candidate():

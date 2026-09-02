@@ -52,8 +52,12 @@ def propagation_paths(subgraph: dict[str, Any], root_uid: str, symptom_uid: str,
     if root_uid not in vertices or symptom_uid not in vertices:
         return []
     if root_uid == symptom_uid:
-        return [{"root_cause_uid": root_uid, "symptom_uid": symptom_uid, "vertex_uids": [root_uid],
-                 "edge_uids": [], "vertices": [vertices[root_uid]], "edges": []}]
+        # A candidate that is identical to the symptom has no causal
+        # propagation relation.  Returning a one-node pseudo-path used to let
+        # the classifier publish a self-root as a confirmed RCA.  Callers
+        # require at least one real edge before confirmation, so represent
+        # this case as no path.
+        return []
 
     adjacency: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
     for edge in subgraph.get("edges") or []:

@@ -486,6 +486,23 @@ func (h *Handler) InternalQueryTraces(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
+		// The summary index is the bounded list source, while error state lives
+		// on raw spans.  Enrich only the selected trace IDs so RCA receives an
+		// explicit, tenant/cluster-scoped degraded signal without turning the
+		// list query into an unbounded raw-span aggregation.
+		if len(traces) > 0 {
+			traceIDs := make([]string, 0, len(traces))
+			for _, trace := range traces {
+				traceIDs = append(traceIDs, trace.TraceID)
+			}
+			errorsByTrace, countErr := h.traceRepo.TraceErrorCounts(r.Context(), rctx.TenantID, rctx.ClusterID, traceIDs)
+			if countErr != nil {
+				return nil, countErr
+			}
+			for i := range traces {
+				traces[i].ErrorCount = errorsByTrace[traces[i].TraceID]
+			}
+		}
 		return json.Marshal(map[string]interface{}{"traces": traces, "total": len(traces)})
 	})
 }
@@ -503,7 +520,7 @@ func (h *Handler) InternalQueryAlerts(w http.ResponseWriter, r *http.Request) {
 		if limit <= 0 {
 			limit = 50
 		}
-		events, err := h.alertRepo.ListEventsScoped(r.Context(), rctx.ClusterID, windowStart, windowEnd, req.Service, limit, req.Offset)
+		events, err := h.alertRepo.ListEventsScoped(r.Context(), rctx.TenantID, rctx.ClusterID, windowStart, windowEnd, req.Service, limit, req.Offset)
 		if err != nil {
 			return nil, err
 		}

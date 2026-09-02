@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAlertRepoListEvents(t *testing.T) {
@@ -53,6 +54,34 @@ func TestAlertRepoListEventsSQLOwnership(t *testing.T) {
 	} {
 		if !strings.Contains(gotQ, want) {
 			t.Errorf("repo SQL missing %q; got: %s", want, gotQ)
+		}
+	}
+}
+
+func TestAlertRepoScopedListBindsTenantAndCluster(t *testing.T) {
+	var gotQ string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQ = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"e1","cluster_id":"cluster-1","tenant_id":"tenant-1"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	repo := &AlertRepository{ch: NewClickHouseRepo(srv.URL, nil)}
+	start := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	_, err := repo.ListEventsScoped(context.Background(), "tenant-1", "cluster-1", &start, &end, "checkout", 10, 0)
+	if err != nil {
+		t.Fatalf("ListEventsScoped: %v", err)
+	}
+	for _, want := range []string{
+		"tenant_id = 'tenant-1'",
+		"cluster_id = 'cluster-1'",
+		"last_timestamp >=",
+		"last_timestamp <",
+	} {
+		if !strings.Contains(gotQ, want) {
+			t.Errorf("scoped alert SQL missing %q; got: %s", want, gotQ)
 		}
 	}
 }

@@ -248,6 +248,19 @@ class TestT1SignAndQuery:
 # ═══════════════════════════════════════════════════════
 
 class TestT2NoBypass:
+    def test_events_tool_binds_to_canonical_kubernetes_events_route(self, client, transport):
+        transport.status, transport.body = 200, b"{}"
+        client.query(
+            tool_id="query_k8s_events.v1",
+            operation="events",
+            tenant_id="7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+            cluster_id="91771a6e-9c2d-11f1-8271-bea176fe9f9f",
+            params={"services": ["checkout"], "limit": 100},
+            context_ref="events-contract",
+        )
+        assert len(transport.calls) == 1
+        assert transport.calls[0]["path"] == "/internal/v1/query/events"
+
     def test_every_operation_routes_only_to_internal_query(self, client, transport):
         transport.status, transport.body = 200, b"{}"
         cases = [

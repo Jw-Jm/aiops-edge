@@ -338,6 +338,21 @@ class RCAEngineV2:
         missing_evidence = [] if top and top["evidence_categories"] >= 2 else ["independent_evidence"]
         if provider_failures:
             missing_evidence.append("evidence_source_unavailable")
+        # A publishable RCA must explain how a distinct candidate propagated
+        # to the observed symptom.  A self-root or an empty/edge-less path is
+        # evidence about the symptom, not a causal explanation.  Keep the
+        # candidate and its score for follow-up, but fail closed instead of
+        # emitting a confirmed result that the evidence gate cannot verify.
+        valid_paths = [path for path in paths
+                       if isinstance(path, Mapping)
+                       and len(path.get("vertex_uids") or []) >= 2
+                       and len(path.get("edge_uids") or []) >= 1]
+        if status == "confirmed" and provider_failures:
+            status = "insufficient_evidence"
+        if status == "confirmed" and not valid_paths:
+            status = "insufficient_evidence"
+            missing_evidence.append("propagation_path")
+        missing_evidence = list(dict.fromkeys(missing_evidence))
         payload = {"root_cause_status": status, "root_cause": top["entity_uid"] if top else None,
                    "candidate_roots": ranked[:5], "propagation_paths": paths, "evidence": evidence,
                    "missing_evidence": missing_evidence,

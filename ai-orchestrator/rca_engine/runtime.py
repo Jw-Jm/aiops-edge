@@ -246,6 +246,22 @@ class InvestigationEvidenceProvider:
                     item["severity"] = min(1.0, max(0.0, float(errors) / max(float(calls), 1.0)))
                 except (TypeError, ValueError):
                     item["severity"] = 0.0
+            if effective_category == "trace" and "degraded" not in item:
+                # Trace summaries expose ErrorCount only after query-api
+                # enriches the bounded summary rows from raw spans.  Do not
+                # infer degradation from latency or from a missing field; a
+                # trace is degraded only when an explicit error count is
+                # present and greater than zero.
+                raw_errors = next((item.get(key) for key in
+                                   ("error_count", "ErrorCount", "errors", "Errors", "errorCount")
+                                   if item.get(key) is not None), None)
+                if raw_errors is not None:
+                    try:
+                        error_count = int(float(raw_errors))
+                    except (TypeError, ValueError):
+                        error_count = 0
+                    item["error_count"] = max(0, error_count)
+                    item["degraded"] = item["error_count"] > 0
             if effective_category in {"alert", "hardware_sel"} and "severity" in item and isinstance(item["severity"], str):
                 item["severity"] = {"critical": 1.0, "fatal": 1.0, "error": 1.0, "warning": .6, "warn": .6, "info": .2}.get(item["severity"].lower(), 0.0)
             if matched_uids:

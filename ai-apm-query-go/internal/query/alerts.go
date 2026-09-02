@@ -43,19 +43,22 @@ func NewAlertRepository(ch *ClickHouseRepo) *AlertRepository {
 
 // ListEvents 查询告警事件（按 last_timestamp 倒序，分页/服务过滤）。
 func (r *AlertRepository) ListEvents(ctx context.Context, service string, limit, offset int) ([]AlertEvent, error) {
-	return r.listEvents(ctx, "", nil, nil, service, limit, offset)
+	return r.listEvents(ctx, "", "", nil, nil, service, limit, offset)
 }
 
 // ListEventsScoped is the Investigation-only form. It binds cluster and the
 // persisted absolute window before querying ClickHouse; relative wall-clock
 // windows are intentionally not accepted on this path.
-func (r *AlertRepository) ListEventsScoped(ctx context.Context, clusterID string, start, end *time.Time, service string, limit, offset int) ([]AlertEvent, error) {
-	return r.listEvents(ctx, clusterID, start, end, service, limit, offset)
+func (r *AlertRepository) ListEventsScoped(ctx context.Context, tenantID, clusterID string, start, end *time.Time, service string, limit, offset int) ([]AlertEvent, error) {
+	return r.listEvents(ctx, tenantID, clusterID, start, end, service, limit, offset)
 }
 
-func (r *AlertRepository) listEvents(ctx context.Context, clusterID string, start, end *time.Time, service string, limit, offset int) ([]AlertEvent, error) {
+func (r *AlertRepository) listEvents(ctx context.Context, tenantID, clusterID string, start, end *time.Time, service string, limit, offset int) ([]AlertEvent, error) {
 	where := ""
 	var conditions []string
+	if tenantID != "" {
+		conditions = append(conditions, "tenant_id = "+sqlStr(tenantID))
+	}
 	if clusterID != "" {
 		conditions = append(conditions, "cluster_id = "+sqlStr(clusterID))
 	}

@@ -61,3 +61,15 @@ def test_ipmi_event_source_is_hardware_evidence_only_when_explicit():
         {"entity_uid": "service:api", "name": "api"}])
     assert [item["category"] for item in output] == ["hardware_sel", "kubernetes_event"]
     assert output[0]["severity"] == 1.0
+
+
+def test_trace_error_count_is_normalized_to_degraded_evidence():
+    provider = InvestigationEvidenceProvider.__new__(InvestigationEvidenceProvider)
+    output = []
+    provider._append(output, "trace", {"traces": [
+        {"TraceID": "trace-1", "ErrorCount": 2, "ServiceNames": ["api"],
+         "Start": "2026-09-02T00:00:00Z"},
+    ]}, [{"entity_uid": "service:api", "name": "api"}])
+    assert len(output) == 1
+    assert output[0]["error_count"] == 2
+    assert output[0]["degraded"] is True

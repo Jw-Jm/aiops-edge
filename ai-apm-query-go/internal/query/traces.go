@@ -34,6 +34,10 @@ type TraceSummary struct {
 	Services     int       `json:"Services"`
 	MaxMS        float64   `json:"MaxMS"`
 	ServiceNames []string  `json:"ServiceNames,omitempty"`
+	// ErrorCount is read from the bounded raw-span set after summary rows are
+	// selected.  Summary state intentionally omits this field, but RCA needs a
+	// canonical signal to distinguish a slow/healthy trace from a degraded one.
+	ErrorCount int64 `json:"ErrorCount"`
 }
 
 // Span 一条 span 详情。

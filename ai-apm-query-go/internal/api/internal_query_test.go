@@ -367,6 +367,39 @@ func TestInternalQueryMetricsNoDataUsesCompleteEnvelope(t *testing.T) {
 	}
 }
 
+func TestInternalQueryTracesIncludesBoundedErrorCounts(t *testing.T) {
+	rows := map[string]string{
+		"trace_summary_index": "trace-1\n",
+		"trace_summary_state": "trace-1\t2026-08-20 10:00:00\t2026-08-20 10:00:05\t3\t2\t150.5\tcheckout,payments\n",
+		"sum(is_error)":       `{"trace_id":"trace-1","errors":2}` + "\n",
+	}
+	c := newInternalQueryTestHandler(t, rows)
+	req := c.signedRequest(t, http.MethodPost, "/internal/v1/query/traces", `{"service":"checkout","hours":1}`, func(ctx *contract.TrustedRequestContext) {
+		ctx.Capability = "observability.traces.read"
+	})
+	rec := httptest.NewRecorder()
+	c.h.InternalQueryTraces(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on traces, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope ToolResultEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	var data struct {
+		Traces []struct {
+			TraceID    string `json:"TraceID"`
+			ErrorCount int64  `json:"ErrorCount"`
+		} `json:"traces"`
+	}
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatalf("decode trace data: %v", err)
+	}
+	if len(data.Traces) != 1 || data.Traces[0].TraceID != "trace-1" || data.Traces[0].ErrorCount != 2 {
+		t.Fatalf("trace error count = %+v", data.Traces)
+	}
+}
+
 func TestExecToolQueryNoDataUsesCompleteEnvelope(t *testing.T) {
 	h := &Handler{}
 	rec := httptest.NewRecorder()
