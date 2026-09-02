@@ -581,12 +581,18 @@ class _InvestigationBrainAdapter:
                 ).diagnose,
                 request, item.request_context,
             )
+            # The rca.v2 event is a durable replay/evidence surface.  Keep the
+            # complete engine payload instead of a lossy status-only adapter;
+            # otherwise evidence, final graph context and deterministic score
+            # fields disappear before the validator/UI can consume them.
             rca_payload = rca_result.to_dict()
-            events.append({"type": "rca.v2", "event_type": "rca.v2", "status": rca_result.root_cause_status,
-                           "root_cause": rca_result.root_cause, "confidence": rca_result.confidence,
-                           "propagation_paths": rca_result.propagation_paths,
-                           "window_start": rca_result.window_start, "window_end": rca_result.window_end,
-                           "symptom_time": rca_result.symptom_time})
+            rca_event = dict(rca_payload)
+            rca_event.update({"type": "rca.v2", "event_type": "rca.v2", "status": rca_result.root_cause_status,
+                              "root_cause": rca_result.root_cause, "confidence": rca_result.confidence,
+                              "propagation_paths": rca_result.propagation_paths,
+                              "window_start": rca_result.window_start, "window_end": rca_result.window_end,
+                              "symptom_time": rca_result.symptom_time})
+            events.append(rca_event)
             result["rca"] = rca_payload
             if not rca_result.graph_enhanced:
                 status = "partial"
@@ -595,8 +601,11 @@ class _InvestigationBrainAdapter:
                 status = "partial"
                 error_code = "INSUFFICIENT_EVIDENCE"
         except Exception as exc:  # noqa: BLE001 - explicit partial RCA, never fake success
+            # Keep provider/SQL/network exception text out of the durable
+            # event and browser stream.  The request/run IDs remain available
+            # to server-side structured logs through the runtime boundary.
             events.append({"type": "rca.error", "event_type": "rca.error",
-                           "error": str(exc)[:200], "status": "partial"})
+                           "error_code": "RCA_V2_UNAVAILABLE", "status": "partial"})
             status = "partial"
             error_code = "RCA_V2_UNAVAILABLE"
 

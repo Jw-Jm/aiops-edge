@@ -156,8 +156,15 @@ class _WorkerBrain:
             # rca.v2 event; Runtime could not perform its terminal
             # is_final=true graph-context append, leaving replay consumers with
             # an active (non-final) context even after a Run completed.
-            result["rca"] = rca_result.to_dict()
-            events.append({
+            # Persist the exact structured RCA contract in the event as well
+            # as in ``result``.  The event is the durable replay surface used
+            # by evidence validators and UI consumers; emitting only the
+            # compact status projection would silently drop evidence,
+            # final_graph_context and deterministic score fields.
+            rca_payload = rca_result.to_dict()
+            result["rca"] = rca_payload
+            rca_event = dict(rca_payload)
+            rca_event.update({
                 "type": "rca.v2",
                 "event_type": "rca.v2",
                 "status": rca_result.root_cause_status,
@@ -172,6 +179,7 @@ class _WorkerBrain:
                 "graph_partial": bool((rca_result.graph_context or {}).get("partial", False)),
                 "graph_stale": bool((rca_result.graph_context or {}).get("stale", False)),
             })
+            events.append(rca_event)
             if not rca_result.graph_enhanced:
                 status, error_code = "partial", "GRAPH_UNAVAILABLE"
             elif rca_result.root_cause_status == "insufficient_evidence":

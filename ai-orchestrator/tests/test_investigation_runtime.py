@@ -97,6 +97,15 @@ async def test_worker_brain_keeps_rca_payload_for_terminal_context(monkeypatch):
         def to_dict(self):
             return {"root_cause_status": self.root_cause_status,
                     "root_cause": self.root_cause,
+                    "confidence": self.confidence,
+                    "propagation_paths": self.propagation_paths,
+                    "evidence": [{"category": "metric", "entity_uid": "service:db"},
+                                 {"category": "trace", "entity_uid": "service:db"}],
+                    "final_graph_context": {"final": True, "vertices": [{"entity_uid": "service:db"}]},
+                    "propagation_path": [{"entity_uid": "service:db"}, {"entity_uid": "service:api"}],
+                    "subgraph_node_count": 3,
+                    "root_score": 0.9,
+                    "deterministic_root_score": 0.9,
                     "graph_context": self.graph_context}
 
     class FakeEngine:
@@ -123,6 +132,11 @@ async def test_worker_brain_keeps_rca_payload_for_terminal_context(monkeypatch):
     result = await _WorkerBrain().investigate(item, Lease())
 
     assert result["result"]["rca"]["root_cause_status"] == "confirmed"
+    rca_event = next(event for event in result["events"] if event.get("event_type") == "rca.v2")
+    assert len(rca_event["evidence"]) == 2
+    assert rca_event["final_graph_context"]["final"] is True
+    assert rca_event["root_score"] == rca_event["deterministic_root_score"]
+    assert rca_event["propagation_path"][0]["entity_uid"] == "service:db"
 
 
 def item():
