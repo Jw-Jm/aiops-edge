@@ -402,7 +402,7 @@ type fakeKnowledgeBackend struct {
 	hits []query.KnowledgeHit
 }
 
-func (f *fakeKnowledgeBackend) Search(ctx context.Context, q string, topK int) ([]query.KnowledgeHit, error) {
+func (f *fakeKnowledgeBackend) Search(ctx context.Context, scope query.KnowledgeScope, q string, topK int) ([]query.KnowledgeHit, error) {
 	return f.hits, nil
 }
 

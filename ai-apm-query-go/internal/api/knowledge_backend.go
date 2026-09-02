@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/query"
 )
@@ -25,7 +26,7 @@ func newKnowledgeBackendFromEnv() query.KnowledgeBackend {
 	cfg := knowledgeBackendCfg{
 		chromaURL:  os.Getenv("CHROMA_URL"),
 		collection: os.Getenv("CHROMA_COLLECTION"),
-		client:     &http.Client{Timeout: 15 * 60_000_000_000},
+		client:     &http.Client{Timeout: 15 * time.Second},
 	}
 	if cfg.chromaURL == "" {
 		return nil // fail-closed：知识检索不可用时不伪造结果
@@ -51,11 +52,20 @@ type chromaQueryResponse struct {
 }
 
 // Search 检索 Chroma collection，将命中的 metadata 映射为 query.KnowledgeHit。
-func (b chromaKnowledgeBackend) Search(ctx context.Context, text string, topK int) ([]query.KnowledgeHit, error) {
+func (b chromaKnowledgeBackend) Search(ctx context.Context, scope query.KnowledgeScope, text string, topK int) ([]query.KnowledgeHit, error) {
 	payload := map[string]interface{}{
 		"query_texts": []string{text},
 		"n_results":   topK,
 		"include":     []string{"documents", "metadatas", "distances"},
+		// Knowledge is cluster-scoped.  Chroma is not an authorization
+		// boundary, so always constrain the vector query and validate the
+		// returned metadata below before exposing a hit.
+		"where": map[string]interface{}{
+			"$and": []map[string]interface{}{
+				{"tenant_id": scope.TenantID},
+				{"cluster_id": scope.ClusterID},
+			},
+		},
 	}
 	body, _ := json.Marshal(payload)
 
@@ -80,13 +90,13 @@ func (b chromaKnowledgeBackend) Search(ctx context.Context, text string, topK in
 	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
 		return nil, err
 	}
-	return mapChromaHits(&cr), nil
+	return mapChromaHits(&cr, scope), nil
 }
 
 var errChromaUnavailable = &query.QueryError{Code: query.UnavailableCode, Message: "knowledge: chroma unavailable", Retryable: true}
 
 // mapChromaHits 将 Chroma 命中映射为结构化 KnowledgeHit（document_id/source/version/similarity/applicability）。
-func mapChromaHits(cr *chromaQueryResponse) []query.KnowledgeHit {
+func mapChromaHits(cr *chromaQueryResponse, scope query.KnowledgeScope) []query.KnowledgeHit {
 	if cr == nil || len(cr.IDs) == 0 {
 		return nil
 	}
@@ -101,6 +111,12 @@ func mapChromaHits(cr *chromaQueryResponse) []query.KnowledgeHit {
 		meta := map[string]interface{}{}
 		if i < len(metas) && metas[i] != nil {
 			meta = metas[i]
+		}
+		// Chroma metadata is untrusted response data.  Do not rely on the
+		// server-side where clause alone: older collections/proxies may ignore
+		// it, and a missing scope must never become a cross-tenant hit.
+		if metaString(meta, "tenant_id") != scope.TenantID || metaString(meta, "cluster_id") != scope.ClusterID {
+			continue
 		}
 		similarity := 0.0
 		if i < len(distances) {
