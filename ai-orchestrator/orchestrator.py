@@ -15,7 +15,6 @@ from langgraph.types import interrupt, Command
 
 from tools import (query_metrics, query_traces, query_logs, get_service_list, query_topology,
                    execute_shell, k8sgpt_diagnose, deepflow_status, get_infrastructure)
-from rag import rag
 from rca import full_rca_analysis
 from skill_registry import ToolRegistry, ExpertRegistry
 from contracts import RequestContext
@@ -1079,17 +1078,39 @@ async def node_rca(state: AgentState) -> dict:
 
 
 async def node_rag(state: AgentState) -> dict:
-    """Search ChromaDB for similar historical cases."""
+    """Search knowledge through the canonical scoped boundary.
+
+    A valid runtime scope must never fall through to the orchestrator-local
+    Chroma store.  The latter remains available only for unscoped development
+    compatibility tests; production requests fail closed when no scoped Query
+    API context is present.
+    """
     symptom = state.get("user_message", "")
     svc = state.get("service", "")
     query = f"{svc}: {symptom}" if svc else symptom
-    if "query_knowledge" in _explicit_tool_routes(symptom):
+    request_context = ScopeViewSnapshot.from_projection(state.get("request_context"))
+    scoped = bool(
+        str(getattr(request_context, "tenant_id", "") or "").strip()
+        and str(getattr(request_context, "cluster_id", "") or "").strip()
+    )
+    explicit_knowledge = "query_knowledge" in _explicit_tool_routes(symptom)
+    if explicit_knowledge or scoped or _llm_production_mode():
         try:
-            # query_knowledge is the explicit knowledge-search tool; keep the
-            # result in the normal similar_cases field so downstream reports
-            # and checkpoint consumers remain backwards compatible.
             from tools import _query_knowledge
-            knowledge = await asyncio.to_thread(_query_knowledge, query=query)
+            knowledge = await asyncio.to_thread(
+                _query_knowledge, query=query, request_context=request_context,
+            )
+            parsed = None
+            try:
+                parsed = json.loads(knowledge) if knowledge else None
+            except (TypeError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict) and parsed.get("error"):
+                return {
+                    "similar_cases": "",
+                    "knowledge_tool_error": str(parsed["error"])[:200],
+                    "messages": [f"[{_now()}] 知识库检索失败"],
+                }
             if knowledge:
                 return {
                     "similar_cases": f"## 知识库检索结果\n{knowledge}",
@@ -1107,7 +1128,9 @@ async def node_rag(state: AgentState) -> dict:
                 "messages": [f"[{_now()}] 知识库检索失败"],
             }
     try:
-        # rag.search (ChromaDB) 是同步阻塞 IO，丢线程池
+        # Local Chroma is only a development compatibility seam.  Scoped
+        # production requests return above and cannot reach this branch.
+        from rag import rag
         cases = await asyncio.to_thread(rag.search, query, 3)
         if cases:
             lines = ["## 相似历史案例"]
@@ -1557,8 +1580,25 @@ async def node_report(state: AgentState) -> dict:
 
 
 async def node_memorize(state: AgentState) -> dict:
-    """Write successful case to ChromaDB（含入库质量校验，过滤测试/无效对话污染）。"""
+    """Persist a successful case without creating a second production owner.
+
+    Query API owns production knowledge persistence.  The historical local
+    Chroma writer has no tenant/cluster transaction or audit boundary, so a
+    scoped/production graph must report the write as unavailable rather than
+    silently persisting data outside Query API.
+    """
     if state.get("verify_pass") and state.get("crewai_result"):
+        request_context = ScopeViewSnapshot.from_projection(state.get("request_context"))
+        scoped = bool(
+            str(getattr(request_context, "tenant_id", "") or "").strip()
+            and str(getattr(request_context, "cluster_id", "") or "").strip()
+        )
+        if scoped or _llm_production_mode():
+            return {
+                "messages": [
+                    f"[{_now()}] 案例未入库 (知识库写入需经 Query API owner，当前写入边界未配置)"
+                ]
+            }
         ok, reason = _case_quality_check(state)
         if not ok:
             return {"messages": [f"[{_now()}] 案例未入库（质量校验未通过: {reason}）"]}
@@ -1574,6 +1614,7 @@ async def node_memorize(state: AgentState) -> dict:
                 "report": state.get("report", "")[:2000],
             }
             # rag.add_case (ChromaDB) 同步阻塞 IO，丢线程池
+            from rag import rag
             await asyncio.to_thread(rag.add_case, case)
             return {"messages": [f"[{_now()}] 案例已入库 (总数: {rag.count()})"]}
         except: pass

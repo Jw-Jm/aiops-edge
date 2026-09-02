@@ -625,9 +625,66 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
 # ═══════════════════════════════════════════════════════════════
 #  Mount E3: query_knowledge 内置运维知识库工具 (cls=safe, category=knowledge)
 # ═══════════════════════════════════════════════════════════════
+def _knowledge_scope_ready(request_context: ScopeView | None) -> bool:
+    """Return whether a knowledge read has an explicit canonical scope.
+
+    The legacy local Chroma store has no tenant/cluster boundary.  It may only
+    be used by an unscoped development compatibility seam; any scoped request
+    must go through query-api so authorization and evidence ownership stay in
+    one place.
+    """
+    if not isinstance(request_context, ScopeView):
+        return False
+    try:
+        tenant_id = str(request_context.tenant_id)
+        cluster_id = str(request_context.cluster_id)
+        UUID(tenant_id)
+        return bool(tenant_id) and bool(_cluster_param(cluster_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def _query_knowledge(query: str = "", path_prefix: str = "", tags: str = "",
-                     max_results: int = 5) -> str:
-    """查询内置运维知识库(playbook 处置手册 + 历史案例), 返回诊断建议/处置步骤。"""
+                     max_results: int = 5,
+                     request_context: ScopeView | None = None) -> str:
+    """查询知识库。
+
+    Production/scoped Investigation calls are routed exclusively through the
+    signed Query API knowledge boundary.  The local Chroma/playbook reader is a
+    deliberately unscoped development compatibility seam and is never selected
+    for a production request.  Chat data access remains disabled until its
+    persistent ChatTool audit contract exists.
+    """
+    if request_context is None and _is_production():
+        return json.dumps({"error": "INVALID_CONTEXT"}, ensure_ascii=False)
+    if request_context is not None:
+        if _knowledge_scope_ready(request_context):
+            if getattr(request_context, "workload_kind", "chat") != "investigation":
+                return json.dumps({"error": "CHAT_KNOWLEDGE_AUDIT_REQUIRED"}, ensure_ascii=False)
+            if path_prefix.strip() or tags.strip():
+                # The canonical internal contract currently supports semantic
+                # query/top_k only.  Do not silently drop legacy filters and
+                # return a broader result set than the caller requested.
+                return json.dumps({"error": "KNOWLEDGE_FILTER_UNSUPPORTED"}, ensure_ascii=False)
+            top_k = max(1, min(int(max_results or 5), 50))
+            try:
+                body = _internal_investigation_query(
+                    tool_id="knowledge_search.v1", operation="knowledge",
+                    params={"query": str(query or "").strip(), "top_k": top_k},
+                    context=request_context,
+                )
+                payload, error = _unwrap_internal_query_result(body)
+                if error or payload is None:
+                    return json.dumps({"error": error or "KNOWLEDGE_QUERY_FAILED"}, ensure_ascii=False)
+                return json.dumps(payload, ensure_ascii=False, default=str)[:6000]
+            except Exception as exc:  # noqa: BLE001 - stable error boundary
+                code = str(getattr(exc, "error_code", "") or "KNOWLEDGE_QUERY_FAILED")
+                return json.dumps({"error": code[:120]}, ensure_ascii=False)
+        if _is_production():
+            return json.dumps({"error": "INVALID_CONTEXT"}, ensure_ascii=False)
+
+    # Unscoped local data is retained only for hermetic development tests and
+    # migration tooling.  It is not a production data owner.
     from playbook_loader import query_knowledge
     result = query_knowledge(
         query,
