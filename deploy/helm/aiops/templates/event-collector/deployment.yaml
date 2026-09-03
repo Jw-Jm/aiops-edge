@@ -75,6 +75,8 @@ spec:
 {{ if .Values.eventCollector.selCollectEnabled }}
               add: ["SYS_RAWIO"]
 {{ end }}
+            seccompProfile:
+              type: RuntimeDefault
           volumeMounts:
 {{ if .Values.eventCollector.selCollectEnabled }}
             # IPMI 本地 KCS 接口（仅显式本地验证 profile）

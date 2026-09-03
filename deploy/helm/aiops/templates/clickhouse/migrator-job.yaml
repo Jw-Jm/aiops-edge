@@ -33,6 +33,14 @@ spec:
                 secretKeyRef: { name: aiops-secrets, key: CLICKHOUSE_PASSWORD }
       containers:
         - name: clickhouse-migrator
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.clickhouse.migratorImage .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.clickhouseMigrator | default "") "env" (.Values.global.environment | default "")) | quote }}
           command: ["/clickhouse-migrator"]
           env:

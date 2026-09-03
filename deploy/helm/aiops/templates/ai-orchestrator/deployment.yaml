@@ -27,6 +27,14 @@ spec:
       # query-api remains the availability authority and the wait is fail-closed.
       initContainers:
         - name: wait-for-query-api
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiOrchestrator.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.aiOrchestrator | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
@@ -42,6 +50,14 @@ spec:
           {{- end }}
       containers:
         - name: ai-orchestrator
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiOrchestrator.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.aiOrchestrator | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           {{- if .Values.internalTLS.enabled }}

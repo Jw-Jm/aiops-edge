@@ -29,6 +29,14 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: executor
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiActionExecutor.image.repository .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.aiActionExecutor | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           ports:

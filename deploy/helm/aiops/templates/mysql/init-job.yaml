@@ -24,6 +24,14 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: schema-migrator
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.mysql.migratorImage .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.mysqlMigrator | default "") "env" (.Values.global.environment | default "")) | quote }}
           command: ["/schema-migrator"]
           env:

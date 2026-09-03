@@ -49,6 +49,26 @@ securityContext:
 {{- end }}
 {{- end -}}
 
+{{/*
+aiops.hardenedContainerSecurityContext: P2-SEC1 全局容器最小权限基线。
+默认项（对所有自研 workload 安全且无需改写路径/Dockerfile USER）：
+  - allowPrivilegeEscalation: false
+  - capabilities: drop ALL
+  - seccompProfile: RuntimeDefault
+非 root / readOnlyRootFilesystem 属组件专项（需 Dockerfile USER + 写路径声明），
+由各组件 securityContext override 打开，不在全局基线强制以避免运行破坏。
+*/}}
+{{- define "aiops.hardenedContainerSecurityContext" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+{{- end -}}
+
 {{- define "aiops.internalScheme" -}}
 {{- if .Values.internalTLS.enabled -}}https{{- else -}}http{{- end -}}
 {{- end -}}

@@ -29,6 +29,14 @@ spec:
       serviceAccountName: query-api-http
       containers:
         - name: query-api-http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.queryApi | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["/query-api-http"]
@@ -74,6 +82,14 @@ spec:
       serviceAccountName: query-run-dispatch
       containers:
         - name: query-run-dispatch
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.queryApi | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["/query-run-dispatcher"]
@@ -119,6 +135,14 @@ spec:
       serviceAccountName: query-alert-eval
       containers:
         - name: query-alert-eval
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.queryApi | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["/query-alert-evaluator"]
