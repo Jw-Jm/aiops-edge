@@ -72,6 +72,7 @@ jobs:
       # source-string pseudo tests that were removed from tests/workflow-e2e).
       - name: Workflow contract (real MySQL, production modules)
         run: |
+          cd ai-apm-query-go
           TEST_MYSQL_DSN='root:wf-root-pass@tcp(127.0.0.1:3306)/aiops_wf_test?parseTime=true&multiStatements=true' \
           go test -tags integration ./internal/api/ -run 'TestWorkflowContract' -count=1 -v
 
