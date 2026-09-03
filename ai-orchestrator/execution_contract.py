@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -43,11 +44,17 @@ def _sha256(*parts) -> str:
     return h.hexdigest()
 
 
-def _contract_hash(contract_id, actions, resources, expire_time) -> str:
+def _contract_hash(contract_id, actions, resources, expire_time,
+                   tools=None, max_scope="", rollback_policy=None) -> str:
+    # S7：hash 必须覆盖全部授权字段。漏掉 tools/max_scope/rollback_policy 时，
+    # 篡改这些字段（扩大工具面 / resource→cluster 提权 / 改回滚策略）不会改变 hash。
     return _sha256(
         contract_id,
         ",".join(sorted(actions)),
         ",".join(sorted(resources)),
+        ",".join(sorted(tools or [])),
+        str(max_scope),
+        json.dumps(rollback_policy or {}, sort_keys=True, separators=(",", ":"), default=str),
         str(expire_time),
     )
 
@@ -102,7 +109,8 @@ class ExecutionContractStore:
         rollback_policy: Dict[str, Any],
     ) -> ExecutionContract:
         contract_id = str(uuid.uuid4())
-        ch = _contract_hash(contract_id, allowed_actions, allowed_resources, expire_time)
+        ch = _contract_hash(contract_id, allowed_actions, allowed_resources, expire_time,
+                            tools=allowed_tools, max_scope=max_scope, rollback_policy=rollback_policy)
         c = ExecutionContract(
             contract_id=contract_id,
             plan_id=plan_id,
@@ -163,7 +171,8 @@ class ExecutionContractStore:
         c = self._store.get(contract_id)
         if c is None:
             return False
-        expected = _contract_hash(c.contract_id, c.allowed_actions, c.allowed_resources, c.expire_time)
+        expected = _contract_hash(c.contract_id, c.allowed_actions, c.allowed_resources, c.expire_time,
+                                  tools=c.allowed_tools, max_scope=c.max_scope, rollback_policy=c.rollback_policy)
         return expected == c.contract_hash
 
     def is_executable(self, contract_id: str) -> bool:

@@ -96,10 +96,14 @@ class TestSignatureIntegration:
     def test_valid_signature_allows(self, adapter, contract, contract_store):
         key = Ed25519PrivateKey.generate()
         sig = sign_approval(
+            # S7：与 execution_adapter._verify_signature 的字段集一致（全量授权字段）
             contract_fields={
                 "contract_id": contract.contract_id,
-                "actions": ["restart"],
-                "resources": ["ns-a"],
+                "actions": contract.allowed_actions,
+                "resources": contract.allowed_resources,
+                "tools": contract.allowed_tools,
+                "max_scope": contract.max_scope,
+                "rollback_policy": contract.rollback_policy,
                 "expire_time": str(contract.expire_time),
             },
             signer="human-1",  # approved_by

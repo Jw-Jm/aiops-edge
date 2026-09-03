@@ -21,10 +21,14 @@ from approval_signature import (
 
 
 def _contract_fields():
+    """与 execution_adapter._verify_signature 的字段集保持一致（S7：全量授权字段）。"""
     return {
         "contract_id": "c-1",
         "actions": ["restart"],
         "resources": ["ns-a"],
+        "tools": ["execute_k8s.v1"],
+        "max_scope": "namespace",
+        "rollback_policy": {},
         "expire_time": "2026-08-20T00:05:00Z",
     }
 
@@ -138,5 +142,40 @@ class TestT5KeyId:
                 signature,
                 contract_fields=_contract_fields(),
                 public_key=other_key.public_key(),
+                expected_signer="user-1",
+            )
+
+
+# ═══════════════════════════════════════════════════════
+#  T6 S7 回归：篡改"签名白名单外"的授权字段必须被拒
+# ═══════════════════════════════════════════════════════
+
+class TestT6FullFieldCoverage:
+    """历史漏洞：payload 只白名单 4 个字段，篡改 tools/max_scope/rollback_policy
+    不影响 payload，攻击者可扩大工具面或 resource→cluster 提权后仍通过验签。"""
+
+    @pytest.mark.parametrize("field,value", [
+        ("tools", ["execute_k8s.v1", "shell_exec.v1"]),   # 扩大工具面
+        ("max_scope", "cluster"),                          # 提权 namespace → cluster
+        ("rollback_policy", {"auto_rollback": False}),     # 关闭回滚保护
+        ("resources", ["ns-b", "ns-a"]),                   # 扩资源（原有行为，防回归）
+    ])
+    def test_tampering_authz_fields_rejected(self, signature, signer_key, field, value):
+        tampered = _contract_fields()
+        tampered[field] = value
+        with pytest.raises(SignatureInvalid):
+            verify_approval(
+                signature,
+                contract_fields=tampered,
+                public_key=signer_key.public_key(),
+                expected_signer="user-1",
+            )
+
+    def test_non_dict_contract_fields_rejected(self, signature, signer_key):
+        with pytest.raises(SignatureInvalid):
+            verify_approval(
+                signature,
+                contract_fields=["not", "a", "dict"],
+                public_key=signer_key.public_key(),
                 expected_signer="user-1",
             )

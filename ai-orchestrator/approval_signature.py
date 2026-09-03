@@ -38,17 +38,15 @@ class ApprovalSignature:
 
 
 def _payload(contract_fields: Dict[str, Any]) -> bytes:
-    """从 contract 关键字段计算签名 payload（防篡改）。"""
-    raw = json.dumps(
-        {
-            "contract_id": contract_fields.get("contract_id"),
-            "actions": sorted(contract_fields.get("actions", [])),
-            "resources": sorted(contract_fields.get("resources", [])),
-            "expire_time": str(contract_fields.get("expire_time")),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    """对 contract 字段的**完整集合**计算签名 payload（防篡改）。
+
+    不再白名单列举字段：调用方传入什么就签什么，契约未来新增授权字段
+    （如 allowed_tools/max_scope）自动纳入签名保护，不产生覆盖缺口。
+    调用双方必须使用同一字段集（执行侧见 execution_adapter._verify_signature）。
+    """
+    if not isinstance(contract_fields, dict):
+        raise SignatureInvalid("contract_fields 必须为 dict")
+    raw = json.dumps(contract_fields, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(raw).digest()
 
 

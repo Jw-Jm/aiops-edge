@@ -156,10 +156,16 @@ class ExecutionAdapter:
     def _verify_signature(self, sig: ApprovalSignature, contract: ExecutionContract) -> bool:
         if self._approval_verifier is None or self._approval_public_key is None:
             return False  # 未配置验签器 → fail-closed
+        # 全量授权字段进入验签：签名覆盖的字段集必须与签发侧一致。
+        # 漏掉 allowed_tools/max_scope/rollback_policy 会让"扩大工具面/提升 scope"
+        # 的契约篡改绕过验签（审核 S7）。
         contract_fields = {
             "contract_id": contract.contract_id,
             "actions": contract.allowed_actions,
             "resources": contract.allowed_resources,
+            "tools": contract.allowed_tools,
+            "max_scope": contract.max_scope,
+            "rollback_policy": contract.rollback_policy,
             "expire_time": str(contract.expire_time),
         }
         try:
