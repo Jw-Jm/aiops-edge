@@ -15,6 +15,7 @@ on:
       - "deploy/scripts/verify-aiops-workflow-gates.sh"
       - "tests/workflow-e2e/**"
       - "Makefile"
+      - ".github/workflows/aiops-workflow-gates.yml"
 
 # Least privilege: the gate only needs to read the repository. No write
 # scopes are required because the gate never uploads artifacts or touches
@@ -26,31 +27,151 @@ concurrency:
   group: aiops-workflow-gates-${{ github.ref }}
   cancel-in-progress: true
 
+# P1-CI1: gates are split into independent jobs so a single failure no longer
+# hides the diagnostics of the other checks. release-gate aggregates all of
+# them and is the required status check for branch protection (P1-GOV1).
+# Stages are selected through AIOPS_GATE_STAGES in
+# deploy/scripts/verify-aiops-workflow-gates.sh (single source of gate logic).
+# Python is pinned to 3.12 to match the production image (P1-SUP1 §8.2/8.7).
+
 jobs:
-  verify:
+  go-query-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "1.26.x"
           cache: true
+      - name: G0 Go contract/store/API tests
+        run: AIOPS_GATE_STAGES=go deploy/scripts/verify-aiops-workflow-gates.sh
+
+  workflow-contract-tests:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: wf-root-pass
+          MYSQL_DATABASE: aiops_wf_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -pwf-root-pass --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      # P2-F1: durable Action workflow contract on REAL MySQL driving the
+      # production handler/DAO/executor-client (replaces the Python Harness /
+      # source-string pseudo tests that were removed from tests/workflow-e2e).
+      - name: Workflow contract (real MySQL, production modules)
+        run: |
+          cd ai-apm-query-go
+          TEST_MYSQL_DSN='root:wf-root-pass@tcp(127.0.0.1:3306)/aiops_wf_test?parseTime=true&multiStatements=true' \
+          go test -tags integration ./internal/api/ -run 'TestWorkflowContract' -count=1 -v
+
+  orchestrator-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.12"
           cache: pip
+      - name: Install orchestrator dev dependencies
+        run: |
+          python -m venv ai-orchestrator/.venv-ci
+          # P1-SUP1: lock 中 torch==2.13.0+cpu 仅存在于 pytorch cpu index
+          ai-orchestrator/.venv-ci/bin/pip install \
+            -r ai-orchestrator/requirements-lock.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+          ai-orchestrator/.venv-ci/bin/pip install -r ai-orchestrator/requirements-dev.txt
+      - name: G1-G3 Orchestrator tests
+        run: |
+          AIOPS_GATE_STAGES=orchestrator \
+          AIOPS_PYTHON="$PWD/ai-orchestrator/.venv-ci/bin/python" \
+          deploy/scripts/verify-aiops-workflow-gates.sh
+
+  executor-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: G5 Action executor tests
+        run: AIOPS_GATE_STAGES=executor deploy/scripts/verify-aiops-workflow-gates.sh
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: observability-frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix observability-frontend
+      - name: G4 Frontend tests and build
+        run: AIOPS_GATE_STAGES=frontend deploy/scripts/verify-aiops-workflow-gates.sh
+
+  helm-contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
         with:
           version: "v3.18.0"
-      - name: Install Python and frontend dependencies
+      - name: Install ripgrep (required by gate assertions)
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: G5 Helm render and mutation/RBAC/policy checks
+        run: AIOPS_GATE_STAGES=helm deploy/scripts/verify-aiops-workflow-gates.sh
+      - name: Deployment contracts
+        run: AIOPS_GATE_STAGES=contracts deploy/scripts/verify-aiops-workflow-gates.sh
+
+  supply-chain-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: observability-frontend/package-lock.json
+      - name: Install SCA scanners
         run: |
-          python -m venv ai-orchestrator/.venv314
-          ai-orchestrator/.venv314/bin/pip install -r ai-orchestrator/requirements-lock.txt -r ai-orchestrator/requirements-dev.txt
-          npm ci --prefix observability-frontend
-      - name: Verify workflow gates
-        run: deploy/scripts/verify-aiops-workflow-gates.sh
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          pip install pip-audit
+      - name: Dependency vulnerability gate
+        run: deploy/scripts/dependency-sca.sh
+
+  release-gate:
+    runs-on: ubuntu-latest
+    needs:
+      - go-query-tests
+      - workflow-contract-tests
+      - orchestrator-tests
+      - executor-tests
+      - frontend-tests
+      - helm-contract-tests
+      - supply-chain-tests
+    steps:
+      - name: Release gate summary
+        run: |
+          echo "All workflow gates passed (mutation remains disabled)."
+          echo "release-gate=success"

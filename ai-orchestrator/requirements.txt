@@ -8,6 +8,10 @@ uvicorn[standard]>=0.32
 sse-starlette>=2.0
 chromadb>=0.4.24
 sentence-transformers>=3.0
+# P1-SUP1: torch 必须用 CPU 构建（PyPI linux 默认 wheel 携带 CUDA 运行时，
+# 体积数百 MB 且生产不需要）。+cpu 本地版本仅存在于 pytorch cpu index。
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
 httpx>=0.28
 pydantic>=2.0
 prometheus-client>=0.20

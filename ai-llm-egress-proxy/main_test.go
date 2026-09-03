@@ -118,3 +118,48 @@ func TestHandleProxyFailsClosedWithoutToken(t *testing.T) {
 		t.Fatalf("expected 503 when proxy token is not configured, got %d", rec.Code)
 	}
 }
+
+// P2-S6B: proxy token 校验必须是常量时间比较。
+func TestSecureEqualTokenComparison(t *testing.T) {
+	cases := []struct {
+		name     string
+		got      string
+		expected string
+		want     bool
+	}{
+		{"correct token", "secret-token", "secret-token", true},
+		{"wrong token", "wrong-token", "secret-token", false},
+		{"empty expected never matches", "secret-token", "", false},
+		{"empty got", "", "secret-token", false},
+		{"length difference", "short", "secret-token", false},
+		{"prefix not enough", "secret-toke", "secret-token", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := secureEqual(tc.got, tc.expected); got != tc.want {
+				t.Fatalf("secureEqual(%q,%q) = %v, want %v", tc.got, tc.expected, got, tc.want)
+			}
+		})
+	}
+}
+
+// P2-S6B: handleProxy 对错误 token / 空 token 必须 403（fail-closed）。
+func TestHandleProxyRejectsWrongToken(t *testing.T) {
+	cfg := &proxyConfig{
+		providerKeys: map[string]string{"deepseek": "sk-test"},
+		baseURLs:     map[string]string{"deepseek": "https://api.deepseek.com"},
+		proxyToken:   "secret-token",
+		client:       &http.Client{},
+	}
+	for _, tok := range []string{"wrong-token", "", "secret-tok3n"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/proxy/deepseek/chat/completions", nil)
+		if tok != "" {
+			req.Header.Set("X-Proxy-Token", tok)
+		}
+		rec := httptest.NewRecorder()
+		cfg.handleProxy(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("token %q: expected 403, got %d", tok, rec.Code)
+		}
+	}
+}

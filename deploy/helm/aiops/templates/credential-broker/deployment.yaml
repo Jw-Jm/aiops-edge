@@ -48,7 +48,13 @@ spec:
       automountServiceAccountToken: true
       containers:
         - name: broker
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.credentialBroker.image.repository .) "tag" .Values.global.imageTag) | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile:
+              type: RuntimeDefault
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.credentialBroker.image.repository .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.credentialBroker | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -65,10 +71,6 @@ spec:
               valueFrom:
                 configMapKeyRef: { name: ai-credential-broker-profiles, key: CREDENTIAL_PROFILES }
             {{- include "aiops.mtlsEnv" . | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: { drop: ["ALL"] }
           readinessProbe:
             httpGet: { path: /readyz, port: http{{- if .Values.internalTLS.enabled }}, scheme: HTTPS{{- end }} }
             periodSeconds: 10

@@ -12,6 +12,42 @@ def test_mock_disabled_by_default(monkeypatch):
     assert is_mock_enabled() is False
 
 
+def test_main_import_mock_off_by_default():
+    """P2-R5: 未设置任何 env → main 默认 mock=false（不打印 mock WARN，不 FATAL）。"""
+    env = os.environ.copy()
+    env.pop("LLM_MOCK", None)
+    env.pop("AIOPS_ENV", None)
+    env.pop("AIOPS_DEPLOYMENT_MODE", None)
+    result = subprocess.run(
+        [sys.executable, "-c", "import main"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (result.stdout + result.stderr)
+    assert "LLM_MOCK=true" not in (result.stdout + result.stderr)
+
+
+def test_local_explicit_mock_allowed():
+    """P2-R5: local 环境 + 显式 LLM_MOCK=true → 允许启动。"""
+    env = os.environ.copy()
+    env["AIOPS_ENV"] = "local"
+    env["AIOPS_DEPLOYMENT_MODE"] = "local"
+    env["LLM_MOCK"] = "true"
+    result = subprocess.run(
+        [sys.executable, "-c", "import main"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (result.stdout + result.stderr)
+    assert "LLM_MOCK=true" in result.stdout
+
+
 def test_production_rejects_mock_before_startup():
     """Production must not boot with deterministic/mock LLM output enabled."""
     env = os.environ.copy()

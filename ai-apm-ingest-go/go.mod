@@ -1,18 +1,20 @@
 module github.com/observability-platform/ai-apm-ingest-go
 
-go 1.23.0
+go 1.25.0
+
+toolchain go1.26.6
 
 require (
 	go.opentelemetry.io/proto/otlp v1.7.1
-	google.golang.org/grpc v1.74.2
+	google.golang.org/grpc v1.82.1
 )
 
 require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.1 // indirect
-	golang.org/x/net v0.42.0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
-	golang.org/x/text v0.27.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20250728155136-f173205681a0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250728155136-f173205681a0 // indirect
-	google.golang.org/protobuf v1.36.6 // indirect
+	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )

@@ -281,6 +281,7 @@ echo "[contract] bootstrap contains only stateful resources"
 helm template aiops "${chart_dir}" \
   --namespace observability \
   -f "${chart_dir}/values-local-bootstrap.yaml" \
+  --set global.environment=local \
   --set global.imageTag="${tag}" \
   --set secrets.jwtSecret="contract-jwt-012345678901234567890123456789" \
   --set secrets.llmEncryptionKey="contract-llm-012345678901234567890123456789" \

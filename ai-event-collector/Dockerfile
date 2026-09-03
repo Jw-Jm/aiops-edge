@@ -1,5 +1,5 @@
 # 使用国内 Docker Hub 镜像代理，避免构建时访问 registry-1.docker.io 超时。
-FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
+FROM docker.m.daocloud.io/library/golang:1.26.6-alpine AS builder
 WORKDIR /app
 # 离线构建：event-collector 零第三方依赖（纯标准库），无需网络下载
 ENV GOTOOLCHAIN=local

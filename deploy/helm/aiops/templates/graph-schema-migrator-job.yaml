@@ -36,7 +36,15 @@ spec:
               do sleep 2; done
       containers:
         - name: graph-schema-migrator
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.hugeGraph.schemaMigratorImage .) "tag" .Values.global.imageTag) | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.hugeGraph.schemaMigratorImage .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.graphSchemaMigrator | default "") "env" (.Values.global.environment | default "")) | quote }}
           env:
             - name: HUGEGRAPH_URL
               value: "http://hugegraph:8080"

@@ -1,5 +1,7 @@
-# 离线依赖包（从运行容器导出，较大，不提交 git，构建时由 Dockerfile 从 bin/ 引用）
+# 离线依赖包（较大，不提交 git；构建时由 Dockerfile 专用 COPY 引用）
 bin/
+# P1-SUP1: 多平台 wheelhouse（wheel 本体不入 Git，由 wheelhouse.sha256 + requirements-lock.txt 锁定）
+wheelhouse/
 # Python 运行时产物
 __pycache__/
 *.pyc

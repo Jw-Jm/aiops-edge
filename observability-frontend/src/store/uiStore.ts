@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { getMe } from '../api/client'
+import { setScopeCluster } from '../api/scopeRuntime'
 
 export interface ClusterOption {
   id: number
@@ -36,7 +37,12 @@ export const useUIStore = create<UIState>()(
       clusterLoading: false,
       toggleCollapsed: () => set((s) => ({ collapsed: !s.collapsed })),
       setAiDockOpen: (v) => set({ aiDockOpen: v }),
-      setCurrentCluster: (id) => set({ currentClusterId: id || '' }),
+      setCurrentCluster: (id) => {
+        const value = id || ''
+        set({ currentClusterId: value })
+        // P2-A2: 同步到请求拦截器使用的内存 scope runtime
+        setScopeCluster(value)
+      },
       setClusters: (clusters) => set({ clusters }),
       refreshClusters: async () => {
         set({ clusterLoading: true })
@@ -76,6 +82,10 @@ export const useUIStore = create<UIState>()(
         aiDockOpen: s.aiDockOpen,
         currentClusterId: s.currentClusterId,
       }),
+      // P2-A2: hydrate 完成后同步 scope runtime（拦截器不再逐请求读 localStorage）
+      onRehydrateStorage: () => (state) => {
+        setScopeCluster(state?.currentClusterId ?? '')
+      },
     },
   ),
 )

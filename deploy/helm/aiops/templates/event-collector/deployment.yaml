@@ -21,7 +21,7 @@ spec:
       # 默认不调度到被污点节点；如确需在特定污点节点采集 SEL，请显式添加受限 tolerations。
       containers:
         - name: event-collector
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.eventCollector.image .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.eventCollector.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.eventCollector | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -75,6 +75,8 @@ spec:
 {{ if .Values.eventCollector.selCollectEnabled }}
               add: ["SYS_RAWIO"]
 {{ end }}
+            seccompProfile:
+              type: RuntimeDefault
           volumeMounts:
 {{ if .Values.eventCollector.selCollectEnabled }}
             # IPMI 本地 KCS 接口（仅显式本地验证 profile）

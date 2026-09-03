@@ -49,24 +49,69 @@ securityContext:
 {{- end }}
 {{- end -}}
 
+{{/*
+aiops.hardenedContainerSecurityContext: P2-SEC1 全局容器最小权限基线。
+默认项（对所有自研 workload 安全且无需改写路径/Dockerfile USER）：
+  - allowPrivilegeEscalation: false
+  - capabilities: drop ALL
+  - seccompProfile: RuntimeDefault
+非 root / readOnlyRootFilesystem 属组件专项（需 Dockerfile USER + 写路径声明），
+由各组件 securityContext override 打开，不在全局基线强制以避免运行破坏。
+*/}}
+{{- define "aiops.hardenedContainerSecurityContext" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+{{- end -}}
+
 {{- define "aiops.internalScheme" -}}
 {{- if .Values.internalTLS.enabled -}}https{{- else -}}http{{- end -}}
 {{- end -}}
 
 {{/*
-aiops.imageWithGlobalTag: render a self-owned image with the release tag.
+aiops.imageWithGlobalTag: render a self-owned image reference.
+
+Args: image (repository, may carry a stale :tag), tag (global.imageTag),
+digest (global.imageDigests.<component>, may be empty), env (global.environment).
+
+Rules (P1-SUP2):
+- production (env == "production"): digest is REQUIRED and must match
+  sha256:<64 hex>. The rendered reference is <repository>@sha256:<64hex> and a
+  tag-only release is refused (immutable identity cannot be a mutable tag).
+- non-production: tag-based rendering is allowed; if a digest is provided it
+  is honoured instead (still validated).
 
 Component-level image values are kept for backwards-compatible registry
-overrides, but their historical tag must never win over global.imageTag.
-This is important during `helm upgrade --reuse-values`: Helm retains old
-component values and would otherwise silently run a mixed release.
+overrides, but their historical tag must never win over global.imageTag or
+global.imageDigests. This is important during `helm upgrade --reuse-values`:
+Helm retains old component values and would otherwise silently run a mixed
+release.
 */}}
 {{- define "aiops.imageWithGlobalTag" -}}
 {{- $image := .image | toString | trim -}}
 {{- $tag := .tag | toString | trim -}}
+{{- $digest := .digest | default "" | toString | trim -}}
+{{- $env := .env | default "" | toString | trim -}}
 {{- if eq $image "" -}}
 {{- fail "self-owned image repository must not be empty" -}}
 {{- end -}}
+{{- if $digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $digest) -}}
+{{- fail (printf "invalid digest format %q (want sha256:<64 hex>) for image %s" $digest $image) -}}
+{{- end -}}
+{{- $repo := $image -}}
+{{- if regexMatch ":[^/:]+$" $repo -}}
+{{- $repo = regexReplaceAll ":[^/:]+$" $repo "" -}}
+{{- end -}}
+{{- printf "%s@%s" $repo $digest -}}
+{{- else if eq $env "production" -}}
+{{- fail (printf "production requires an immutable digest for self-owned image %s: set global.imageDigests.<component> (tag-only releases are not permitted; got tag %q)" $image $tag) -}}
+{{- else -}}
 {{- if eq $tag "" -}}
 {{- fail "global.imageTag must not be empty" -}}
 {{- end -}}
@@ -76,6 +121,7 @@ component values and would otherwise silently run a mixed release.
 {{- regexReplaceAll ":[^/:]+$" $image (printf ":%s" $tag) -}}
 {{- else -}}
 {{- printf "%s:%s" $image $tag -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

@@ -1,0 +1,15 @@
+# P1-SCA1 SCA exception allowlist (auditable; CI gate reads this file).
+# Format: <ADVISORY_ID>|<EXPIRY YYYY-MM-DD>|<REASON>
+# Every entry MUST have: reachability analysis, mitigation, expiry date.
+# Entries past EXPIRY are NOT honoured — the gate fails until the entry is
+# renewed by explicit risk acceptance or the package is upgraded.
+
+# chromadb 1.5.9 (latest release as of 2026-09-03; no fixed version published
+# upstream). CVE-2026-45829/30/31/33 & PYSEC-2026-311 target the Chroma REST
+# API server mode; this project embeds chromadb in-process (RAG knowledge
+# store on PVC) and never exposes a Chroma server; egress NetworkPolicy is
+# default-deny. Renew or upgrade when upstream publishes a fixed release.
+PYSEC-2026-311|2026-12-31|chromadb in-process only, server-mode RCE not reachable, no fixed release yet (see SCA_TRIAGE_LEDGER.md)
+CVE-2026-45830|2026-12-31|chromadb in-process only, server-mode RCE not reachable, no fixed release yet (see SCA_TRIAGE_LEDGER.md)
+CVE-2026-45831|2026-12-31|chromadb in-process only, server-mode RCE not reachable, no fixed release yet (see SCA_TRIAGE_LEDGER.md)
+CVE-2026-45833|2026-12-31|chromadb in-process only, server-mode RCE not reachable, no fixed release yet (see SCA_TRIAGE_LEDGER.md)

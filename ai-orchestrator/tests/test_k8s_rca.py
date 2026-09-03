@@ -120,27 +120,27 @@ def test_k8s_rca_differs_by_rule_name():
 if __name__ == "__main__":
     unittest.main()
 
-def test_kubectl_safe_rejects_input_redirection():
-    """`<` 输入重定向可覆盖管道 stdin，使白名单工具读取任意文件（如 /etc/shadow）。
-
-    回归锁定: `kubectl get pods | sort < /etc/shadow` 必须被拒绝，
-    白名单工具自身（sort/wc/grep -f）不能成为文件读取通道。
-    """
-    from rca import _run_kubectl_safe
+def test_shell_string_input_redirection_channel_removed():
+    """P1-S1 结构化改造：`<` 输入重定向 PoC（`kubectl get pods | sort < /etc/shadow`）
+    所在的 shell 执行路径已整体移除，任意 shell 字符串一律拒绝。
+    回归锁定: 白名单管道 + 文件参数读取通道不再存在。"""
+    from rca import cluster_check
 
     for cmd in (
         "kubectl get pods | sort < /etc/shadow",
         "kubectl get pods | wc -l < /etc/passwd",
         "kubectl get pods < /etc/shadow",
+        "kubectl get pods | head /proc/self/environ",
     ):
-        out = _run_kubectl_safe(cmd, timeout=5)
-        assert out.startswith("[命令含危险字符，已拒绝]"), f"must reject: {cmd}"
+        out = cluster_check(cmd)
+        assert "拒绝" in out, f"must reject: {cmd}"
 
 
-def test_kubectl_safe_still_allows_pipes():
-    """放行不涉及输入重定向的常规管道（`kubectl ... | grep`）。"""
-    from rca import _run_kubectl_safe
+def test_shell_pipe_strings_rejected_by_structured_interface():
+    """P1-S1 设计变更（原测试断言"放行常规管道"已失效）:
+    审核报告 §5.2 要求彻底移除 RCA 通用 shell——含白名单管道，
+    LLM 只允许输出结构化检查 (kind/namespace/pod)。"""
+    from rca import cluster_check
 
-    out = _run_kubectl_safe("kubectl version --client | head -1", timeout=5)
-    assert "危险字符" not in out
-    assert "不安全管道工具" not in out
+    out = cluster_check("kubectl version --client | head -1")
+    assert "拒绝" in out

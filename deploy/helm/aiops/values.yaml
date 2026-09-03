@@ -15,6 +15,26 @@ global:
   # Runtime environment is explicit so security-sensitive compatibility paths
   # and cookie behavior cannot silently inherit a developer default.
   environment: production
+  # P1-SUP2: immutable production image digests. When environment=production
+  # every self-owned image MUST resolve to repository@sha256:<64hex>; a missing
+  # digest fails `helm template` (see aiops.imageWithGlobalTag). Values are
+  # injected by the release system after the production image build; they are
+  # deliberately empty here so a bare production render fails loudly instead of
+  # silently deploying mutable tags.
+  imageDigests:
+    queryApi: ""
+    ingest: ""
+    eventCollector: ""
+    aiOrchestrator: ""
+    investigationWorker: ""
+    frontend: ""
+    aiActionExecutor: ""
+    credentialBroker: ""
+    llmEgressProxy: ""
+    ipmiExporter: ""
+    clickhouseMigrator: ""
+    mysqlMigrator: ""
+    graphSchemaMigrator: ""
 namespace:
   observability: observability
   deepflow: deepflow

@@ -22,7 +22,15 @@ spec:
         - operator: Exists
       containers:
         - name: ipmi-exporter
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.ipmiExporter.image .) "tag" .Values.global.imageTag) | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.ipmiExporter.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.ipmiExporter | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: {{ .Values.ipmiExporter.imagePullPolicy | default "IfNotPresent" }}
           securityContext:
             privileged: true
