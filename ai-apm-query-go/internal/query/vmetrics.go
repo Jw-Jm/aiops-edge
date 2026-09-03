@@ -66,8 +66,9 @@ func vmLabelSelectors(q VMQuery) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-// ServiceRED 查询某服务最近 N 分钟的 RED 时序列（call_rate/error_rate/duration）。
-// 通过 VM query_range，取 call_total / error_total / duration_sum 的 rate。
+// ServiceRED 查询某服务最近 N 分钟的 RED 时序列（调用数/错误数/平均耗时）。
+// RED writer 写入的是累计 counter；这里按固定的一分钟采样桶取 increase，
+// 将 counter 的单位还原为每桶计数，避免把小于 1 的每秒 rate 四舍五入为 0。
 func (r *VictoriaMetricsReader) ServiceRED(ctx context.Context, q VMQuery) ([]REDPoint, error) {
 	if q.Minutes <= 0 {
 		q.Minutes = 60
@@ -86,11 +87,12 @@ func (r *VictoriaMetricsReader) ServiceRED(ctx context.Context, q VMQuery) ([]RE
 	// labelled before the set union so the response remains attributable after
 	// PromQL aggregation; absent error/duration series remain zero rather than
 	// being inferred from latency or a missing field.
+	const bucketWindow = "1m"
 	expr := strings.Join([]string{
-		fmt.Sprintf(`label_replace(sum(rate(call_total%s[5m])), "red_kind", "calls", "", "")`, sel),
-		fmt.Sprintf(`label_replace(sum(rate(error_total%s[5m])), "red_kind", "errors", "", "")`, sel),
-		fmt.Sprintf(`label_replace(sum(rate(duration_seconds_sum%s[5m])), "red_kind", "duration_sum", "", "")`, sel),
-		fmt.Sprintf(`label_replace(sum(rate(duration_seconds_count%s[5m])), "red_kind", "duration_count", "", "")`, sel),
+		fmt.Sprintf(`label_replace(sum(increase(call_total%s[%s])), "red_kind", "calls", "", "")`, sel, bucketWindow),
+		fmt.Sprintf(`label_replace(sum(increase(error_total%s[%s])), "red_kind", "errors", "", "")`, sel, bucketWindow),
+		fmt.Sprintf(`label_replace(sum(increase(duration_seconds_sum%s[%s])), "red_kind", "duration_sum", "", "")`, sel, bucketWindow),
+		fmt.Sprintf(`label_replace(sum(increase(duration_seconds_count%s[%s])), "red_kind", "duration_count", "", "")`, sel, bucketWindow),
 	}, " or ")
 	series, err := r.queryRangeSeries(ctx, expr, start, end, step)
 	if err != nil {

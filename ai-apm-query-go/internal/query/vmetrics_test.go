@@ -31,7 +31,7 @@ func mockVM(t *testing.T, dispatch map[string]string) *VictoriaMetricsReader {
 func TestVMREDQuerySuccess(t *testing.T) {
 	// VM query_range 返回 2 个样本。
 	rows := `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"service_name":"checkout","tenant_id":"t1","cluster_id":"c1"},"values":[["1710000000","10"],["1710000060","12"]]}]}}`
-	r := mockVM(t, map[string]string{"rate(": rows})
+	r := mockVM(t, map[string]string{"increase(": rows})
 	pts, err := r.ServiceRED(context.Background(), VMQuery{
 		TenantID: "t1", ClusterID: "c1", Service: "checkout", Minutes: 60,
 	})
@@ -108,6 +108,10 @@ func TestVMSQLOwnershipLabelsInjected(t *testing.T) {
 		Service:   "checkout", Minutes: 60,
 	})
 	for _, want := range []string{
+		"increase(call_total",
+		"increase(error_total",
+		"increase(duration_seconds_sum",
+		"increase(duration_seconds_count",
 		"tenant_id=\"3f3c3b3a-0000-4000-8000-000000000001\"",
 		"cluster_id=\"3f3c3b3a-0000-4000-8000-000000000002\"",
 		"service_name=\"checkout\"",
