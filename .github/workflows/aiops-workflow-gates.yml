@@ -48,25 +48,32 @@ jobs:
 
   workflow-contract-tests:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: wf-root-pass
+          MYSQL_DATABASE: aiops_wf_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -pwf-root-pass --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install orchestrator dev dependencies
+          go-version: "1.26.x"
+          cache: true
+      # P2-F1: durable Action workflow contract on REAL MySQL driving the
+      # production handler/DAO/executor-client (replaces the Python Harness /
+      # source-string pseudo tests that were removed from tests/workflow-e2e).
+      - name: Workflow contract (real MySQL, production modules)
         run: |
-          python -m venv ai-orchestrator/.venv-ci
-          # P1-SUP1: lock 中 torch==2.13.0+cpu 仅存在于 pytorch cpu index
-          ai-orchestrator/.venv-ci/bin/pip install \
-            -r ai-orchestrator/requirements-lock.txt \
-            --extra-index-url https://download.pytorch.org/whl/cpu
-          ai-orchestrator/.venv-ci/bin/pip install -r ai-orchestrator/requirements-dev.txt
-      - name: G0.5 Cross-service durable workflow contract tests
-        run: |
-          AIOPS_GATE_STAGES=workflow-contracts \
-          AIOPS_PYTHON="$PWD/ai-orchestrator/.venv-ci/bin/python" \
-          deploy/scripts/verify-aiops-workflow-gates.sh
+          TEST_MYSQL_DSN='root:wf-root-pass@tcp(127.0.0.1:3306)/aiops_wf_test?parseTime=true&multiStatements=true' \
+          go test -tags integration ./internal/api/ -run 'TestWorkflowContract' -count=1 -v
 
   orchestrator-tests:
     runs-on: ubuntu-latest

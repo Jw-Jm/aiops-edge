@@ -10,7 +10,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
 
-STAGES="${AIOPS_GATE_STAGES:-go,workflow-contracts,orchestrator,executor,frontend,helm,contracts}"
+STAGES="${AIOPS_GATE_STAGES:-go,orchestrator,executor,frontend,helm,contracts}"
 has_stage() { [[ ",${STAGES}," == *",${1},"* ]]; }
 
 go_cache="${GOCACHE:-${TMPDIR:-/tmp}/aiops-gocache}"
@@ -32,11 +32,6 @@ fi
 if has_stage go; then
   echo "[G0] Go contract/store/API tests"
   (cd ai-apm-query-go && go test ./... -count=1)
-fi
-
-if has_stage workflow-contracts; then
-  echo "[G0.5] Cross-service durable workflow contract tests"
-  (cd "${repo_root}" && "${python_bin}" -m pytest tests/workflow-e2e -q)
 fi
 
 if has_stage orchestrator; then
