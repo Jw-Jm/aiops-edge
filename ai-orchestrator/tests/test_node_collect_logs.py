@@ -147,6 +147,7 @@ def test_infrastructure_permission_error_is_not_reported_as_zero_resources(monke
     assert "权限" in report or "forbidden" in report
     assert "数量未知" in report
     assert "运行中 Pods: 0 个" not in report
+    assert "admin or approver role required" not in report
 
 
 def test_infrastructure_unwraps_query_tool_result_envelope(monkeypatch):

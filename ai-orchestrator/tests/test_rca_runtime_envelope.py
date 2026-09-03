@@ -19,6 +19,16 @@ def test_graph_adapter_does_not_turn_failed_query_into_empty_graph():
         _unwrap_query_payload({"quality": "failed", "source_errors": ["GRAPH_UNAVAILABLE"]})
 
 
+def test_graph_adapter_failed_query_does_not_echo_sensitive_source_error():
+    with pytest.raises(RuntimeError, match="GRAPH_UNAVAILABLE") as exc:
+        _unwrap_query_payload({
+            "quality": "failed",
+            "source_errors": ["mysql password=super-secret host=db.internal"],
+        })
+    assert "super-secret" not in str(exc.value)
+    assert "db.internal" not in str(exc.value)
+
+
 def test_evidence_provider_exposes_failure_accumulator(monkeypatch):
     monkeypatch.setattr("rca_engine.runtime._client", lambda: object())
     provider = InvestigationEvidenceProvider(object())

@@ -417,7 +417,13 @@ async def run_invocation(request: Request):
             risk="R0",
         )
     except AuthzError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        # Authorization messages may contain tenant/role/storage details.  The
+        # signed internal boundary exposes only the machine-readable denial
+        # code; full diagnostics stay in server logs/metrics.
+        raise HTTPException(
+            status_code=403,
+            detail=stable_error_code(getattr(exc, "error_code", ""), "AUTHZ_DENIED"),
+        ) from exc
     scope = build_invocation_scope(claims)
     if body.get("tenant_id") and str(body["tenant_id"]) != scope.tenant_id:
         raise HTTPException(status_code=403, detail="TENANT_ACCESS_DENIED")

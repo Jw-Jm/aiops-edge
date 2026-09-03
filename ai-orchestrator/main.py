@@ -60,6 +60,11 @@ from contracts import RequestContext
 from invocation_scope import LegacyScopeAdapter
 from internal_ingress import build_invocation_scope, verify_run_control_ingress, verify_run_invocation_ingress
 from error_safety import stable_error_code
+
+
+def _public_exception_code(exc: BaseException, default: str) -> str:
+    """Return a stable wire/audit error code without exposing exception text."""
+    return stable_error_code(getattr(exc, "error_code", ""), default)
 if not _PRODUCTION_COMPOSITION:
     # Legacy approval/task views are kept for local migration compatibility.
     # Production action state is Query API/MySQL-owned and must not construct a
@@ -1636,7 +1641,7 @@ async def marketplace_install(request: Request, body: dict = None):
     except PermissionError:
         raise HTTPException(403, "仅管理员可安装")
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, _public_exception_code(e, "INVALID_MARKETPLACE_REQUEST")) from e
 
 
 @app.get("/api/v1/ai/marketplace/installed")
@@ -1659,7 +1664,7 @@ async def marketplace_uninstall(request: Request, pack_id: str):
             pass
         return result
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404, "MARKETPLACE_NOT_FOUND") from e
 
 @app.get("/api/v1/ai/agents")
 async def ai_agents():
@@ -1795,7 +1800,7 @@ def execute_suggestion_command(req: SuggestionRequest, request: Request):
         exec_result = _get_brain().execute_suggestion(
             req.service or "", script, req.context or "", task_id=req.thread_id or "manual")
     except Exception as e:
-        exec_result = f"执行失败: {e}"
+        exec_result = "执行失败: EXECUTION_FAILED"
         _persist_execution_result(req, exec_result,
                                   tenant_id=request_tenant_id, cluster_id=request_cluster_id)
         return {"thread_id": req.thread_id, "approved": True, "exec_result": exec_result, "error": True}
@@ -2100,7 +2105,7 @@ async def delete_session(sid: str):
             pass
         return {"message": "session deleted", "session_id": sid}
     except Exception as e:
-        raise HTTPException(500, f"delete failed: {e}")
+        raise HTTPException(500, "SESSION_DELETE_FAILED") from e
 
 
 @app.delete("/api/v1/ai/sessions")
@@ -2123,7 +2128,7 @@ async def clear_sessions():
             pass
         return {"message": "all sessions cleared"}
     except Exception as e:
-        raise HTTPException(500, f"clear failed: {e}")
+        raise HTTPException(500, "SESSION_CLEAR_FAILED") from e
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2309,7 +2314,7 @@ async def create_task(req: TaskCreateRequest, request: Request):
             _task_store[tid]["diagnosis"] = f"诊断超时({DIAGNOSIS_TIMEOUT}s)"
         except Exception as e:
             _task_store[tid]["status"] = "failed"
-            _task_store[tid]["diagnosis"] = str(e)[:500]
+            _task_store[tid]["diagnosis"] = _public_exception_code(e, "DIAGNOSIS_FAILED")
     threading.Thread(target=_run, daemon=True).start()
 
     return {"task": task}
@@ -2466,7 +2471,7 @@ def _run_diagnosis(
             _task_store[tid]["diagnosis"] = f"诊断超时({DIAGNOSIS_TIMEOUT}s)"
         except Exception as e:
             _task_store[tid]["status"] = "failed"
-            _task_store[tid]["diagnosis"] = str(e)[:500]
+            _task_store[tid]["diagnosis"] = _public_exception_code(e, "DIAGNOSIS_FAILED")
     threading.Thread(target=_run, daemon=True).start()
 
 
@@ -2680,7 +2685,10 @@ def k8s_execute(body: K8sActionBody, request: Request):
                 f"{kind}/{name}", body.action, "ok",
                 {"output": str(out)[:500], "source": "k8s_actions"}))
     except k8s_actions.K8sActionError as e:
-        raise HTTPException(e.status_code, str(e))
+        raise HTTPException(
+            e.status_code,
+            _public_exception_code(e, "K8S_ACTION_FAILED"),
+        ) from e
     return {"ok": True, "output": result["output"]}
 
 
@@ -3231,7 +3239,8 @@ async def list_anomalies(service: str = "", limit: int = 50):
         finally:
             conn.close()
     except Exception as e:
-        return {"anomaly_trends": [], "total": 0, "error": str(e)}
+        return {"anomaly_trends": [], "total": 0,
+                "error": _public_exception_code(e, "ANOMALY_QUERY_FAILED")}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3446,7 +3455,7 @@ async def list_inspection_reports(service: str = "", limit: int = 50, offset: in
         page = (offset // limit) + 1 if limit else 1
         result = ReportStore().list(service=service or None, page=page, size=limit)
     except Exception as e:
-        return {"reports": [], "error": str(e)}
+        return {"reports": [], "error": _public_exception_code(e, "REPORT_QUERY_FAILED")}
     reports = []
     for r in result["items"]:
         reports.append({
@@ -3466,7 +3475,7 @@ async def inspection_report_trend(days: int = 14, report_type: str = "inspection
     try:
         result = ReportStore().list(page=1, size=10000)
     except Exception as e:
-        return {"trend": [], "error": str(e)}
+        return {"trend": [], "error": _public_exception_code(e, "REPORT_TREND_QUERY_FAILED")}
     import datetime
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=int(days))
     daily: dict[str, dict] = {}
@@ -3546,7 +3555,8 @@ async def list_reports():
             for r in result["items"]],
             "count": len(result["items"])}
     except Exception as e:
-        return {"reports": [], "count": 0, "error": str(e)}
+        return {"reports": [], "count": 0,
+                "error": _public_exception_code(e, "REPORT_QUERY_FAILED")}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -4112,7 +4122,8 @@ def nl2sql_execute(sid: str):
     try:
         rows = _ch_query_json(item["sql"])
     except Exception as e:
-        return {"error": str(e), "columns": [], "rows": [], "count": 0}
+        return {"error": _public_exception_code(e, "NL2SQL_QUERY_FAILED"),
+                "columns": [], "rows": [], "count": 0}
     columns = list(rows[0].keys()) if rows else []
     try:
         _audit_log(item.get("id", "") or "manual", "nl2sql", "system", "", item["sql"],
@@ -4257,7 +4268,7 @@ async def create_change_event(req: ChangeEventRequest, request: Request):
             conn.rollback()
         except Exception:
             pass
-        raise HTTPException(500, f"insert change_event failed: {e}")
+        raise HTTPException(500, "CHANGE_EVENT_PERSIST_FAILED") from e
     finally:
         conn.close()
     try:
@@ -4308,7 +4319,7 @@ async def create_change_webhook(body: dict = None, request: Request = None):
             conn.rollback()
         except Exception:
             pass
-        raise HTTPException(500, f"insert change_event failed: {e}")
+        raise HTTPException(500, "CHANGE_EVENT_PERSIST_FAILED") from e
     finally:
         conn.close()
     try:
@@ -4349,7 +4360,8 @@ async def list_change_events(
             rows = cur.fetchall()
         return {"changes": rows, "total": total, "page": page, "page_size": page_size}
     except Exception as e:
-        return {"changes": [], "total": 0, "page": page, "page_size": page_size, "error": str(e)}
+        return {"changes": [], "total": 0, "page": page, "page_size": page_size,
+                "error": _public_exception_code(e, "CHANGE_QUERY_FAILED")}
     finally:
         conn.close()
 

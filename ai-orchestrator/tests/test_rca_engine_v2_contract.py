@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rca_engine import RCARequest
-from rca_engine.engine import RCAEngineV2
+from rca_engine.engine import RCAEngineV2, RCAResult
 from rca_engine.evidence import evidence_for_candidate, independent_categories
 from rca_engine.scorer import deterministic_temporal_score
 
@@ -155,6 +155,33 @@ def test_confirmed_result_exposes_publishable_evidence_contract():
     assert [item["entity_uid"] for item in payload["propagation_path"]] == ["service:db", "service:checkout"]
     assert payload["propagation_path_detail"]["edge_uids"] == ["edge:checkout-db"]
     assert payload["root_score"] == payload["deterministic_root_score"]
+
+
+def test_non_confirmed_result_keeps_deterministic_replay_fields_without_final_claim():
+    result = RCAResult(
+        run_id="run-probable",
+        root_cause="service:db",
+        root_cause_status="probable",
+        confidence=0.65,
+        graph_enhanced=True,
+        graph_context={
+            "vertices": [{"entity_uid": "service:db"}],
+            "partial": False,
+            "stale": False,
+        },
+        window_start="2026-08-27T00:00:00Z",
+        window_end="2026-08-27T01:00:00Z",
+        symptom_time="2026-08-27T00:30:00Z",
+    )
+
+    payload = result.to_dict()
+
+    assert payload["status"] == "probable"
+    assert payload["time_range_start"] == "2026-08-27T00:00:00Z"
+    assert payload["time_range_end"] == "2026-08-27T01:00:00Z"
+    assert payload["root_score"] == 0.65
+    assert payload["deterministic_root_score"] == 0.65
+    assert "final_graph_context" not in payload
 
 
 def test_symptom_candidate_cannot_be_confirmed_without_a_non_self_propagation_path():

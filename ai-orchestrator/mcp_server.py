@@ -2,6 +2,7 @@
 import json
 import tools as agent_tools
 from execution_gate import check_tool_executable
+from error_safety import stable_error_code
 
 
 class MCPServer:
@@ -80,11 +81,13 @@ class MCPServer:
                 if not allowed:
                     return json.dumps({"error": f"execute_shell 需要人工审批后执行: {reason}"})
             except Exception as e:
-                return json.dumps({"error": f"execute_shell 安全校验失败: {e}"})
+                return json.dumps({"error": "EXECUTION_GATE_UNAVAILABLE"})
         try:
             return tool["handler"](**args)
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            return json.dumps({"error": stable_error_code(
+                getattr(e, "error_code", ""), "MCP_TOOL_FAILED"
+            )})
 
 
 mcp = MCPServer()

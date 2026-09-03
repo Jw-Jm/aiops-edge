@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from ops_action_hub import ActionNotFoundError, OpsActionHub
 from phase11_execution import Phase11Error
+from error_safety import stable_error_code
 
 router = APIRouter(prefix="/api/v1/ops/actions", tags=["ops-actions"])
 
@@ -63,11 +64,14 @@ def propose(body: ProposeBody):
             llm_risk_suggestion=body.llm_risk_suggestion,
         )
     except ActionNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail="ACTION_NOT_FOUND") from e
     except Phase11Error as e:
-        raise HTTPException(status_code=400, detail=f"{e.error_code}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=stable_error_code(getattr(e, "error_code", ""), "ACTION_REJECTED"),
+        ) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="INVALID_ACTION_REQUEST") from e
     return {"action": action}
 
 
@@ -82,7 +86,7 @@ def get_action(action_id: str):
     try:
         action = get_hub().get(action_id)
     except ActionNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail="ACTION_NOT_FOUND") from e
     return {"action": action}
 
 
@@ -91,7 +95,10 @@ def confirm_action(action_id: str, body: ConfirmBody):
     try:
         result = get_hub().confirm(action_id=action_id, requester=body.requester)
     except ActionNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail="ACTION_NOT_FOUND") from e
     except Phase11Error as e:
-        raise HTTPException(status_code=400, detail=f"{e.error_code}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=stable_error_code(getattr(e, "error_code", ""), "ACTION_REJECTED"),
+        ) from e
     return result

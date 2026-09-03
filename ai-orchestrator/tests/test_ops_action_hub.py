@@ -97,6 +97,7 @@ def test_get_unknown_404():
     client, _ = _fresh_app()
     resp = client.get("/api/v1/ops/actions/unknown-id")
     assert resp.status_code == 404
+    assert resp.json()["detail"] == "ACTION_NOT_FOUND"
 
 
 def test_confirm_known_and_double_confirm():
@@ -117,6 +118,7 @@ def test_confirm_unknown_404():
     client, _ = _fresh_app()
     resp = client.post("/api/v1/ops/actions/unknown-id/confirm", json={"requester": "bob"})
     assert resp.status_code == 404
+    assert resp.json()["detail"] == "ACTION_NOT_FOUND"
 
 
 def test_hub_execute_is_fail_closed_by_default():

@@ -35,9 +35,11 @@ def _get_json(url: str, *, request_context: RequestContext | None = None) -> dic
     try:
         return json.loads(signed_query_api_request(url, context=request_context))
     except TrustedContextError as e:
-        return {"error": e.error_code}
-    except (urllib.error.URLError, json.JSONDecodeError) as e:
-        return {"error": str(e)}
+        return {"error": stable_error_code(e.error_code, "TRUSTED_CONTEXT_ERROR")}
+    except urllib.error.URLError:
+        return {"error": "QUERY_TRANSPORT_ERROR"}
+    except json.JSONDecodeError:
+        return {"error": "INVALID_QUERY_RESPONSE"}
 
 
 # ── P19.7 K8sGPT：按需拉取平台 LLM 配置 + 子进程私有 env 注入 ─────────────
@@ -573,7 +575,7 @@ def execute_shell(command: str, timeout: int = 30) -> str:
     except subprocess.TimeoutExpired:
         return f"命令超时 (>{timeout}s)"
     except Exception as e:
-        return f"执行失败: {str(e)}"
+        return "执行失败: EXECUTION_FAILED"
 
 
 _K8SGPT_TMPFS = "/dev/shm"
@@ -661,8 +663,10 @@ def k8sgpt_diagnose(namespace: str = "observability") -> str:
     except subprocess.TimeoutExpired:
         return "K8sGPT unavailable: timeout"
     except Exception as e:
-        # 异常消息脱敏（key 可能出现在异常 repr 中）
-        return f"K8sGPT unavailable: {_redact_key(str(e), api_key) if api_key else str(e)}"
+        # Provider URLs and network exceptions may still contain internal
+        # topology or credentials after key redaction; expose only a stable
+        # diagnostic code to callers.
+        return "K8sGPT unavailable: K8SGPT_FAILED"
     finally:
         if tmp_home:
             import shutil
@@ -766,14 +770,18 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
         with mtls_urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode())
     except TrustedContextError as e:
-        data = {"error": e.error_code}
+        data = {"error": stable_error_code(e.error_code, "TRUSTED_CONTEXT_ERROR")}
     except urllib.error.HTTPError as e:
-        data = {"error": "HTTP Error %s: %s" % (e.code, e.read().decode()[:200])}
-    except (urllib.error.URLError, json.JSONDecodeError) as e:
-        data = {"error": str(e)}
+        data = {"error": "QUERY_FORBIDDEN" if e.code == 403 else f"QUERY_HTTP_{e.code}"}
+    except urllib.error.URLError:
+        data = {"error": "QUERY_TRANSPORT_ERROR"}
+    except json.JSONDecodeError:
+        data = {"error": "INVALID_QUERY_RESPONSE"}
     data, unwrap_error = _unwrap_internal_query_result(data)
     if unwrap_error or data is None or data.get("error"):
         detail = unwrap_error or data.get("error")
+        if detail == "QUERY_FORBIDDEN":
+            detail = "权限不足（QUERY_FORBIDDEN）"
         return f"K8s 基础设施数据不可用（节点/Pod 数量未知，无法据此判断健康）: {detail}"
 
     pods = data.get("pods") or []

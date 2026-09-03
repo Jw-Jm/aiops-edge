@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import urllib.error
 
 from invocation_scope import InvocationScope, ScopeViewSnapshot
 
@@ -56,6 +57,21 @@ def test_chat_query_exception_does_not_echo_sensitive_exception(monkeypatch):
     assert result == "查询失败: QUERY_FAILED"
     assert "super-secret" not in result
     assert "10.0.0.7" not in result
+
+
+def test_legacy_query_transport_error_is_stable_and_non_sensitive(monkeypatch):
+    import tools
+
+    monkeypatch.setattr(
+        tools,
+        "signed_query_api_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            urllib.error.URLError("https://query.internal?token=super-secret")
+        ),
+    )
+    result = tools._get_json("https://query.internal/api/v1/services")
+    assert result == {"error": "QUERY_TRANSPORT_ERROR"}
+    assert "super-secret" not in json.dumps(result)
 
 
 def test_chat_scope_projection_keeps_audit_identity():
@@ -138,3 +154,153 @@ def test_node_rca_exception_is_stable_and_non_sensitive(monkeypatch):
     assert result["messages"][0].endswith("RCA: 失败 (RCA_FAILED)")
     assert "super-secret" not in result["messages"][0]
     assert "query.internal" not in result["messages"][0]
+
+
+def test_node_verify_exception_is_stable_and_non_sensitive(monkeypatch):
+    import orchestrator
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(orchestrator.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(
+        orchestrator,
+        "query_metrics",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("clickhouse password=super-secret host=10.0.0.7")
+        ),
+    )
+    result = asyncio.run(orchestrator.node_verify({
+        "service": "checkout",
+        "cluster_id": CLUSTER,
+        "before_metrics": "P50延迟=100ms",
+        "request_context": None,
+    }))
+    assert result["verify_error_code"] == "VERIFICATION_SOURCE_UNAVAILABLE"
+    assert "super-secret" not in result["messages"][0]
+    assert "10.0.0.7" not in result["messages"][0]
+
+
+def test_run_dag_exception_is_stable_and_non_sensitive(monkeypatch):
+    import orchestrator
+
+    class FailingGraph:
+        async def ainvoke(self, *_args, **_kwargs):
+            raise RuntimeError("provider token=super-secret host=10.0.0.7")
+
+    async def no_checkpointer():
+        return None
+
+    brain = orchestrator.BrainOrchestrator.__new__(orchestrator.BrainOrchestrator)
+    brain.graph = FailingGraph()
+    brain.chat_graph = brain.graph
+    brain.llm_config = None
+    brain._ensure_async_checkpointer = no_checkpointer
+    scope = _chat_scope()
+    result = asyncio.run(brain._run_dag(
+        "diagnosis", "checkout", "检查 checkout", request_context=scope,
+    ))
+    assert result == {
+        "final_response": "[DAG 执行异常: BRAIN_ERROR]",
+        "error": "BRAIN_ERROR",
+    }
+    assert "super-secret" not in json.dumps(result)
+    assert "10.0.0.7" not in json.dumps(result)
+
+
+def test_execute_suggestion_exception_is_stable_and_non_sensitive(monkeypatch):
+    import subprocess
+    import orchestrator
+    import shell_policy
+
+    class AllowPolicy:
+        def check(self, _command):
+            return None
+
+        def check_shell_metachars(self, _command):
+            return None
+
+        def is_whitelisted_for_execute(self, _command):
+            return True, "readonly"
+
+        def check_extra_blacklist(self, _command):
+            return None
+
+    monkeypatch.setattr(shell_policy, "ShellPolicy", AllowPolicy)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("provider token=super-secret host=10.0.0.7")
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "_audit_log", lambda *_args, **_kwargs: None)
+    brain = orchestrator.BrainOrchestrator.__new__(orchestrator.BrainOrchestrator)
+    result = brain.execute_suggestion("checkout", "kubectl get pods", task_id="task-1")
+    assert result == "$ kubectl get pods\n(执行失败: EXECUTION_FAILED)"
+    assert "super-secret" not in result
+    assert "10.0.0.7" not in result
+
+
+def test_execute_shell_exception_is_stable_and_non_sensitive(monkeypatch):
+    import subprocess
+    import shell_policy
+    import tools
+
+    class AllowPolicy:
+        def check(self, _command):
+            return None
+
+        def check_shell_metachars(self, _command):
+            return None
+
+        def is_whitelisted_for_execute(self, _command):
+            return True, "readonly"
+
+        def check_extra_blacklist(self, _command):
+            return None
+
+    monkeypatch.setattr(shell_policy, "ShellPolicy", AllowPolicy)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("mysql password=super-secret host=10.0.0.7")
+        ),
+    )
+    result = tools.execute_shell("kubectl get pods")
+    assert result == "执行失败: EXECUTION_FAILED"
+    assert "super-secret" not in result
+    assert "10.0.0.7" not in result
+
+
+def test_k8sgpt_exception_is_stable_and_non_sensitive(monkeypatch):
+    import tools
+
+    monkeypatch.setattr(tools, "_fetch_llm_config_for_k8sgpt", lambda: {
+        "api_key": "super-secret", "base_url": "https://llm.internal", "model": "test"
+    })
+    monkeypatch.setattr(
+        tools,
+        "_run_k8sgpt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("provider host=10.0.0.7 token=super-secret")
+        ),
+    )
+    result = tools.k8sgpt_diagnose("observability")
+    assert result == "K8sGPT unavailable: K8SGPT_FAILED"
+    assert "super-secret" not in result
+    assert "10.0.0.7" not in result
+
+
+def test_mcp_tool_exception_is_stable_and_non_sensitive(monkeypatch):
+    import mcp_server
+
+    server = mcp_server.MCPServer()
+    server.tools["query_metrics"]["handler"] = lambda **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("mysql password=super-secret host=10.0.0.7")
+    )
+    result = json.loads(server.call_tool("query_metrics", {"service": "checkout"}))
+    assert result == {"error": "MCP_TOOL_FAILED"}
+    assert "super-secret" not in json.dumps(result)
+    assert "10.0.0.7" not in json.dumps(result)

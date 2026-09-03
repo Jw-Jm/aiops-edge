@@ -16,6 +16,7 @@ from internal_query import _load_private_key
 from internal_query_client import InternalQueryClient
 from tool_execution_context import ToolExecutionContext
 from trusted_context_issuer import TrustedContextIssuer
+from error_safety import stable_error_code
 
 
 def _client() -> InternalQueryClient:
@@ -57,8 +58,11 @@ def _unwrap_query_payload(body: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("QUERY_INVALID_RESPONSE")
     if body.get("quality") == "failed":
         errors = body.get("source_errors") or body.get("errors") or []
-        detail = "; ".join(str(item) for item in errors[:3]) if isinstance(errors, list) else str(errors)
-        raise RuntimeError(detail or "QUERY_FAILED")
+        # Source details may contain SQL, URLs or credentials.  Preserve only
+        # an allow-listed error code; graph callers must never receive the
+        # provider's raw diagnostic text through this adapter.
+        first = errors[0] if isinstance(errors, list) and errors else errors
+        raise RuntimeError(stable_error_code(first, "GRAPH_UNAVAILABLE"))
     payload = body.get("data", body)
     if not isinstance(payload, Mapping):
         raise RuntimeError("QUERY_INVALID_DATA")

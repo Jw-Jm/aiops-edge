@@ -195,14 +195,22 @@ class RCAResult:
                    "window_start": self.window_start, "window_end": self.window_end,
                    "symptom_time": self.symptom_time, "policy_version": self.policy_version,
                    "policy_digest": self.policy_digest, "context_evidence": self.context_evidence}
-        # The evidence validator consumes the RCA result itself.  Expose the
-        # deterministic fields explicitly instead of requiring a second,
-        # lossy adapter to reconstruct them from ``confidence`` and graph
-        # internals.  A final context is emitted only for a genuinely
-        # confirmed, complete graph result; partial/probable results remain
-        # fail-closed and intentionally omit finality claims.
+        # The evidence validator and durable Run replay consume the RCA result
+        # itself.  Expose deterministic identity/score fields for every status
+        # instead of requiring a lossy adapter to reconstruct them from
+        # ``confidence`` and graph internals.  A final context is emitted only
+        # for a genuinely confirmed, complete graph result; partial/probable
+        # results remain fail-closed and intentionally omit finality claims.
         context = self.graph_context if isinstance(self.graph_context, dict) else {}
         vertices = context.get("vertices") if isinstance(context.get("vertices"), list) else []
+        score = float(self.confidence)
+        payload["status"] = self.root_cause_status
+        payload["time_range_start"] = self.window_start
+        payload["time_range_end"] = self.window_end
+        payload["root_score"] = score
+        payload["deterministic_root_score"] = score
+        payload["propagation_path"] = []
+        payload["subgraph_node_count"] = len(vertices)
         if self.root_cause_status == "confirmed" and not context.get("partial") and not context.get("stale"):
             final_context = dict(context)
             final_context["final"] = True
@@ -220,16 +228,6 @@ class RCAResult:
                 vertices_in_path = [{"entity_uid": str(uid)} for uid in vertex_uids if str(uid)]
             payload["propagation_path"] = list(vertices_in_path)
             payload["propagation_path_detail"] = dict(path) if isinstance(path, dict) else {}
-            payload["subgraph_node_count"] = len(vertices)
-            score = float(self.confidence)
-            payload["root_score"] = score
-            payload["deterministic_root_score"] = score
-            # These aliases are part of the evidence-gate contract.  The
-            # internal names remain in the payload above for backward
-            # compatibility with existing Run/event consumers.
-            payload["status"] = self.root_cause_status
-            payload["time_range_start"] = self.window_start
-            payload["time_range_end"] = self.window_end
         return payload
 
 

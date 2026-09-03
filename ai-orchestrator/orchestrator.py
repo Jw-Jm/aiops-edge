@@ -1576,7 +1576,9 @@ async def node_verify(state: AgentState) -> dict:
             "verify_pass": False,
             "verify_status": "inconclusive",
             "verify_error_code": "VERIFICATION_SOURCE_UNAVAILABLE",
-            "messages": [f"[{_now()}] 验证: 数据源不可用 ({e})"],
+            "messages": [
+                f"[{_now()}] 验证: 数据源不可用 (VERIFICATION_SOURCE_UNAVAILABLE)"
+            ],
         }
 
 
@@ -2198,7 +2200,10 @@ class BrainOrchestrator:
                 graph = getattr(self, "chat_graph", self.graph)
             return await graph.ainvoke(initial, config)
         except Exception as e:
-            return {"final_response": f"[DAG 执行异常: {str(e)[:200]}]", "error": str(e)[:200]}
+            # The graph result is forwarded to API/Run callers.  Keep provider,
+            # SQL and topology details out of that durable/user-visible
+            # boundary; diagnostics remain available through server logging.
+            return {"final_response": "[DAG 执行异常: BRAIN_ERROR]", "error": "BRAIN_ERROR"}
 
     async def stream_sync(self, intent: str, service: str, message: str, thread_id: str = "default",
                           mode: str = "chat", exec_context: str = "", iteration: int = 1,
@@ -2488,7 +2493,7 @@ class BrainOrchestrator:
                 except subprocess.TimeoutExpired:
                     outputs.append(f"$ {line}\n(命令超时)")
                 except Exception as e:
-                    outputs.append(f"$ {line}\n(执行失败: {e})")
+                    outputs.append(f"$ {line}\n(执行失败: EXECUTION_FAILED)")
             # 审计日志 (P1-2): task_id=真实会话/任务ID(无则 "manual"), operator="system"(非状态值)
             _audit_log(task_id or "manual", "execute", "system",
                        _infer_target_from_script(script, service), script[:500],
@@ -2496,7 +2501,7 @@ class BrainOrchestrator:
                        {"output_preview": "\n".join(outputs)[:200]})
             return "\n".join(outputs) or "(命令无输出)"
         except Exception as e:
-            return f"执行异常: {str(e)[:200]}"
+            return "执行异常: EXECUTION_FAILED"
 
     def _detect_service(
         self,

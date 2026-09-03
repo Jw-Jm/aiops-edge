@@ -73,6 +73,47 @@ def _configure(monkeypatch, private_key, token="svc-token"):
     monkeypatch.setenv("QUERY_TO_ORCHESTRATOR_TOKEN", token)
 
 
+def test_run_invocation_authz_error_does_not_echo_internal_details(monkeypatch):
+    """授权失败只返回稳定码，不能泄漏矩阵/数据库/主体细节。"""
+    import asyncio
+    import apps.investigation as investigation
+    from authorization_matrix import AuthzError
+
+    monkeypatch.setattr(
+        investigation,
+        "verify_run_invocation_ingress",
+        lambda _request: {
+            "capability": "ai.investigate",
+            "run_id": "run-1",
+            "invocation_id": "inv-1",
+            "principal_id": PRINCIPAL,
+            "tenant_id": TENANT,
+            "cluster_scope": [CLUSTER],
+        },
+    )
+
+    class DenyMatrix:
+        def authorize(self, **_kwargs):
+            raise AuthzError("AUTHZ_DENIED", "mysql password=super-secret host=db.internal")
+
+    monkeypatch.setattr(investigation, "_authz_matrix", DenyMatrix())
+
+    class RequestStub:
+        async def json(self):
+            return {"run_id": "run-1", "invocation_id": "inv-1"}
+
+    try:
+        asyncio.run(investigation.run_invocation(RequestStub()))
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+        detail = str(getattr(exc, "detail", ""))
+        assert detail == "AUTHZ_DENIED"
+        assert "super-secret" not in detail
+        assert "db.internal" not in detail
+    else:  # pragma: no cover - the endpoint must reject this request
+        raise AssertionError("run invocation unexpectedly accepted denied authorization")
+
+
 @pytest.fixture
 def client(monkeypatch):
     from fastapi.testclient import TestClient
