@@ -237,7 +237,7 @@ def test_execute_suggestion_exception_is_stable_and_non_sensitive(monkeypatch):
     monkeypatch.setattr(orchestrator, "_audit_log", lambda *_args, **_kwargs: None)
     brain = orchestrator.BrainOrchestrator.__new__(orchestrator.BrainOrchestrator)
     result = brain.execute_suggestion("checkout", "kubectl get pods", task_id="task-1")
-    assert result == "$ kubectl get pods\n(执行失败: EXECUTION_FAILED)"
+    assert result == "执行异常: EXECUTION_FAILED"
     assert "super-secret" not in result
     assert "10.0.0.7" not in result
 

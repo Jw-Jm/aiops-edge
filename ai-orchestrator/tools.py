@@ -565,8 +565,8 @@ def execute_shell(command: str, timeout: int = 30) -> str:
     if blk := policy.check_extra_blacklist(command):
         return f"命令被安全策略拒绝: {blk}"
     try:
-        # 已按产品要求放宽：命令支持管道/重定向（shell=True），执行前经人工审批，
-        # 因此按 shell 语义执行（`kubectl ... | grep` 等管道生效）。
+        # ShellPolicy.check_shell_metachars 已拦截重定向/拼接（仅放行单管道），
+        # shell=True 仅用于让 `kubectl ... | grep` 管道生效；如放宽元字符拦截，必须同步重审此处。
         result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
         output = result.stdout[:2000]
         if result.stderr:

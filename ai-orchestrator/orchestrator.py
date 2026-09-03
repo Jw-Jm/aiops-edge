@@ -2478,28 +2478,25 @@ class BrainOrchestrator:
             return f"命令被安全策略拒绝: {blk}"
         try:
             import subprocess
-            # 已按产品要求放宽：命令支持管道/重定向/换行（shell=True），
-            # 执行前有人工审批确认，因此按 shell 语义执行（`kubectl ... | grep` 等管道生效）。
-            outputs = []
-            for line in script.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                try:
-                    r = subprocess.run(line, shell=True, capture_output=True, text=True, timeout=30)
-                    outputs.append(f"$ {line}\n{r.stdout[:30000]}")
-                    if r.stderr:
-                        outputs.append(f"[stderr] {r.stderr[:10000]}")
-                except subprocess.TimeoutExpired:
-                    outputs.append(f"$ {line}\n(命令超时)")
-                except Exception as e:
-                    outputs.append(f"$ {line}\n(执行失败: EXECUTION_FAILED)")
+            # ShellPolicy.check_shell_metachars 已拦截换行/重定向/拼接（仅放行单管道），
+            # script 到这里必为单行命令。shell=True 仅用于让 `kubectl ... | grep` 管道生效，
+            # 不存在多行/重定向语义——如放宽元字符拦截，必须同步重审此处。
+            r = subprocess.run(script, shell=True, capture_output=True, text=True, timeout=30)
+            output = f"$ {script}\n{r.stdout[:30000]}"
+            if r.stderr:
+                output += f"\n[stderr] {r.stderr[:10000]}"
+            failed = "失败" in output or "超时" in output or r.returncode != 0
             # 审计日志 (P1-2): task_id=真实会话/任务ID(无则 "manual"), operator="system"(非状态值)
             _audit_log(task_id or "manual", "execute", "system",
                        _infer_target_from_script(script, service), script[:500],
-                       "success" if not any("失败" in o or "超时" in o for o in outputs) else "error",
-                       {"output_preview": "\n".join(outputs)[:200]})
-            return "\n".join(outputs) or "(命令无输出)"
+                       "error" if failed else "success",
+                       {"output_preview": output[:200]})
+            return output or "(命令无输出)"
+        except subprocess.TimeoutExpired:
+            _audit_log(task_id or "manual", "execute", "system",
+                       _infer_target_from_script(script, service), script[:500],
+                       "error", {"output_preview": "命令超时"})
+            return f"$ {script}\n(命令超时)"
         except Exception as e:
             return "执行异常: EXECUTION_FAILED"
 
