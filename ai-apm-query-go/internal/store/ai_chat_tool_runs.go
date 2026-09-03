@@ -66,7 +66,16 @@ func (d *AIChatToolRunDAO) Start(t AIChatToolRun) (bool, *AIChatToolRun, error) 
 	if status == "" {
 		status = "running"
 	}
-	started := nullableTime(t.StartedAt)
+	// ``started_at`` is NOT NULL in the durable audit schema.  Callers may omit
+	// it because the server owns the audit clock, but must never turn the
+	// omitted value into an explicit SQL NULL (MySQL error 1048).  Fill it at
+	// the persistence boundary so every admitted ChatTool has a start time.
+	startedAt := t.StartedAt
+	if startedAt == nil {
+		now := time.Now()
+		startedAt = &now
+	}
+	started := nullableTime(startedAt)
 	_, err := conn.Exec(`INSERT INTO ai_chat_tool_runs
  (chat_tool_run_id,principal_id,session_id,chat_session_id,turn_id,tool_call_id,
   tenant_id,cluster_id,tool_name,operation,capability,args_hash,status,started_at)

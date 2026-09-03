@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+
+	mysqlDriver "github.com/go-sql-driver/mysql"
 
 	"github.com/observability-platform/ai-apm-query-go/internal/contract"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
@@ -34,6 +37,7 @@ var chatOperationByCapability = map[string]string{
 
 func (h *Handler) beginChatToolRun(req *internalQueryRequest, tenantID, clusterID string) (*toolRunContext, bool, error) {
 	if h.chatToolDAO == nil {
+		log.Printf("chat tool audit start unavailable: dao=nil")
 		return nil, false, &internalQueryError{Code: contract.ErrorCodeToolUnavailable, Message: "ChatTool audit persistence unavailable"}
 	}
 	if req.PrincipalType != "user" || req.PrincipalID == "" || req.SessionID == "" {
@@ -65,6 +69,16 @@ func (h *Handler) beginChatToolRun(req *internalQueryRequest, tenantID, clusterI
 	}
 	created, existing, err := h.chatToolDAO.Start(audit)
 	if err != nil {
+		// Keep the client-facing error stable and never log identity values or
+		// database/provider text.  The concrete error class is enough to
+		// distinguish wiring, ownership and schema/connection failures in
+		// operator logs without leaking audit payloads.
+		var mysqlErr *mysqlDriver.MySQLError
+		if errors.As(err, &mysqlErr) {
+			log.Printf("chat tool audit start failed: error_type=%T mysql_code=%d", err, mysqlErr.Number)
+		} else {
+			log.Printf("chat tool audit start failed: error_type=%T", err)
+		}
 		if errors.Is(err, store.ErrChatToolIdempotencyConflict) {
 			return nil, false, &internalQueryError{Code: contract.ErrorCodeRunStateConflict, Message: err.Error()}
 		}

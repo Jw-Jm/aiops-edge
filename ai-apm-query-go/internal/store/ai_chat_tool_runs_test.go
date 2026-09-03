@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql/driver"
 	"errors"
 	"strings"
 	"testing"
@@ -8,6 +9,13 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+type nonNilTimeArgument struct{}
+
+func (nonNilTimeArgument) Match(value driver.Value) bool {
+	_, ok := value.(time.Time)
+	return ok
+}
 
 const (
 	chatAuditAuthSession = "55555555-5555-4555-8555-555555555555"
@@ -56,6 +64,36 @@ func TestChatToolRunStartCreatesAndDoesNotPersistResultPayload(t *testing.T) {
 	created, existing, err := (&AIChatToolRunDAO{}).Start(record)
 	if err != nil || !created || existing != nil {
 		t.Fatalf("Start() = created=%v existing=%v err=%v, want a new audit row", created, existing, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChatToolRunStartDefaultsRequiredStartedAt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := GetDB()
+	SetDB(db)
+	t.Cleanup(func() { SetDB(previous) })
+
+	record := chatAuditRecord()
+	record.StartedAt = nil
+	mock.ExpectQuery(`SELECT user_uuid,tenant_id,cluster_id FROM ai_chat_sessions WHERE session_id=\?`).
+		WithArgs(record.ChatSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "tenant_id", "cluster_id"}).AddRow(record.PrincipalID, record.TenantID, record.ClusterID))
+	mock.ExpectExec(`INSERT INTO ai_chat_tool_runs`).
+		WithArgs(record.ChatToolRunID, record.PrincipalID, record.SessionID, record.ChatSessionID,
+			record.TurnID, record.ToolCallID, record.TenantID, record.ClusterID, record.ToolName,
+			record.Operation, record.Capability, record.ArgsHash, record.Status, nonNilTimeArgument{}).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	created, existing, err := (&AIChatToolRunDAO{}).Start(record)
+	if err != nil || !created || existing != nil {
+		t.Fatalf("Start() = created=%v existing=%v err=%v, want a durable audit row", created, existing, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
