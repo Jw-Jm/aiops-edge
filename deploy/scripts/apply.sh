@@ -19,6 +19,25 @@ if [[ "${FRESH_INSTALL_VALIDATION:-0}" == "1" ]]; then
   exec "${SCRIPT_DIR}/local-validation.sh" "$@"
 fi
 
+# =============================================================================
+# 生产环境守卫（P1-S3）
+# AIOPS_ENV=production 时，本脚本的本地联调默认值（弱初始密码 / 关闭首次改密 /
+# dev- 前缀 JWT）一律禁止：要么显式提供生产值，要么拒绝部署。fail-closed。
+# =============================================================================
+is_production() {
+  [[ "$(printf '%s' "${AIOPS_ENV:-}" | tr '[:upper:]' '[:lower:]')" == "production" ]]
+}
+if is_production; then
+  if [[ "${ADMIN_PASSWORD:-}" == "" || "${ADMIN_PASSWORD:-}" == "admin1234" ]]; then
+    echo "错误: AIOPS_ENV=production 禁止缺省/弱 ADMIN_PASSWORD，请设置强随机值。" >&2
+    exit 1
+  fi
+  if [[ "${JWT_SECRET:-}" != "" && "${JWT_SECRET}" == dev-jwt-* ]]; then
+    echo "错误: AIOPS_ENV=production 禁止 dev- 前缀的 JWT_SECRET。" >&2
+    exit 1
+  fi
+fi
+
 # 确保 deepflow chart 仓库已添加
 helm repo add deepflow https://deepflowio.github.io/deepflow >/dev/null 2>&1 || true
 helm repo update deepflow >/dev/null 2>&1 || true
@@ -62,6 +81,7 @@ resolve_required_secret() {
 # Local first bootstrap has a deterministic credential. An explicit
 # ADMIN_PASSWORD or an
 # existing Secret still wins and is never overwritten by an upgrade.
+# 生产模式已在上方守卫中强制显式 ADMIN_PASSWORD，缺省 admin1234 仅限本地联调。
 ADMIN_PASSWORD_VAL="${ADMIN_PASSWORD:-$(secret_value ADMIN_INITIAL_PASSWORD)}"
 if [ -z "$ADMIN_PASSWORD_VAL" ]; then
   ADMIN_PASSWORD_VAL="admin1234"
@@ -98,18 +118,29 @@ get_or_gen() {
 }
 JWT_SECRET_VAL="${JWT_SECRET:-$(get_or_gen aiops-secrets JWT_SECRET dev-jwt-)}"
 LLM_KEY_VAL="${LLM_ENCRYPTION_KEY:-$(get_or_gen aiops-secrets LLM_ENCRYPTION_KEY dev-llm-)}"
+# 生产模式下禁止关闭首次登录强制改密（chart 默认 true 承担强制；本地联调才显式关闭）
+AUTH_PWD_CHANGE_ARGS=(--set queryApi.authRequireFirstLoginPasswordChange=false)
+if is_production; then
+  AUTH_PWD_CHANGE_ARGS=()
+fi
+# helm 密钥参数：构造为 argv 数组再整体传给 helm，避免逐一内联展开。
+# 注意：secrets 仍会留存于 helm release 值；生产应优先使用 values-prod.yaml
+# 的 existingSecretName 外部 Secret 模式（chart 已支持）。
+HELM_SET_ARGS=(
+  --set-string "secrets.jwtSecret=${JWT_SECRET_VAL}"
+  --set-string "secrets.llmEncryptionKey=${LLM_KEY_VAL}"
+  --set-string "secrets.internalToken=${INTERNAL_TOKEN_VAL}"
+  --set-string "secrets.ingestApiKey=${INGEST_API_KEY_VAL}"
+  --set-string "secrets.adminInitialPassword=${ADMIN_PASSWORD_VAL}"
+  --set-string "secrets.clickhousePassword=${CLICKHOUSE_PASSWORD_VAL}"
+  --set-string "secrets.mysqlRootPassword=${MYSQL_ROOT_PASSWORD_VAL}"
+)
 helm upgrade --install aiops "$CHART_DIR" \
   --namespace observability --create-namespace \
   --set deepflow.enabled=false \
-  --set queryApi.authRequireFirstLoginPasswordChange=false \
+  ${AUTH_PWD_CHANGE_ARGS[@]+"${AUTH_PWD_CHANGE_ARGS[@]}"} \
   --set global.imageTag="${IMAGE_TAG_VAL}" \
-  --set secrets.jwtSecret="${JWT_SECRET_VAL}" \
-  --set secrets.llmEncryptionKey="${LLM_KEY_VAL}" \
-  --set secrets.internalToken="${INTERNAL_TOKEN_VAL}" \
-  --set secrets.ingestApiKey="${INGEST_API_KEY_VAL}" \
-  --set secrets.adminInitialPassword="${ADMIN_PASSWORD_VAL}" \
-  --set secrets.clickhousePassword="${CLICKHOUSE_PASSWORD_VAL}" \
-  --set secrets.mysqlRootPassword="${MYSQL_ROOT_PASSWORD_VAL}" \
+  "${HELM_SET_ARGS[@]}" \
   --wait \
   --timeout 15m
 

@@ -65,9 +65,11 @@ func TestHandleProxyUnknownProvider(t *testing.T) {
 	cfg := &proxyConfig{
 		providerKeys: map[string]string{"deepseek": "sk-test"},
 		baseURLs:     map[string]string{"deepseek": "https://api.deepseek.com"},
+		proxyToken:   "secret-token",
 		client:       &http.Client{},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/unknown/chat/completions", nil)
+	req.Header.Set("X-Proxy-Token", "secret-token")
 	rec := httptest.NewRecorder()
 	cfg.handleProxy(rec, req)
 	if rec.Code != http.StatusNotFound {
@@ -89,12 +91,30 @@ func TestHandleProxyHonorsUpstreamTimeout(t *testing.T) {
 		providerKeys:    map[string]string{"deepseek": "sk-test"},
 		baseURLs:        map[string]string{"deepseek": upstream.URL},
 		allowlist:       map[string]struct{}{parsed.Hostname(): {}},
+		proxyToken:      "secret-token",
 		upstreamTimeout: 10 * time.Millisecond,
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/deepseek/chat/completions", nil)
+	req.Header.Set("X-Proxy-Token", "secret-token")
 	rec := httptest.NewRecorder()
 	cfg.handleProxy(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("stalled provider should time out as 502, got %d", rec.Code)
+	}
+}
+
+// 未配置 PROXY_TOKEN 时必须 fail-closed：拒绝转发而不是放行注入 provider key。
+func TestHandleProxyFailsClosedWithoutToken(t *testing.T) {
+	cfg := &proxyConfig{
+		providerKeys: map[string]string{"deepseek": "sk-test"},
+		baseURLs:     map[string]string{"deepseek": "https://api.deepseek.com"},
+		proxyToken:   "", // 未配置
+		client:       &http.Client{},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/deepseek/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	cfg.handleProxy(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when proxy token is not configured, got %d", rec.Code)
 	}
 }

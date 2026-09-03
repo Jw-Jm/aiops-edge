@@ -2,6 +2,9 @@ name: aiops-workflow-gates
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
   pull_request:
     paths:
       - "ai-apm-query-go/**"
@@ -12,6 +15,16 @@ on:
       - "deploy/scripts/verify-aiops-workflow-gates.sh"
       - "tests/workflow-e2e/**"
       - "Makefile"
+
+# Least privilege: the gate only needs to read the repository. No write
+# scopes are required because the gate never uploads artifacts or touches
+# the GitHub API beyond checkout.
+permissions:
+  contents: read
+
+concurrency:
+  group: aiops-workflow-gates-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -37,7 +50,7 @@ jobs:
       - name: Install Python and frontend dependencies
         run: |
           python -m venv ai-orchestrator/.venv314
-          ai-orchestrator/.venv314/bin/pip install -r ai-orchestrator/requirements.txt -r ai-orchestrator/requirements-dev.txt
+          ai-orchestrator/.venv314/bin/pip install -r ai-orchestrator/requirements-lock.txt -r ai-orchestrator/requirements-dev.txt
           npm ci --prefix observability-frontend
       - name: Verify workflow gates
         run: deploy/scripts/verify-aiops-workflow-gates.sh

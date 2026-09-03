@@ -96,8 +96,13 @@ func main() {
 func (c *proxyConfig) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// PROXY_TOKEN 鉴权（调用方 orchestrator 出示）。CrewAI/OpenAI-compatible
 	// clients naturally send the token as Authorization, while direct callers may
-	// use the explicit X-Proxy-Token header.
-	if c.proxyToken != "" && proxyTokenFromRequest(r) != c.proxyToken {
+	// use the explicit X-Proxy-Token header. Fail-closed: 未配置 PROXY_TOKEN 时
+	// 绝不放行——否则任何网络可达者都能借本代理注入 provider key 消耗额度。
+	if c.proxyToken == "" {
+		http.Error(w, "proxy credentials are not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if proxyTokenFromRequest(r) != c.proxyToken {
 		http.Error(w, "unauthorized proxy token", http.StatusForbidden)
 		return
 	}
