@@ -20,7 +20,9 @@ func newHTTPServer(handler *api.Handler, port int) *http.Server {
 		Addr:              fmt.Sprintf(":%d", port),
 		Handler:           protected,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      0,
+		// 慢客户端写超时兜底（审核 R4）：WriteTimeout=0 时慢连接可无限占用。
+		// SSE 是唯一长写响应，sse_proxy.go 内用 ResponseController 续期 deadline。
+		WriteTimeout:      5 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
 	}

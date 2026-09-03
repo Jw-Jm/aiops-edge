@@ -68,6 +68,13 @@ func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
+	// 服务器全局 WriteTimeout（bootstrap 设 5min）会掐断长连 SSE；按 heartbeat
+	// 节奏续期写 deadline（R4）：普通路由保持兜底超时，SSE 由活动自己续命。
+	rc := http.NewResponseController(w)
+	extendWriteDeadline := func() {
+		_ = rc.SetWriteDeadline(time.Now().Add(2 * sseHeartbeatInterval))
+	}
+	extendWriteDeadline()
 
 	// P1-5：retention 在 replay **前**检查——过期 cursor 立即拒绝（不先全量 replay 再发现超窗）。
 	last, lastErr := h.eventDAO.LastSequence(runID)
@@ -101,6 +108,7 @@ func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {
 	if len(evs) > 0 {
 		afterSeq = evs[len(evs)-1].Sequence
 	}
+	extendWriteDeadline()
 
 	// live-tail：轮询 LastSequence，heartbeat。
 	lastHeartbeat := time.Now()
@@ -142,6 +150,7 @@ func (h *Handler) StreamRunEvents(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 			}
 			lastHeartbeat = time.Now()
+			extendWriteDeadline()
 		}
 		select {
 		case <-r.Context().Done():
