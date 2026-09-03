@@ -358,91 +358,68 @@ def diagnose_root_cause(
 #  集群诊断工具（kubectl 为基础，反映真实集群状态）
 # ═══════════════════════════════════════════════════════
 
-# 集群检查命令模板：RCA 假设引擎用这些检查集群真实状态（而非容器内 ps/free/ss）
-CLUSTER_CHECK_TEMPLATES = {
-    "pod_events": "kubectl get events -n {namespace} --sort-by=.lastTimestamp --field-selector=type!=Normal | tail -20",
-    "pod_restarts": "kubectl get pods -n {namespace} -o wide",
-    "pod_oom": "kubectl get pods -n {namespace} -o jsonpath={.items[*].status.containerStatuses[*].lastState.terminated.reason} | tr ' ' '\\n' | grep -i oom",
-    "pod_waiting": "kubectl get pods -n {namespace} --field-selector=status.phase=Pending",
-    "node_status": "kubectl get nodes -o wide",
-    "node_usage": "kubectl top node",
-    "pod_usage": "kubectl top pod -n {namespace}",
-    "deploy_replicas": "kubectl get deployment -n {namespace} -o custom-columns=NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas",
-    "svc_endpoints": "kubectl get endpoints -n {namespace}",
-    "describe_pod": "kubectl describe pod -n {namespace} {pod} | tail -30",
+# ── P1-S1 结构化集群检查 ─────────────────────────────────────────────
+# 原 CLUSTER_CHECK_TEMPLATES + _ALLOWED_PIPE_TOOLS + 通用 shell 执行器
+# （白名单正则 + shell 解释执行）已整体移除。RCA 集群检查唯一入口是
+# cluster_checks.py 的结构化模型（kind/namespace/pod）：
+# - kubectl 一律 argv + shell=False，动词/参数来自代码内静态模板；
+# - 管道后处理（tail/head/grep/tr/sort/wc）在 Python 内实现，awk 删除；
+# - 任意 shell 字符串（含原白名单管道 + 文件参数读取通道）一律拒绝。
+
+_LLM_CHECK_KINDS_DESC = {
+    "pod_events": "查看 Warning 事件（Pod 崩溃/调度失败/探针失败等）",
+    "pod_restarts": "查看 Pod 列表与重启次数",
+    "pod_oom": "查看 Pod 上次容器终止原因（OOMKilled 检测）",
+    "pod_waiting": "查看 Pending 状态的 Pod",
+    "node_status": "查看节点状态与资源",
+    "node_usage": "查看节点资源用量",
+    "pod_usage": "查看 Pod 资源用量",
+    "deploy_replicas": "查看 Deployment 期望/就绪副本数",
+    "svc_endpoints": "查看 Service 后端 Endpoints",
+    "describe_pod": "查看单个 Pod 详情（需提供 pod 名称）",
 }
 
-# 允许的管道辅助命令（配合 kubectl 使用，白名单保证安全）
-_ALLOWED_PIPE_TOOLS = {"tail", "head", "sort", "grep", "tr", "wc", "awk", "echo"}
 
+def cluster_check(check, timeout: int = 15) -> str:
+    """执行结构化集群诊断检查（P1-S1 唯一入口，无 shell 路径）。
 
-def _run_kubectl_safe(cmd: str, timeout: int) -> str:
-    """安全执行 kubectl 命令（支持管道），经过严格白名单校验。
-
-    - 仅允许以 kubectl 开头的命令
-    - 管道符后续命令必须在白名单内
-    - 拒绝危险字符（重定向/命令替换等）
+    接受：
+    - ClusterCheck / {"kind","namespace","pod"} 结构化对象；
+    - '{kind}' 模板引用字符串（向后兼容）；
+    拒绝：任意裸 kubectl/shell 字符串（fail-closed，不再存在管道执行路径）。
     """
-    import re
-    import subprocess
-
-    # 校验：必须以 kubectl 开头
-    if not cmd.strip().startswith("kubectl "):
-        return f"[不安全命令，仅允许 kubectl] {cmd[:50]}"
-    # 校验：无危险字符（重定向/命令替换/分号/&&/逻辑或||/输入重定向）
-    # `<` 必须拦截：`kubectl get pods | sort < /etc/shadow` 中输入重定向会覆盖
-    # 管道 stdin，使白名单工具（sort/wc/grep -f 等）直接输出任意文件内容。
-    if re.search(r"[;<>&`$()\n]", cmd):
-        return f"[命令含危险字符，已拒绝] {cmd[:50]}"
-    # 校验：管道后续工具必须在白名单（按单个 | 分割，避免误切 ||）
-    parts = re.split(r"(?<!\|)\|(?!\|)", cmd)
-    for i, part in enumerate(parts):
-        part = part.strip()
-        if not part:
-            continue
-        if i == 0:
-            if not part.startswith("kubectl "):
-                return f"[不安全: 首段非 kubectl] {part[:50]}"
-            continue
-        first = part.split()
-        if not first:
-            continue
-        tool = first[0].strip("'\"")
-        if tool not in _ALLOWED_PIPE_TOOLS:
-            return f"[不安全管道工具: {tool}]"
-
+    from cluster_checks import (
+        ClusterCheck,
+        InvalidClusterCheck,
+        check_from_hypothesis,
+        parse_cluster_check,
+        run_cluster_check,
+    )
     try:
-        # 用 shell=True 支持管道，但已通过白名单校验
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-        out = r.stdout[:2000]
-        if r.stderr and "error" in r.stderr.lower():
-            out += f"\n[stderr]: {r.stderr[:300]}"
-        return out or "(no output)"
-    except subprocess.TimeoutExpired:
-        return f"命令超时 (>{timeout}s)"
-    except Exception as e:
-        return f"执行失败: {str(e)}"
+        if isinstance(check, ClusterCheck):
+            cc = check
+        elif isinstance(check, dict):
+            cc = check_from_hypothesis(check)
+        elif isinstance(check, str):
+            cc = check_from_hypothesis(check)
+        else:
+            cc = None
+    except InvalidClusterCheck as e:
+        return f"[不安全检查，已拒绝] {e}"
+    if cc is None:
+        return ("[不安全命令，已拒绝] RCA 集群诊断仅接受结构化检查 "
+                "(kind/namespace/pod)，不支持 shell/kubectl 命令字符串")
+    return run_cluster_check(cc, timeout=timeout)
 
 
-def cluster_check(check: str, timeout: int = 15) -> str:
-    """执行集群诊断检查命令（kubectl），返回真实集群状态。
-
-    支持管道等 shell 特性（安全白名单），查询被诊断服务的真实集群状态，
-    而非容器内 ps/free/ss（它们反映的是 orchestrator 自身，无法诊断集群）。
-    """
-    cmd = check.strip()
-    # 处理模板引用形式 (如 {pod_events})
-    if cmd.startswith("{") and cmd.endswith("}"):
-        tmpl = CLUSTER_CHECK_TEMPLATES.get(cmd[1:-1])
-        if tmpl:
-            cmd = tmpl.replace("{namespace}", "observability").replace("{pod}", "")
-            return _run_kubectl_safe(cmd, timeout)
-        return f"[未知检查模板] {cmd}"
-    # kubectl 命令直接执行
-    if cmd.startswith("kubectl "):
-        return _run_kubectl_safe(cmd, timeout)
-    # 其他命令：拒绝容器内诊断，明确提示
-    return f"[RCA 集群诊断仅支持 kubectl 命令，不支持容器内命令: {cmd[:50]}]"
+def _describe_check(check) -> str:
+    """把 proposed_check（结构化对象/模板串/任意值）转为安全的展示文本。"""
+    if isinstance(check, dict):
+        kind = check.get("kind", "?")
+        ns = check.get("namespace") or ""
+        pod = check.get("pod") or ""
+        return f"kind={kind} ns={ns} pod={pod}"[:100]
+    return str(check)[:100]
 
 
 # ═══════════════════════════════════════════════════════
@@ -451,9 +428,11 @@ def cluster_check(check: str, timeout: int = 15) -> str:
 
 HYPO_SYSTEM_PROMPT = """你是故障诊断引擎的"假设生成器"。基于异常指纹生成3-5个可证伪的假设。
 规则:
-1. 每个假设必须包含 proposed_check: 必须是 **kubectl 集群查询命令**（如 kubectl get events / kubectl describe pod / kubectl top pod），
-   用于查询被诊断服务的真实集群状态，**禁止使用 ps/free/ss/netstat 等容器内命令**（它们诊断不了集群其他服务）。
-   也可使用模板引用，如 {pod_events} {pod_restarts} {pod_oom} {node_status} {pod_usage} {deploy_replicas} {svc_endpoints}。
+1. 每个假设必须包含 proposed_check: **结构化检查对象**（不是 shell 命令）：
+   {"kind": "<检查类型>", "namespace": "<命名空间>", "pod": "<pod名，仅 describe_pod 需要>"}
+   kind 只能取以下值之一: pod_events pod_restarts pod_oom pod_waiting node_status node_usage
+   pod_usage deploy_replicas svc_endpoints describe_pod。
+   系统只接受结构化检查，任何 shell/kubectl 命令字符串都会被拒绝执行。
 2. 每个假设必须包含 predictions.confirm (支持证据) 和 predictions.falsify (排除证据)
 3. 考虑"正常"的维度作为关键线索
 4. 输出纯 JSON 格式: {"hypotheses": [{...}]}"""
@@ -483,10 +462,12 @@ def generate_hypotheses(fingerprint: dict, alert_context: dict = None) -> list[d
         ctx += f"- 告警消息: {alert_context.get('message', '')}\n"
         ctx += f"- 触发服务: {alert_context.get('service', '')}\n"
     ctx += f"关键矛盾: 错误率正常但延迟飙升" if "error_rate" in normal and any("latency" in a for a in abnormal) else ""
-    # 提供可用的集群检查命令模板，引导 LLM 生成符合 kubectl 语义的检查
-    ctx += f"\n\n可用集群检查命令 (proposed_check 必须用这些或类似 kubectl 命令，禁止容器内 ps/free/ss):\n"
-    for k, v in CLUSTER_CHECK_TEMPLATES.items():
-        ctx += f"- {{{k}}}: {v}\n"
+    # 提供可用的结构化检查类型（LLM 只能输出 kind/namespace/pod，不能输出命令）
+    ctx += "\n\n可用集群检查类型 (proposed_check 只能输出结构化对象 {\"kind\":...,\"namespace\":...}, 禁止 shell 命令):\n"
+    from cluster_checks import VALID_KINDS, DEFAULT_NAMESPACE
+    for k in VALID_KINDS:
+        ctx += f"- {k}: {_LLM_CHECK_KINDS_DESC[k]}\n"
+    ctx += f"- namespace 缺省为 {DEFAULT_NAMESPACE}\n"
 
     from orchestrator import _llm as llm_call
     # P1-5: 诊断类 LLM 调用放宽超时到 120s
@@ -562,7 +543,7 @@ def hypothesis_falsification_loop(hypotheses: list[dict], service: str, max_iter
             h["confidence"] = max(0.0, min(1.0, conf))
             evidence_log.append({
                 "hypothesis": h.get("id", h.get("hypothesis", ""))[:30],
-                "check": check[:100],
+                "check": _describe_check(check),
                 "result": interp["result"][:200],
                 "verdict": interp["verdict"],
                 "confidence": round(conf, 2),

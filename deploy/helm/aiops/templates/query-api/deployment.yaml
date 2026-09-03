@@ -29,7 +29,7 @@ spec:
       serviceAccountName: query-api-http
       containers:
         - name: query-api-http
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.queryApi | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["/query-api-http"]
           ports:
@@ -74,7 +74,7 @@ spec:
       serviceAccountName: query-run-dispatch
       containers:
         - name: query-run-dispatch
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.queryApi | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["/query-run-dispatcher"]
           env:
@@ -119,7 +119,7 @@ spec:
       serviceAccountName: query-alert-eval
       containers:
         - name: query-alert-eval
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.queryApi.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.queryApi | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["/query-alert-evaluator"]
           env:

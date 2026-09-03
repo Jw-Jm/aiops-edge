@@ -1,4 +1,7 @@
-# 排除开发/运行时无关内容，避免 `COPY . .` 将大文件或敏感内容拷入镜像
+# 排除开发/运行时无关内容。注意：被 Dockerfile 专用 COPY 引用的路径
+# （bin/, wheelhouse/, *.sha256, requirements-lock.txt）绝不能在此排除，
+# 否则 COPY 会因上下文缺少该路径而失败。运行时依赖通过 COPY 目录白名单
+# 显式挑选，wheelhouse/bin 不会进入最终镜像层。
 .git
 __pycache__
 *.pyc
@@ -8,6 +11,8 @@ venv
 .venv312
 node_modules
 *.log
+.pytest_cache
+.ruff_cache
 # Production images must not contain test fixtures, demo data, or the retired
 # RCA implementation. They remain available in the source tree for local
 # tests only and are never importable from a production image layer.

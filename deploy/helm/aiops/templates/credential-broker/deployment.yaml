@@ -48,7 +48,7 @@ spec:
       automountServiceAccountToken: true
       containers:
         - name: broker
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.credentialBroker.image.repository .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.credentialBroker.image.repository .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.credentialBroker | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

@@ -1,0 +1,6 @@
+2026/09/03 18:59:16 loadAlertRules(mysql): mysql unavailable
+2026/09/03 18:59:16 loadAlertSilences(mysql): mysql unavailable
+=== RUN   TestEWMAConstant
+--- PASS: TestEWMAConstant (0.00s)
+PASS
+ok  	github.com/observability-platform/ai-apm-query-go/internal/api	0.537s

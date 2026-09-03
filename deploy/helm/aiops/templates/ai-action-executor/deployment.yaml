@@ -29,7 +29,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: executor
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiActionExecutor.image.repository .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiActionExecutor.image.repository .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.aiActionExecutor | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

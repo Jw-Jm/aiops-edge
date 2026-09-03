@@ -1,4 +1,4 @@
-FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
+FROM docker.m.daocloud.io/library/golang:1.26.6-alpine AS builder
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /app
 COPY go.mod ./

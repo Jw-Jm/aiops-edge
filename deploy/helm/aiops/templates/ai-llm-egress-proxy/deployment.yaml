@@ -22,7 +22,7 @@ spec:
       {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
       containers:
         - name: proxy
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.llmEgressProxy.image.repository .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.llmEgressProxy.image.repository .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.llmEgressProxy | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

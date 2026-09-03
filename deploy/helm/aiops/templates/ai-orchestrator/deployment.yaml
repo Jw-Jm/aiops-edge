@@ -27,7 +27,7 @@ spec:
       # query-api remains the availability authority and the wait is fail-closed.
       initContainers:
         - name: wait-for-query-api
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiOrchestrator.image .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiOrchestrator.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.aiOrchestrator | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
           args:
@@ -42,7 +42,7 @@ spec:
           {{- end }}
       containers:
         - name: ai-orchestrator
-          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiOrchestrator.image .) "tag" .Values.global.imageTag) | quote }}
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiOrchestrator.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.aiOrchestrator | default "") "env" (.Values.global.environment | default "")) | quote }}
           imagePullPolicy: IfNotPresent
           {{- if .Values.internalTLS.enabled }}
           command: ["python", "-m", "mtls_server"]

@@ -40,11 +40,25 @@ func TestLinearRegressionShort(t *testing.T) {
 }
 
 // EWMA：常数列平滑后不变。
+// P1-CI1: 原精确比较 `v != 3` 依赖浮点实现细节——CI x86_64 上
+// 0.3*3+(1-0.3)*3 累积出 2.9999999999999996 而失败（本机 ARM64 恰好等于 3）。
+// 改为误差断言；不修改 EWMA 生产算法，不引入 rounding。
 func TestEWMAConstant(t *testing.T) {
 	out := EWMA([]float64{3, 3, 3, 3}, 0.3)
 	for _, v := range out {
-		if v != 3 {
-			t.Fatalf("EWMA constant = %v, want 3", v)
+		if math.Abs(v-3) > 1e-12 {
+			t.Fatalf("EWMA constant = %v, want 3 (epsilon 1e-12)", v)
+		}
+	}
+}
+
+// EWMA：非整数常数列同样收敛到常数（误差断言）。
+// P1-CI1 回归锁定：防止后续有人通过 rounding/取整让断言变绿而破坏生产精度。
+func TestEWMAConstantNonInteger(t *testing.T) {
+	out := EWMA([]float64{0.1, 0.1, 0.1, 0.1}, 0.3)
+	for i, v := range out {
+		if math.Abs(v-0.1) > 1e-12 {
+			t.Fatalf("EWMA constant non-integer out[%d] = %v, want 0.1 (epsilon 1e-12)", i, v)
 		}
 	}
 }

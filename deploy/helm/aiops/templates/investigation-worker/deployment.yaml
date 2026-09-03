@@ -1,6 +1,6 @@
 {{- if .Values.investigationWorker.enabled }}
 {{- $workerRepository := tpl .Values.investigationWorker.image.repository . -}}
-{{- $workerImage := include "aiops.imageWithGlobalTag" (dict "image" $workerRepository "tag" .Values.global.imageTag) -}}
+{{- $workerImage := include "aiops.imageWithGlobalTag" (dict "image" $workerRepository "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.investigationWorker | default "") "env" (.Values.global.environment | default "")) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

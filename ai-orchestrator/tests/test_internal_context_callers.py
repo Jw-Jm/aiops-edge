@@ -201,7 +201,7 @@ def test_k8s_rca_does_not_fallback_to_orchestrator_shell(monkeypatch):
 
     monkeypatch.setattr(
         rca,
-        "_run_kubectl_safe",
+        "cluster_check",
         lambda *_args, **_kwargs: pytest.fail(
             "canonical RCA must not read Kubernetes credentials through shell"
         ),
