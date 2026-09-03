@@ -1,6 +1,7 @@
 # P1-A1 Legacy runtime 使用矩阵（2026-09-03）
 
 > 依据审核报告 §12。原则：**删除优于关闭**；先真实调用图，再删除。
+> 更新：P1-A1 完整删除已完成（见 §5 最终状态）。
 
 ## 1. Legacy 文件矩阵
 
@@ -38,3 +39,14 @@
 
 - main/flow_api legacy flow endpoints（run-legacy 已于 P14 删除，investigator legacy 主链仍在 main）
 - `INVESTIGATOR_ENABLED`/`LEGACY_FLOW_RUNTIME_ENABLED` 的 Helm env 注入清理（等代码删后）
+
+## 5. P1-A1 最终删除状态（本轮已完成）
+
+- **canonical RcaEngine 提升**：`rca_engine_legacy.py` → `rca_engine/phase9_engine.py`；`rca_engine/__init__` 删除 feature-flag 桥（_load_legacy/_legacy_compat_enabled），静态导出 canonical（RcaEngine is phase9_engine.RcaEngine 同一对象）。
+- **legacy alert investigator 主链删除**：main Mount B6（maybe_investigate）与 Mount A3（alert→flow dispatch）移除；`investigator.py` 物理删除；flow_api 的 `/run` 与 `/runs/{id}/resume` 端点删除。
+- **direct mutation 退役**：main `_direct_mutation_enabled()` 恒 False（不再读取 retired flag），protected endpoints 恒 410 fail-closed。
+- **Helm/values**：ai-orchestrator + investigation-worker 中 `LEGACY_FLOW_RUNTIME_ENABLED`/`INVESTIGATOR_ENABLED`/`LEGACY_DIRECT_MUTATIONS_ENABLED` env 全部移除；values keys 删除。
+- **前端**：`runFlowAsync`/`resumeFlowRun` client 删除（无调用方）。
+- **测试迁移**：rca isolation 改为 canonical identity contract；legacy flag 测试改为"恒 False"语义；flow_api run/resume 测试改为"端点已删除→404"；checkpointer streamed-exec 测试移除（retired 路径）。
+- **ARCH contract 601-607**：canonical-only 装配断言（legacy token 在 runtime/Helm 零命中）。
+- **验证**：orchestrator 1321 passed；gate helm+contracts exit 0；`git grep` legacy tokens（rca_engine_legacy/LEGACY_FLOW_RUNTIME_ENABLED/LEGACY_DIRECT_MUTATIONS_ENABLED/INVESTIGATOR_ENABLED）= 0 hits。

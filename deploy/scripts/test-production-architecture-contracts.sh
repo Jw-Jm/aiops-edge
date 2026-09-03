@@ -183,4 +183,14 @@ required 'uq_ai_chat_message_turn' "$repo_root/ai-apm-query-go/internal/store/mi
 required 'uq_ai_chat_tool_call' "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0017_ai_chat_tool_runs.sql" 'ARCH-508 ChatTool idempotency constraint missing';
 required 'fk_ai_chat_tool_chat_session' "$repo_root/ai-apm-query-go/internal/store/migrations/versions/0017_ai_chat_tool_runs.sql" 'ARCH-509 ChatTool chat-session ownership FK missing';
 
+# P1-A1: canonical-only assembly. production composition must not contain any
+# legacy RCA bridge / legacy investigator / legacy flow or direct-mutation flag.
+forbidden 'LEGACY_FLOW_RUNTIME_ENABLED' "$repo_root/ai-orchestrator" 'ARCH-601 legacy flow runtime flag leaked';
+forbidden 'INVESTIGATOR_ENABLED' "$repo_root/ai-orchestrator" 'ARCH-602 legacy investigator flag leaked';
+forbidden 'LEGACY_DIRECT_MUTATIONS_ENABLED' "$repo_root/ai-orchestrator" 'ARCH-603 legacy direct-mutation flag leaked';
+forbidden 'maybe_investigate' "$repo_root/ai-orchestrator/main.py" 'ARCH-604 legacy alert auto-investigation call remains';
+forbidden 'from investigator import' "$repo_root/ai-orchestrator" 'ARCH-605 legacy investigator import remains';
+forbidden '_load_legacy' "$repo_root/ai-orchestrator/rca_engine" 'ARCH-606 legacy RCA bridge loader remains';
+required 'def _direct_mutation_enabled' "$repo_root/ai-orchestrator/main.py" 'ARCH-607 in-process mutation guard removed';
+
 echo "production architecture contracts passed"
