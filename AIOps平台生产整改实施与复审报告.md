@@ -17,9 +17,9 @@
 
 ### 0.0.2 代码、GitHub、镜像和运行态一致性
 
-- GitHub：`origin/main` 已同步到 `c81fb0c19c312e56b303af292d1de99d33a1fd46`（提交 `2cb7e1d` 与 `c81fb0c` 均已推送）。工作区无代码修改；用户既有 `.ses` 运行时文件未纳入提交。
-- 镜像：`IMAGE_TAG=git-c81fb0c19c31` 的 12 个自研镜像全部本机构建成功，OCI revision label 与完整 Git commit 一致；构建中代理 registry 两次 TLS `bad record MAC` 已通过同版本官方基础镜像缓存重试解决，没有复用旧镜像。
-- Helm：`aiops` revision **54**，`STATUS=deployed`。自研 Deployment/DaemonSet/Worker/迁移 Job 均使用 `git-c81fb0c19c31`；Pod 实际 imageID 已逐一核对，业务 Pod 全部 Ready、迁移及回填 Job 全部 Complete、重启数为 0。
+- GitHub：`origin/main` 已包含运行代码提交 `c81fb0c19c312e56b303af292d1de99d33a1fd46`（`2cb7e1d`、`c81fb0c`）及其后的文档提交 `930e341`；工作区无代码修改，用户既有 `.ses` 运行时文件未纳入提交。
+- 镜像：`IMAGE_TAG=git-930e341` 的 12 个自研镜像全部本机构建成功，OCI revision label 与构建时完整 Git commit（`930e341`）一致；构建中代理 registry 的 TLS `bad record MAC` 已通过同版本官方基础镜像缓存重试解决，没有复用旧镜像。
+- Helm：`aiops` revision **55**，`STATUS=deployed`。自研 Deployment/DaemonSet/Worker/迁移 Job 均使用 `git-930e341`；Pod 实际 imageID 已逐一核对，业务 Pod 全部 Ready、迁移及回填 Job 全部 Complete、重启数为 0。
 - 运行探针：编排 Pod 内使用挂载的本机 mTLS CA/证书/私钥访问 `https://127.0.0.1:8080/metrics`，HTTP **200**；首次错误端口 8000 的探针结果不计入验收。
 
 ### 0.0.3 测试与静态检查
@@ -30,7 +30,7 @@
 | Go 自研服务 | Query、Ingest、Event Collector、Action Executor、Credential Broker、LLM Egress Proxy、迁移工具 `go vet ./...` 与 `go test ./...` 全部返回 0。 | **通过** |
 | 前端 | 25 个 Vitest 文件、39 个测试通过；`tsc` 与 Vite production build 通过。 | **通过** |
 | 部署/生产架构/Secret 契约 | `test-deployment-contracts.sh`、`test-production-architecture-contracts.sh`、`secret-format-test.sh` 全部通过。 | **通过** |
-| release evidence | `/tmp/aiops-release-evidence-c81fb0c19c31.json`：commit、工作区、12 个本地镜像 presence/revision label、Helm/契约/单测均 PASS；`registry_bound=false`、签名 binding/KMS 公钥缺失，最终 `publishable=false`。 | **按设计阻断** |
+| release evidence | `/tmp/aiops-release-evidence-c81fb0c19c31.json` 记录了代码提交 `c81fb0c` 的本地镜像；随后文档提交 `930e341` 已重建并部署 `git-930e341`。本机镜像 presence/revision、Helm/契约/单测均 PASS；`registry_bound=false`、签名 binding/KMS 公钥缺失，最终 `publishable=false`。 | **按设计阻断** |
 
 ### 0.0.4 真实观测与 RCA 结论
 
