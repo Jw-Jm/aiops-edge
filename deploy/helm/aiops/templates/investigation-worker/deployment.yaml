@@ -71,10 +71,7 @@ spec:
               value: "true"
             - name: INVESTIGATION_RUNTIME_ENABLED
               value: "1"
-            - name: LEGACY_FLOW_RUNTIME_ENABLED
-              value: "0"
-            - name: LEGACY_DIRECT_MUTATIONS_ENABLED
-              value: "0"
+            {{- /* P1-A1: legacy flow/mutation env 对 worker 无读取方，已移除 */}}
             - name: QUERY_API_URL
               value: {{ .Values.aiOrchestrator.queryApiUrl | quote }}
             - name: GRAPH_BACKEND

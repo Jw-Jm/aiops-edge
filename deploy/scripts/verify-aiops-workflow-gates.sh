@@ -127,10 +127,10 @@ if has_stage helm; then
   fi
 
   echo "[policy] production safety switches"
-  if ! rg -Uq 'name: LEGACY_FLOW_RUNTIME_ENABLED[[:space:]]+value: "0"' "${rendered}" || \
-     ! rg -Uq 'name: INVESTIGATOR_ENABLED[[:space:]]+value: "0"' "${rendered}" || \
-     ! rg -Uq 'name: LEGACY_DIRECT_MUTATIONS_ENABLED[[:space:]]+value: "0"' "${rendered}"; then
-    echo "legacy runtimes or direct mutation routes are enabled in the rendered production manifest" >&2
+  # P1-A1: legacy flow/investigator/direct-mutation 已物理删除。渲染 manifest 中
+  # 任何 legacy env（FLOW_RUNTIME/INVESTIGATOR/DIRECT_MUTATIONS）都不应存在。
+  if rg -q 'name: (LEGACY_FLOW_RUNTIME_ENABLED|INVESTIGATOR_ENABLED|LEGACY_DIRECT_MUTATIONS_ENABLED)' "${rendered}"; then
+    echo "legacy runtime or direct-mutation env leaked into the rendered production manifest" >&2
     exit 1
   fi
 fi

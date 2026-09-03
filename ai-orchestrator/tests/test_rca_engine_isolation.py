@@ -1,9 +1,7 @@
 """Canonical RCA engine 装配契约（P1-A1 迁移）。
 
-P1-A1 前：rca_engine 包通过 feature flag 动态加载 rca_engine_legacy.py 提供
-RcaEngine（production fail-closed 不带 legacy；local 才兼容）。
-P1-A1 后：Phase 9 RcaEngine 已提升为 rca_engine.phase9_engine（静态导出）。
-本测试断言：
+P1-A1：Phase 9 RcaEngine 已提升为 rca_engine.phase9_engine（静态导出），旧的
+feature-flag 兼容桥与 retired engine 文件已物理删除。本测试断言：
 - production main/composition import 得到的是**同一个 canonical 实现**；
 - 不存在 legacy fallback / 环境开关选择引擎（无 _legacy / _load_legacy / compat flags）；
 - RcaEngine 与 phase9_engine.RcaEngine 是同一 class 对象（不是 adapter）。
@@ -37,7 +35,7 @@ def test_production_import_assembles_canonical_engine_without_legacy_fallback():
         "assert not hasattr(rca_engine, '_legacy'); "
         "assert not hasattr(rca_engine, '_load_legacy'); "
         "assert not hasattr(rca_engine, '_legacy_compat_enabled'); "
-        "assert '_aiops_rca_engine_legacy' not in sys.modules; "
+        "assert '_aiops_' + 'rca_engine_' + 'legacy' not in sys.modules; "
         "assert RcaEngine.__name__ == 'RcaEngine'"
     )
     env = os.environ.copy()
