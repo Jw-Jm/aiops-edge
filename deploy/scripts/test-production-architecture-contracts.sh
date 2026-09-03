@@ -40,6 +40,23 @@ if [[ "${AIOPS_CONTRACT_ALLOW_TEST_SECRETS:-}" == "true" ]]; then
     --set 'networkPolicy.kubernetesApiCIDRs={10.0.0.0/8}'
     --set-string 'internalTLS.clientSAN=query-api.observability.svc.cluster.local\,query-run-dispatch.observability.svc.cluster.local\,ai-orchestrator.observability.svc.cluster.local'
   )
+  # P1-SUP2: production render 必须 digest-pin（本地 contract 测试注入同形假 digest）
+  gate_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  helm_secret_args+=(
+    --set global.imageDigests.queryApi="${gate_digest}"
+    --set global.imageDigests.ingest="${gate_digest}"
+    --set global.imageDigests.eventCollector="${gate_digest}"
+    --set global.imageDigests.aiOrchestrator="${gate_digest}"
+    --set global.imageDigests.investigationWorker="${gate_digest}"
+    --set global.imageDigests.frontend="${gate_digest}"
+    --set global.imageDigests.aiActionExecutor="${gate_digest}"
+    --set global.imageDigests.credentialBroker="${gate_digest}"
+    --set global.imageDigests.llmEgressProxy="${gate_digest}"
+    --set global.imageDigests.ipmiExporter="${gate_digest}"
+    --set global.imageDigests.clickhouseMigrator="${gate_digest}"
+    --set global.imageDigests.mysqlMigrator="${gate_digest}"
+    --set global.imageDigests.graphSchemaMigrator="${gate_digest}"
+  )
 fi
 
 command -v helm >/dev/null || { echo "ARCH-001 missing helm" >&2; exit 2; }
@@ -119,8 +136,9 @@ required 'event_identity_counts' "$repo_root/deploy/scripts/validate-local-stack
 required '0009_k8s_events_require_identity.sql' "$tmp" 'ARCH-326 event identity default removal migration missing';
 required 'event_id_default_kind' "$repo_root/deploy/scripts/validate-local-stack.sh" 'ARCH-327 event_id default removal gate is missing';
 required 'tests/' "$repo_root/ai-orchestrator/.dockerignore" 'ARCH-328 production orchestrator image includes test fixtures';
-required 'rca_engine_legacy.py' "$repo_root/ai-orchestrator/.dockerignore" 'ARCH-329 production image includes retired RCA implementation';
-required 'def _legacy_compat_enabled' "$repo_root/ai-orchestrator/rca_engine/__init__.py" 'ARCH-330 RCA legacy bridge is not explicitly isolated';
+required 'phase9_engine' "$repo_root/ai-orchestrator/rca_engine/__init__.py" 'ARCH-329 canonical RcaEngine is not statically exported';
+forbidden 'rca_engine_legacy' "$repo_root/ai-orchestrator/.dockerignore" 'ARCH-329b retired RCA dockerignore entry still present';
+required 'from .phase9_engine import' "$repo_root/ai-orchestrator/rca_engine/__init__.py" 'ARCH-330 RcaEngine must statically import the canonical phase9 engine';
 required 'def _legacy_graph_snapshot_enabled' "$repo_root/ai-orchestrator/tools.py" 'ARCH-331 production graph snapshot fallback is not explicitly isolated';
 required 'if _legacy_public_api_retired():' "$repo_root/ai-orchestrator/main.py" 'ARCH-332 production legacy mutation flags are not fail-closed';
 required 'def stable_error_code' "$repo_root/ai-orchestrator/error_safety.py" 'ARCH-333 stable runtime error boundary missing';
