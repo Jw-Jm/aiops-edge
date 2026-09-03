@@ -28,7 +28,9 @@
 现状：main.py 仍为 4435 行 / 85 条路由，但域模块化已存在并持续增长：
 `apps/investigation.py`（worker）、`ai_runs_api.py`、`ops_action_api.py`、`data_cleanup_api.py`、`flow_api.py`、`kg_api.py`、`production_surface.py`（生产路由 allowlist 过滤）、`internal_ingress.py`、`db_agents.py` 等。
 
-> 状态：本迭代评估了"完整物理拆分 main.py"（将剩余 chat/gateway/legacy-tasks 域逐条搬出）的改造成本与回归风险，确认其为**无行为变化的结构重构**且会触碰大量共享 main 全局状态。选择以「production_surface 路由清单 + ARCH 模块边界契约」作为拆包约束的收敛形态（见 §5 决策），未在本次做高风险搬移。
+> **决策（2026-09-03 用户裁决）**：本轮以收敛形态收口——`production_surface` 路由 allowlist + 既有域 router（domain owner）装配 + ARCH 模块边界契约共同构成"按域装配"约束（P3-4 选择 A）。**禁止**为降低 main.py 行数做大规模无行为变化搬移；main.py 剩余单文件的完整物理拆包另立后续重构任务。
+>
+> 该约束由 `deploy/scripts/test-production-architecture-contracts.sh` 固化：生产路由面 = ARCH-316/317（`PRODUCTION_ROUTE_ALLOWLIST` + `_apply_production_route_surface()` 接线）；域 router 装配 + canonical-only = ARCH-601..607（legacy flow/investigator/direct-mutation 泄漏 forbidden、RCA 桥 loader forbidden、in-process mutation guard 在位）。域模块由 main 通过 `app.include_router(...)` 装配（apps/investigation、ai_runs_api、ops_action_api、data_cleanup_api、flow_api、kg_api 等），任何新增生产能力必须先落域模块 + allowlist，再经 contracts gate。
 
 ## 4. GOV1 ruleset 变更备注（补记）
 
@@ -43,8 +45,8 @@
 ## 5. 决策与边界
 
 - P1-A1 用户边界已遵守：① 兼容桥仅符号兼容（RcaEngine 静态同一实现）；② 未误删 V2 Investigation Runtime / 当前 RCA API / Query API→Orchestrator 正式链；③ legacy 测试删除但安全约束由 ARCH 契约承接；④ 本轮未混入域拆包/HA/接口美化。
-- **域拆包（P3-4）收敛形态**：production route 过滤（`production_surface`）+ 既有域 router + ARCH 模块边界断言已构成"按域装配"约束；对 main.py 剩余单文件的搬移列为独立重构任务（涉及 chat/gateway 大域，需回归预算），未在本轮混入（与用户 P1-A1 边界 4 一致）。
-- **HA（P3-5 / P2-HA1）**：报告标注"需要时"。生产现为单副本（orchestratorReplicas=1, PVC RWO）。是否投入多副本全套（checkpoint 外部化、worker lease、2+ replicas、故障恢复测试）或按报告接受单副本并写 `runtime-slo.md`（明确 RTO/失效行为、删除"生产高可用"模糊表述）——需要正式 SLO 输入，未擅断。
+- **域拆包（P3-4）收敛形态（已按用户裁决收口）**：production_surface 路由 allowlist + 既有域 router 装配 + ARCH 模块边界断言构成"按域装配"约束；main.py 剩余单文件物理拆包列为后续重构任务（禁止本轮大规模无行为变化搬移）。
+- **HA（P3-5 / P2-HA1）**：**保持 OPEN**（2026-09-03 用户裁决）。按裁决补 `docs/runtime-slo.md`「可用性与失效行为」一节：只记录客观部署事实（1 副本 / PVC RWO / checkpoint、sqlite、Chroma 本地耦合 / canonical 状态在 MySQL），并明确**业务 SLO 未确认**；未填写 RTO/RPO，未以单副本现状声称"满足生产高可用"。关闭需业务 SLO 输入后二选一。
 
 ## 6. 验证汇总
 
