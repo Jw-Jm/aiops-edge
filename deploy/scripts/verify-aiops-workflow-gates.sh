@@ -59,7 +59,9 @@ if has_stage helm; then
     echo "helm is required for the release gate" >&2
     exit 1
   fi
-  helm lint deploy/helm/aiops
+  # P1-SUP2: helm lint 用 local 环境（production digest 语义由随后的
+  # helm template + sup2 断言校验，lint 只做 chart 结构校验）
+  helm lint deploy/helm/aiops --set global.environment=local
   rendered="${TMPDIR:-/tmp}/aiops-workflow-gate-${$}.yaml"
   role="${TMPDIR:-/tmp}/aiops-orchestrator-role-${$}.yaml"
   trap 'rm -f "${rendered}" "${role}"' EXIT

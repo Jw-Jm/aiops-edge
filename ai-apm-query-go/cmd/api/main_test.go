@@ -70,6 +70,8 @@ func TestHelmChartRendersSeparateQueryRuntimeWorkloads(t *testing.T) {
 	chartDir := filepath.Join("..", "..", "..", "deploy", "helm", "aiops")
 	args := []string{
 		"template", "aiops", chartDir,
+		// P1-SUP2: 结构测试用 local 环境（digest 语义由 test-image-digest-contracts.sh 覆盖）
+		"--set", "global.environment=local",
 		"--set-string", "secrets.jwtSecret=test-jwt-secret-012345678901234567890123",
 		"--set-string", "secrets.llmEncryptionKey=test-llm-encryption-key-012345678901",
 		"--set-string", "secrets.internalToken=test-internal-token-0123456789012345",
