@@ -15,9 +15,20 @@ from skill_registry import ToolRegistry
 from kg_tools import kg_evidence_tool
 from trusted_context import TrustedContextError
 from mtls import urlopen as mtls_urlopen
+from error_safety import stable_error_code
 
 QUERY_API = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "")
+
+
+def _public_query_error(exc: BaseException, default: str = "QUERY_FAILED") -> str:
+    """Expose only a stable error code from a query/tool exception.
+
+    Provider, SQL and transport exceptions can contain credentials or internal
+    topology.  Tool results are user-visible, so never interpolate ``str(exc)``.
+    """
+    code = getattr(exc, "error_code", None) or getattr(exc, "kind", None)
+    return stable_error_code(code, default)
 
 
 def _get_json(url: str, *, request_context: RequestContext | None = None) -> dict:
@@ -306,14 +317,14 @@ def _unwrap_internal_query_result(result: object) -> tuple[dict | None, str | No
     an empty successful result.
     """
     if not isinstance(result, dict):
-        return None, "invalid query response"
+        return None, "INVALID_QUERY_RESPONSE"
     if result.get("quality") == "failed":
-        errors = result.get("source_errors") or result.get("errors") or []
-        detail = "; ".join(str(item) for item in errors[:3]) if isinstance(errors, list) else str(errors)
-        return None, detail or "query failed"
+        return None, _public_query_error(
+            RuntimeError(result.get("error_code") or ""), "QUERY_FAILED"
+        )
     payload = result.get("data", result)
     if not isinstance(payload, dict):
-        return None, "invalid query data"
+        return None, "INVALID_QUERY_DATA"
     return payload, None
 
 
@@ -330,14 +341,14 @@ def query_metrics(service: str, tenant_id: str = "", cluster_id: str = "", *, re
                 tool_id="query_metrics.v1", operation="metrics", params={"service": service}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "investigation":
         try:
             return json.dumps(_internal_investigation_query(
                 tool_id="query_metrics.v1", operation="metrics", params={"service": service}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
         return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(f"{QUERY_API}/services/{service}?{cp}", request_context=context)
@@ -359,14 +370,14 @@ def query_traces(service: str = "", tenant_id: str = "", cluster_id: str = "", *
                 tool_id="query_traces.v1", operation="traces", params={"service": service, "limit": 5}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "investigation":
         try:
             return json.dumps(_internal_investigation_query(
                 tool_id="query_traces.v1", operation="traces", params={"service": service, "limit": 5}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
         return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(url, request_context=context)
@@ -396,7 +407,7 @@ def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "", *, re
                 params={"service": service, "minutes": minutes}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"日志查询失败: {str(exc)[:200]}"
+            return f"日志查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "investigation":
         try:
             return json.dumps(_internal_investigation_query(
@@ -404,7 +415,7 @@ def query_logs(service: str = "", minutes: int = 30, cluster_id: str = "", *, re
                 params={"service": service, "minutes": minutes}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"日志查询失败: {str(exc)[:200]}"
+            return f"日志查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
         return "日志查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(url, request_context=context)
@@ -432,14 +443,14 @@ def query_topology(tenant_id: str = "", cluster_id: str = "", *, request_context
                 tool_id="query_topology.v1", operation="topology", params={}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "investigation":
         try:
             return json.dumps(_internal_investigation_query(
                 tool_id="query_topology.v1", operation="topology", params={}, context=context,
             ), ensure_ascii=False)
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
         return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     data = _get_json(f"{QUERY_API}/topology/global?{cp}", request_context=context)
@@ -454,15 +465,18 @@ def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_conte
         return "查询失败: invalid_context"
     if getattr(request_context, "workload_kind", "") == "investigation":
         try:
-            data = _internal_investigation_query(
+            body = _internal_investigation_query(
                 tool_id="query_topology.v1", operation="topology", params={}, context=request_context,
             )
+            data, unwrap_error = _unwrap_internal_query_result(body)
+            if unwrap_error or data is None:
+                return f"查询失败: {unwrap_error or 'QUERY_FAILED'}"
             nodes = data.get("nodes", []) if isinstance(data, dict) else []
             services = sorted({str(n.get("name") or n.get("service_name")) for n in nodes
                                if isinstance(n, dict) and n.get("type") == "service"})
             return "服务数 " + str(len(services)) + "：\n" + "\n".join(services[:50])
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(request_context, "workload_kind", "") == "chat" and _chat_context_ready(request_context):
         try:
             data = _internal_chat_query(
@@ -476,7 +490,7 @@ def get_service_list(tenant_id: str = "", cluster_id: str = "", *, request_conte
                                if isinstance(n, dict) and n.get("type") == "service"})
             return "服务数 " + str(len(services)) + "：\n" + "\n".join(services[:50])
         except Exception as exc:
-            return f"查询失败: {str(exc)[:200]}"
+            return f"查询失败: {_public_query_error(exc)}"
     if getattr(request_context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(request_context):
         return "查询失败: CHAT_TOOL_AUDIT_REQUIRED"
     # The legacy MySQL graph snapshot is compatibility-only.  It must be
@@ -697,7 +711,7 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
                 return "K8s 基础设施数据不可用（未获取到节点信息，无法据此判断健康）"
             return f"运行中 Pods: {len(pods)} 个\n节点: {len(nodes)} 个"
         except Exception as exc:
-            return f"K8s 基础设施数据不可用（查询失败: {str(exc)[:200]}）"
+            return f"K8s 基础设施数据不可用（查询失败: {_public_query_error(exc)}）"
     if getattr(context, "workload_kind", "") == "chat" and _chat_context_ready(context):
         try:
             body = _internal_chat_query(
@@ -713,7 +727,7 @@ def get_infrastructure(*, request_context: RequestContext | None = None) -> str:
                 return "K8s 基础设施数据不可用（未获取到节点信息，无法据此判断健康）"
             return f"运行中 Pods: {len(pods)} 个\n节点: {len(nodes)} 个"
         except Exception as exc:
-            return f"K8s 基础设施数据不可用（查询失败: {str(exc)[:200]}）"
+            return f"K8s 基础设施数据不可用（查询失败: {_public_query_error(exc)}）"
     if getattr(context, "workload_kind", "") == "chat" and not _chat_compatibility_allowed(context):
         return "K8s 基础设施数据不可用（CHAT_TOOL_AUDIT_REQUIRED）"
     # 内部边界端点 /internal/v1/query/kubernetes 是 POST + body(cluster_id)。

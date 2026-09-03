@@ -14,7 +14,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 
 from tools import (query_metrics, query_traces, query_logs, get_service_list, query_topology,
-                   execute_shell, k8sgpt_diagnose, deepflow_status, get_infrastructure)
+                   execute_shell, k8sgpt_diagnose, deepflow_status, get_infrastructure,
+                   _public_query_error)
 from rca import full_rca_analysis
 from skill_registry import ToolRegistry, ExpertRegistry
 from contracts import RequestContext
@@ -430,11 +431,14 @@ def _collect_alerts(
         return "采集失败"
     if getattr(request_context, "workload_kind", "") == "investigation":
         try:
-            from tools import _internal_investigation_query
-            data = _internal_investigation_query(
+            from tools import _internal_investigation_query, _unwrap_internal_query_result
+            body = _internal_investigation_query(
                 tool_id="query_alerts.v1", operation="alerts", params={"limit": 15}, context=request_context,
             )
-            events = data.get("events", data.get("data", [])) if isinstance(data, dict) else []
+            data, unwrap_error = _unwrap_internal_query_result(body)
+            if unwrap_error or data is None:
+                return f"活跃告警事件: 采集失败（{unwrap_error or 'QUERY_FAILED'}）"
+            events = data.get("alerts", data.get("events", data.get("data", [])))
             if not events:
                 return "活跃告警事件: 无"
             lines = ["活跃告警事件:"]
@@ -445,7 +449,7 @@ def _collect_alerts(
                 )
             return "\n".join(lines)
         except Exception as exc:
-            return f"活跃告警事件: 采集失败（{str(exc)[:120]}）"
+            return f"活跃告警事件: 采集失败（{_public_query_error(exc)}）"
     if getattr(request_context, "workload_kind", "") == "chat":
         try:
             from tools import _chat_compatibility_allowed, _chat_context_ready, _internal_chat_query, _unwrap_internal_query_result
@@ -472,7 +476,7 @@ def _collect_alerts(
         except LookupError:
             pass
         except Exception as exc:
-            return f"活跃告警事件: 采集失败（{str(exc)[:120]}）"
+            return f"活跃告警事件: 采集失败（{_public_query_error(exc)}）"
     qa = _os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1")
     out = []
 

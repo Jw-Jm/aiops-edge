@@ -25,3 +25,33 @@ def test_investigation_metrics_uses_toolrun_client(monkeypatch):
     assert calls and calls[0][0] == "query_metrics.v1"
     assert calls[0][2]["service"] == "orders"
     assert "avg_ms" in result
+
+
+def test_investigation_service_list_unwraps_tool_result_envelope(monkeypatch):
+    scope = _scope()
+
+    def fake_query(**_kwargs):
+        return {
+            "quality": "complete",
+            "data": {"nodes": [{"type": "service", "name": "orders"}]},
+        }
+
+    monkeypatch.setattr(tools, "_internal_investigation_query", fake_query)
+    result = tools.get_service_list(cluster_id=scope.cluster_id, request_context=scope)
+    assert result == "服务数 1：\norders"
+
+
+def test_investigation_alert_collection_unwraps_tool_result_envelope(monkeypatch):
+    import orchestrator
+
+    scope = _scope()
+    monkeypatch.setattr(
+        tools, "_internal_investigation_query",
+        lambda **_kwargs: {
+            "quality": "complete",
+            "data": {"alerts": [{"severity": "critical", "rule_name": "error-rate", "service": "orders", "count": 2}]},
+        },
+    )
+    result = orchestrator._collect_alerts(request_context=scope)
+    assert "error-rate" in result
+    assert "critical" in result

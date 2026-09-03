@@ -188,6 +188,12 @@ class InvestigationEvidenceProvider:
             params=params, context_ref=str(self.item.request_id),
             execution_context=execution,
         ).body
+        # A failed ToolResultEnvelope is a datasource outage/error, not an
+        # empty result.  Do not pass source_errors through this boundary:
+        # they may contain SQL, URLs or credentials.  The caller records only
+        # the stable domain error and the RCA engine marks the run partial.
+        if isinstance(body, Mapping) and body.get("quality") == "failed":
+            raise RuntimeError("QUERY_FAILED")
         # Query-api owns ToolRun and ai_evidence persistence.  Consume each
         # eligible result immediately; keeping evidence only in this Python
         # process would make RCA non-replayable after worker restart.
@@ -262,6 +268,14 @@ class InvestigationEvidenceProvider:
                         error_count = 0
                     item["error_count"] = max(0, error_count)
                     item["degraded"] = item["error_count"] > 0
+            if effective_category == "hardware_sel" and "severity" not in item:
+                # The collector's canonical SEL envelope carries ``Type``
+                # (Error/Warning/Info) rather than a separate severity field.
+                # Mapping that explicit field preserves the source contract;
+                # it does not infer severity from an arbitrary event message.
+                item_type = str(item.get("type") or item.get("Type") or "").strip().lower()
+                item["severity"] = {"critical": 1.0, "fatal": 1.0, "error": 1.0,
+                                     "warning": .6, "warn": .6, "info": .2}.get(item_type, 0.0)
             if effective_category in {"alert", "hardware_sel"} and "severity" in item and isinstance(item["severity"], str):
                 item["severity"] = {"critical": 1.0, "fatal": 1.0, "error": 1.0, "warning": .6, "warn": .6, "info": .2}.get(item["severity"].lower(), 0.0)
             if matched_uids:

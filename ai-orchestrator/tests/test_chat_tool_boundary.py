@@ -44,6 +44,19 @@ def test_chat_read_tools_use_internal_audited_query(monkeypatch):
     assert context.chat_turn_id == CHAT_TURN
 
 
+def test_chat_query_exception_does_not_echo_sensitive_exception(monkeypatch):
+    import tools
+
+    monkeypatch.setattr(
+        tools, "_internal_chat_query",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("provider api_key=super-secret host=10.0.0.7")),
+    )
+    result = tools.query_metrics("checkout", cluster_id=CLUSTER, request_context=_chat_scope())
+    assert result == "查询失败: QUERY_FAILED"
+    assert "super-secret" not in result
+    assert "10.0.0.7" not in result
+
+
 def test_chat_scope_projection_keeps_audit_identity():
     projection = ScopeViewSnapshot.to_projection(_chat_scope())
     assert projection["chat_session_id"] == CHAT_SESSION
