@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -341,7 +342,7 @@ func main() {
 	// 鉴权 + 限流中间件（对数据接收端点生效，health/metrics 开放）
 	secured := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		met.IncReqTotal()
-		if apiKey != "" && r.Header.Get("X-Api-Key") != apiKey {
+		if apiKey != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Api-Key")), []byte(apiKey)) != 1 {
 			met.IncReqRejected()
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

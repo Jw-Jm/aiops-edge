@@ -30,6 +30,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -263,7 +264,7 @@ func (s *server) handleExecute(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-	} else if s.token != "" && r.Header.Get("X-Executor-Token") != s.token {
+	} else if s.token != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Executor-Token")), []byte(s.token)) != 1 {
 		// 回退：verify key 未配置时仅允许 disabled（默认）——approved 需要签名。
 		http.Error(w, "unauthorized executor token", http.StatusForbidden)
 		return
@@ -1083,7 +1084,7 @@ func buildPatchPayload(ctx ActionExecutionContext) (string, error) {
 
 // handleStatus 返回某 action 的执行结果（进程内；权威在 Query API）。
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if s.token != "" && r.Header.Get("X-Executor-Token") != s.token {
+	if s.token != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Executor-Token")), []byte(s.token)) != 1 {
 		http.Error(w, "unauthorized", http.StatusForbidden)
 		return
 	}
@@ -1111,7 +1112,7 @@ func (s *server) handleReconcile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, ActionResult{Status: "rejected", Message: "signed reconciliation context verification failed: " + err.Error()})
 			return
 		}
-	} else if s.token != "" && r.Header.Get("X-Executor-Token") != s.token {
+	} else if s.token != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Executor-Token")), []byte(s.token)) != 1 {
 		http.Error(w, "unauthorized", http.StatusForbidden)
 		return
 	}

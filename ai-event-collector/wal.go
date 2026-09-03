@@ -44,11 +44,12 @@ type WAL struct {
 
 // NewWAL 打开（必要时创建）WAL 日志并恢复 ack 水位。
 func NewWAL(dir, file string) (*WAL, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 事件数据含消息正文，仅限采集服务账号可读：目录 0750、文件 0600。
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, file)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +199,7 @@ func (w *WAL) Compact() {
 		return
 	}
 	tmp := w.path + ".tmp"
-	tf, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	tf, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
@@ -214,7 +215,7 @@ func (w *WAL) Compact() {
 	_ = tf.Sync()
 	_ = tf.Close()
 	_ = os.Rename(tmp, w.path)
-	nf, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	nf, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
@@ -240,7 +241,7 @@ func (w *WAL) persistAck() {
 	}
 	sort.Slice(st.Acked, func(i, j int) bool { return st.Acked[i] < st.Acked[j] })
 	b, _ := json.Marshal(st)
-	_ = os.WriteFile(w.ackPath+".tmp", b, 0o644)
+	_ = os.WriteFile(w.ackPath+".tmp", b, 0o600)
 	_ = os.Rename(w.ackPath+".tmp", w.ackPath)
 }
 

@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -131,7 +132,7 @@ func (s *server) authorized(r *http.Request) bool {
 		return false
 	}
 	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	return got != "" && got == s.token
+	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
