@@ -22,6 +22,7 @@ from invocation_scope import (
     InvocationScope, LegacyScopeAdapter, ScopeView, ScopeViewSnapshot,
 )
 from internal_query import signed_query_api_request
+from tool_registry import init_default_tool_registry
 
 QUERY_API_VL = os.environ.get("QUERY_API_URL", "http://query-api.observability.svc.cluster.local:8080/api/v1") + "/logs/victorialogs"
 
@@ -1920,6 +1921,11 @@ class BrainOrchestrator:
     def __init__(self, db_path=None):
         import os as _os
         import tempfile
+        # Gateway and stateless worker are separate composition roots.  Both
+        # must load the canonical Tool definitions consumed by
+        # InternalQueryClient before any ChatTool/ToolRun query is admitted.
+        # Registration is idempotent and executes no tool.
+        init_default_tool_registry()
         self._stateless_worker = (
             _os.environ.get("INVESTIGATION_WORKER_MODE", "0").lower() in {"1", "true", "yes", "on"}
             or (
