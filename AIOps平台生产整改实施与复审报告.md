@@ -12,41 +12,43 @@
 | FIX-RCA-05 | `ai-event-collector/sel_events.go` 的 IPMI SEL 事件带 `Type: Error` 但缺少 `severity`；RCA 硬件类别评分恒为 0。 | 仅依据真实 `type/Type` 字段规范化硬件严重度（Error/Fatal/Critical、Warning、Info），不合成硬件证据。 | `tests/test_rca_runtime_envelope.py::test_ipmi_error_type_is_normalized_to_hardware_severity_when_missing` 通过。 |
 | FIX-RCA-06 | Investigation 的 `get_service_list` 与 `orchestrator._collect_alerts` 将 ToolResultEnvelope 当 payload 读取，真实 envelope 下服务/告警被读成空。 | 两条路径统一调用 `_unwrap_internal_query_result`，失败 envelope fail-closed，成功 envelope 正确读取 `data`。 | `tests/test_tools_investigation_path.py` 两条回归通过；真实 Worker/Query 镜像使用本提交运行。 |
 | FIX-CHAT-03 | Chat/Investigation 查询工具异常及 K8sGPT/RCA/知识库节点把 provider URL、SQL、token、地址等异常原文写入响应或运行结果。 | 所有受影响出口统一返回 allow-listed 稳定错误码（`QUERY_FAILED`、`K8SGPT_FAILED`、`RCA_FAILED`、`KNOWLEDGE_QUERY_FAILED` 等）；Run commit/lease、计划/假设/验证持久化只保存错误码。 | `tests/test_chat_tool_boundary.py` 新增 3 条敏感文本回归；相关 Chat/Investigation 集合 **44 passed**。 |
+| FIX-CHAT-04 | `apps/investigation.py:run_invocation` 的授权矩阵异常将 `str(exc)` 直接作为 403 detail，可能泄漏租户、角色、数据库或内部拓扑信息。 | 签名运行入口仅返回 `stable_error_code(..., "AUTHZ_DENIED")`，原异常通过异常链保留给服务端日志，不跨越 HTTP 边界。 | `tests/test_p19_chat_ingress.py::test_run_invocation_authz_error_does_not_echo_internal_details`；生产架构契约与 AICHAT 回归通过。 |
+| FIX-CHAT-05 | `node_verify`、DAG full fallback、shell/K8sGPT/MCP 及旧 Action/报告/NL2SQL/变更兼容出口仍把异常原文回传或持久化；即使生产路由 retired，本地迁移调用也可污染审计/响应。 | 统一使用稳定错误码：`VERIFICATION_SOURCE_UNAVAILABLE`、`BRAIN_ERROR`、`EXECUTION_FAILED`、`K8SGPT_FAILED`、`MCP_TOOL_FAILED`、`*_QUERY_FAILED` 等；不改变生产路由 allowlist 或禁写策略。 | `tests/test_chat_tool_boundary.py` 新增 6 条敏感文本回归；`tests/test_ops_action_hub.py` 状态码契约更新；受影响 Python 隔离全量 **1275 passed**。 |
 
 此前已完成的 `FIX-CHAT-01/02`、`FIX-OBS-01` 仍有效：canonical Tool Registry 初始化、`started_at` 默认值和 `/metrics` disabled legacy store no-op。
 
 ### 0.0.2 代码、GitHub、镜像和运行态一致性
 
-- GitHub：`origin/main` 已包含运行代码提交 `c81fb0c19c312e56b303af292d1de99d33a1fd46`（`2cb7e1d`、`c81fb0c`）及后续文档提交；工作区无代码修改，用户既有 `.ses` 运行时文件未纳入提交。
-- 镜像：`IMAGE_TAG=git-930e341` 的 12 个自研镜像全部本机构建成功，OCI revision label 与构建时完整 Git commit（`930e341`）一致；构建中代理 registry 的 TLS `bad record MAC` 已通过同版本官方基础镜像缓存重试解决，没有复用旧镜像。
-- Helm：`aiops` revision **55**，`STATUS=deployed`。自研 Deployment/DaemonSet/Worker/迁移 Job 均使用 `git-930e341`；Pod 实际 imageID 已逐一核对，业务 Pod 全部 Ready、迁移及回填 Job 全部 Complete、重启数为 0。
+- GitHub：`origin/main` 已包含本轮运行代码提交 `33944714ae6fdfa53ec60ad679caaf3d40bdf5e5`；工作区无代码修改，用户既有 `.ses` 运行时文件未纳入提交。
+- 镜像：`IMAGE_TAG=git-3394471` 的 12 个自研镜像全部本机构建成功，OCI revision label 与提交 `33944714ae6fdfa53ec60ad679caaf3d40bdf5e5` 一致；Docker 构建使用本机缓存基础镜像，无复用旧业务镜像。
+- Helm：`aiops` revision **56**，`STATUS=deployed`。自研 Deployment/DaemonSet/Worker/迁移 Job 均使用 `git-3394471`；Pod 实际 imageID 已逐一核对，业务 Pod 全部 Ready、迁移及回填 Job 全部 Complete、重启数为 0。
 - 运行探针：编排 Pod 内使用挂载的本机 mTLS CA/证书/私钥访问 `https://127.0.0.1:8080/metrics`，HTTP **200**；首次错误端口 8000 的探针结果不计入验收。
 
 ### 0.0.3 测试与静态检查
 
 | 检查 | 实际结果 | 结论 |
 |---|---|---|
-| Python 受环境隔离全量 | `1265 passed, 1 skipped, 3 deselected, 2 warnings`；仅排除 `test_uvicorn_protocol_rejects_wrong_san_over_real_tls`、`test_production_full_reachable_returns_remote`、`test_check_control_plane_reachable_reachable`，原因是宿主禁止 localhost 临时监听；单独运行其余网络相关测试均通过。 | **有限通过**；3 项环境限制仍未验证。 |
+| Python 受环境隔离全量 | `1275 passed, 1 skipped, 3 deselected, 2 warnings`；仅排除 `test_uvicorn_protocol_rejects_wrong_san_over_real_tls`、`test_production_full_reachable_returns_remote`、`test_check_control_plane_reachable_reachable`，原因是宿主禁止 localhost 临时监听；单独运行其余网络相关测试均通过。 | **有限通过**；3 项环境限制仍未验证。 |
 | Go 自研服务 | Query、Ingest、Event Collector、Action Executor、Credential Broker、LLM Egress Proxy、迁移工具 `go vet ./...` 与 `go test ./...` 全部返回 0。 | **通过** |
 | 前端 | 25 个 Vitest 文件、39 个测试通过；`tsc` 与 Vite production build 通过。 | **通过** |
 | 部署/生产架构/Secret 契约 | `test-deployment-contracts.sh`、`test-production-architecture-contracts.sh`、`secret-format-test.sh` 全部通过。 | **通过** |
-| release evidence | `/tmp/aiops-release-evidence-c81fb0c19c31.json` 记录了代码提交 `c81fb0c` 的本地镜像；随后文档提交 `930e341` 已重建并部署 `git-930e341`。本机镜像 presence/revision、Helm/契约/单测均 PASS；`registry_bound=false`、签名 binding/KMS 公钥缺失，最终 `publishable=false`。 | **按设计阻断** |
+| release evidence | `/tmp/aiops-release-evidence-3394471.json` 记录代码提交 `33944714ae6fdfa53ec60ad679caaf3d40bdf5e5`、工作区 clean、12 个本机镜像 presence/revision、Helm/契约/单测均 PASS；`registry_bound=false`、签名 binding/KMS 公钥及 rendered manifest 缺失，最终 `publishable=false`。 | **按设计阻断** |
 
 ### 0.0.4 真实观测与 RCA 结论
 
-- 无 fixture 的 `validate-observability-evidence.sh --output /tmp/aiops-evidence-c81fb0c19c31.json` 实际返回 **exit=2 / `gate_status=BLOCKED_BY_ENV`**，原因是未提供 `AIOPS_VALIDATION_DATA_MARKER`；没有把空数据或 fixture 当成生产证据。
+- 无 fixture 的 `validate-observability-evidence.sh --output /tmp/aiops-evidence-3394471.json` 实际返回 **exit=2 / `gate_status=BLOCKED_BY_ENV`**，原因是未提供 `AIOPS_VALIDATION_DATA_MARKER`；没有把空数据或 fixture 当成生产证据。
 - 最近一次真实 marker 快照 `/tmp/aiops-current-real-evidence-report.json`（2026-09-02）显示 metrics/logs/Kubernetes events/DeepFlow/dependency 均 PASS；真实 RCA 仍为 `FAIL`（缺 confirmed 所需时间窗别名、final graph context、bounded propagation path 和 deterministic root score），不是 `confirmed`。观测数据可读与 RCA confirmed 证据闭环仍严格区分。
 - 因此本机运行态只能证明本次代码修复已在新镜像生效，不能解除生产 RCA confirmed、正式 registry/KMS、生产凭据/证书、HA/PITR/RPO/RTO 或跨节点 Graph 门禁。
 
 ### 0.0.5 当前发布结论与最小阻断集合
 
-当前 **不可发布到生产**。已完成的代码级阻断：RCA failed-envelope 误判、硬件事件严重度丢失、Investigation envelope 误读、Chat/Investigation 异常敏感信息泄露；并已同步 GitHub、镜像和本机 Helm 运行态。解除发布阻断的最小集合仍为：
+当前 **不可发布到生产**。已完成的代码级阻断：RCA failed-envelope 误判、硬件事件严重度丢失、Investigation envelope 误读、Chat/Investigation 异常敏感信息泄露（含 Worker 授权、DAG/验证、shell/K8sGPT/MCP 和兼容出口）；并已同步 GitHub、镜像和本机 Helm 运行态。解除发布阻断的最小集合仍为：
 
 1. 在正式环境用同一真实 marker 完成 metrics/logs/events/DeepFlow/dependency，并取得 RCA `status=confirmed`（至少两个独立证据类别、非空最终图上下文、bounded propagation path、`root_score == deterministic_root_score`）；禁止把本机 `probable/partial` 或 fixture 升格。
 2. 提供正式 registry immutable digest、镜像签名/KMS 验签、SBOM/漏洞门禁和回滚演练证据；本机 tag/content digest 不等价于正式 registry 身份。
 3. 提供生产 Secret/证书 SAN 轮换与撤销、服务身份/短时签名/防重放、Credential Broker/TokenRequest、HA/PITR/RPO/RTO、跨节点 Graph 容量恢复/p95/资源证据。
 
-整改验收顺序：先以 `c81fb0c` 重建并核对镜像/Pod → ChatTool 审计与错误边界回放 → 真实 marker 全域观测 → RCA confirmed 闭环 → registry/KMS 与 HA/恢复门禁。任一外部证据缺失均保持 `BLOCKED_BY_ENV` 或 `FAIL`。
+整改验收顺序：先以 `3394471` 重建并核对镜像/Pod → ChatTool 审计与错误边界回放 → 真实 marker 全域观测 → RCA confirmed 闭环 → registry/KMS 与 HA/恢复门禁。任一外部证据缺失均保持 `BLOCKED_BY_ENV` 或 `FAIL`。
 
 ## 0. 2026-09-03 权威复审、修复与发布结论（优先于本文历史记录）
 
