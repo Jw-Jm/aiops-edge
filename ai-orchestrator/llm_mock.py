@@ -1,7 +1,7 @@
 """LLM mock 通道：独立纯逻辑模块，避免触发 orchestrator 的重依赖导入链。
 
-通过环境变量 LLM_MOCK 控制（"true"/"1"/"yes" 视为开启）。本机部署联调默认开启，
-生产接真实模型时设 LLM_MOCK=false。
+通过环境变量 LLM_MOCK 控制（"true"/"1"/"yes" 视为开启）。P2-R5: mock 为显式
+opt-in，默认关闭；本地联调由 .env.local/compose 显式开启，生产必须保持关闭。
 """
 
 import os

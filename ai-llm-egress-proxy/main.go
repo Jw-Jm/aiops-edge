@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net/http"
@@ -102,7 +103,7 @@ func (c *proxyConfig) handleProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "proxy credentials are not configured", http.StatusServiceUnavailable)
 		return
 	}
-	if proxyTokenFromRequest(r) != c.proxyToken {
+	if !secureEqual(proxyTokenFromRequest(r), c.proxyToken) {
 		http.Error(w, "unauthorized proxy token", http.StatusForbidden)
 		return
 	}
@@ -182,6 +183,16 @@ func proxyTokenFromRequest(r *http.Request) string {
 		return token
 	}
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// secureEqual 常量时间比较 token（P2-S6B）。长度不一致立即返回 false 且
+// 不泄露长度信息（subtle.ConstantTimeCompare 对长度差返回 0）。
+func secureEqual(got, expected string) bool {
+	if expected == "" {
+		// 空 token 由调用方先 fail-closed（503），这里永不视为匹配。
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
 func parseAllowlist(raw string, baseURLs map[string]string) map[string]struct{} {

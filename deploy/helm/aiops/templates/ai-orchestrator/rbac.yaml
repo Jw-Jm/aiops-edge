@@ -29,6 +29,16 @@ rules:
 - apiGroups: [""]
   resources: ["replicationcontrollers", "events", "pods/log"]
   verbs: ["get", "list"]
+{{- if .Values.aiOrchestrator.grantK8sWrite }}
+# ── 受控演练写权限（P2-F2 RBAC toggle）──
+# 默认关闭（values.yaml grantK8sWrite: false；values-prod 不覆盖 → 恒 false）。
+# 仅限 observability workloads 的 deployments patch，是 grant-orchestrator-ops.sh
+# 临时演练用开关；演练结束必须 revoke-orchestrator-ops.sh 撤销（置回 false）。
+# production manifest 校验该段不得出现（见 test-image-digest-contracts / gate）。
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["patch"]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

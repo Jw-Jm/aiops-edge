@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { useAuthStore } from '../store/authStore'
+import { getScopeCluster } from './scopeRuntime'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -20,21 +21,12 @@ export interface MeResponse {
 export const setActiveScope = (tenantId: string, clusterId?: string) =>
   api.post('/me/scope', { tenant_id: tenantId, cluster_id: clusterId || null })
 
-// 从持久化的 uiStore 读取当前集群选择（'all' = 全部集群），避免与 uiStore 循环依赖。
-function readCurrentClusterId(): string {
-  try {
-    const raw = localStorage.getItem('aiops-ui-v3')
-    if (!raw) return ''
-    const parsed = JSON.parse(raw)
-    const cid = parsed?.state?.currentClusterId
-    return cid || ''
-  } catch {
-    return ''
-  }
-}
-
+// P2-A2: cluster 选择读取内存 scope runtime（uiStore hydrate 后同步，
+// 模块启动时仅一次恢复），不再每请求 JSON.parse(localStorage)。
+//
 // 全局端点白名单：这些接口与具体集群无关，注入 cluster_id 会静默缩小结果集（见 F3）。
-// 仅对集群级端点注入 cluster_id；/clusters 自身也跳过（避免干扰集群 CRUD）。
+// 仅对集群级端点注入 cluster_id 作为【查询过滤参数】（非授权依据——服务端由
+// Query API 基于 HttpOnly session + active scope 强制注入/校验）。
 const GLOBAL_PATHS = [
   '/clusters',
   '/users',
@@ -60,11 +52,9 @@ const GLOBAL_PATHS = [
   '/system',
 ]
 
-// Request interceptor: set Authorization header + 多集群过滤参数
+// Request interceptor: 多集群视图过滤参数（cluster_id 只做服务端数据过滤）。
 api.interceptors.request.use((config) => {
-  // Browser authentication is an HttpOnly cookie; no caller-controlled
-  // Authorization or tenant headers are constructed here.
-  const cid = readCurrentClusterId()
+  const cid = getScopeCluster()
   const url = config.url || ''
   const isGlobal = GLOBAL_PATHS.some((p) => url.startsWith(p))
   if (!isGlobal && cid) {

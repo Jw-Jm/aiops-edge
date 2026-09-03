@@ -75,9 +75,10 @@ else:
 import metrics  # noqa: F401 — 注册 Prometheus 指标
 from orchestrator import describe_graph, _audit_log, _is_info_query, _risk_from_evidence, _case_quality_check, _llm_async
 
-# 默认开启 LLM mock（本机部署联调用，不消耗真实模型）；生产设 LLM_MOCK=false 关闭。
-# 注意：mock 模式下 NL2SQL/RCA 深度/AI 诊断返回的是模拟内容，生产环境必须关闭。
-os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "true"))
+# P2-R5: LLM mock 是显式 opt-in，默认关闭（"假能力必须 opt-in，真实能力不能依赖
+# 记得关 mock"）。本地开发由 .env.local / compose / 验证脚本显式设 LLM_MOCK=true。
+# 注意：mock 模式下 NL2SQL/RCA 深度/AI 诊断返回的是模拟内容。
+os.environ.setdefault("LLM_MOCK", os.getenv("LLM_MOCK", "false"))
 _llm_mock_enabled = os.environ.get("LLM_MOCK", "").lower() in ("true", "1", "yes")
 _runtime_env = os.environ.get("AIOPS_ENV", "").strip().lower()
 _deployment_mode = os.environ.get("AIOPS_DEPLOYMENT_MODE", "").strip().lower()
