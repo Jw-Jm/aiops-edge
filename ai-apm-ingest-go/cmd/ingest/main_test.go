@@ -56,3 +56,53 @@ func TestValidateEventBatchRejectsMalformedTimestampBeforeWAL(t *testing.T) {
 		t.Fatal("mismatched time_bucket must be rejected before WAL append")
 	}
 }
+
+// R3 回归：令牌桶不存在固定窗口的边界 2 倍突发——
+// 在窗口重置点瞬间到达的 2×limit 请求不允许全部放行。
+func TestRateLimiterNoBoundaryBurst(t *testing.T) {
+	rl := newRateLimiter(10)
+	// 立即打满桶容量
+	allowed := 0
+	for i := 0; i < 20; i++ {
+		if rl.allow() {
+			allowed++
+		}
+	}
+	if allowed != 10 {
+		t.Fatalf("burst should be capped at bucket size 10, allowed %d", allowed)
+	}
+	// 桶空后短时间内不允许继续放行（旧固定窗口会在此重置后又放行 10 个）
+	time.Sleep(20 * time.Millisecond)
+	if rl.allow() {
+		t.Fatalf("tokens must refill proportionally, not reset at window boundary")
+	}
+}
+
+func TestRateLimiterRefillsOverTime(t *testing.T) {
+	rl := newRateLimiter(100)
+	for i := 0; i < 100; i++ {
+		rl.allow() // 清空桶
+	}
+	if rl.allow() {
+		t.Fatal("empty bucket must reject")
+	}
+	time.Sleep(30 * time.Millisecond) // 100/s → 30ms 补 ~3 个令牌
+	allowed := 0
+	for i := 0; i < 10; i++ {
+		if rl.allow() {
+			allowed++
+		}
+	}
+	if allowed < 1 || allowed > 5 {
+		t.Fatalf("refill should grant ~3 tokens in 30ms, got %d", allowed)
+	}
+}
+
+func TestRateLimiterDisabledWhenLimitNotPositive(t *testing.T) {
+	rl := newRateLimiter(0)
+	for i := 0; i < 1000; i++ {
+		if !rl.allow() {
+			t.Fatal("limit<=0 must be unlimited")
+		}
+	}
+}

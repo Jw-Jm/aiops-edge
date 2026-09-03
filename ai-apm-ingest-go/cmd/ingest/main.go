@@ -669,20 +669,22 @@ func parseEnvBoolDefault(key string, defaultValue bool) bool {
 	}
 }
 
-// rateLimiter 是基于固定窗口的简单令牌限流器（生产可替换为更精确的滑动窗口）。
+// rateLimiter 是令牌桶限流器：以 limit/s 的速率补充令牌，桶容量 limit。
+// 相比固定窗口，不存在窗口边界处 2 倍突发（审核 R3），长期平均速率与
+// 固定窗口一致（同为 limit/s），对合法稳态流量无额外收紧。
 type rateLimiter struct {
-	limit   int
-	mu      sync.Mutex
-	window  time.Time
-	windowN int
+	limit  int
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
 }
 
 // newRateLimiter 从环境变量字符串创建限流器。limit<=0 表示不限流。
 func newRateLimiter(rps int) *rateLimiter {
-	return &rateLimiter{limit: rps, window: time.Now()}
+	return &rateLimiter{limit: rps, tokens: float64(rps), last: time.Now()}
 }
 
-// allow 判断当前是否允许放行一个请求（固定 1 秒窗口内的 RPS）。
+// allow 判断当前是否允许放行一个请求（令牌桶，平均速率 ≤ limit/s）。
 func (r *rateLimiter) allow() bool {
 	if r.limit <= 0 {
 		return true
@@ -690,13 +692,15 @@ func (r *rateLimiter) allow() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
-	if now.Sub(r.window) >= time.Second {
-		r.window = now
-		r.windowN = 0
+	// 按经过时间补充令牌，封顶桶容量 limit（允许 1 秒的受控突发）。
+	r.tokens += now.Sub(r.last).Seconds() * float64(r.limit)
+	if r.tokens > float64(r.limit) {
+		r.tokens = float64(r.limit)
 	}
-	if r.windowN >= r.limit {
+	r.last = now
+	if r.tokens < 1 {
 		return false
 	}
-	r.windowN++
+	r.tokens--
 	return true
 }
