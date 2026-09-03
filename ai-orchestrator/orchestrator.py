@@ -922,7 +922,7 @@ async def node_collect(state: AgentState) -> dict:
             else:
                 result["k8sgpt_raw"] = raw_text
         except Exception as exc:
-            result["k8sgpt_error"] = f"K8sGPT error: {str(exc)[:300]}"
+            result["k8sgpt_error"] = f"K8sGPT error: {_public_query_error(exc, 'K8SGPT_FAILED')}"
     elif (not investigation_workload and is_diag and
           not _is_info_query(state.get("user_message", "")) and shutil.which("k8sgpt")):
         # P19.7：统一走 k8sgpt_diagnose（安全注入版）——按需拉取平台 LLM key 子进程私有 env 注入，
@@ -935,7 +935,7 @@ async def node_collect(state: AgentState) -> dict:
             else:
                 result["k8sgpt_raw"] = raw_text
         except Exception as exc:
-            result["k8sgpt_error"] = f"K8sGPT error: {str(exc)[:300]}"
+            result["k8sgpt_error"] = f"K8sGPT error: {_public_query_error(exc, 'K8SGPT_FAILED')}"
     result["messages"] = [f"[{_now()}] 数据采集完成"]
     return result
 
@@ -1135,7 +1135,11 @@ async def node_rca(state: AgentState) -> dict:
                 "messages": [f"[{_now()}] RCA: 假设引擎分析 (结论={hyp.get('conclusion','?')})"],
             }
     except Exception as e:
-        return {"rca_mode": "error", "rca_root_cause": "", "messages": [f"[{_now()}] RCA: 失败 ({e})"]}
+        return {
+            "rca_mode": "error",
+            "rca_root_cause": "",
+            "messages": [f"[{_now()}] RCA: 失败 ({_public_query_error(e, 'RCA_FAILED')})"],
+        }
 
 
 async def node_rag(state: AgentState) -> dict:
@@ -1185,7 +1189,9 @@ async def node_rag(state: AgentState) -> dict:
         except Exception as exc:
             return {
                 "similar_cases": "",
-                "knowledge_tool_error": f"知识库检索失败: {str(exc)[:300]}",
+                "knowledge_tool_error": (
+                    f"知识库检索失败: {_public_query_error(exc, 'KNOWLEDGE_QUERY_FAILED')}"
+                ),
                 "messages": [f"[{_now()}] 知识库检索失败"],
             }
     try:
@@ -1614,7 +1620,8 @@ def _persist_verification_result(state: AgentState, scope: ScopeView, result: di
         result["verify_status"] = "inconclusive"
         result["verify_error_code"] = "VERIFICATION_PERSISTENCE_FAILED"
         result.setdefault("messages", []).append(
-            f"[{_now()}] 验证结果未持久化，已降级为不充分: {str(exc)[:160]}"
+            f"[{_now()}] 验证结果未持久化，已降级为不充分: "
+            f"{_public_query_error(exc, 'VERIFICATION_PERSISTENCE_FAILED')}"
         )
 
 

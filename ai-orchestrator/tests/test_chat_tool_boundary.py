@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from invocation_scope import InvocationScope, ScopeViewSnapshot
@@ -72,3 +73,68 @@ def test_legacy_knowledge_graph_tool_is_closed_in_production(monkeypatch):
     monkeypatch.setenv("AIOPS_ENV", "production")
     result = kg_tools.kg_evidence_tool("checkout", CLUSTER)
     assert result == "KNOWLEDGE_GRAPH_INVESTIGATION_REQUIRED"
+
+
+def test_node_collect_k8sgpt_exception_is_stable_and_non_sensitive(monkeypatch):
+    import orchestrator
+
+    monkeypatch.setattr(
+        orchestrator,
+        "k8sgpt_diagnose",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("provider api_key=super-secret host=10.0.0.7")
+        ),
+    )
+    result = asyncio.run(orchestrator.node_collect({
+        "intent": "diagnosis",
+        "service": "checkout",
+        "user_message": "请用 k8sgpt 诊断 checkout",
+        "llm_config": None,
+        "request_context": None,
+    }))
+    assert result["k8sgpt_error"] == "K8sGPT error: K8SGPT_FAILED"
+    assert "super-secret" not in result["k8sgpt_error"]
+    assert "10.0.0.7" not in result["k8sgpt_error"]
+
+
+def test_node_rag_exception_is_stable_and_non_sensitive(monkeypatch):
+    import orchestrator
+    import tools
+
+    monkeypatch.setattr(
+        tools,
+        "_query_knowledge",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("mysql password=hunter2 host=db.internal")
+        ),
+    )
+    result = asyncio.run(orchestrator.node_rag({
+        "intent": "diagnosis",
+        "service": "checkout",
+        "user_message": "query_knowledge OOM",
+        "request_context": None,
+    }))
+    assert result["knowledge_tool_error"] == "知识库检索失败: KNOWLEDGE_QUERY_FAILED"
+    assert "hunter2" not in result["knowledge_tool_error"]
+    assert "db.internal" not in result["knowledge_tool_error"]
+
+
+def test_node_rca_exception_is_stable_and_non_sensitive(monkeypatch):
+    import orchestrator
+
+    monkeypatch.setattr(
+        orchestrator,
+        "full_rca_analysis",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("query https://query.internal?token=super-secret failed")
+        ),
+    )
+    result = asyncio.run(orchestrator.node_rca({
+        "service": "checkout",
+        "cluster_id": CLUSTER,
+        "request_context": None,
+    }))
+    assert result["rca_mode"] == "error"
+    assert result["messages"][0].endswith("RCA: 失败 (RCA_FAILED)")
+    assert "super-secret" not in result["messages"][0]
+    assert "query.internal" not in result["messages"][0]

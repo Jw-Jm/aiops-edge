@@ -59,6 +59,7 @@ from models import ChatRequest, ShellCheckRequest, MCPCallRequest, AlertRCAReque
 from contracts import RequestContext
 from invocation_scope import LegacyScopeAdapter
 from internal_ingress import build_invocation_scope, verify_run_control_ingress, verify_run_invocation_ingress
+from error_safety import stable_error_code
 if not _PRODUCTION_COMPOSITION:
     # Legacy approval/task views are kept for local migration compatibility.
     # Production action state is Query API/MySQL-owned and must not construct a
@@ -664,7 +665,9 @@ class _InvestigationBrainAdapter:
                         description=str(event.get("text") or node),
                     )
             except Exception as exc:  # noqa: BLE001 - plan is an audit projection
-                plan_persist_error = str(exc)[:200]
+                plan_persist_error = stable_error_code(
+                    getattr(exc, "error_code", ""), "PLAN_PERSISTENCE_FAILED"
+                )
         if hypothesis_events:
             from control_plane_client import ControlPlaneClient
             cp = ControlPlaneClient()
@@ -680,14 +683,16 @@ class _InvestigationBrainAdapter:
                         confirmed_by_evidence=bool(event.get("confirmed_by_evidence")),
                     )
             except Exception as exc:  # noqa: BLE001 - hypothesis is an audit projection
-                plan_persist_error = plan_persist_error or str(exc)[:200]
+                plan_persist_error = plan_persist_error or stable_error_code(
+                    getattr(exc, "error_code", ""), "HYPOTHESIS_PERSISTENCE_FAILED"
+                )
         if proposal and item.action_mode == "plan_only":
             try:
                 candidate = build_action_candidate(proposal)
             except ValueError as exc:
                 status = "partial"
-                error_code = str(exc)
-                proposal_error = str(exc)
+                error_code = stable_error_code(getattr(exc, "error_code", ""), "INVALID_ACTION_PROPOSAL")
+                proposal_error = error_code
                 candidate = None
             if candidate:
                 from control_plane_client import ControlPlaneClient
@@ -1091,7 +1096,7 @@ async def run_invocations(request: Request):
                 principal_type=claims.get("principal_type", ""),
             )
         except _ManualTriggerDenied as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise HTTPException(status_code=403, detail="MANUAL_TRIGGER_REQUIRED") from exc
     # P13 真实接线（P0-6）：AuthorizationMatrix 服务端授权（capability=ai.investigate）。
     # 角色由服务端 ROLE_CAPABILITIES / SERVICE_ACCOUNT_ROLES 判定，忽略前端 role。
     try:
@@ -1104,7 +1109,7 @@ async def run_invocations(request: Request):
             risk="R0",
         )
     except _AuthzError as exc:
-        raise HTTPException(status_code=403, detail=f"{exc.error_code}: {exc}") from exc
+        raise HTTPException(status_code=403, detail=stable_error_code(exc.error_code, "AUTHZ_DENIED")) from exc
     scope = build_invocation_scope(claims)
     if body.get("tenant_id") and str(body["tenant_id"]) != scope.tenant_id:
         raise HTTPException(status_code=403, detail="TENANT_ACCESS_DENIED")
@@ -1186,14 +1191,17 @@ async def run_invocations(request: Request):
                 except Exception as _ce:  # noqa: BLE001
                     try:
                         _audit_log(run_id, "run.commit.failed", "system", tenant_id,
-                                   "commit", "failed", detail={"error": str(_ce)})
+                                   "commit", "failed",
+                                   detail={"error_code": stable_error_code(
+                                       getattr(_ce, "error_code", ""), "RUN_COMMIT_FAILED"
+                                   )})
                     except Exception:
                         pass
         except LeaseAcquireError as exc:
-            raise HTTPException(status_code=409, detail=f"RUN_LEASE_UNAVAILABLE: {exc}") from exc
+            raise HTTPException(status_code=409, detail="RUN_LEASE_UNAVAILABLE") from exc
         except LeaseLostError as exc:
             # P0#4/#12：Lease 丢失 → 停止（不执行无 Lease 保护的数据面/动作），409 RUN_LEASE_LOST。
-            raise HTTPException(status_code=409, detail=f"RUN_LEASE_LOST: {exc}") from exc
+            raise HTTPException(status_code=409, detail="RUN_LEASE_LOST") from exc
     else:
         # 本地/单测：无真实 query-api，直接执行（不引入 Lease 边界）。
         await _run_investigation()
