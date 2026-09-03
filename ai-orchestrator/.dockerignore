@@ -21,5 +21,4 @@ tests/
 .pytest_cache/
 .ruff_cache/
 multicluster_demo.py
-rca_engine_legacy.py
 *.ses

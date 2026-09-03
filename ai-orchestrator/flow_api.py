@@ -49,24 +49,6 @@ def _require_admin(request: Request):
         raise HTTPException(403, "仅管理员可操作")
 
 
-def _require_approver(request: Request):
-    """审批通过（resume approved=True）需 admin 或审批人（P0-3）。"""
-    _require_internal_token(request)
-    role = request.headers.get("X-Internal-Role", "")
-    is_approver = request.headers.get("X-Internal-Approver", "0") == "1"
-    if role != "admin" and not is_approver:
-        raise HTTPException(403, "仅管理员或审批人可操作")
-
-
-def _legacy_flow_runtime_enabled() -> bool:
-    return os.environ.get("LEGACY_FLOW_RUNTIME_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
-
-
-def _require_legacy_flow_runtime() -> None:
-    if not _legacy_flow_runtime_enabled():
-        raise HTTPException(410, "LEGACY_FLOW_RUNTIME_DISABLED_USE_INVESTIGATION_RUN")
-
-
 class FlowCreate(BaseModel):
     name: str
     description: str = ""
@@ -78,16 +60,6 @@ class FlowUpdate(BaseModel):
     description: str = None
     graph: dict = None
     enabled: bool = None
-
-
-class RunRequest(BaseModel):
-    trigger: dict = None
-    message: str = ""
-    service: str = ""
-
-
-class ResumeRequest(BaseModel):
-    approved: bool = True
 
 
 class GenerateBody(BaseModel):
@@ -241,24 +213,6 @@ def toggle_flow(flow_id: str, request: Request):
     return svc.get_flow(flow_id)
 
 
-@router.post("/{flow_id}/run")
-def run_flow(flow_id: str, req: RunRequest):
-    _require_legacy_flow_runtime()
-    svc = get_flow_service()
-    trigger = req.trigger or {}
-    if req.service:
-        trigger.setdefault("service", req.service)
-    try:
-        run_id = f"run_{uuid.uuid4().hex}"
-        result = svc.run_flow(flow_id, trigger, run_id)
-        return {"run_id": run_id, "status": result.status, "run": result.run,
-                "result": result.context.nodes.get("summarize", {}).get("output", {}) if result.status == "succeeded" else {}}
-    except KeyError:
-        raise HTTPException(404, "flow not found")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
 @router.get("/{flow_id}/runs")
 def list_runs(flow_id: str):
     svc = get_flow_service()
@@ -273,18 +227,3 @@ def get_run(flow_id: str, run_id: str):
         raise HTTPException(404, "run not found")
     run["nodes"] = svc.store.get_run_nodes(run_id)
     return {"run": run}
-
-
-@router.post("/{flow_id}/runs/{run_id}/resume")
-def resume_run(flow_id: str, run_id: str, req: ResumeRequest, request: Request):
-    _require_legacy_flow_runtime()
-    # P0-3: 自研引擎 resume 的 approved 若为 True（放行执行），必须由 admin/审批人
-    # 显式发起，禁止普通用户自决审批绕过审批节点直接执行工作流。
-    if req.approved:
-        _require_approver(request)
-    svc = get_flow_service()
-    try:
-        result = svc.resume_run(run_id, req.approved)
-        return {"run_id": run_id, "status": result.status, "run": result.run}
-    except KeyError:
-        raise HTTPException(404, "run not found")

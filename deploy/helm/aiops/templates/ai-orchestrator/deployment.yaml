@@ -95,12 +95,8 @@ spec:
             # all data access goes through query-api.
             - name: INVESTIGATION_RUNTIME_ENABLED
               value: {{ .Values.aiOrchestrator.investigationRuntimeEnabled | quote }}
-            - name: LEGACY_FLOW_RUNTIME_ENABLED
-              value: {{ .Values.aiOrchestrator.legacyFlowRuntimeEnabled | quote }}
-            - name: INVESTIGATOR_ENABLED
-              value: {{ .Values.aiOrchestrator.investigatorEnabled | quote }}
-            - name: LEGACY_DIRECT_MUTATIONS_ENABLED
-              value: {{ .Values.aiOrchestrator.legacyDirectMutationsEnabled | quote }}
+            {{- /* P1-A1: legacy flow/investigator/direct-mutation env 已全部移除
+                  （main._direct_mutation_enabled 恒 False，不再读取任何 legacy flag） */}}
             - name: LLM_MOCK
               value: {{ .Values.aiOrchestrator.llmMock | quote }}
             {{- include "aiops.mtlsEnv" . | nindent 12 }}

@@ -234,30 +234,6 @@ def test_generic_probe_never_attaches_internal_authority(monkeypatch):
     assert "x-tenant-id" not in headers
 
 
-def test_investigator_writeback_reuses_explicit_context_for_read_and_write(monkeypatch):
-    import investigator
-
-    calls = []
-
-    def fake_request(url, *, context, **kwargs):
-        calls.append((url, context, kwargs))
-        if len(calls) == 1:
-            return b'{"data":[{"id":"alert-1","status":"firing"}]}'
-        return b'{}'
-
-    monkeypatch.setattr(investigator, "signed_query_api_request", fake_request, raising=False)
-
-    result = investigator._writeback_to_alert_event(
-        "high-cpu", "investigation", request_context=_context()
-    )
-
-    assert "alert-1" in result
-    assert len(calls) == 2
-    assert all(call[1].tenant_id == TENANT_ID for call in calls)
-    assert calls[1][2]["method"] == "POST"
-    assert calls[1][2]["headers"] == {"Content-Type": "application/json"}
-
-
 def test_orchestrator_alert_collection_requires_explicit_context(monkeypatch):
     try:
         import orchestrator
