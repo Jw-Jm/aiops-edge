@@ -389,8 +389,10 @@ def _run_kubectl_safe(cmd: str, timeout: int) -> str:
     # 校验：必须以 kubectl 开头
     if not cmd.strip().startswith("kubectl "):
         return f"[不安全命令，仅允许 kubectl] {cmd[:50]}"
-    # 校验：无危险字符（重定向/命令替换/分号/&&/逻辑或||）
-    if re.search(r"[;>&`$()\n]", cmd):
+    # 校验：无危险字符（重定向/命令替换/分号/&&/逻辑或||/输入重定向）
+    # `<` 必须拦截：`kubectl get pods | sort < /etc/shadow` 中输入重定向会覆盖
+    # 管道 stdin，使白名单工具（sort/wc/grep -f 等）直接输出任意文件内容。
+    if re.search(r"[;<>&`$()\n]", cmd):
         return f"[命令含危险字符，已拒绝] {cmd[:50]}"
     # 校验：管道后续工具必须在白名单（按单个 | 分割，避免误切 ||）
     parts = re.split(r"(?<!\|)\|(?!\|)", cmd)
