@@ -76,8 +76,16 @@ def update_rag_metrics():
         pass
 
 
-def update_task_metrics(task_store: dict):
-    """根据 _task_store 更新队列深度 gauge"""
+def update_task_metrics(task_store: dict | None):
+    """根据 _task_store 更新队列深度 gauge。
+
+    The production composition deliberately disables the legacy in-memory
+    task owner, so ``main._task_store`` is ``None`` there.  Metrics scraping
+    must stay healthy when that compatibility store is absent; canonical Run
+    metrics are exported by Query API instead.
+    """
+    if task_store is None:
+        return
     statuses = {}
     for t in task_store.values():
         s = t.get("status", "unknown")
