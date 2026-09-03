@@ -20,8 +20,8 @@
 ### 0.0.2 代码、GitHub、镜像和运行态一致性
 
 - GitHub：`origin/main` 已包含运行代码修复提交 `33944714ae6fdfa53ec60ad679caaf3d40bdf5e5`；本节为随后发布的文档-only 更新，不改变该运行候选的代码内容。工作区无代码修改，用户既有 `.ses` 运行时文件未纳入提交。
-- 镜像：`IMAGE_TAG=git-3ec4c6f` 的 12 个自研镜像全部本机构建成功，OCI revision label 与运行候选提交 `3ec4c6f7902345a1f9158684a86d38bb39f3536d` 一致；Docker 构建使用本机缓存基础镜像，无复用旧业务镜像。
-- Helm：`aiops` revision **58**，`STATUS=deployed`。自研 Deployment/DaemonSet/Worker/迁移 Job 均使用 `git-3ec4c6f`；Pod 实际 imageID 已逐一核对，业务 Pod 全部 Ready、迁移及回填 Job 全部 Complete、重启数为 0。
+- 镜像：`IMAGE_TAG=git-b387869` 的 12 个自研镜像全部本机构建成功，OCI revision label 与运行候选提交 `b38786966d2401cbbfcb52d06f06a0fe974870c7` 一致；Docker 构建使用本机缓存基础镜像，无复用旧业务镜像。
+- Helm：`aiops` revision **59**，`STATUS=deployed`。自研 Deployment/DaemonSet/Worker/迁移 Job 均使用 `git-b387869`；Pod 实际 imageID 已逐一核对，业务 Pod 全部 Ready、迁移及回填 Job 全部 Complete、重启数为 0。
 - 运行探针：编排 Pod 内使用挂载的本机 mTLS CA/证书/私钥访问 `https://127.0.0.1:8080/metrics`，HTTP **200**；首次错误端口 8000 的探针结果不计入验收。
 
 ### 0.0.3 测试与静态检查
@@ -32,11 +32,11 @@
 | Go 自研服务 | Query、Ingest、Event Collector、Action Executor、Credential Broker、LLM Egress Proxy、迁移工具 `go vet ./...` 与 `go test ./...` 全部返回 0。 | **通过** |
 | 前端 | 25 个 Vitest 文件、39 个测试通过；`tsc` 与 Vite production build 通过。 | **通过** |
 | 部署/生产架构/Secret 契约 | `test-deployment-contracts.sh`、`test-production-architecture-contracts.sh`、`secret-format-test.sh` 全部通过。 | **通过** |
-| release evidence | `/tmp/aiops-release-evidence-3ec4c6f.json` 记录运行候选提交 `3ec4c6f7902345a1f9158684a86d38bb39f3536d`、工作区 clean、12 个本机镜像 presence/revision、Helm/契约/单测均 PASS；`registry_bound=false`、签名 binding/KMS 公钥及 rendered manifest 缺失，最终 `publishable=false`。 | **按设计阻断** |
+| release evidence | `/tmp/aiops-release-evidence-b387869.json` 记录运行候选提交 `b38786966d2401cbbfcb52d06f06a0fe974870c7`、工作区 clean、12 个本机镜像 presence/revision、Helm/契约/单测均 PASS；`registry_bound=false`、签名 binding/KMS 公钥及 rendered manifest 缺失，最终 `publishable=false`。 | **按设计阻断** |
 
 ### 0.0.4 真实观测与 RCA 结论
 
-- 无 fixture 的 `validate-observability-evidence.sh --output /tmp/aiops-evidence-3ec4c6f.json` 实际返回 **exit=2 / `gate_status=BLOCKED_BY_ENV`**，原因是未提供 `AIOPS_VALIDATION_DATA_MARKER`；没有把空数据或 fixture 当成生产证据。
+- 无 fixture 的 `validate-observability-evidence.sh --output /tmp/aiops-evidence-b387869.json` 实际返回 **exit=2 / `gate_status=BLOCKED_BY_ENV`**，原因是未提供 `AIOPS_VALIDATION_DATA_MARKER`；没有把空数据或 fixture 当成生产证据。
 - 最近一次真实 marker 快照 `/tmp/aiops-current-real-evidence-report.json`（2026-09-02）显示 metrics/logs/Kubernetes events/DeepFlow/dependency 均 PASS；真实 RCA 仍为 `FAIL`（缺 confirmed 所需时间窗别名、final graph context、bounded propagation path 和 deterministic root score），不是 `confirmed`。观测数据可读与 RCA confirmed 证据闭环仍严格区分。
 - 因此本机运行态只能证明本次代码修复已在新镜像生效，不能解除生产 RCA confirmed、正式 registry/KMS、生产凭据/证书、HA/PITR/RPO/RTO 或跨节点 Graph 门禁。
 
@@ -48,7 +48,7 @@
 2. 提供正式 registry immutable digest、镜像签名/KMS 验签、SBOM/漏洞门禁和回滚演练证据；本机 tag/content digest 不等价于正式 registry 身份。
 3. 提供生产 Secret/证书 SAN 轮换与撤销、服务身份/短时签名/防重放、Credential Broker/TokenRequest、HA/PITR/RPO/RTO、跨节点 Graph 容量恢复/p95/资源证据。
 
-整改验收顺序：先以 `3394471` 代码修复并以最终提交 `3ec4c6f` 绑定镜像/Pod → ChatTool 审计与错误边界回放 → 真实 marker 全域观测 → RCA confirmed 闭环 → registry/KMS 与 HA/恢复门禁。任一外部证据缺失均保持 `BLOCKED_BY_ENV` 或 `FAIL`。
+整改验收顺序：先以 `3394471` 代码修复并以运行候选 `b387869` 绑定镜像/Pod → ChatTool 审计与错误边界回放 → 真实 marker 全域观测 → RCA confirmed 闭环 → registry/KMS 与 HA/恢复门禁。任一外部证据缺失均保持 `BLOCKED_BY_ENV` 或 `FAIL`。
 
 ## 0. 2026-09-03 权威复审、修复与发布结论（优先于本文历史记录）
 
