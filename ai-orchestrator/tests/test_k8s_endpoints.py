@@ -13,14 +13,45 @@ from k8s_actions import K8sActionError, make_preflight_token, set_secret
 
 _SECRET = "endpoint-test-secret"
 
-# ApprovalStore.__init__ 为每实例独立 _mem (仅 MySQL 降级兜底)。测试环境无 MySQL,
-# 将类替换为共享内存版, 使跨实例 create/decide/get 一致。
+# ApprovalStore P1-R1 后为纯 MySQL（fail-closed，不再内存降级）。本文件是 legacy
+# k8s_actions 执行流的端点测试，测试环境无 MySQL → 以共享内存 double 替换
+# ApprovalStore（存储替身，不重写被测业务逻辑），使跨实例 create/decide/get 一致。
 _shared_mem: dict = {}
 
 
 class _SharedApprovalStore(db_approval.ApprovalStore):
+    """测试替身：仅覆盖持久化方法为共享内存，校验/审计语义沿用生产。"""
+
     def __init__(self):
         self._mem = _shared_mem
+
+    def _available(self):
+        return True
+
+    def degraded(self):
+        return False
+
+    def create(self, task):
+        self._mem[task["id"]] = dict(task)
+
+    def get(self, task_id):
+        return self._mem.get(task_id)
+
+    def list(self):
+        return list(self._mem.values())
+
+    def update(self, task_id, **fields):
+        from db_approval import _UPDATABLE_COLUMNS
+        unknown = set(fields) - _UPDATABLE_COLUMNS
+        if unknown:
+            raise ValueError(f"approval update has non-whitelisted columns: {sorted(unknown)}")
+        if task_id in self._mem:
+            self._mem[task_id].update(fields)
+
+    def decide(self, task_id, status, decision_by=""):
+        import time
+        self.update(task_id, status=status,
+                    decided_at=time.strftime("%Y-%m-%dT%H:%M:%SZ"), decision_by=decision_by)
 
 
 @pytest.fixture(autouse=True)

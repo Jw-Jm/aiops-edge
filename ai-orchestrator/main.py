@@ -190,24 +190,18 @@ def _workflow_cron_enabled() -> bool:
     return os.environ.get("RUN_CREATION_MODE", "").lower() == "auto"
 
 
-def _legacy_flow_runtime_enabled() -> bool:
-    """Parallel flow/investigator runtime is opt-in during convergence."""
-    return os.environ.get("LEGACY_FLOW_RUNTIME_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
-
-
 def _investigation_runtime_enabled() -> bool:
     """Canonical persistent Investigation worker switch (enabled by default)."""
     return os.environ.get("INVESTIGATION_RUNTIME_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
 
 
 def _direct_mutation_enabled() -> bool:
-    """Direct shell/Kubernetes/SQL mutation paths are retired by default."""
-    # Production mutation ownership is Query API → Broker → Executor. Never
-    # allow a stale compatibility flag to resurrect the old in-process writer,
-    # even if a deployment accidentally retains the environment variable.
-    if _legacy_public_api_retired():
-        return False
-    return os.environ.get("LEGACY_DIRECT_MUTATIONS_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
+    """Direct shell/Kubernetes/SQL mutation paths are retired (P1-A1)."""
+    # Mutation ownership is Query API → Credential Broker → Action Executor.
+    # The legacy in-process writer is physically retired: this guard always
+    # returns False (fail-closed) and the retired direct-mutation flag is no
+    # longer read; protected endpoints keep returning 410/denied.
+    return False
 
 
 def _execution_after_approval_enabled() -> bool:
@@ -2361,56 +2355,9 @@ async def ops_webhook(request: Request):
     }
     _task_store[tid] = task
 
-    # === Mount A3: 告警触发 workflow（后台派发，不阻塞 webhook 返回）===
-    try:
-        if not _legacy_flow_runtime_enabled():
-            raise RuntimeError("legacy flow runtime disabled")
-        import threading as _t
-        import logging as _logging
-        from flow_api import get_flow_service as _get_flow_service
-        from flow_engine.flow_alert_dispatch import dispatch_alert
-
-        def _dispatch_alert_bg():
-            try:
-                wsvc = _get_flow_service()
-                fired = dispatch_alert(
-                    lambda: [f for f in wsvc.list_flows() if f.get("enabled")],
-                    wsvc.run_flow, source, severity, body)
-                if fired:
-                    _logging.getLogger("flow_dispatch").info("告警触发 workflow: %s", fired)
-            except Exception:
-                _logging.getLogger("flow_dispatch").exception("告警→workflow 派发失败(不影响告警入库)")
-
-        _t.Thread(target=_dispatch_alert_bg, daemon=True).start()
-    except Exception:
-        pass
-
-    # === Mount B6: 告警自动调查 (incident-investigator，daemon 线程异步执行，不阻塞告警入库) ===
-    try:
-        if not _legacy_flow_runtime_enabled():
-            raise RuntimeError("legacy alert investigator disabled")
-        import logging as _logging
-        import threading as _t
-        from investigator import maybe_investigate
-
-        _inv_log = _logging.getLogger("investigator")
-
-        def _investigate_bg():
-            try:
-                maybe_investigate(
-                    source, severity,
-                    {"service": service, "summary": context, "context": context},
-                    run_worker=None)
-            except Exception:
-                _inv_log.exception("告警自动调查失败(不影响告警入库)")
-
-        _t.Thread(target=_investigate_bg, daemon=True,
-                  name=f"investigate-{tid}").start()
-    except Exception:
-        pass
-
-    # 不再自动触发 LLM 诊断：只登记任务，等待人工在任务工作台手动触发
-    # (避免每次告警都自动调用 LLM，造成大量开销；也避免 vmalert 15s 重复 webhook 反复诊断)
+    # P1-A1: 移除告警自动 workflow 派发（A3）与 legacy incident-investigator
+    # 自动调查（B6，investigator.py）。legacy 并行 runtime 已物理删除；alert
+    # webhook 只登记任务，由人工在任务工作台手动触发（避免自动 LLM/自动动作）。
     return {"task_id": tid, "status": "queued", "message": "task queued, trigger diagnosis manually"}
 
 

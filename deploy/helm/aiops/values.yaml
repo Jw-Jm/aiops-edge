@@ -486,9 +486,6 @@ aiOrchestrator:
   # Canonical persistent Investigation runtime switches. Legacy flow and
   # investigator runtimes stay disabled; mutations are executor-owned.
   investigationRuntimeEnabled: "1"
-  legacyFlowRuntimeEnabled: "0"
-  investigatorEnabled: "0"
-  legacyDirectMutationsEnabled: "0"
 
 # Stateless durable Investigation worker. It rebuilds work from query-api Run
 # snapshots/leases and does not mount the legacy SQLite session PVC.

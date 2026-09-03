@@ -399,10 +399,10 @@ export const createFlow = (data: Record<string, unknown>) => api.post('/ai/workf
 export const updateFlow = (id: string, data: Record<string, unknown>) => api.put(`/ai/workflows/${encodeURIComponent(id)}`, data)
 export const deleteFlow = (id: string) => api.delete(`/ai/workflows/${encodeURIComponent(id)}`)
 export const toggleFlow = (id: string) => api.post(`/ai/workflows/${encodeURIComponent(id)}/toggle`)
-export const runFlowAsync = (id: string, trigger: Record<string, unknown>) => api.post(`/ai/workflows/${encodeURIComponent(id)}/run`, { trigger })
+// P1-A1: FlowEditor 执行端点（/run、/runs/{id}/resume）已随 legacy flow runtime
+// 删除；流程执行迁移到 canonical Investigation Run。仅保留历史运行查询。
 export const listFlowRuns = (id: string) => api.get(`/ai/workflows/${encodeURIComponent(id)}/runs`)
 export const getFlowRun = (id: string, runId: string) => api.get(`/ai/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`)
-export const resumeFlowRun = (id: string, runId: string, approved: boolean) => api.post(`/ai/workflows/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/resume`, { approved })
 
 // ===== Dashboard =====
 export interface DashboardStats {
