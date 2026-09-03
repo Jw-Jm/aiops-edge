@@ -1,11 +1,14 @@
-"""ApprovalStore — 审批任务持久化。MySQL 不可用降级为内存。
+"""ApprovalStore — 审批任务持久化（legacy/兼容，MySQL 唯一权威）。
 
-降级语义（fail-loud）：
-- 写路径（create/update）失败必须记录日志并标记降级态，不允许静默——
-  审批决策是执行链的授权依据，丢失即审计断链。
-- 降级期间数据仅存进程内存：重启即丢、多副本互不可见。读路径通过
-  degraded() 暴露该状态，API 层可据此提示"非持久/单副本"。
-- UPDATE 列名经白名单校验，防止新增调用方把任意字段拼进 SQL。
+P1-R1：审批结果作为执行授权依据不得以内存降级充当生产 SoT。本类已移除
+内存 fallback——MySQL 不可用或写入失败时操作抛 ApprovalStoreError（fail-closed），
+调用方（审批/持久化路径）必须把失败返回给用户，绝不把"内存成功"当作授权。
+
+- 现代 canonical Action 审批/执行链在 query-api（ai_actions/ai_approval_decisions，
+  MySQL owner），不经过本类（见 query-go workflow_contract_mysql_test.go）。
+- 本类仅服务 orchestrator 侧 legacy 任务工作台（approval_tasks），其 approve
+  端点已由 main._legacy_approval_compat_enabled 默认关闭（410）。
+- UPDATE 列名经白名单校验。
 """
 import logging
 
@@ -20,106 +23,111 @@ _UPDATABLE_COLUMNS = frozenset({
 })
 
 
+class ApprovalStoreError(RuntimeError):
+    """审批持久化不可用（fail-closed）。调用方应返回 5xx，不得降级授权。"""
+
+
 class ApprovalStore:
-    """审批任务持久化。MySQL 不可用降级为内存（降级态可观测）。"""
+    """审批任务持久化（仅 MySQL）。MySQL 不可用即失败，不做内存降级。"""
 
     def __init__(self):
-        self._mem: dict[str, dict] = {}
         self._degraded = False
 
     def _available(self):
         return db.db_available()
 
     def degraded(self) -> bool:
-        """是否处于内存降级态（MySQL 写入失败过）。降级期间数据非持久。"""
+        """是否发生过 MySQL 写入失败。期间审批操作全部失败（fail-closed）。"""
         return self._degraded
 
-    def _mark_degraded(self, op: str, task_id: str, exc: Exception):
+    def _fail(self, op: str, task_id: str, exc: Exception):
         self._degraded = True
         logger.error(
-            "approval store %s failed; falling back to in-memory (non-durable) task_id=%s error_type=%s",
+            "approval store %s failed (fail-closed, no in-memory fallback) task_id=%s error_type=%s",
             op, task_id or "-", type(exc).__name__,
         )
+        raise ApprovalStoreError(f"approval store {op} unavailable (mysql): {type(exc).__name__}")
 
     def create(self, task: dict):
-        if self._available():
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO approval_tasks (task_id, service_name, status, plan, script, "
-                        "risk_score, risk_reason, diagnosis, report, requester, created_at, decided_at, decision_by) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL)",
-                        (task.get("id"), task.get("service", ""), task.get("status", "waiting"),
-                         task.get("plan", ""), task.get("script", ""),
-                         float(task.get("risk_score", 0) or 0), task.get("risk_reason", ""),
-                         task.get("diagnosis", ""), task.get("report", ""),
-                         task.get("requester", ""), task.get("created_at", "")),
-                    )
-                conn.commit()
-            except Exception as exc:
-                self._mark_degraded("insert", str(task.get("id") or ""), exc)
-            finally:
-                conn.close()
-        self._mem[task["id"]] = dict(task)
+        if not self._available():
+            self._fail("insert", str(task.get("id") or ""), RuntimeError("mysql unavailable"))
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO approval_tasks (task_id, service_name, status, plan, script, "
+                    "risk_score, risk_reason, diagnosis, report, requester, created_at, decided_at, decision_by) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL)",
+                    (task.get("id"), task.get("service", ""), task.get("status", "waiting"),
+                     task.get("plan", ""), task.get("script", ""),
+                     float(task.get("risk_score", 0) or 0), task.get("risk_reason", ""),
+                     task.get("diagnosis", ""), task.get("report", ""),
+                     task.get("requester", ""), task.get("created_at", "")),
+                )
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 — 错误路径已显式处理（读降级日志/写 raise fail-closed）
+            self._fail("insert", str(task.get("id") or ""), exc)
+        finally:
+            conn.close()
 
     def get(self, task_id: str):
-        if self._available():
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT * FROM approval_tasks WHERE task_id=%s", (task_id,))
-                    row = cur.fetchone()
-                if row:
-                    return self._row_to_task(row)
-            except Exception as exc:
-                # 读失败不标记降级（可能是瞬时抖动），但必须留痕
-                logger.warning("approval store read failed task_id=%s error_type=%s",
-                               task_id or "-", type(exc).__name__)
-            finally:
-                conn.close()
-        return self._mem.get(task_id)
+        if not self._available():
+            logger.warning("approval store read unavailable task_id=%s (mysql down)", task_id or "-")
+            return None
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM approval_tasks WHERE task_id=%s", (task_id,))
+                row = cur.fetchone()
+            if row:
+                return self._row_to_task(row)
+            return None
+        except Exception as exc:  # noqa: BLE001 — 读路径降级日志（授权写路径 fail-closed raise）
+            logger.warning("approval store read failed task_id=%s error_type=%s",
+                           task_id or "-", type(exc).__name__)
+            return None
+        finally:
+            conn.close()
 
     def list(self):
-        if self._available():
-            conn = db.get_conn()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT * FROM approval_tasks ORDER BY created_at DESC LIMIT 200")
-                    rows = cur.fetchall()
-                if rows:
-                    return [self._row_to_task(r) for r in rows]
-            except Exception as exc:
-                logger.warning("approval store list failed error_type=%s", type(exc).__name__)
-            finally:
-                conn.close()
-        return list(self._mem.values())
+        if not self._available():
+            logger.warning("approval store list unavailable (mysql down)")
+            return []
+        conn = db.get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM approval_tasks ORDER BY created_at DESC LIMIT 200")
+                rows = cur.fetchall()
+            return [self._row_to_task(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001 — 读路径降级日志（授权写路径 fail-closed raise）
+            logger.warning("approval store list failed error_type=%s", type(exc).__name__)
+            return []
+        finally:
+            conn.close()
 
     def update(self, task_id: str, **fields):
         unknown = set(fields) - _UPDATABLE_COLUMNS
         if unknown:
-            # 无论 DB 分支是否可用都拒绝：内存路径同样不接受未注册字段
             logger.error("approval store update rejected non-whitelisted columns=%s task_id=%s",
                          sorted(unknown), task_id or "-")
             raise ValueError(f"approval update has non-whitelisted columns: {sorted(unknown)}")
-        if self._available():
-            conn = db.get_conn()
-            try:
-                cols = []
-                vals = []
-                for k, v in fields.items():
-                    cols.append(f"{k}=%s")
-                    vals.append(v)
-                vals.append(task_id)
-                with conn.cursor() as cur:
-                    cur.execute(f"UPDATE approval_tasks SET {', '.join(cols)} WHERE task_id=%s", tuple(vals))
-                conn.commit()
-            except Exception as exc:
-                self._mark_degraded("update", task_id, exc)
-            finally:
-                conn.close()
-        if task_id in self._mem:
-            self._mem[task_id].update(fields)
+        if not self._available():
+            self._fail("update", task_id, RuntimeError("mysql unavailable"))
+        conn = db.get_conn()
+        try:
+            cols = []
+            vals = []
+            for k, v in fields.items():
+                cols.append(f"{k}=%s")
+                vals.append(v)
+            vals.append(task_id)
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE approval_tasks SET {', '.join(cols)} WHERE task_id=%s", tuple(vals))
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 — 错误路径已显式处理（读降级日志/写 raise fail-closed）
+            self._fail("update", task_id, exc)
+        finally:
+            conn.close()
 
     def decide(self, task_id: str, status: str, decision_by: str = ""):
         import time

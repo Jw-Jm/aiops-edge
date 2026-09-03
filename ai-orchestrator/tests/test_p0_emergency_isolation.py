@@ -217,7 +217,40 @@ def _seed_task(monkeypatch, client):
     return tid
 
 
-def test_approval_does_not_execute_script_by_default(monkeypatch, client):
+class _FakeApprovalDB:
+    """P1-R1: ApprovalStore 已 fail-closed（纯 MySQL，无内存降级）。
+    本测试验证审批后执行隔离，批准持久化为外部副作用 → 注入可用 DB fake。"""
+
+    def cursor(self):
+        return _FakeApprovalCursor()
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _FakeApprovalCursor:
+    def execute(self, sql, args=None):
+        return 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def _approval_db(monkeypatch):
+    import db as db_module
+    monkeypatch.setattr(db_module, "db_available", lambda: True)
+    monkeypatch.setattr(db_module, "get_conn", lambda: _FakeApprovalDB())
+    yield
+
+
+def test_approval_does_not_execute_script_by_default(monkeypatch, client, _approval_db):
     """审计 P0：默认（EXECUTION_AFTER_APPROVAL 未启用）审批只记录状态、不执行脚本。"""
     tid = _seed_task(monkeypatch, client)
     headers = {"X-Internal-Token": "svc-token",
@@ -230,7 +263,7 @@ def test_approval_does_not_execute_script_by_default(monkeypatch, client):
     assert "执行暂停" in body["note"]
 
 
-def test_approval_executes_when_explicitly_enabled(monkeypatch, client):
+def test_approval_executes_when_explicitly_enabled(monkeypatch, client, _approval_db):
     """审计 P0：仅显式 EXECUTION_AFTER_APPROVAL=1 才恢复审批后执行。"""
     tid = _seed_task(monkeypatch, client)
     monkeypatch.setenv("EXECUTION_AFTER_APPROVAL", "1")
