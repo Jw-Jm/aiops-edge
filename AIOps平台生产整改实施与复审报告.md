@@ -1,5 +1,53 @@
 # AIOps 平台生产整改实施、架构与功能复审报告
 
+## 0. 2026-09-03 权威复审、修复与发布结论（优先于本文历史记录）
+
+本节覆盖本次复审结束时的唯一有效状态；文档后续较早日期、旧提交、旧 Helm revision 和旧镜像仅保留为历史对照，不得覆盖本节结论。
+
+### 0.1 本轮已核对并修复的真实问题
+
+| 编号 | 真实根因与证据 | 修复与验证 |
+|---|---|---|
+| FIX-CHAT-01 | Gateway `BrainOrchestrator` 的独立组合根未调用严格 `tool_registry.init_default_tool_registry()`；`InternalQueryClient` 使用的 registry 为空，真实 ChatTool 请求在签名校验前返回 `invalid_context`，没有审计行。证据：`ai-orchestrator/orchestrator.py`、真实 Pod 内 registry 状态、回归测试。 | 在 `BrainOrchestrator.__init__` 初始化 canonical registry；新增 `tests/test_gateway_tool_registry_bootstrap.py`。修复提交 `b882c88`；定向 Python 测试 **24 passed**。 |
+| FIX-CHAT-02 | `ai_chat_tool_runs.started_at` 在迁移 `0017_ai_chat_tool_runs.sql` 中为 `NOT NULL`，旧 DAO 在 `StartedAt=nil` 时显式插入 NULL；真实 Query API 日志记录 MySQL 错误码 **1048**，Chat 返回 `TOOL_UNAVAILABLE`。 | `AIChatToolRunDAO.Start` 在缺省时间时补齐 `time.Now()`；新增 `TestChatToolRunStartDefaultsRequiredStartedAt`，修复提交 `a65ecd5`。Query store/API 定向测试和 `go vet` 通过；真实审计插入恢复。 |
+| FIX-OBS-01 | 生产组合根按设计将 legacy `_task_store` 设为 `None`，但 `/metrics` 仍无条件调用 `update_task_metrics(_task_store)`，真实编排 Pod 日志出现 `AttributeError: 'NoneType' object has no attribute 'values'`，Prometheus 抓取返回 HTTP 500。 | `metrics.update_task_metrics` 对 disabled legacy store 采用显式 no-op；新增 `tests/test_metrics_endpoint.py`。先失败后通过，修复提交 `71378ab`；部署后容器内 `/metrics` HTTP **200**。 |
+
+### 0.2 当前代码、镜像和本机运行态
+
+- 当前 HEAD：`71378ab`（包含 `b882c88`、`a65ecd5`、`02299f3` 等前序修复）；工作区干净，`main...origin/main [ahead 6]`，尚未推送远端。
+- Helm：`aiops` revision **53**，`STATUS=deployed`；所有自研 Deployment/DaemonSet 使用统一 `git-71378ab`：frontend、query-api（三角色）、ingest、ai-orchestrator、investigation-worker、event-collector、ai-action-executor、ai-llm-egress-proxy；全部 Ready，重启数 0。迁移/回填 Jobs（MySQL、ClickHouse、Graph、trace summary）均 Complete。
+- MySQL `aiops_schema_migrations` 已有 `mysql/0017_ai_chat_tool_runs`（checksum 前缀 `a73f784e653c6b61`）；`ai_chat_tool_runs` 当前共有 7 条真实审计记录。
+- 本轮未连接生产环境、未使用生产凭据、未执行数据库迁移命令或破坏性外部写入；所有观测写入均为本机 OrbStack 验证流量。
+
+### 0.3 AICHAT 两个自研模块的真实可用性
+
+真实登录 Cookie → Frontend `/api/v1/ai/chat` → Query API → Orchestrator → 签名 `TrustedRequestContext` → Query `/internal/v1/query/*` 链路已打通。全新 Chat 回合返回 HTTP 200、SSE `tool_start/tool_end/done`，MySQL 审计状态如下：`query_metrics.v1=success(10)`、`query_traces.v1=success(5)`、`query_k8s.v1=success(42)`、`query_topology.v1=success(45)`、`query_logs.v1=no_data`、`query_alerts.v1=no_data`、`knowledge_search.v1=failed/CHAT_TOOL_FAILED`。因此“访问前持久化审计”和失败时 fail-closed 已真实成立；知识检索数据源本机失败被如实记录，不能宣称所有工具均成功。
+
+### 0.4 真实观测与 RCA confirmed 验证
+
+通过本机 mTLS/API-key 向 Ingest 写入 2 条新 OTLP Span（gateway→backend、错误状态、450ms），公共 metrics 查询读到最新分钟桶（backend `call_count=1,error_count=1,avg_ms=450`）。随后显式创建只读 Investigation Run `bbad7af2-e65f-43a9-8eed-2f99ae72463e`，真实 outbox→Worker→RCA V2 完成，Run 状态 `success`。持久化 `rca.v2` 结果：
+
+- evidence 总数 104：`metric=2`、`trace=2`、`log=100`；`graph_enhanced=true`、`partial=false`、`stale=false`；图上下文 2 vertices/1 edge，存在 1 条 bounded gateway→backend propagation path；`missing_evidence=[]`。
+- 最高候选 `aiops-validation-gateway` 与 backend 分数均 **0.65**，确定性评分一致；状态为 **`probable`**，不是 `confirmed`。缺少 change、hardware 或 co-failure 等独立支持，按冻结阈值不能升格。该结果是策略按证据闭环 fail-closed 的正确行为，不是把“观测数据可读”误报成 RCA confirmed。
+- 不带 `--fixture` 执行 `validate-observability-evidence.sh`，因未提供统一真实 marker 明确返回 `exit=2 / gate_status=BLOCKED_BY_ENV`；没有用 fixture 冒充生产证据。
+
+### 0.5 测试与门禁结果
+
+- Python 新增/受影响定向集合：**25 passed**；编排容器 `/metrics` 实际 HTTP 200。
+- Go：在宿主沙箱首次运行时因回环端口权限失败；按授权在本机环境重试后 `go test ./...` 全部通过，`go vet ./...` 无输出通过。
+- `test-production-architecture-contracts.sh`、`test-deployment-contracts.sh`：通过。
+- Python 全量命令实际结果：`1247 passed, 1 skipped, 12 failed, 2 errors`；失败均有环境/测试隔离证据（宿主回环端口限制、mTLS 临时监听、测试 fake subprocess/monkeypatch 污染），故本项标记“未验证”，不能当作全量通过。
+
+### 0.6 发布结论与最小阻断集合
+
+当前 **不可作为生产发布通过**。已解除的代码阻断是 ChatTool 审计初始化、`started_at` 写入和生产 `/metrics` 500；仍需解除的最小集合：
+
+1. 在正式环境用真实统一 marker 完成 metrics/logs/events/DeepFlow/dependency，并取得 RCA `confirmed`（`status=confirmed`、至少两个独立类别、最终图上下文、bounded propagation path、root score 与 deterministic score 一致）；本机当前只有 `probable 0.65`，不得人为降低阈值或制造 fixture。
+2. 提供正式 registry 的 immutable digest、镜像签名/KMS 验签、SBOM/漏洞门禁和回滚演练证据；本机 tag 只能证明构建/部署一致性。
+3. 完成生产 Secret/证书轮换、服务身份、防重放、Credential Broker/TokenRequest、HA/PITR/RPO/RTO 与跨节点 Graph 200k/1M 恢复/p95/资源证据；本机未验证项保持阻断。
+
+整改验收顺序：先以提交 `71378ab` 重建并验证镜像一致性 → ChatTool 审计/失败回放契约 → 真实 marker 观测闭环 → RCA confirmed 证据闭环 → registry/KMS 与 HA/恢复门禁。任何一步缺少真实证据都保持 `BLOCKED_BY_ENV` 或 `FAIL`，不降级为通过。
+
 **复审日期：** 2026-08-31 至 2026-09-01（Asia/Shanghai）
 **代码构建基线：** Query/Graph 功能代码最新提交 `865de6a`（包含 `7f80889`、`8c73f02` 的图查询及自环过滤修复）；当前 Query 镜像 tag `query-api:git-865de6a`。Worker 的自环过滤源码已提交于 `8c73f02`，但本轮 Python 基础镜像拉取 EOF，Worker 镜像未能重建，运行中仍为既有 `ai-orchestrator:git-04cd7512698a`。
 **本机验证：** OrbStack Kubernetes `orbstack`，Helm release `aiops` revision 25（2026-09-01，本轮代码同步）；未执行 Graph 压测或 `graph-load-test.sh`。本轮执行了真实 Kubernetes→HugeGraph generation 1/2 同步与代际清理验证、Query→HugeGraph 索引边回退验证，并用真实 marker 读回 ClickHouse/DeepFlow、VictoriaMetrics、VictoriaLogs 和 Kubernetes Event API；当前运行态核心 Pod Ready，Query API 使用 `query-api:git-865de6a`。Query 镜像构建部署成功；Python Worker 完整重建在基础镜像镜像源 EOF 处受环境限制，未伪称全部重建。Helm 状态为 `deployed`。
