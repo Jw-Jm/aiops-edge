@@ -17,7 +17,7 @@
 
 ### 0.0.2 代码、GitHub、镜像和运行态一致性
 
-- GitHub：`origin/main` 已包含运行代码提交 `c81fb0c19c312e56b303af292d1de99d33a1fd46`（`2cb7e1d`、`c81fb0c`）及其后的文档提交 `930e341`；工作区无代码修改，用户既有 `.ses` 运行时文件未纳入提交。
+- GitHub：`origin/main` 已包含运行代码提交 `c81fb0c19c312e56b303af292d1de99d33a1fd46`（`2cb7e1d`、`c81fb0c`）及后续文档提交；工作区无代码修改，用户既有 `.ses` 运行时文件未纳入提交。
 - 镜像：`IMAGE_TAG=git-930e341` 的 12 个自研镜像全部本机构建成功，OCI revision label 与构建时完整 Git commit（`930e341`）一致；构建中代理 registry 的 TLS `bad record MAC` 已通过同版本官方基础镜像缓存重试解决，没有复用旧镜像。
 - Helm：`aiops` revision **55**，`STATUS=deployed`。自研 Deployment/DaemonSet/Worker/迁移 Job 均使用 `git-930e341`；Pod 实际 imageID 已逐一核对，业务 Pod 全部 Ready、迁移及回填 Job 全部 Complete、重启数为 0。
 - 运行探针：编排 Pod 内使用挂载的本机 mTLS CA/证书/私钥访问 `https://127.0.0.1:8080/metrics`，HTTP **200**；首次错误端口 8000 的探针结果不计入验收。
