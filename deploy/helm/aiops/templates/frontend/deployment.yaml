@@ -24,6 +24,13 @@ spec:
             capabilities:
               drop:
                 - ALL
+              add:
+                # nginx master (root) must chown its cache dirs and spawn the
+                # worker as uid 101; drop-ALL alone makes nginx exit with
+                # "chown(...) failed: Operation not permitted".
+                - CHOWN
+                - SETUID
+                - SETGID
             seccompProfile:
               type: RuntimeDefault
           image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.frontend.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.frontend | default "") "env" (.Values.global.environment | default "")) | quote }}
