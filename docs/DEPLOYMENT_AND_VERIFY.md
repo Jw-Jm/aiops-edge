@@ -195,6 +195,22 @@ docker run -d --name pitr -e MYSQL_ROOT_PASSWORD=x -p 13307:3306 mysql:8
 - **LLM 集成**：需要真实 provider key 才能启用 proxy 转发；未配置时 proxy fail-closed（无 key 无转发），且 NetworkPolicy 不渲染 LLM 规则。
 - **Stage D 真实执行**：`EXECUTION_MODE` 必须保持 `disabled`，直到 Credential Broker 真实接通 + post-verify/audit 闭环（`BLOCKED_BY_ENV`）。切 `approved` 前务必先完成 Credential Broker + rollback/post-verify/audit。
 
+### 4.2 publishable / 签名绑定门禁：不阻塞离线包制作与目标环境部署（确认清单）
+
+**结论**：`publishable` 判定与 Ed25519 签名绑定（§2.3 / `collect-release-evidence.sh` / `verify-release-signature.sh` / `verify-release-binding.sh`）只服务**发布审批层**，不参与离线包制作、镜像搬运或目标环境部署。部署流程**不需要**签发 key、binding 或 release evidence。
+
+已核实的代码事实（2026-09-04，main 0cb0935）：
+- `deploy/helm/**`：对 `publishable`/`release-evidence`/`release-binding`/`collect-release-evidence` 引用 **0 命中** —— Helm 渲染与 install/upgrade 不感知该门禁。
+- `deploy/scripts/local-validation.sh`（本机部署入口）：对上述符号引用 **0 命中**。
+- `deploy/scripts/verify-aiops-workflow-gates.sh`（release-gate 聚合）：对 `publishable` 引用 **0 命中**。
+
+部署人确认清单（满足即不受该门禁影响）：
+1. 离线包：构建镜像 → `docker save` → tar 搬运 → 目标环境 `docker load`，**照常进行**。
+2. 部署：目标环境 `helm install/upgrade`（含 secret 注入、TLS、NetworkPolicy 等 §4 配置），**不要求任何 evidence/签名**。
+3. 全程**不需要**：Ed25519 私钥/公钥、`release-binding.json`、`.sig`、`AIOPS_RELEASE_*` 环境变量。
+4. `publishable=true` 只是"发布审批"的可选背书：只有当你们选择"对外/对生产发布前必须由受控签名验证放行"时才需要（§2.3 流程）；不启用则部署完全不受影响。
+5. 如需追溯部署镜像版本：用 `docker inspect` 的 `org.opencontainers.image.revision` label 与 registry digest 记录即可，非强制项。
+
 ## 5. 准入状态与后续
 
 ```
