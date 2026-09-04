@@ -1,10 +1,8 @@
-"""V9.3 Phase 10 (P10 完整闭环 Plan B) — RunStateMachine：纯状态机 + 语义校验。
+"""RunStateMachine：纯状态机 + 语义校验。
 
 远端提交优先架构的组成部分：RunStateMachine 只做状态转换合法性校验与预算/终态判定，
 不持有任何存储。持久化由 PersistentRunRepository（远端提交优先）负责，内存仅作
 RunCache 缓存 query-api 已提交结果。
-
-设计依据：docs/superpowers/specs/2026-08-21-p10-full-closed-loop-design.md §D2。
 """
 from __future__ import annotations
 
