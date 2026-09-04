@@ -6,16 +6,11 @@ on:
     branches:
       - main
   pull_request:
-    paths:
-      - "ai-apm-query-go/**"
-      - "ai-orchestrator/**"
-      - "ai-action-executor/**"
-      - "observability-frontend/**"
-      - "deploy/helm/aiops/**"
-      - "deploy/scripts/verify-aiops-workflow-gates.sh"
-      - "tests/workflow-e2e/**"
-      - "Makefile"
-      - ".github/workflows/aiops-workflow-gates.yml"
+    # No path filter: ruleset (GOV1) requires the release-gate status check on
+    # every PR, and a filtered trigger deadlocks docs/evidence-only PRs
+    # (required check never appears -> base branch policy blocks merge).
+    branches:
+      - main
 
 # Least privilege: the gate only needs to read the repository. No write
 # scopes are required because the gate never uploads artifacts or touches
