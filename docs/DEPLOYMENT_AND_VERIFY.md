@@ -3,7 +3,7 @@
 本文档说明如何（1）在本机（OrbStack/K8s）部署并验证 AIOps 平台，（2）将同一份代码/Helm 部署到其他环境。命令输出是唯一证据来源；未实际执行的环境项必须标记为 `BLOCKED_BY_ENV`。
 
 > 定位：当前代码为 `RUNTIME_CORRECTNESS_CANDIDATE` / `CONTROLLED_AI_INVESTIGATION_CANDIDATE` / `CONTROLLED_ACTION_CANDIDATE`。
-> 生产安全边界（`EXECUTION_MODE=disabled`、orchestrator 无 execute、Stage D 真实执行 keep disabled）按设计保持收敛态，详见《AIOps_全面代码修改报告_V2.md》§28/§29/§35。
+> 生产安全边界：Kubernetes mutation 仅经 query-api → ai-action-executor；`EXECUTION_MODE=disabled` 为默认；orchestrator/investigation worker 不持有任何 K8s 写能力。
 
 ---
 
@@ -221,4 +221,4 @@ RUNTIME_CORRECTNESS_CANDIDATE
 ```
 - 本机全量验证通过（A0/B1/B2/C 核心 + Stage D 接线）。
 - **生产候选前仍应完成**：Trace/LLM 生产 E2E 扩展、Alert DB-time（已改）、MySQL PITR 完整 binlog 重放演练、多节点 failover（`BLOCKED_BY_ENV`）、Stage D 真实执行前置（Credential Broker 等）。
-- 发布禁止条件见《AIOps_全面代码修改报告_V2.md》§35。
+- 发布与执行约束以 `SECURITY.md`、`docs/runtime-slo.md` 与当前 Helm 配置为准；真实 mutation 保持默认 disabled。

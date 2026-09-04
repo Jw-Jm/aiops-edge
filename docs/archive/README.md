@@ -1,5 +1,27 @@
 # 历史文档归档
 
-本目录存放历史方案、审阅/整改报告与验收记录。**仅作迁移与审计背景，不得作为
-运行时契约**——生产架构以 `docs/architecture/index.md`、`SECURITY.md` 和部署
-Chart 为准（见仓库根 README.md）。
+本目录仅保存极少量历史审计背景。
+
+## 使用边界
+
+本目录内容：
+
+- 不得作为当前生产架构依据；
+- 不得作为当前权限模型依据；
+- 不得作为当前部署配置依据；
+- 不得作为当前发布门禁依据；
+- 不得作为当前数据/API 契约依据。
+
+当前事实源请查看：
+
+- `../../README.md`
+- `../../SECURITY.md`
+- `../README.md`
+- `../architecture/index.md`
+- `../ownership/data-owners.md`
+- `../contracts/`
+- `../runtime-slo.md`
+- `../DEPLOYMENT_AND_VERIFY.md`
+- `../../deploy/helm/aiops/`
+
+Git 历史保留已删除的旧方案、阶段整改记录和验收执行记录。
