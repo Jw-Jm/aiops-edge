@@ -104,3 +104,7 @@ deploy/offline/
 
 # P2-S11: historical local artifact (timestamp+uuid session file); no current generator
 :memory:.ses
+
+# Generated release evidence: create per release, do not track in source main
+/deploy/evidence/release-evidence.json
+/deploy/evidence/release-candidate-manifest.json
