@@ -8,12 +8,13 @@
 #       query-api 因缺失 JWT_SECRET / LLM_ENCRYPTION_KEY 会拒绝启动（安全兜底）。
 # =============================================================================
 
-# 无状态服务（frontend/query-api）副本数。
+# 无状态服务副本数。2026-09-04 业务决策：所有自研中心服务统一单副本，不要求服务级 HA
+#（见 docs/runtime-slo.md；ARCH-701 Helm 渲染契约强制自研中心 Deployment spec.replicas==1）。
 # 注意：ingest（挂 RWO WAL PVC）与 ai-orchestrator（挂 RWO 数据 PVC，含 ChromaDB/sqlite/checkpoint）
 #       为有状态单写组件，多副本必然因 RWO PVC 冲突 CrashLoopBackOff，当前固定 1 副本
 #       （见下方 orchestratorReplicas / ingestReplicas 覆盖项；若需多副本必须先外部化存储）。
 # 有状态中间件（mysql/clickhouse）固定用 statefulReplicaCount=1，不受此值影响。
-replicaCount: 2
+replicaCount: 1
 
 internalTLS:
   enabled: true
