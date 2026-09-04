@@ -502,8 +502,6 @@ investigationWorker:
   kgBuildIntervalSeconds: 60
   dataStorageClass: ""
   dataStorage: 5Gi
-  # Deprecated compatibility knobs; ignored by the read-only RBAC template.
-  grantK8sWrite: false
   # injectDbCredentials：是否向 orchestrator 注入 ClickHouse/MySQL 直连凭据。
   #   审计 P0-3：orchestrator 不应持有 DB 直连凭据，原则上只访问 query-api。
   #   默认 false（fail-closed，不注入）。
