@@ -28,7 +28,7 @@ type ackState struct {
 	Acked       []uint64 `json:"acked"`
 }
 
-// WAL 提供崩溃安全持久化：写入 CH 前先落盘，重启后从磁盘恢复未确认批次。
+// WAL 提供崩溃安全持久化：事件提交给 Unified Ingest 前先落盘，重启后从磁盘恢复未确认批次。
 // 语义：Append 返回递增 seq → 成功写 CH 后 Ack(seq) → 重启从 consecutiveAck 之后 replay。
 // 仿 ai-apm-ingest-go/internal/clickhouse/wal.go 的最小实现。
 type WAL struct {
@@ -109,7 +109,7 @@ func (w *WAL) Append(kind string, v []byte) (uint64, error) {
 	return w.seq, nil
 }
 
-// Ack 标记 seq 已成功写入 CH，并推进连续 ack 水位，持久化到 .ack 文件。
+// Ack 标记 seq 已被 Unified Ingest 确认接收，并推进连续 ack 水位，持久化到 .ack 文件。
 func (w *WAL) Ack(seq uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

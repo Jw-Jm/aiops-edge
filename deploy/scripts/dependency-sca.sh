@@ -47,7 +47,7 @@ critical="${RESULT%% *}"
 high="${RESULT##* }"
 echo "[sca] frontend production vulnerabilities: critical=${critical} high=${high}"
 if [[ "${critical}" != "0" || "${high}" != "0" ]]; then
-  echo "SCA GATE FAILED: production critical/high must be 0 (allowlist policy: docs/remediation/2026-09-03/phase1-p1sca1/SCA_TRIAGE_LEDGER.md)" >&2
+  echo "SCA GATE FAILED: production critical/high must be 0 (allowlist policy: deploy/scripts/sca-allowlist.txt)" >&2
   fail=1
 fi
 cd "${repo_root}"

@@ -38,7 +38,7 @@ type Config struct {
 	BatchSize     int
 	FlushInterval int // seconds
 
-	// WAL 持久化（Phase 5）：写入 CH 前先落盘，崩溃/重启后从磁盘恢复未确认批次。
+	// WAL 持久化：事件提交给 Unified Ingest 前先落盘，崩溃/重启后从磁盘恢复未确认批次。
 	// 为空时退化为内存重试队列（向后兼容）。
 	WALDir string
 

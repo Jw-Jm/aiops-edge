@@ -193,6 +193,13 @@ forbidden 'from investigator import' "$repo_root/ai-orchestrator" 'ARCH-605 lega
 forbidden '_load_legacy' "$repo_root/ai-orchestrator/rca_engine" 'ARCH-606 legacy RCA bridge loader remains';
 required 'def _direct_mutation_enabled' "$repo_root/ai-orchestrator/main.py" 'ARCH-607 in-process mutation guard removed';
 
+# ARCH-702: legacy orchestrator K8s write compatibility must not exist.
+if rg -n 'grantK8sWrite' "$repo_root/deploy/helm/aiops"; then
+  fail 'ARCH-702 legacy orchestrator grantK8sWrite knob must not exist'
+fi
+[[ -e "$repo_root/deploy/scripts/grant-orchestrator-ops.sh" ]] && fail 'ARCH-702 grant-orchestrator-ops.sh must not exist'
+[[ -e "$repo_root/deploy/scripts/revoke-orchestrator-ops.sh" ]] && fail 'ARCH-702 revoke-orchestrator-ops.sh must not exist'
+
 # ARCH-701: production self-owned center services must be single replica.
 # The rendered manifest is parsed as YAML (not a source grep): every self-owned
 # center Deployment must resolve spec.replicas == 1. DaemonSet/Job/StatefulSet

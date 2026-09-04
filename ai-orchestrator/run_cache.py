@@ -1,9 +1,7 @@
-"""V9.3 Phase 10 (P10 完整闭环 Plan B) — RunCache：只缓存 query-api 已提交结果。
+"""RunCache：只缓存 query-api 已提交结果。
 
-远端提交优先架构的组成部分（§D2）：RunCache 只缓存 query-api 已提交的 Run；
+远端提交优先架构的组成部分：RunCache 只缓存 query-api 已提交的 Run；
 HTTP 失败/冲突时不得推进缓存状态（不能"本地先成功、随后同步"形成双写不一致）。
-
-设计依据：docs/superpowers/specs/2026-08-21-p10-full-closed-loop-design.md §D2。
 """
 from __future__ import annotations
 

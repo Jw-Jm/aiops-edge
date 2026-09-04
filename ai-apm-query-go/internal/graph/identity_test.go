@@ -23,7 +23,7 @@ type identityFixture struct {
 
 func loadIdentityFixture(t *testing.T) identityFixture {
 	t.Helper()
-	path := filepath.Join("..", "..", "..", "docs", "testdata", "graph_identity_v1.json")
+	path := filepath.Join("..", "..", "..", "tests", "fixtures", "graph", "graph_identity_v1.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read identity fixture: %v", err)

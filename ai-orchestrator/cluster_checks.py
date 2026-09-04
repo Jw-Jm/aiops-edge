@@ -7,7 +7,7 @@
 - 参数校验 fail-closed：路径穿越、flag 注入、任意 shell 字符串全部拒绝；
 - 审计记录含 check_kind/namespace/pod/exit_code/duration_ms/truncated，不记录 Secret。
 
-审核依据：《AIOps_全面技术审核与生产整改最终报告_2026-09-03》§5 (P1-S1)。
+P1-S1 收敛后本模块是 kubectl 调查路径的唯一入口；不引入通用 shell executor。
 """
 from __future__ import annotations
 

@@ -6,7 +6,7 @@
 //
 //	LOADGEN_INGEST=http://ingest:8080 LOADGEN_API_KEY=xxx \
 //	LOADGEN_SERVICES=payments,orders LOADGEN_ERROR_RATE=0.05 \
-//	go run ./cmd/loadgen
+//	go run ./tools/loadgen
 //
 // 流量模式（LOADGEN_MODE）：
 //   - steady   : 平稳流量（服务 RED 平稳基线，供 zscore/MAD 正常检测）
