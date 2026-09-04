@@ -22,7 +22,7 @@ Graph gate、备份恢复和证书/签名 key 轮换证据。证据由 `deploy/s
 > 2026-09-04 单副本业务决策后，"双副本重启 / 服务级 failover / 节点驱逐后另一副本接管"不再是
 > 发布前提；可保留 Kubernetes 单 Pod 重建、DaemonSet 重建、备份恢复、Helm rollback、PVC 重挂载。
 
-## 可用性与失效行为（P2-HA1：2026-09-04 业务决策收口）
+## 可用性与失效行为（2026-09-04 单副本业务决策）
 
 以下只记录客观部署事实与确认状态，不构成任何高可用承诺：
 
@@ -30,4 +30,4 @@ Graph gate、备份恢复和证书/签名 key 轮换证据。证据由 `deploy/s
 - 本文件不填写 RTO/RPO 数值承诺，也不以当前部署形态代表"生产高可用/多副本"。
 - 当前 ai-orchestrator 部署为 **1 副本**，持久卷为 **ReadWriteOnce**；LangGraph checkpoint、session sqlite 与 Chroma/RAG 数据均与 orchestrator 进程本地耦合；canonical Run/Action 状态存 MySQL。
 - 客观失效行为：Pod/节点故障时，控制面的可恢复性取决于 Pod 重启与 PVC 挂载恢复；滚动更新期间，新旧实例并存会与 RWO/PVC 单写者约束冲突。
-- **处理决定**：按业务决策以单副本收口（报告 §21 条款 (b)：业务明确可用性形态后收口）。若未来需要服务级 HA，再启用报告 §21 条款 (a)：checkpoint 外部化、worker lease/fencing、≥2 副本及故障恢复验证。
+- **处理决定**：按业务决策以单副本收口。若未来需要服务级 HA，再启用 checkpoint 外部化、worker lease/fencing、≥2 副本及故障恢复验证。

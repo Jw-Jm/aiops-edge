@@ -15,7 +15,7 @@ global:
   # Runtime environment is explicit so security-sensitive compatibility paths
   # and cookie behavior cannot silently inherit a developer default.
   environment: production
-  # P1-SUP2: immutable production image digests. When environment=production
+  # Production self-owned images must use immutable sha256 digests. When environment=production
   # every self-owned image MUST resolve to repository@sha256:<64hex>; a missing
   # digest fails `helm template` (see aiops.imageWithGlobalTag). Values are
   # injected by the release system after the production image build; they are
@@ -63,7 +63,7 @@ internalTLS:
 # ---------------------------------------------------------------------------
 networkPolicy:
   enabled: true
-  # P0-P13 审计（P0-4）：egress default-deny + orchestrator 出站白名单（仅 query-api）。
+  # Egress default-deny + orchestrator 出站白名单（仅 query-api）。
   # egressDefaultDeny=true 时默认拒绝所有出站，仅放行显式 egress 白名单。
   egressDefaultDeny: false
   # allowOrchestratorDbAccess：是否放行 orchestrator 直连 clickhouse/mysql/victoria-metrics。
@@ -120,7 +120,7 @@ hugeGraph:
     limits: { cpu: "2", memory: "2Gi" }
   schemaMigratorImage: "graph-schema-migrator:{{ .Values.global.imageTag }}"
 
-# Stage D（报告 §21 / F-22）：ai-action-executor——独立生产 mutation 安全执行边界。
+# ai-action-executor —— 独立生产 Kubernetes mutation 安全执行边界。
 # EXECUTION_MODE=disabled 默认关闭真实执行（A-C + D 全闭环后才可开 approved）。
 aiActionExecutor:
   enabled: false
@@ -153,7 +153,7 @@ credentialBroker:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "200m", memory: "256Mi" }
 
-# C-04（报告 §19）：ai-llm-egress-proxy——LLM 出站唯一代理。
+# ai-llm-egress-proxy —— LLM 出站唯一代理。
 #   默认 disabled；启用时 orchestrator 的 LLM 出站走本 proxy（Provider key 只存于 proxy Secret）。
 llmEgressProxy:
   enabled: false
@@ -193,7 +193,7 @@ secrets:
   # LLM proxy credentials: provider keys remain exclusively in the proxy container.
   llmProxyToken: ""
   llmProviderKeys: ""
-  # ── V9.2 Service Identity (INTERNAL-AUTH-P0-011) — four independent credential/key groups ──
+  # ── Service Identity — four independent credential/key groups ──
   # orchestrator → query-api direction (service credential + signing keypair)
   orchestratorToQueryToken: ""
   orchestratorToQuerySigningKey: ""        # Ed25519 private key, raw-url base64 without padding, 64-byte private key (seed||public)
@@ -202,7 +202,7 @@ secrets:
   queryToOrchestratorToken: ""
   queryToOrchestratorSigningKey: ""        # Ed25519 private key, raw-url base64 without padding, 64-byte private key (seed||public)
   queryToOrchestratorVerifyKeys: ""        # Ed25519 public key(s), raw-url base64 without padding, comma-separated
-  # ── Stage D: ai-action-executor (报告 §29) ──
+  # ── ai-action-executor ──
   # query-api → executor 方向：EXECUTOR_TOKEN 为共享 token（disabled 时 executor 兜底校验）；
   # aiActionExecutorSigningKey 为 query-api 签发 signed ActionExecutionContext 的 Ed25519 私钥
   # （executor 持对应独立公钥 AI_ACTION_EXECUTOR_VERIFY_KEYS 验签）。
@@ -270,8 +270,8 @@ mysql:
     host: ""
     port: "3306"
   image: "mysql:8.4"
-  # V9.2 Phase 4 P4.8：schema-migrator 镜像（运行 versioned migrations，aiops_migrator 账号）。
-  # V9.2 Phase6 Final Rebuild：独立构建 schema-migrator:rebuild-20260820（ai-apm-query-go/cmd/schema-migrator）。
+  # schema-migrator 镜像（运行 versioned migrations，aiops_migrator 账号）。
+  # 独立构建于 ai-apm-query-go/cmd/schema-migrator，tag 与 global.imageTag 对齐。
   migratorImage: 'schema-migrator:{{ .Values.global.imageTag }}'
   storageClass: ""
   storage: 10Gi
@@ -289,14 +289,14 @@ vmalert:
     limits: { cpu: "200m", memory: "256Mi" }
 
 # node-exporter — 每节点采集服务器 OS 部件（CPU/内存/磁盘/网卡）
-# 已由 categraf 替代（P1-7）：categraf 内建 node_exporter 插件，职责合并，默认关闭。
+# 已由 categraf 替代：categraf 内建 node_exporter 插件，职责合并，默认关闭。
 # 如需单独启用可改回 true（注意与 categraf 造成重复采集）。
 nodeExporter:
   enabled: false
   image: "prom/node-exporter:v1.8.2"
 
 # ipmi-exporter — 每节点本地采集 IPMI 传感器（/dev/ipmi0，不走带外网）
-# 已由 categraf 替代（P1-7）：categraf input.ipmi 插件承担 IPMI KCS 本地采集，默认关闭。
+# 已由 categraf 替代：categraf input.ipmi 插件承担 IPMI KCS 本地采集，默认关闭。
 # 如需单独启用可改回 true（注意与 categraf 造成重复采集）。
 ipmiExporter:
   enabled: false
@@ -305,7 +305,7 @@ ipmiExporter:
   collectInterval: "120"
 
 # ---------------------------------------------------------------------------
-# categraf（P1-7）— 每节点主机指标采集 DaemonSet（flashcat, MIT）
+# categraf — 每节点主机指标采集 DaemonSet（flashcat, MIT）
 # 替代 node-exporter/ipmi-exporter/自研 SNMP/中间件采集四个职责：
 #   input.node_exporter → 原 node-exporter；input.ipmi → 原 ipmi-exporter；
 #   input.snmp/input.mysql/input.redis 等按需增开（配置下发见平台设计 4.2）。
@@ -326,7 +326,7 @@ categraf:
     limits: { cpu: "500m", memory: "256Mi" }
 
 # ---------------------------------------------------------------------------
-# 备份（P0-9）— 每日定时把 MySQL/ClickHouse 数据导出到 backup-pvc
+# 备份 — 每日定时把 MySQL/ClickHouse 数据导出到 backup-pvc
 # 默认 enabled=true：方案要求生产必须备份；无需备份的环境可置 false，
 # 或把 schedule 改为一年一次（如 "0 0 31 2 *"）实现"默认关"。
 # 两个 CronJob 共用 backup-pvc（RWO），默认 02:00 / 03:00 错峰执行，无并发冲突。
@@ -345,7 +345,7 @@ backup:
     schedule: "0 3 * * *"   # 每日 03:00
 
 # ---------------------------------------------------------------------------
-# Ingress/TLS（P0-10）— 前端入口。默认关闭：演示环境走 NodePort(frontend.nodePort)。
+# Ingress/TLS — 前端入口。默认关闭：演示环境走 NodePort(frontend.nodePort)。
 # 生产启用：ingress.enabled=true + 注入证书 secret + 指定 host，详见 templates/ingress.yaml 头注释。
 # ---------------------------------------------------------------------------
 ingress:
@@ -412,8 +412,7 @@ queryApi:
   # C-05（F-12）：生产 profile 必须验证 K8s API 证书/CA，insecureSkipVerify 只能用于
   # 明确标记的本地验证 profile。默认 false（fail-closed，验证目标集群 API Server 证书）。
   k8sInsecureSkipVerify: "false"
-  # P6.3.3/P6.4.0: reader 路由（legacy|new）。default=legacy（Phase 6 transition）。
-  # cutover 受控窗口内翻为 new；显式非法值 → startup FAIL（拒绝启动）。
+  # Reader 路由（legacy|new）。default=legacy；显式非法值 → startup FAIL（拒绝启动）。
   queryReaderMode: "new"
   graphBackend: "{{ .Values.graph.backend }}"
   hugeGraphUrl: "http://hugegraph.{{ .Values.namespace.observability }}.svc.cluster.local:8080"
@@ -445,12 +444,12 @@ ingest:
   image: "ingest-pipeline:{{ .Values.global.imageTag }}"
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"
-  # 多集群纳管：本 ingest 实例所属集群 ID（V9.2 canonical identity，禁止 default）
+  # 多集群纳管：本 ingest 实例所属集群 ID（canonical UUID，禁止 default）
   clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
   # DeepFlow OTLP/gRPC exporter 写入平台 Trace SoT 使用的租户身份；必须与
   # queryApi.systemTenantId 对齐，避免真实流量落入 default 租户后前端不可见。
   deepflowTenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
-  # V9.3 Phase 14（P14.5）：legacy ClickHouse writer 已删除，legacyWriterEnabled 开关已移除。
+  # legacy ClickHouse writer 已删除，legacyWriterEnabled 开关已移除。
   # telemetry new backend：TELEMETRY_WRITER_MODE=new 启用 VM/VLogs 写链。
   # VICTORIA_*_URL 必须为 base URL（不带 /insert/jsonline，writer 内部追加）。
   telemetryWriterMode: "new"
@@ -503,7 +502,7 @@ investigationWorker:
   dataStorageClass: ""
   dataStorage: 5Gi
   # injectDbCredentials：是否向 orchestrator 注入 ClickHouse/MySQL 直连凭据。
-  #   审计 P0-3：orchestrator 不应持有 DB 直连凭据，原则上只访问 query-api。
+  #   Orchestrator 不应持有 DB 直连凭据，原则上只访问 query-api。
   #   默认 false（fail-closed，不注入）。
   injectDbCredentials: false
   resources:
@@ -515,19 +514,19 @@ deepflow:
   enabled: true
 
 # ---------------------------------------------------------------------------
-# event-collector（P1-4）— K8s 事件 watch + IPMI SEL 明细统一落 CH。
+# event-collector — K8s 事件 watch + IPMI SEL 明细统一落 CH。
 # DaemonSet：SEL 按节点本地采集；K8s 事件为集群级资源，多副本 watch 重复由
 # CH ReplacingMergeTree 去重兜底（单节点环境无影响）。
 # ---------------------------------------------------------------------------
 eventCollector:
   enabled: true
   image: "event-collector:{{ .Values.global.imageTag }}"
-  # Phase 5：tenantId/clusterId 必须为 canonical UUID（注册后的集群 UUID）。缺失/非法
-  # 组件 fail-closed 拒绝启动（禁止 default/slug/数值）。Final State：注入 V9.2 canonical identity。
+  # tenantId/clusterId 必须为 canonical UUID（注册后的集群 UUID）。缺失/非法
+  # 组件 fail-closed 拒绝启动（禁止 default/slug/数值）。
   tenantId: "7ed01afc-cc79-4ecd-8767-a2befa6168ad"
   clusterId: "91771a6e-9c2d-11f1-8271-bea176fe9f9f"
   k8sWatchEnabled: "true"
-  # Leader election（V9.2 §71 single leader）：DaemonSet 多副本下仅 Lease holder watch
+  # Leader election（single leader）：DaemonSet 多副本下仅 Lease holder watch
   # 集群级 K8s 事件，其余副本只做 SEL。默认启用。
   leaderElectionEnabled: "true"
   leaseName: "aiops-event-collector-leader"
