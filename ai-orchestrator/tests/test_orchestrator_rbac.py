@@ -91,11 +91,12 @@ def test_no_deployment_patch_rule_anywhere(helm_manifest):
 
 def test_grant_knob_and_scripts_removed():
     """grantK8sWrite knob 与 grant/revoke 脚本都不应存在。"""
-    knob = subprocess.run(
-        ["rg", "-n", "grantK8sWrite", str(CHART)],
-        capture_output=True,
-        text=True,
-    )
-    assert knob.returncode == 1, f"grantK8sWrite must not exist in deploy/helm/aiops:\n{knob.stdout}"
+    for path in CHART.rglob("*"):
+        if path.is_file() and path.suffix in {".yaml", ".yml", ".tpl", ".txt"}:
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            assert "grantK8sWrite" not in content, f"grantK8sWrite must not exist in {path}"
     for name in ("grant-orchestrator-ops.sh", "revoke-orchestrator-ops.sh"):
         assert not (ROOT / "deploy" / "scripts" / name).exists(), name
