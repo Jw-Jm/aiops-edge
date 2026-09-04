@@ -7,7 +7,7 @@ from kg.models import GraphMutation, GraphMutationBatch
 
 
 def test_identity_fixture_is_cross_language_stable():
-    fixture = json.loads((Path(__file__).parents[2] / "docs/testdata/graph_identity_v1.json").read_text())
+    fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/graph/graph_identity_v1.json").read_text())
     for vector in fixture["vectors"]:
         assert sha256_parts(*vector["parts"]) == vector["expected"]
     for entity in fixture["entities"]:
