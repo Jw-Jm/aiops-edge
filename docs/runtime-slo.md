@@ -14,15 +14,19 @@ drop-and-ack、无限 timeout、空 catch 后返回成功。
 
 ## 发布门禁
 
-本机零失败的单元/静态测试只是必要条件。候选环境还必须提供：迁移/回滚、双副本重启、
-依赖中断、Action drift/reconcile、WAL replay、LLM 限流取消、Graph gate、备份恢复和
-证书/签名 key 轮换证据。证据由 `deploy/scripts/collect-release-evidence.sh` 生成并绑定版本。
+本机零失败的单元/静态测试只是必要条件。候选环境还必须提供：迁移/回滚、单 Pod 重建与
+PVC 重挂载、DaemonSet 重建、依赖中断、Action drift/reconcile、WAL replay、LLM 限流取消、
+Graph gate、备份恢复和证书/签名 key 轮换证据。证据由 `deploy/scripts/collect-release-evidence.sh`
+生成并绑定版本。
+
+> 2026-09-04 单副本业务决策后，"双副本重启 / 服务级 failover / 节点驱逐后另一副本接管"不再是
+> 发布前提；可保留 Kubernetes 单 Pod 重建、DaemonSet 重建、备份恢复、Helm rollback、PVC 重挂载。
 
 ## 可用性与失效行为（P2-HA1：2026-09-04 业务决策收口）
 
 以下只记录客观部署事实与确认状态，不构成任何高可用承诺：
 
-- **业务 SLO / 可用性决策（2026-09-04 已确认）**：所有自研中心服务先采用**单副本**，**不要求服务级 HA**；DaemonSet 类采集组件按节点部署。Helm 各组件 `replicas` 已统一为 1（`values.yaml`/`values-prod.yaml`/`values-local-validation.yaml`，含 investigationWorker/credentialBroker 由 2 收敛为 1）。
+- **业务 SLO / 可用性决策（2026-09-04 已确认）**：所有自研中心服务先采用**单副本**，**不要求服务级 HA**；DaemonSet 类采集组件按节点部署。Helm 各组件 `replicas` 已统一为 1（`values.yaml`/`values-prod.yaml`/`values-local-validation.yaml`，含 investigationWorker/credentialBroker 由 2 收敛为 1），并由 ARCH-701 Helm 渲染契约强制（自研中心 Deployment `spec.replicas == 1`，DaemonSet/Job 除外）。
 - 本文件不填写 RTO/RPO 数值承诺，也不以当前部署形态代表"生产高可用/多副本"。
 - 当前 ai-orchestrator 部署为 **1 副本**，持久卷为 **ReadWriteOnce**；LangGraph checkpoint、session sqlite 与 Chroma/RAG 数据均与 orchestrator 进程本地耦合；canonical Run/Action 状态存 MySQL。
 - 客观失效行为：Pod/节点故障时，控制面的可恢复性取决于 Pod 重启与 PVC 挂载恢复；滚动更新期间，新旧实例并存会与 RWO/PVC 单写者约束冲突。

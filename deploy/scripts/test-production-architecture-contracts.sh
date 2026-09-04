@@ -193,4 +193,54 @@ forbidden 'from investigator import' "$repo_root/ai-orchestrator" 'ARCH-605 lega
 forbidden '_load_legacy' "$repo_root/ai-orchestrator/rca_engine" 'ARCH-606 legacy RCA bridge loader remains';
 required 'def _direct_mutation_enabled' "$repo_root/ai-orchestrator/main.py" 'ARCH-607 in-process mutation guard removed';
 
+# ARCH-701: production self-owned center services must be single replica.
+# The rendered manifest is parsed as YAML (not a source grep): every self-owned
+# center Deployment must resolve spec.replicas == 1. DaemonSet/Job/StatefulSet
+# and third-party components are intentionally out of scope of this assertion.
+command -v python3 >/dev/null 2>&1 || { echo "missing required command: python3" >&2; exit 2; }
+if ! center_replicas_json="$(python3 - "$tmp" <<'PY'
+import json
+import sys
+
+try:
+    import yaml
+except Exception as exc:  # pragma: no cover - dependency guard
+    print(f"PyYAML is required for the ARCH-701 single-replica contract: {exc}", file=sys.stderr)
+    sys.exit(3)
+
+allowed_center = {
+    "frontend",
+    "query-api-http",
+    "query-run-dispatch",
+    "query-alert-eval",
+    "ingest",
+    "ai-orchestrator",
+    "ai-investigation-worker",
+    "ai-llm-egress-proxy",
+    "ai-action-executor",
+    "ai-credential-broker",
+}
+violations = []
+seen = []
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for doc in yaml.safe_load_all(handle):
+        if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
+            continue
+        name = (doc.get("metadata") or {}).get("name")
+        if name not in allowed_center:
+            continue
+        seen.append(name)
+        replicas = (doc.get("spec") or {}).get("replicas")
+        if replicas != 1:
+            violations.append("{} spec.replicas={!r}".format(name, replicas))
+print(json.dumps({"seen": sorted(seen), "violations": violations}))
+PY
+)"; then
+  exit 1
+fi
+if [[ "$(printf '%s' "$center_replicas_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["violations"]))')" != "0" ]]; then
+  printf '%s' "$center_replicas_json" | python3 -c 'import json,sys; [print("  " + v) for v in json.load(sys.stdin)["violations"]]' >&2
+  fail 'ARCH-701 production self-owned center services must be single replica (spec.replicas == 1)'
+fi
+
 echo "production architecture contracts passed"
