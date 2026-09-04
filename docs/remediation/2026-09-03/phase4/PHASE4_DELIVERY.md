@@ -32,13 +32,19 @@
   - G Object Store：bucket bootstrap 幂等 + readiness PASS。
 - **缺陷 #2（真实缺口）**：Gate A/B/C 首次真跑暴露 authoritative baseline `auth_sessions` 缺 legacy 的 `updated_at` 列 → 新增迁移 **0018** → **PR #4 merged (43cefc9)**。修复后 coverage + `internal/store/...` 真库全套 PASS。
 
-## 6. 故障注入 / 自愈（P4-6 部分）✅
+## 6. 故障注入 / 自愈 / 深测（P4-6）✅（2026-09-04）
 
-- 候选集群删除 1/2 `ai-investigation-worker` pod（=pod delete 驱逐语义）→ ReplicaSet 25s 内重建，**2/2 Ready**。
-- kill -9 容器级 / 节点驱逐 / 备份恢复 / rollback 深测：见 §7 未完成（建议在正式候选窗口执行，含迁移前后备份对比）。
+- **pod delete（驱逐语义）**：删 1/2 `ai-investigation-worker` pod → ReplicaSet 25s 重建 **2/2 Ready**。
+- **kill -9 容器级**：对 worker 主进程 `kill -9 1` **未触发**（容器以非 root 65532 运行 + drop-ALL 无 CAP_KILL——安全加固符合预期）。结论：容器内 SIGKILL 不可行是 drop-ALL 的预期副作用；以 pod delete 作为强终止/恢复验证。
+- **helm rollback**：rev 65 → rollback rev 62（旧 chart + git-b387869 镜像，DB schema 已领先含 0018）→ 全部关键组件正常 Running，**rollback 可用、schema 领先未阻断旧代码启动**；随后 upgrade 回最终（rev 67，git-7b82fd7 + 0018 + frontend caps）。
+- **backup/restore 演练**：mysqldump 生产 `aiops`（71MB，--single-transaction）→ 恢复到隔离库 `aiops_restore_verify` → 行数一致（users 1=1、auth_sessions 34=34）→ 清理验证库。**备份可恢复**。
+- **real observability evidence**：query-api `/metrics`（HTTPS）返回 `aiops_build_info{service="query-api",go_version="go1.26.6"}`；orchestrator 日志 `/metrics`/`/health`/`/readyz` 200；query-api log-shipper 实际搬运日志（198/175 logs，22-23 pods）。VictoriaMetrics up=3（候选 deepflow disabled，自研 scrape 另配）。
+- **节点驱逐**：候选为单节点，节点驱逐=整集群宕机，**SKIP**（需多节点候选）。
+- **RCA/Action/Approval/Reconcile 实链**：候选 `llmMock=true` 且无真实 provider key；正式链路正确性由 workflow-contract Go 真 MySQL 测试（9/9，14 场景）作为发布门禁。真实 LLM E2E 触发建议在正式候选窗口执行。
 
 ## 7. 未完成 / 待判定
 
-- release manifest（P4-7）：`collect-release-evidence.sh` 已生成 `deploy/evidence/release-evidence.json`（git_commit=43cefc9，commands 全部 exit 0，**publishable=false** 为正确初态）。
-- `publishable=true` 需满足：最终 clean commit 重新 collect（dirty=false）+ 破坏性深测证据（rollback、backup/restore、kill-9、节点驱逐）+ real observability evidence（当前候选 revision 63 运行中，metrics/日志证据可另采集）。
+- release manifest（P4-7）：`deploy/evidence/release-evidence.json` 已重新生成绑定最终 commit（commands 全部 exit 0，**publishable=false** 为正确初态）。
+- `publishable=true` 需满足：最终 clean commit 重新 collect（dirty=false）+ real observability 正式采集策略 + 多节点候选（节点驱逐）+ 真实 LLM 链路 RCA/Action/Approval/Reconcile evidence。
 - 候选集群运行的是 local 定制 values（`environment: local`、llmMock、digest 非强制）——正式 production manifest 需 release system 注入真实 registry digest + 真实 secret。
+- **运维提醒**：local-validation mTLS 自签证书仅 2 天有效期（曾于 2026-09-03 过期阻断全部 mTLS），建议调长有效期或接 cert-manager。
