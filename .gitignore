@@ -101,3 +101,6 @@ deploy/offline/
 
 # 本地默认部署的递增版本状态（不进入版本库）
 /.deploy-version
+
+# P2-S11: historical local artifact (timestamp+uuid session file); no current generator
+:memory:.ses
