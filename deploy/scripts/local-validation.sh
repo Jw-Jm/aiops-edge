@@ -347,13 +347,15 @@ keyUsage = critical,digitalSignature,keyEncipherment
 extendedKeyUsage = serverAuth,clientAuth
 subjectAltName = @alt_names
 EOF
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+# 2 天有效期过短：曾于 2026-09-03 中断全部内部 mTLS（证书当日过期导致
+# 候选集群 TLS 校验失败）。改为 30 天以支持持续运行的候选环境。
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
   -subj "/CN=aiops-local-ca" \
   -keyout "${LOCAL_TLS_DIR}/ca.key" -out "${LOCAL_TLS_DIR}/ca.crt" >/dev/null 2>&1
 openssl req -newkey rsa:2048 -nodes \
   -config "${LOCAL_TLS_DIR}/openssl.cnf" \
   -keyout "${LOCAL_TLS_DIR}/tls.key" -out "${LOCAL_TLS_DIR}/tls.csr" >/dev/null 2>&1
-openssl x509 -req -days 2 \
+openssl x509 -req -days 30 \
   -in "${LOCAL_TLS_DIR}/tls.csr" \
   -CA "${LOCAL_TLS_DIR}/ca.crt" -CAkey "${LOCAL_TLS_DIR}/ca.key" \
   -CAcreateserial -out "${LOCAL_TLS_DIR}/tls.crt" \
