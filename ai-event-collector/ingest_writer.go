@@ -56,7 +56,7 @@ type EventWriter struct {
 	retry  []retryBatch // 写入失败待重试批次
 
 	// wal（Phase 5）：可选崩溃安全持久化。非 nil 时 flush 失败先落盘再入重试，
-	// 成功写入 CH 后 Ack；重启时从未 ack 水位恢复。
+	// Unified Ingest 确认接收后 Ack；重启时从未 ack 水位恢复。
 	wal *WAL
 
 	httpClient *http.Client
@@ -97,7 +97,7 @@ func NewEventWriter(cfg *Config) (*EventWriter, error) {
 	}
 	w.httpClient = client
 	// Phase 5：可选 WAL。配置 WAL_DIR 时启用崩溃安全持久化，并在启动时恢复
-	// 上次未确认写入 CH 的批次到重试队列（跨重启不丢事件）。
+	// 上次未确认写入 Ingest 的批次到重试队列（跨重启不丢事件）。
 	if cfg.WALDir != "" {
 		wal, err := NewWAL(cfg.WALDir, "events-wal.log")
 		if err != nil {
@@ -116,7 +116,7 @@ func NewEventWriter(cfg *Config) (*EventWriter, error) {
 			}
 		}
 		if len(entries) > 0 {
-			log.Printf("CH: recovered %d unacked batch(es) from WAL", len(entries))
+			log.Printf("ingest: recovered %d unacked batch(es) from WAL", len(entries))
 		}
 	}
 	go w.flushLoop()
@@ -231,7 +231,7 @@ func (w *EventWriter) retryLoop() {
 			if backoff > 60*time.Second {
 				backoff = 60 * time.Second
 			}
-			log.Printf("CH: retry failed (next in %s): %v", backoff, err)
+			log.Printf("ingest: retry failed (next in %s): %v", backoff, err)
 		} else {
 			backoff = time.Second
 		}
@@ -287,7 +287,7 @@ func (w *EventWriter) flushRetry() error {
 			failed = append(failed, b)
 			continue
 		}
-		// 成功写入 CH：有 WAL 时 Ack，不再从 WAL 恢复。
+		// 成功写入 Unified Ingest：有 WAL 时 Ack，不再从 WAL 恢复。
 		if w.wal != nil && b.walSeq > 0 {
 			w.wal.Ack(b.walSeq)
 		}
@@ -443,7 +443,7 @@ func (w *EventWriter) countFlushed(rows []byte) {
 		}
 	}
 	w.flushed.Add(int64(n))
-	log.Printf("CH: flushed %d events (total %d)", n, w.flushed.Load())
+	log.Printf("ingest: flushed %d events (total %d)", n, w.flushed.Load())
 }
 
 // Ping quickly probes unified Ingest (short timeout, used by /health).
