@@ -34,7 +34,8 @@ aiOrchestrator:
   legacyDirectMutationsEnabled: "0"
 investigationWorker:
   enabled: true
-  replicas: 2
+  # 2026-09-04 业务决策：自研中心服务统一单副本，不要求服务级 HA。
+  replicas: 1
   image:
     repository: ai-orchestrator
     tag: "{{ .Values.global.imageTag }}"
