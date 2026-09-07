@@ -1,6 +1,6 @@
 const { MANIFEST } = require('./manifest')
 const { classifyCase } = require('./result-policy')
-const { extractItems, requestJson } = require('./page-data')
+const { extractItems, hasStrictTraceEvidence, requestJson } = require('./page-data')
 
 function isHttpSuccess(response) { return response && response.status >= 200 && response.status < 300 }
 
@@ -47,7 +47,7 @@ async function runBackend({ request, apiBase, tenantId, clusterId, telemetryRead
   results.push(caseResult('PF-BE-004', [
     { name: 'traces_200', pass: isHttpSuccess(traces), detail: `traces=${traces.status}` },
     { name: 'trace_envelope', pass: Array.isArray(traceRows), detail: `rows=${traceRows.length}` },
-    { name: 'trace_marker_if_required', pass: !marker || JSON.stringify(traces.body).includes(marker), detail: `marker=${marker || 'not required'}` },
+    { name: 'trace_marker_if_required', pass: hasStrictTraceEvidence(traces.body, marker), detail: `marker=${marker || 'not required'}` },
     { name: 'trace_identifiers_if_rows', pass: traceRows.every((row) => row.trace_id || row.traceId || row.id), detail: `rows=${traceRows.length}` },
   ], telemetryReady, telemetryEvidence, { traces: shapeOf(traces.body) }))
 

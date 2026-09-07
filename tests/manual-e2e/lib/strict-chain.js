@@ -33,12 +33,12 @@ function idempotency(prefix) {
 
 async function getJson(request, route) {
   const response = await request.get(`${ENV.apiBase}${route}`)
-  return { status: response.status(), body: await requestBody(response) }
+  return { status: response.status(), headers: response.headers(), body: await requestBody(response) }
 }
 
 async function postJson(request, route, body) {
   const response = await request.post(`${ENV.apiBase}${route}`, { data: body })
-  return { status: response.status(), body: await requestBody(response) }
+  return { status: response.status(), headers: response.headers(), body: await requestBody(response) }
 }
 
 function ok(value) { return value && value.status >= 200 && value.status < 300 }
@@ -141,14 +141,14 @@ async function ensureStrictChain(request) {
   let sessionId = ''
   const turnOne = await postJson(request, '/ai/chat', {
     intent: 'diagnosis', message: `Investigate ${ledger.marker}: payments to orders latency and errors`,
-    stream: false, session_id: '', turn_id: idempotency('chat-1'), cluster_id: ENV.clusterId,
+    stream: false, session_id: '', turn_id: crypto.randomUUID(), cluster_id: ENV.clusterId,
   })
   record('chat_turn_1', turnOne)
-  sessionId = turnOne.body?.session_id || turnOne.body?.thread_id || turnOne.body?.session?.id || ''
+  sessionId = turnOne.body?.session_id || turnOne.body?.thread_id || turnOne.body?.session?.id || turnOne.headers?.['x-session-id'] || ''
   if (sessionId) {
     const turnTwo = await postJson(request, '/ai/chat', {
       intent: 'diagnosis', message: 'Use trace, logs, metrics, Kubernetes and graph evidence; state uncertainty explicitly.',
-      stream: false, session_id: sessionId, turn_id: idempotency('chat-2'), cluster_id: ENV.clusterId,
+      stream: false, session_id: sessionId, turn_id: crypto.randomUUID(), cluster_id: ENV.clusterId,
     })
     record('chat_turn_2', turnTwo, { session_id: sessionId })
     const session = await getJson(request, `/ai/session/${encodeURIComponent(sessionId)}`)

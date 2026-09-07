@@ -3,7 +3,7 @@ const path = require('path')
 const { MANIFEST } = require('./manifest')
 const { classifyCase } = require('./result-policy')
 const { summarizeItems, writeSummaryAtomic } = require('./summarize')
-const { runPageData, requestJson, extractItems } = require('./page-data')
+const { runPageData, requestJson, extractItems, traceIdForMarker } = require('./page-data')
 const { runBackend } = require('./backend')
 const { runStrictActionLoop } = require('./action')
 const { ensureStrictChain } = require('../lib/strict-chain')
@@ -58,8 +58,9 @@ async function run() {
     const telemetryReady = ledger.telemetry_ready !== false
     const get = (route) => requestJson(page.request, ENV.apiBase, route)
 
-    items.push(...await runPageData({ request: page.request, apiBase: ENV.apiBase, telemetryReady, telemetryEvidence: ledger.telemetry, marker: ledger.marker }))
-    items.push(...await runBackend({ request: page.request, apiBase: ENV.apiBase, tenantId: ENV.tenantId, clusterId: ENV.clusterId, telemetryReady, telemetryEvidence: ledger.telemetry, marker: ledger.marker }))
+    const traceId = traceIdForMarker(ledger.marker)
+    items.push(...await runPageData({ request: page.request, apiBase: ENV.apiBase, telemetryReady, telemetryEvidence: ledger.telemetry, marker: ledger.marker, traceId }))
+    items.push(...await runBackend({ request: page.request, apiBase: ENV.apiBase, tenantId: ENV.tenantId, clusterId: ENV.clusterId, telemetryReady, telemetryEvidence: ledger.telemetry, marker: ledger.marker, traceId }))
 
     const clusters = await get('/clusters')
     const clusterRows = extractItems(clusters.body)

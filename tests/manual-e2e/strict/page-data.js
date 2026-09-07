@@ -1,5 +1,24 @@
+const crypto = require('crypto')
 const { MANIFEST } = require('./manifest')
 const { classifyCase } = require('./result-policy')
+
+function traceIdForMarker(marker) {
+  return marker ? crypto.createHash('sha256').update(`${marker}/1`).digest('hex') : ''
+}
+
+function hasStrictServiceEvidence(body, marker) {
+  if (!marker) return true
+  const rows = extractItems(body)
+  return JSON.stringify(body || {}).includes(marker) || rows.some((row) => {
+    const name = row.service || row.name || row.service_name
+    return name === 'payments' || name === 'orders'
+  })
+}
+
+function hasStrictTraceEvidence(body, marker) {
+  if (!marker) return true
+  return JSON.stringify(body || {}).includes(marker) || JSON.stringify(body || {}).includes(traceIdForMarker(marker))
+}
 
 function extractItems(body) {
   if (Array.isArray(body)) return body
@@ -98,21 +117,21 @@ async function runPageData({ request, apiBase, telemetryReady = true, telemetryE
     okCheck('nonempty_service_identity', serviceRows.length > 0 && serviceRows.every((row) => String(row.service || row.name || row.service_name || '').trim() !== ''), `services=${serviceRows.length}`),
     okCheck('map_endpoint_200', serviceMap.status === 200, `map=${serviceMap.status} rows=${mapRows.length}`),
     okCheck('dependency_matrix_endpoint_200', matrix.status === 200, `matrix=${matrix.status}`),
-    okCheck('strict_marker_services', hasMarker(services.body, marker) || serviceRows.some((row) => ['payments', 'orders'].includes(row.service || row.name)), `marker=${marker || 'not required'}`),
+    okCheck('strict_marker_services', hasStrictServiceEvidence(services.body, marker), `marker=${marker || 'not required'}`),
     okCheck('payments_orders_dependency', !marker || /payments.*orders|orders.*payments/i.test(mapText), 'service map identity'),
   ], telemetryReady, telemetryEvidence))
 
   const traces = await get('/traces?hours=24&limit=50')
   const traceRows = extractItems(traces.body)
   let detail = null
-  const selectedTraceId = traceId || traceRows[0]?.trace_id || traceRows[0]?.traceId || traceRows[0]?.id
+  const selectedTraceId = traceId || traceIdForMarker(marker) || traceRows[0]?.trace_id || traceRows[0]?.traceId || traceRows[0]?.id
   if (selectedTraceId) detail = await get(`/traces/${encodeURIComponent(selectedTraceId)}`)
   const traceValidation = validateTraceRows(detail ? [detail.body?.trace || detail.body] : traceRows)
   results.push(caseResult('PF-DATA-003', [
     okCheck('traces_endpoint_200', traces.status === 200, `traces=${traces.status}`),
     okCheck('trace_ids_durations_valid', traceRows.length > 0 && validateTraceRows(traceRows).ok, `rows=${traceRows.length}`),
     okCheck('trace_detail_parent_child_valid', Boolean(detail) && detail.status === 200 && traceValidation.ok, detail ? `detail=${detail.status} ${traceValidation.reason || 'ok'}` : 'trace detail unavailable'),
-    okCheck('strict_marker_trace', hasMarker(traces.body, marker) || hasMarker(detail?.body, marker), `marker=${marker || 'not required'}`),
+    okCheck('strict_marker_trace', hasStrictTraceEvidence(traces.body, marker) || hasStrictTraceEvidence(detail?.body, marker), `marker=${marker || 'not required'}`),
   ], telemetryReady, telemetryEvidence))
 
   const logs = await get('/logs/query?hours=24&service_name=payments&limit=50')
@@ -194,4 +213,4 @@ async function runPageData({ request, apiBase, telemetryReady = true, telemetryE
   return results
 }
 
-module.exports = { extractItems, requestJson, runPageData, validateForecast, validateTraceRows }
+module.exports = { extractItems, hasStrictServiceEvidence, hasStrictTraceEvidence, requestJson, runPageData, traceIdForMarker, validateForecast, validateTraceRows }

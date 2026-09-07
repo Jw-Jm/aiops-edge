@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const { extractItems, validateTraceRows, validateForecast } = require('./page-data')
+const { extractItems, validateTraceRows, validateForecast, traceIdForMarker, hasStrictTraceEvidence, hasStrictServiceEvidence } = require('./page-data')
 
 test('extractItems reads the product envelopes without inventing rows', () => {
   assert.deepEqual(extractItems({ data: [{ id: 'a' }], total: 1 }), [{ id: 'a' }])
@@ -43,4 +43,13 @@ test('validateForecast accepts the documented history plus forecast timeline', (
     status: 200,
     body: { ...response.body, timestamps: [1, 2, 3, 4] },
   }).ok, false)
+})
+
+test('strict telemetry evidence uses canonical service fields and deterministic trace IDs', () => {
+  const marker = 'strict-marker'
+  const traceId = traceIdForMarker(marker)
+  assert.match(traceId, /^[a-f0-9]{64}$/)
+  assert.equal(hasStrictServiceEvidence({ services: [{ service_name: 'payments' }, { service_name: 'orders' }] }, marker), true)
+  assert.equal(hasStrictTraceEvidence({ data: [{ trace_id: traceId }] }, marker), true)
+  assert.equal(hasStrictTraceEvidence({ data: [{ trace_id: 'other' }] }, marker), false)
 })
