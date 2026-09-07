@@ -25,8 +25,8 @@ function kubectl(args) {
   }).trim()
 }
 
-function replicas() {
-  return kubectl(['get', 'deployment', TARGET, '-n', NAMESPACE, '-o', 'jsonpath={.spec.replicas}'])
+function deploymentState() {
+  return JSON.parse(kubectl(['get', 'deployment', TARGET, '-n', NAMESPACE, '-o', 'json']))
 }
 
 function setReplicas(value) {
@@ -36,10 +36,26 @@ function setReplicas(value) {
 async function waitForReplicas(expected, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
   let observed = ''
+  let stableResourceVersion = ''
+  let stableSince = 0
   while (Date.now() < deadline) {
     try {
-      observed = replicas()
-      if (actionStateMatches(observed, expected)) return observed
+      const state = deploymentState()
+      observed = String(state.spec?.replicas ?? '')
+      const ready = Number(state.status?.readyReplicas || 0)
+      const available = Number(state.status?.availableReplicas || 0)
+      const resourceVersion = String(state.metadata?.resourceVersion || '')
+      if (actionStateMatches(observed, expected) && ready >= expected && available >= expected && resourceVersion) {
+        if (resourceVersion !== stableResourceVersion) {
+          stableResourceVersion = resourceVersion
+          stableSince = Date.now()
+        } else if (Date.now() - stableSince >= 2_000) {
+          return observed
+        }
+      } else {
+        stableResourceVersion = ''
+        stableSince = 0
+      }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 2_000))
   }
@@ -93,16 +109,16 @@ async function ensureApprover(admin, tenantId, runId) {
   return { username, user, created, error: '' }
 }
 
-async function loginApprover(username, tenantId, clusterId) {
+async function loginApprover(username, tenantId, clusterId, apiBase) {
   const context = await playwrightRequest.newContext()
-  const login = await context.post(`${process.env.AIOPS_API_BASE || 'http://localhost:30253/api/v1'}/auth/login`, {
+  const login = await context.post(`${apiBase}/auth/login`, {
     data: { username, password: APPROVER_PASSWORD },
   })
   if (!login.ok()) {
     await context.dispose()
     return { context: null, error: `approver login status=${login.status()}` }
   }
-  const scope = await context.post(`${process.env.AIOPS_API_BASE || 'http://localhost:30253/api/v1'}/me/scope`, {
+  const scope = await context.post(`${apiBase}/me/scope`, {
     data: { tenant_id: tenantId, cluster_id: clusterId },
   })
   if (!scope.ok()) {
@@ -166,7 +182,7 @@ async function createApproveExecute({ admin, approver, ledger, clusterId, action
   return actionId
 }
 
-async function runStrictActionLoop({ admin, ledger, tenantId, clusterId }) {
+async function runStrictActionLoop({ admin, ledger, tenantId, clusterId, apiBase }) {
   const checks = []
   const check = (name, pass, detail = '') => checks.push({ name, pass: Boolean(pass), detail: String(detail).slice(0, 500) })
   if (!ledger?.telemetry_ready) {
@@ -178,8 +194,8 @@ async function runStrictActionLoop({ admin, ledger, tenantId, clusterId }) {
   let approverId = null
   let approverUsername = ''
   try {
-    const baseline = replicas()
-    if (!actionStateMatches(baseline, 1)) setReplicas(1)
+    const baseline = deploymentState()
+    if (!actionStateMatches(String(baseline.spec?.replicas ?? ''), 1)) setReplicas(1)
     const baselineObserved = await waitForReplicas(1)
     check('action_target_precondition', actionStateMatches(baselineObserved, 1), `replicas=${baselineObserved} expected=1`)
 
@@ -189,7 +205,7 @@ async function runStrictActionLoop({ admin, ledger, tenantId, clusterId }) {
     check('independent_approver_ready', Boolean(approver.user?.id) && approver.user.role === 'approver', approver.error || approver.username)
     if (!approver.user?.id) return { checks }
 
-    const loggedIn = await loginApprover(approver.username, tenantId, clusterId)
+    const loggedIn = await loginApprover(approver.username, tenantId, clusterId, apiBase)
     approverContext = loggedIn.context
     check('independent_approver_login', Boolean(approverContext), loggedIn.error || approver.username)
     if (!approverContext) return { checks }
@@ -237,13 +253,21 @@ async function runStrictActionLoop({ admin, ledger, tenantId, clusterId }) {
   } finally {
     if (approverContext) await approverContext.dispose().catch(() => {})
     if (approverId) {
-      const deleted = await admin.delete(`/users/${encodeURIComponent(approverId)}`)
-      check('independent_approver_cleaned', deleted.status() === 200 || deleted.status() === 204, `status=${deleted.status()}`)
+      try {
+        const deleted = await admin.delete(`${apiBase}/users/${encodeURIComponent(approverId)}`)
+        check('independent_approver_cleaned', deleted.status() === 200 || deleted.status() === 204, `status=${deleted.status()}`)
+      } catch {
+        check('independent_approver_cleaned', false, 'approver cleanup request failed')
+      }
     } else if (approverUsername) {
       check('independent_approver_cleaned', true, 'approver was not created')
     }
     try {
-      const restored = await waitForReplicas(1)
+      let restored = await waitForReplicas(1)
+      if (!actionStateMatches(restored, 1)) {
+        setReplicas(1)
+        restored = await waitForReplicas(1)
+      }
       check('action_final_state_restored', actionStateMatches(restored, 1), `replicas=${restored} expected=1`)
     } catch {
       check('action_final_state_restored', false, 'target state could not be read')

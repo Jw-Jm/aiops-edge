@@ -125,6 +125,7 @@ async function run() {
       ledger,
       tenantId: ENV.tenantId,
       clusterId: ENV.clusterId,
+      apiBase: ENV.apiBase,
     })
     items.push(result('PF-LOGIC-010', actionCase.checks, ledger))
   })
