@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,6 +63,18 @@ func TestStrictTraceContainsPaymentsOrdersParentChildAndMarker(t *testing.T) {
 	}
 	if root.Status["code"] != float64(0) || child.Status["code"] != float64(2) {
 		t.Fatalf("strict trace status = root %#v child %#v, want mixed success/error", root.Status, child.Status)
+	}
+}
+
+func TestStrictLogsExposeMarkerInProjectedBody(t *testing.T) {
+	logs := assembleLogs(1, []string{"payments", "orders"}, 4, 0, "steady", rngForStrict(1), "strict-run-logs")
+	if len(logs) != 4 {
+		t.Fatalf("strict logs = %d, want 4", len(logs))
+	}
+	for _, logRecord := range logs {
+		if !strings.Contains(logRecord.Body["stringValue"].(string), "strict-run-logs") {
+			t.Fatalf("strict log body = %#v, want marker", logRecord.Body)
+		}
 	}
 }
 

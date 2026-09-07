@@ -410,6 +410,9 @@ func assembleLogs(round int, services []string, n int, errRate float64, mode str
 		} else if sev == "FATAL" {
 			body = "FATAL: out of memory, process aborted"
 		}
+		if marker != "" {
+			body = fmt.Sprintf("%s marker=%s", body, marker)
+		}
 		attributes := []map[string]interface{}{{"key": "service.name", "value": map[string]interface{}{"stringValue": svc}}}
 		if marker != "" {
 			attributes = append(attributes, map[string]interface{}{"key": "aiops.test.marker", "value": map[string]interface{}{"stringValue": marker}})
