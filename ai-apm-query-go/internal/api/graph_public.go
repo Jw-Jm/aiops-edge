@@ -237,7 +237,10 @@ func (h *Handler) graphScope(r *http.Request) (graphpkg.GraphScope, error) {
 			return graphpkg.GraphScope{}, err
 		}
 	}
-	clusterID := strings.TrimSpace(firstNonEmpty(r.Header.Get("X-Cluster-ID"), r.URL.Query().Get("cluster_id")))
+	// Scope precedence: explicit request parameter/header (validated against
+	// the tenant below), then the server-persisted session scope selected
+	// through POST /me/scope so browser flows are not forced to repeat it.
+	clusterID := strings.TrimSpace(firstNonEmpty(r.Header.Get("X-Cluster-ID"), r.URL.Query().Get("cluster_id"), authContext.ActiveClusterID))
 	scope := graphpkg.GraphScope{TenantID: authContext.TenantID, ClusterIDs: map[string]struct{}{}}
 	if clusterID == "" {
 		return scope, nil

@@ -43,10 +43,15 @@ llmEgressProxy:
   enabled: true
 aiActionExecutor:
   enabled: true
-  executionMode: disabled
-  realMutation: false
+  # PF-LOGIC-010 修复（2026-09-06，用户授权）：审批后 Action 必须能真实执行。
+  # approved + realMutation 走本地隔离真实 mutation 边界（专用 SA + 目标 namespace
+  # 最小 RBAC，见 docs/runbooks/aiops-action-rollout.md §4）；生产 profile 仍为
+  # disabled，且生产 approved 必须经 Credential Broker（Helm 渲染门禁强制）。
+  executionMode: approved
+  realMutation: true
   targetNamespaces:
     - aiops-canary
+    - aiops-action-test
 eventCollector:
   enabled: true
   ingestURL: "https://ingest.observability.svc.cluster.local:8080"
@@ -54,6 +59,10 @@ deepflow:
   enabled: false
 graph:
   backend: hugegraph
+  # The default 1500ms read timeout is too tight for the public kneighbor
+  # traverser at limit=300 (observed ~1.55s end-to-end and GRAPH_UNAVAILABLE
+  # 503s); give traverser reads headroom in this local profile.
+  readTimeoutMs: 5000
 hugeGraph:
   enabled: true
   # The 200k-vertex/1M-edge local gate exercises RocksDB caches and the

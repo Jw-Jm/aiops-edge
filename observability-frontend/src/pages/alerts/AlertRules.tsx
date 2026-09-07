@@ -27,7 +27,14 @@ const AlertRules: React.FC = () => {
   useEffect(() => { load() }, [currentClusterId])
 
   const submit = async () => {
-    const v = await form.validateFields()
+    // PF-PAGE-011: 空表单点"确定"时 validateFields 会 reject，
+    // 未捕获会产生 pageerror；antd 已在表单项上展示错误，这里静默返回即可。
+    let v: any
+    try {
+      v = await form.validateFields()
+    } catch {
+      return
+    }
     // P0: 契约对齐后端 AlertRule 结构体字段（name/service 而非 rule_name/service_name）。
     // 后端 AlertRule 结构体 json tag 为 name/service，且 service 必填。
     const payload = {

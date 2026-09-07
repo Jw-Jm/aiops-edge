@@ -36,9 +36,11 @@ func (d *GraphEntityAliasDAO) ListByTenant(tenantID string, limit int) ([]GraphE
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	// The canonical graph_entity_alias schema (migrations 0011) has no
+	// updated_at column; last_seen_at is the authoritative recency order.
 	rows, err := conn.Query(`SELECT alias_id, tenant_id, scope_cluster_id, source, alias_type, alias_value,
     alias_value_sha256, canonical_entity_uid, confidence, status, resolver, first_seen_at, last_seen_at
-    FROM graph_entity_alias WHERE tenant_id=? ORDER BY updated_at DESC, alias_id DESC LIMIT ?`, tenantID, limit)
+    FROM graph_entity_alias WHERE tenant_id=? ORDER BY last_seen_at DESC, alias_id DESC LIMIT ?`, tenantID, limit)
 	if err != nil {
 		return nil, err
 	}

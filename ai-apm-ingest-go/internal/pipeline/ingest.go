@@ -262,10 +262,38 @@ func (p *Pipeline) ProcessOTLPTraces(tenantID string, body []byte) (int, error) 
 	return p.ProcessSpans(tenantID, spans)
 }
 
+// sanitizeSpanIdentity enforces span identity invariants (PF-DATA-003) before
+// a span enters the Trace SoT write path or metric extraction:
+//   - parent_span_id missing stays "" — it must never be defaulted to the
+//     span's own span_id (root spans are parent_span_id = "" by definition);
+//   - parent_span_id == span_id is an invalid self-reference (a span cannot be
+//     its own parent). Some exporters/seed data emit duplicated span_ids that
+//     collapse parent and child onto the same id, turning the parent link into
+//     a self-loop; such links carry no real topology information and are
+//     cleared to "" so downstream joins cannot match a span against itself.
+//
+// Real (non-self) parent_span_id values are preserved untouched so genuine
+// parent-child relationships survive ingestion.
+func sanitizeSpanIdentity(sp *model.Span) {
+	if sp == nil {
+		return
+	}
+	if sp.SpanID != "" && sp.ParentSpanID == sp.SpanID {
+		sp.ParentSpanID = ""
+	}
+}
+
 // ProcessSpans persists already-converted spans and extracts the same RED and
 // topology signals used by the JSON OTLP path. A DurableSpanSink is preferred
 // when configured so protocol adapters can return a retryable error instead of
 // acknowledging data that failed to reach the platform Trace SoT.
+//
+// Identity normalization (PF-DATA-003): before writing, each span is checked
+// for a self-referential parent_span_id (cleared to "") and the batch is
+// deduplicated on (tenant_id, cluster_id, trace_id, span_id) — span ids are
+// unique within a trace by the OTel spec, so repeated deliveries of the same
+// logical span must not produce additional trace_spans rows or inflated RED
+// metrics. Duplicate rows keep the first occurrence.
 func (p *Pipeline) ProcessSpans(tenantID string, spans []*model.Span) (int, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return 0, fmt.Errorf("tenant id is required")
@@ -275,6 +303,9 @@ func (p *Pipeline) ProcessSpans(tenantID string, spans []*model.Span) (int, erro
 		spanIDToService: make(map[string]string),
 		spanIDToCaller:  make(map[string]string),
 	}
+	unique := make([]*model.Span, 0, len(spans))
+	seen := make(map[string]struct{}, len(spans))
+	duplicates := 0
 	for _, span := range spans {
 		if span == nil {
 			return 0, fmt.Errorf("nil span")
@@ -291,6 +322,14 @@ func (p *Pipeline) ProcessSpans(tenantID string, spans []*model.Span) (int, erro
 		if span.ClusterID != p.clusterID {
 			return 0, fmt.Errorf("span cluster %q does not match ingest cluster %q", span.ClusterID, p.clusterID)
 		}
+		sanitizeSpanIdentity(span)
+		key := span.TenantID + "|" + span.ClusterID + "|" + span.TraceID + "|" + span.SpanID
+		if _, dup := seen[key]; dup {
+			duplicates++
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, span)
 		traceCtx.spanInfos = append(traceCtx.spanInfos, &spanInfo{
 			traceID:      span.TraceID,
 			spanID:       span.SpanID,
@@ -302,6 +341,10 @@ func (p *Pipeline) ProcessSpans(tenantID string, spans []*model.Span) (int, erro
 		})
 		traceCtx.spanIDToService[span.SpanID] = span.ServiceName
 	}
+	if duplicates > 0 {
+		log.Printf("Pipeline: dropped %d duplicate spans (same tenant/cluster/trace_id/span_id) for tenant %s", duplicates, tenantID)
+	}
+	spans = unique
 
 	if p.writer != nil && len(spans) > 0 {
 		if durable, ok := p.writer.(DurableSpanSink); ok {

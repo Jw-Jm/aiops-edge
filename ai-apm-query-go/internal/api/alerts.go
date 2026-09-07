@@ -168,6 +168,26 @@ func SetAlertCH(h *Handler) {
 	loadAlertEvents()
 }
 
+// RunAlertEventsSyncLoop 周期性从 ClickHouse 重载告警事件到内存态。
+// http 模式（query-api-http）不运行告警评估循环，事件由 alert-eval pod 写入 CH；
+// 若不周期重载，http 进程内存缓存启动后即冻结，GET /api/v1/alerts/events
+// 看不到 alert-eval 新产生的事件（回归 alerts_events_api_shows_event）。
+func (h *Handler) RunAlertEventsSyncLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			loadAlertEvents()
+		}
+	}
+}
+
 // toCHTime 把 RFC3339 转成 ClickHouse DateTime64(3) 格式；空串返回空（由调用方写 NULL）。
 func toCHTime(s string) string {
 	if s == "" {

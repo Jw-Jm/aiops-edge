@@ -29,15 +29,31 @@ export default function ClusterSwitcher() {
     if (['down', 'error', 'offline', 'disconnected'].includes(st)) return { color: '#dc2626', label: '失联' }
     return { color: '#a3aebe', label: '未知' }
   }
+  // LOGIC-002: 统一的 scope 应用入口。onChange 处理切换；同值点击（antd Select
+  // 不触发 onChange）通过 option label 的 onClick 走同一入口，恢复/刷新 scope。
+  const applyScope = async (v: string) => {
+    const selected = clusters.find((c) => c.cluster_id === v)
+    if (!selected?.tenant_id) return
+    try {
+      await setActiveScope(selected.tenant_id, selected.cluster_id)
+      setCurrentCluster(v)
+    } catch {
+      // Keep the previous scope on a server-side authorization failure.
+    }
+  }
+
   const options = clusters.map((c) => {
+      const value = c.cluster_id || `legacy-${c.id}`
       const d = statusDot(c.status)
       return {
-        value: c.cluster_id || `legacy-${c.id}`,
+        value,
         label: c.node_count
           ? `${c.name} (${c.node_count}节点)`
           : c.name,
         // 用 ReactNode 渲染状态点，Select 支持
-        labelNode: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        labelNode: <span
+          onClick={() => { if (value === currentClusterId) void applyScope(value) }}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
           {c.name}
           {c.node_count ? ` (${c.node_count}节点)` : ''}
@@ -50,16 +66,7 @@ export default function ClusterSwitcher() {
       <Select
         value={currentClusterId}
         placeholder="选择作用域"
-        onChange={async (v) => {
-          const selected = clusters.find((c) => c.cluster_id === v)
-          if (!selected?.tenant_id) return
-          try {
-            await setActiveScope(selected.tenant_id, selected.cluster_id)
-            setCurrentCluster(v)
-          } catch {
-            // Keep the previous scope on a server-side authorization failure.
-          }
-        }}
+        onChange={applyScope}
         options={options.map((o) => ({ ...o, label: o.labelNode || o.label }))}
         style={{ minWidth: 130 }}
         size="small"

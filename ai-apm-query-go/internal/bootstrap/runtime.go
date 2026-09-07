@@ -30,12 +30,13 @@ const (
 )
 
 type ModePlan struct {
-	StartHTTP           bool
-	StartRunDispatch    bool
-	StartActionDispatch bool
-	StartToolReconcile  bool
-	StartAlertEval      bool
-	StartLogShipper     bool
+	StartHTTP            bool
+	StartRunDispatch     bool
+	StartActionDispatch  bool
+	StartToolReconcile   bool
+	StartAlertEval       bool
+	StartLogShipper      bool
+	StartAlertEventsSync bool
 }
 
 type Options struct {
@@ -67,7 +68,10 @@ func ParseMode(raw string) (Mode, error) {
 func PlanForMode(mode Mode) (ModePlan, error) {
 	switch mode {
 	case ModeHTTP:
-		return ModePlan{StartHTTP: true, StartLogShipper: true}, nil
+		// StartAlertEventsSync：http 进程不运行告警评估，但 /api/v1/alerts/events
+		// 从内存态读取；alert-eval pod 把事件写入 ClickHouse，http 进程必须注入
+		// CH 事件源并周期重载，否则内存告警事件缓存恒空（回归 alerts_events_api）。
+		return ModePlan{StartHTTP: true, StartLogShipper: true, StartAlertEventsSync: true}, nil
 	case ModeRunDispatch:
 		return ModePlan{StartRunDispatch: true, StartActionDispatch: true, StartToolReconcile: true}, nil
 	case ModeAlertEval:
@@ -132,6 +136,13 @@ func Run(ctx context.Context, opts Options) error {
 	if plan.StartAlertEval {
 		api.SetAlertCH(handler)
 		handler.StartAlertEvaluation()
+	}
+	if plan.StartAlertEventsSync {
+		// 复用 SetAlertCH：注入 CH 事件读取/持久化能力，并立即从 CH 加载一次。
+		// 之后由 RunAlertEventsSyncLoop 周期重载（对齐 tool-reconciler 的 30s 约定），
+		// 使 alert-eval pod 新写入 CH 的事件对 /api/v1/alerts/events 可见。
+		api.SetAlertCH(handler)
+		go handler.RunAlertEventsSyncLoop(ctx, 30*time.Second)
 	}
 	if err := seedBootstrapData(db); err != nil {
 		return err

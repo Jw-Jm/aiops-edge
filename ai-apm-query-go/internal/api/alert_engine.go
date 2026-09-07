@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,122 @@ func randomSuffix() string {
 	// 简短随机后缀区分多 pod holder_id（不含密码/敏感信息）。
 	// 用时间戳 + 进程内计数器近似；真实场景由 Deployment pod name 覆盖。
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+// ── PF-LOGIC-004：规则热加载 ──
+// 此前规则仅在进程启动时（alerts.go init → loadAlertRules）加载一次，之后新建/修改的
+// 规则不被评估，必须重启 pod 才生效。现在每个评估周期开始时从 MySQL 重新加载；
+// 加载失败（MySQL 不可用 / 本机测试环境）保留内存规则继续本轮评估（fail-open 到
+// 最近一次已知的好配置，不清空）。
+func reloadAlertRulesFromStore() bool {
+	rows, err := (&store.AlertRuleDAO{}).LoadAll()
+	if err != nil {
+		log.Printf("alert rule hot-reload skipped (keep in-memory rules): %v", err)
+		return false
+	}
+	rules := make([]AlertRule, 0, len(rows))
+	for _, r := range rows {
+		rules = append(rules, AlertRule{
+			ID: r.ID, Name: r.Name, Service: r.Service, Type: r.Type, Metric: r.Metric,
+			Condition: r.Condition, Threshold: r.Threshold, Duration: r.Duration,
+			Severity: r.Severity, Enabled: r.Enabled, WebhookURL: r.WebhookURL,
+			Cooldown: r.Cooldown, Dampening: r.Dampening,
+			BaselineSeconds: r.BaselineSeconds, AnomalyMethod: r.AnomalyMethod, SLOID: r.SLOID,
+			Keyword: r.Keyword, Cluster: r.Cluster,
+		})
+	}
+	alertRulesMu.Lock()
+	alertRules = rules
+	alertRulesMu.Unlock()
+	return true
+}
+
+// ── PF-LOGIC-004：规则评估异常登记 ──
+// UI 允许对任意 metric 建 threshold 规则，引擎遇到不认识的 metric 之前每分钟报错并
+// 静默跳过（刷屏）。现在：unknown metric 的规则只 warn 一次并登记评估异常状态，
+// 后续评估周期直接跳过；规则被修正（metric 变更或评估成功）后自动清除登记。
+type RuleEvalIssue struct {
+	RuleID string `json:"rule_id"`
+	Metric string `json:"metric"`
+	Reason string `json:"reason"` // "metric_not_found"
+}
+
+const ruleIssueMetricNotFound = "metric_not_found"
+
+var (
+	ruleEvalIssues   = map[string]RuleEvalIssue{}
+	ruleEvalIssuesMu sync.Mutex
+)
+
+// markRuleEvalIssue 记录规则评估异常；同一规则的同一问题只记录/warn 一次（防刷屏）。
+func markRuleEvalIssue(rule AlertRule, issue RuleEvalIssue) {
+	ruleEvalIssuesMu.Lock()
+	defer ruleEvalIssuesMu.Unlock()
+	if prev, ok := ruleEvalIssues[rule.ID]; ok && prev == issue {
+		return // 已登记过：不再重复 warn
+	}
+	ruleEvalIssues[rule.ID] = issue
+	log.Printf("WARN[alert-engine]: 规则 %s (%s): %s (metric=%q) — 跳过评估，规则修正后自动恢复（仅提示一次）",
+		rule.ID, rule.Name, issue.Reason, rule.Metric)
+}
+
+// clearRuleEvalIssue 规则评估恢复正常（或 metric 被修正）后清除异常登记。
+func clearRuleEvalIssue(ruleID string) {
+	ruleEvalIssuesMu.Lock()
+	delete(ruleEvalIssues, ruleID)
+	ruleEvalIssuesMu.Unlock()
+}
+
+// lookupRuleEvalIssue 查询规则当前评估异常（无则 ok=false）。
+func lookupRuleEvalIssue(ruleID string) (RuleEvalIssue, bool) {
+	ruleEvalIssuesMu.Lock()
+	defer ruleEvalIssuesMu.Unlock()
+	issue, ok := ruleEvalIssues[ruleID]
+	return issue, ok
+}
+
+// shouldSkipUnknownMetricRule 判断该规则是否应因 metric 不存在而跳过本轮评估。
+// metric 已被修正（与登记的 metric 不一致）时不再跳过，恢复评估。
+func shouldSkipUnknownMetricRule(rule AlertRule) bool {
+	issue, ok := lookupRuleEvalIssue(rule.ID)
+	return ok && issue.Reason == ruleIssueMetricNotFound && issue.Metric == rule.Metric
+}
+
+// RuleEvalIssuesSnapshot 返回全部规则的评估异常登记快照（供规则列表/评估状态 API 接入，
+// 在规则列表中体现"metric 不存在"状态）。
+func RuleEvalIssuesSnapshot() []RuleEvalIssue {
+	ruleEvalIssuesMu.Lock()
+	defer ruleEvalIssuesMu.Unlock()
+	out := make([]RuleEvalIssue, 0, len(ruleEvalIssues))
+	for _, issue := range ruleEvalIssues {
+		out = append(out, issue)
+	}
+	return out
+}
+
+// isUnknownMetricError 判断评估错误是否为 unknown metric（引擎不认识规则引用的 metric）。
+func isUnknownMetricError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "unknown metric:")
+}
+
+// ── PF-BE-008 / PF-DATA-005：告警事件 tenant/cluster 归属 ──
+// 此前写入 ClickHouse alert_events 的 tenant_id/cluster_id 为空字符串，平台 API 按
+// scope 过滤后恒为空，前端告警页恒空。修复：事件写入时补齐归属——
+//   - cluster：优先继承规则自身 scope（rule.Cluster，空/"all" 视为未限定）；
+//   - tenant：规则表无 tenant 字段，回退系统租户 AIOPS_SYSTEM_TENANT_ID
+//     （与 log-shipper / 容量 ETT 的 metricsTenantID() 同一约定）。
+// 未配置系统租户时返回空（fail-closed，不伪造默认租户）；部署需配置
+// AIOPS_SYSTEM_TENANT_ID（集群级回退 AIOPS_SYSTEM_CLUSTER_ID）保证事件可按租户过滤。
+// 历史空标签数据：ClickHouse ReplacingMergeTree 按 id 去重保留新版本，旧数据不会自动
+// 回填；如需修复可在 CH 执行 ALTER TABLE ... UPDATE tenant_id/cluster_id 回填，或依赖
+// TTL 自然过期（见下方 notes，不做强制迁移）。
+func alertEventScope(rule AlertRule) (tenantID, clusterID string) {
+	tenantID = metricsTenantID()
+	clusterID = rule.Cluster
+	if clusterID == "" || clusterID == "all" {
+		clusterID = strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_CLUSTER_ID"))
+	}
+	return tenantID, clusterID
 }
 
 // isK8sRule 判断规则是否属于 K8s 类（评估时实时打 K8s API）。
@@ -156,6 +273,10 @@ func (h *Handler) computeRuleBreach(rule AlertRule) ruleEvalResult {
 }
 
 func (h *Handler) evaluateAlerts() {
+	// PF-LOGIC-004：规则热加载——每轮评估周期从 MySQL 重载规则，
+	// 新建/修改的规则无需重启 pod 即生效。加载失败保留内存规则继续本轮评估。
+	reloadAlertRulesFromStore()
+
 	alertRulesMu.RLock()
 	rules := make([]AlertRule, len(alertRules))
 	copy(rules, alertRules)
@@ -181,6 +302,11 @@ func (h *Handler) evaluateAlerts() {
 		if !rule.Enabled {
 			continue
 		}
+		// PF-LOGIC-004：已登记"metric 不存在"且 metric 未被修正的规则直接跳过，
+		// 避免每分钟重复报错；规则 metric 修正后登记不再匹配，自动恢复评估。
+		if shouldSkipUnknownMetricRule(rule) {
+			continue
+		}
 		wg.Add(1)
 		go func(idx int, r AlertRule) {
 			defer wg.Done()
@@ -203,11 +329,26 @@ func (h *Handler) evaluateAlerts() {
 		if !rule.Enabled {
 			continue
 		}
+		// 与并行评估阶段保持一致：已跳过评估的规则不进入串行处理
+		//（否则会走 res.err==nil 分支误清评估异常登记）。
+		if shouldSkipUnknownMetricRule(rule) {
+			continue
+		}
 		res := results[i]
 		if res.err != nil {
+			if isUnknownMetricError(res.err) {
+				// PF-LOGIC-004：引擎不认识的 metric 只 warn 一次并登记状态
+				//（供规则列表/评估状态体现"metric 不存在"），之后跳过评估。
+				markRuleEvalIssue(rule, RuleEvalIssue{
+					RuleID: rule.ID, Metric: rule.Metric, Reason: ruleIssueMetricNotFound,
+				})
+				continue
+			}
 			log.Printf("evaluate rule %s (%s): %v", rule.ID, rule.Name, res.err)
 			continue
 		}
+		// 评估成功：清除该规则此前的评估异常登记（如 metric 已被修正）。
+		clearRuleEvalIssue(rule.ID)
 		value := res.value
 		breached := res.breached
 
@@ -295,13 +436,17 @@ func (h *Handler) evaluateAlerts() {
 						msg += fmt.Sprintf(" | 对象: %s", objs)
 					}
 				}
+				// PF-BE-008/PF-DATA-005：事件写入必须携带 tenant/cluster 归属，
+				// 否则平台 API 按 scope 过滤后返回 0，前端告警页恒空。
+				eventTenantID, eventClusterID := alertEventScope(rule)
 				event := AlertEvent{
 					ID:       generateID(),
+					TenantID: eventTenantID, // PF-BE-008：事件租户归属（规则无 tenant 字段→系统租户）
 					RuleID:   rule.ID,
 					RuleName: rule.Name,
 					Service:  rule.Service,
-					Severity: rule.Severity,            // P0-2 修复：事件继承规则严重级别
-					Cluster:  rule.Cluster,             // A-6 修复：事件继承规则集群标记
+					Severity: rule.Severity,     // P0-2 修复：事件继承规则严重级别
+					Cluster:  eventClusterID,    // A-6 + PF-DATA-005：继承规则集群，未限定时回退系统集群
 					Object:   k8sAlertObjects(rule.ID), // 修复：新建事件时把告警对象名直接存到 Object 字段
 
 					Message:        msg,

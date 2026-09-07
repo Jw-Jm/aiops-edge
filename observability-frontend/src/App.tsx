@@ -42,7 +42,7 @@ const NotFound = lazy(() => import('./pages/NotFound'))
 
 // ===== 侧栏导航：7 大板块 =====
 interface NavItem { path: string; label: string; icon: AppIconName; badge?: string }
-interface NavGroup { title: string; collapsed?: boolean; footer?: boolean; items: NavItem[] }
+interface NavGroup { title: string; collapsed?: boolean; footer?: boolean; adminOnly?: boolean; items: NavItem[] }
 
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -92,6 +92,8 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: '系统管理',
     footer: true,
+    // PF-LOGIC-013: 管理员专属菜单，仅 role=admin 可见
+    adminOnly: true,
     items: [
       { path: '/admin/approvals', label: '审批中心', icon: 'approvals' },
       { path: '/admin/users', label: '用户管理', icon: 'users' },
@@ -101,7 +103,10 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ]
 
-const allNav = NAV_GROUPS.flatMap((g) => g.items)
+// PF-LOGIC-013: 按当前用户 role 过滤导航（admin 专属菜单仅 role=admin 可见）
+function visibleNavGroups(role: string): NavGroup[] {
+  return NAV_GROUPS.filter((g) => !g.adminOnly || role === 'admin')
+}
 
 function AppLayout() {
   const navigate = useNavigate()
@@ -149,10 +154,15 @@ function AppLayout() {
 
   // 高亮当前路由
   const pathname = location.pathname
-  const selectedKey = allNav.find((it) => it.path === pathname)?.path
-    || allNav.find((it) => pathname.startsWith(it.path + '/'))?.path
+  const auth = useAuthStore()
+  const role = auth.role
+  // PF-LOGIC-013: 侧栏按 role 过滤后的导航组
+  const navGroups = visibleNavGroups(role)
+  const visibleNav = navGroups.flatMap((g) => g.items)
+  const selectedKey = visibleNav.find((it) => it.path === pathname)?.path
+    || visibleNav.find((it) => pathname.startsWith(it.path + '/'))?.path
     || '/overview'
-  const currentLabel = allNav.find((m) => m.path === selectedKey)?.label || ''
+  const currentLabel = visibleNav.find((m) => m.path === selectedKey)?.label || ''
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -162,7 +172,6 @@ function AppLayout() {
     return () => clearInterval(t)
   }, [])
 
-  const auth = useAuthStore()
   const userLabel = auth.displayName || auth.username || '用户'
   const displayName = userLabel.slice(0, 1).toUpperCase()
 
@@ -191,7 +200,7 @@ function AppLayout() {
 
         <div className="sidebar__scroll">
           <nav className="nav">
-            {NAV_GROUPS.filter((g) => !g.footer).map((g) => {
+            {navGroups.filter((g) => !g.footer).map((g) => {
               const isCollapsed = navCollapsed[g.title]
               return (
                 <div key={g.title} className={'nav__group' + (isCollapsed ? ' is-collapsed' : '')}>
@@ -220,7 +229,7 @@ function AppLayout() {
         </div>
 
         <div className="nav__footer">
-          {NAV_GROUPS.filter((g) => g.footer).map((g) => (
+          {navGroups.filter((g) => g.footer).map((g) => (
             <div key={g.title}>
               {!collapsed && <div className="nav__group-label">{g.title}</div>}
               {g.items.map((it) => (
@@ -282,7 +291,8 @@ function AppLayout() {
             menu={{
               items: [
                 { key: 'profile', label: '个人资料', disabled: true },
-                { key: 'password', label: '修改密码', disabled: true },
+                // PF-UI-004: 启用修改密码入口，跳转独立修改密码页
+                { key: 'password', label: '修改密码', onClick: () => navigate('/change-password') },
                 { type: 'divider' },
                 { key: 'settings', label: '系统设置', onClick: () => navigate('/admin/settings') },
                 { key: 'about', label: '关于平台', disabled: true },

@@ -91,8 +91,20 @@ spec:
               value: {{ .Values.aiOrchestrator.systemTenantId | quote }}
             - name: AIOPS_SYSTEM_CLUSTER_ID
               value: {{ .Values.aiOrchestrator.systemClusterId | quote }}
-            # C2-5：Orchestrator receives no MySQL/ClickHouse credentials;
-            # all data access goes through query-api.
+            # C2-5 例外（2026-09-06 产品级恢复授权）：恢复的 /ops/changes、
+            # /ops/reports/*、/ops/audit-logs 路由由 orchestrator 直接持久化
+            # （main.py pymysql），需要 MySQL 应用凭据；ClickHouse 仍不直连。
+            - name: MYSQL_HOST
+              value: {{ .Values.queryApi.mysqlHost | default "mysql" | quote }}
+            - name: MYSQL_PORT
+              value: {{ .Values.queryApi.mysqlPort | default "3306" | quote }}
+            - name: MYSQL_USER
+              value: {{ .Values.queryApi.mysqlUser | default "aiops_app" | quote }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: aiops-secrets, key: MYSQL_APP_PASSWORD }
+            - name: MYSQL_DB
+              value: {{ .Values.queryApi.mysqlDb | default "aiops" | quote }}
             - name: INVESTIGATION_RUNTIME_ENABLED
               value: {{ .Values.aiOrchestrator.investigationRuntimeEnabled | quote }}
             {{- /* P1-A1: legacy flow/investigator/direct-mutation env 已全部移除

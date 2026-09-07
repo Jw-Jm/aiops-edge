@@ -52,7 +52,10 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if passwordHash == "" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.CurrentPassword)) != nil {
-		respondJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "invalid credentials"})
+		// PF-PAGE-002：错误的"当前密码"是用户输入错误（客户端校验失败），返回 400
+		// + invalid_current_password。401 仅保留给会话失效/未认证场景——此前这里
+		// 返回 401 会被前端全局拦截器误判为会话过期而强制登出。
+		respondJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid_current_password"})
 		return
 	}
 	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)

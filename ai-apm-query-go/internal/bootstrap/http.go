@@ -34,6 +34,8 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 
 	mux.HandleFunc("/api/v1/auth/login", handler.Login)
 	mux.HandleFunc("/api/v1/auth/change-password", handler.ChangePassword)
+	// PF-UI-004/LOGIC-001：退出登录吊销服务端会话（auth_sessions），持 cookie 即可调用。
+	mux.HandleFunc("/api/v1/auth/logout", handler.Logout)
 	mux.HandleFunc("/api/v1/login", handler.Login)
 
 	mux.HandleFunc("/api/v1/users", handler.RequireRole("admin", handler.UserRouter))

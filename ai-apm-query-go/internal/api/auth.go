@@ -342,7 +342,9 @@ func RequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) 
 		// Identity-only endpoints are needed to render the scope selector. They
 		// still validate user/session/token_version from MySQL, but do not
 		// authorize a tenant until POST /me/scope selects one explicitly.
-		if r.URL.Path == "/api/v1/me" || r.URL.Path == "/api/v1/me/scope" {
+		// PF-UI-004/LOGIC-001：/auth/logout 也允许在未选择 tenant 前调用——
+		// 吊销当前会话只依赖身份/会话有效性，不应被 SCOPE_SELECTION_REQUIRED 卡死。
+		if r.URL.Path == "/api/v1/me" || r.URL.Path == "/api/v1/me/scope" || r.URL.Path == "/api/v1/auth/logout" {
 			return resolveMySQLAuthorizationIdentity(userID, sessionID, tokenVersion)
 		}
 		return zero, authorizationFailure("SCOPE_SELECTION_REQUIRED")
@@ -558,6 +560,53 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, 401, map[string]interface{}{"error": "invalid credentials"})
+}
+
+// Logout 吊销当前服务端会话并清除浏览器 HttpOnly cookie（PF-UI-004/LOGIC-001）。
+// 此前缺少 /auth/logout 端点，退出仅在前端丢弃 cookie，auth_sessions 行仍为
+// active——token 泄露后可继续使用。现在登录态唯一权威（auth_sessions）被吊销：
+// 后续请求在 resolveMySQLAuthorization* 处因 session status != 'active' fail-closed。
+// 调用方只需持有效 cookie/JWT；不要求已选择 tenant scope。
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	authCtx, ok := requestAuthorizationContext(r)
+	if !ok || authCtx.UserID == "" || authCtx.SessionID == "" {
+		respondJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "unauthorized"})
+		return
+	}
+	conn := store.GetDB()
+	if conn == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
+		return
+	}
+	// 与 ChangePassword 同款会话吊销语义：状态置 revoked + 记录 revoked_at +
+	// token_version 自增（即使旧 token_version 校验也立即失效）。
+	result, err := conn.Exec(`UPDATE auth_sessions SET status='revoked', revoked_at=UTC_TIMESTAMP(), token_version=token_version+1
+WHERE session_id=? AND user_uuid=? AND status='active'`, authCtx.SessionID, authCtx.UserID)
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
+		return
+	}
+	if affected, aerr := result.RowsAffected(); aerr == nil && affected == 0 {
+		// 会话已不存在/已吊销：幂等成功，仍清除浏览器 cookie。
+		clearSessionCookie(w)
+		respondJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		return
+	}
+	// 吊销成功：清空浏览器 HttpOnly cookie（MaxAge=-1 让浏览器立即删除）。
+	clearSessionCookie(w)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
+// clearSessionCookie 使浏览器立即删除 aiops_access HttpOnly 会话 cookie。
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name: "aiops_access", Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: secureSessionCookie(), SameSite: http.SameSiteLaxMode,
+	})
 }
 
 // secureSessionCookie keeps production cookies transport-bound while allowing
@@ -779,6 +828,15 @@ func isCanonicalProtectedRoute(path string) bool {
 		// 解析 + ai.chat capability 签名后转发 orchestrator /internal/v1/chat（SSE 流式）。
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
 		return true
+	}
+	// PF-LOGIC-004：规则详情更新/删除（PUT/DELETE /api/v1/alerts/rules/{id}）此前
+	// 不在 canonical-protected 白名单，AuthMiddleware 一律 403 permission_denied，
+	// 规则编辑/删除产品级不可用。这里仅放行单段规则 ID 子路径；admin 可写仍由
+	// handler 的 MySQL 权威角色校验（updateAlertRule/deleteAlertRule hasRole("admin")）
+	// 保持权威。"create" 字面量保持 fail-closed（创建走 POST /api/v1/alerts/rules 集合路由）。
+	if strings.HasPrefix(path, "/api/v1/alerts/rules/") {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/alerts/rules/"), "/"), "/")
+		return len(parts) == 1 && parts[0] != "" && parts[0] != "create"
 	}
 	if strings.HasPrefix(path, "/api/v1/ai/session/") {
 		return true
@@ -1008,12 +1066,20 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		}
 		// Password bootstrap is a browser-only interactive state. Internal
 		// signed service calls keep their existing service boundary semantics.
+		// PF-UI-004/LOGIC-001：logout 始终可用——即使用户被强制改密也必须能退出登录。
 		internalRequest := r.Header.Get("X-Internal-Token") != "" || r.Header.Get("X-Trusted-Request-Context") != ""
-		if !internalRequest && authorization.MustChangePassword && path != "/api/v1/auth/change-password" && path != "/api/v1/me" {
+		if !internalRequest && authorization.MustChangePassword && path != "/api/v1/auth/change-password" && path != "/api/v1/me" && path != "/api/v1/auth/logout" {
 			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "password_change_required"})
 			return
 		}
 		if path == "/api/v1/auth/change-password" {
+			next.ServeHTTP(w, withAuthorizationContext(r, authorization))
+			return
+		}
+		// PF-UI-004/LOGIC-001：退出登录必须吊销服务端会话。持有效 cookie/JWT 即可
+		// 调用（identity-only 校验见 RequestAuthorizationContext），不要求已选择
+		// canonical tenant；吊销动作由 handler 对 auth_sessions 落库完成。
+		if path == "/api/v1/auth/logout" {
 			next.ServeHTTP(w, withAuthorizationContext(r, authorization))
 			return
 		}

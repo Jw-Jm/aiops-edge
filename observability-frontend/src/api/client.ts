@@ -64,10 +64,15 @@ api.interceptors.request.use((config) => {
 })
 
 // Response interceptor: if 401, redirect to /login
+// PF-PAGE-002: 认证类接口（登录/修改密码）的 401 是业务校验失败（密码错误等），
+// 不是会话过期——豁免登出/跳转逻辑，让错误正常抛给页面展示。
+const AUTH_401_EXEMPT_PATHS = ['/auth/login', '/auth/change-password']
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const requestUrl: string = error.config?.url || ''
+    const isAuthRequest = AUTH_401_EXEMPT_PATHS.some((p) => requestUrl.startsWith(p))
+    if (error.response?.status === 401 && !isAuthRequest) {
       useAuthStore.getState().logout()
       // Only redirect if not already on login page
       if (window.location.pathname !== '/login') {

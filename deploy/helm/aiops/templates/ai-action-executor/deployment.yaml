@@ -23,10 +23,19 @@ spec:
         app: ai-action-executor
     spec:
       {{- include "aiops.mtlsPodSecurityContext" . | nindent 6 }}
-      # Executor never uses a long-lived service-account token for mutation;
-      # Credential Broker returns a short-lived TokenRequest token per action.
-      serviceAccountName: {{ if .Values.credentialBroker.enabled }}ai-action-executor-broker-client{{ else }}default{{ end }}
+      # Executor never uses a long-lived service-account token for mutation in
+      # production; Credential Broker returns a short-lived TokenRequest token
+      # per action.  The local-validation approved profile (realMutation=true,
+      # non-production) runs as the dedicated least-privilege SA so the
+      # namespace-scoped Role/RoleBinding below actually apply to the Pod.
+      serviceAccountName: {{ if .Values.credentialBroker.enabled }}ai-action-executor-broker-client{{ else if and .Values.aiActionExecutor.realMutation (ne (.Values.global.environment | default "production") "production") }}ai-action-executor{{ else }}default{{ end }}
+      {{- if and .Values.aiActionExecutor.realMutation (ne (.Values.global.environment | default "production") "production") }}
+      # Local-validation approved seam: the dedicated SA token must be mounted
+      # for the in-cluster mutation client.  Production keeps this false.
+      automountServiceAccountToken: true
+      {{- else }}
       automountServiceAccountToken: false
+      {{- end }}
       containers:
         - name: executor
           securityContext:
@@ -61,10 +70,15 @@ spec:
                   key: CREDENTIAL_BROKER_TOKEN
             - name: CREDENTIAL_BROKER_URL
               value: {{ if .Values.aiActionExecutor.credentialBrokerUrl }}{{ .Values.aiActionExecutor.credentialBrokerUrl | quote }}{{ else if .Values.credentialBroker.enabled }}{{ printf "%s://ai-credential-broker.%s.svc.cluster.local:8080" (include "aiops.internalScheme" .) .Values.namespace.observability | quote }}{{ else }}""{{ end }}
-            # Retained only as an explicit local-validation seam; production
-            # credentials always arrive from the broker.
+            # Local-validation approved seam only (realMutation + non-production):
+            # in-cluster mutation via the dedicated least-privilege SA.  Production
+            # credentials always arrive from the broker and POD_SA_ACCESS stays false.
             - name: POD_SA_ACCESS
+              {{- if and .Values.aiActionExecutor.realMutation (ne (.Values.global.environment | default "production") "production") }}
+              value: "true"
+              {{- else }}
               value: "false"
+              {{- end }}
             # D-Gate：所有已启用的执行器都验签 query-api 签发的执行上下文。
             # 即使 EXECUTION_MODE=disabled，也必须先通过签名校验再返回拒绝，
             # 这样受控测试和生产禁写路径都不会退化为仅依赖可选 token。

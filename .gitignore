@@ -93,6 +93,11 @@ ai-apm-query-go/query-api
 # 测试截图产物（不入库）
 gui-test-screenshots/
 
+# AIOps manual E2E credentials and generated evidence (do not commit)
+/tests/manual-e2e/env.json
+/test-results/
+/tests/test-results/
+
 # deepwork 进度文件
 .slim/deepwork/
 

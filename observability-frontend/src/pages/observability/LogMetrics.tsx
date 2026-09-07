@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Input, Button, Select, Space, Segmented, Tag, Table, Tooltip } from 'antd'
-import { queryLogs, aggregateLogs } from '../../api/client'
+import { queryLogs, aggregateLogs, getServices } from '../../api/client'
+import { extractServiceNames } from './Trace'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 import { useUIStore } from '../../store/uiStore'
 
@@ -22,6 +23,9 @@ const LogMetrics: React.FC = () => {
   // 修复(P2-3)：默认过滤健康检查噪音日志（/health、/ready、/v1/query 等探针请求），
   // 否则日志列表被海量 /health [200] 0ms 淹没，用户看不到真实业务日志。
   const [hideHealth, setHideHealth] = useState<boolean>(true)
+  // PF-FLOW-001: 服务筛选（/logs/query?service= 由后端支持）
+  const [service, setService] = useState<string>('')
+  const [services, setServices] = useState<string[]>([])
   const [q, setQ] = useState('')
   const [rows, setRows] = useState<LogRow[]>([])
   const [aggs, setAggs] = useState<AggRow[]>([])
@@ -31,7 +35,7 @@ const LogMetrics: React.FC = () => {
 
   // A7: 筛选条件变更时自动触发查询（与模式切换一致）。overrides 让 onChange 立即生效，
   // 避免 setState 异步导致 search() 读到旧值。
-  const search = (targetMode?: 'logs' | 'aggregate', overrides: Partial<{ source: string; level: string; hours: number; hideHealth: boolean }> = {}) => {
+  const search = (targetMode?: 'logs' | 'aggregate', overrides: Partial<{ source: string; level: string; hours: number; hideHealth: boolean; service: string }> = {}) => {
     const requestId = ++requestSeq.current
     const m = targetMode || mode
     setLoading(true)
@@ -40,12 +44,15 @@ const LogMetrics: React.FC = () => {
     const lv = overrides.level ?? level
     const hr = overrides.hours ?? hours
     const hh = overrides.hideHealth ?? hideHealth
+    const sv = overrides.service ?? service
     const p: Record<string, unknown> = {
       limit: 100,
       source: src,
       hours: hr,
       ...(q ? { query: q } : {}),
       ...(lv !== 'all' ? { level: lv } : {}),
+      // PF-FLOW-001: 服务筛选参数
+      ...(sv ? { service: sv } : {}),
       // 修复(P2-3)：过滤健康检查探针日志（/health、/ready、/v1/query）
       ...(hh ? { exclude_health: true } : {}),
     }
@@ -93,6 +100,13 @@ const LogMetrics: React.FC = () => {
   // P3-2 首次加载自动查询
   useEffect(() => { search() }, [currentClusterId])
 
+  // PF-FLOW-001: 服务下拉选项（复用 /services 活跃服务列表，与 Trace 页一致）
+  useEffect(() => {
+    getServices().then((r) => {
+      setServices(extractServiceNames(r.data))
+    }).catch(() => setServices([]))
+  }, [currentClusterId])
+
   const logCols = [
     { title: '时间', dataIndex: 'ts', key: 'ts', render: (v: string) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>{v}</span>, width: 165 },
     { title: '级别', dataIndex: 'level', key: 'level', width: 70, render: (v: string) => <Tag color="default" style={{ color: LEVEL_TONE[v] || 'var(--text-muted)', fontWeight: 500 }}>{v === 'unknown' || !v ? '未知' : v}</Tag> },
@@ -116,6 +130,9 @@ const LogMetrics: React.FC = () => {
             options={[{ value: 'all', label: '全部级别' }, { value: 'error', label: '错误' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }, { value: 'debug', label: '调试' }]} />
           <Select value={hours} onChange={(v) => { const nh = v as number; setHours(nh); search(undefined, { hours: nh }) }} style={{ width: 100 }}
             options={[{ value: 1, label: '近 1 小时' }, { value: 6, label: '近 6 小时' }, { value: 24, label: '近 24 小时' }, { value: 168, label: '近 7 天' }]} />
+          {/* PF-FLOW-001: 服务筛选下拉，选中后自动重新查询 */}
+          <Select value={service || undefined} allowClear placeholder="全部服务" onChange={(v) => { const ns = (v as string) || ''; setService(ns); search(undefined, { service: ns }) }} style={{ width: 160 }}
+            options={services.map((s) => ({ value: s, label: s }))} />
           <Input value={q} onChange={(e) => setQ(e.target.value)} onPressEnter={() => search()} placeholder="搜索关键词，如 error / 服务名" style={{ width: 320 }} />
           <Button type={hideHealth ? 'default' : 'primary'} onClick={() => { const nhh = !hideHealth; setHideHealth(nhh); search(undefined, { hideHealth: nhh }) }} title="过滤 /health、/v1/query 等探针噪音日志">{hideHealth ? '过滤探针' : '显示探针'}</Button>
           <Button type="primary" onClick={() => search()} loading={loading}>查询</Button>
