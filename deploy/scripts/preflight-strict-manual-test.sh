@@ -60,14 +60,23 @@ NODE
 if ! curl -fsS -c "${COOKIE_FILE}" -H 'Content-Type: application/json' --data-binary @"${login_json}" "${API_BASE}/auth/login" -o "${WORK_DIR}/login-response.json"; then
   fail 'product_login_failed'
 else
-  curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/clusters" -o "${WORK_DIR}/clusters.json" || fail 'cluster_registry_unavailable'
-  curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/ai/kg/health" -o "${WORK_DIR}/graph-health.json" || fail 'graph_health_unavailable'
-  curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/settings/llm/config" -o "${WORK_DIR}/llm-config.json" || fail 'llm_config_unavailable'
-  curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/ai/knowledge/rag/stats" -o "${WORK_DIR}/rag-stats.json" || fail 'knowledge_backend_unavailable'
-  curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/traces?hours=24&limit=100" -o "${WORK_DIR}/traces.json" || fail 'trace_query_unavailable'
-  curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/logs/query?hours=24&limit=100" -o "${WORK_DIR}/logs.json" || fail 'log_query_unavailable'
-  node - "${WORK_DIR}" "${TENANT_ID}" "${CLUSTER_ID}" "${MARKER}" <<'NODE' || fail 'product_preconditions_failed'
+  scope_json="${WORK_DIR}/scope.json"
+  AIOPS_TENANT_ID="${TENANT_ID}" AIOPS_CLUSTER_ID="${CLUSTER_ID}" node - <<'NODE' > "${scope_json}"
+process.stdout.write(JSON.stringify({ tenant_id: process.env.AIOPS_TENANT_ID, cluster_id: process.env.AIOPS_CLUSTER_ID }))
+NODE
+  if ! curl -fsS -b "${COOKIE_FILE}" -c "${COOKIE_FILE}" -H 'Content-Type: application/json' \
+    --data-binary @"${scope_json}" "${API_BASE}/me/scope" -o "${WORK_DIR}/scope-response.json"; then
+    fail 'scope_initialization_failed'
+  else
+    curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/clusters" -o "${WORK_DIR}/clusters.json" || fail 'cluster_registry_unavailable'
+    curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/ai/kg/health" -o "${WORK_DIR}/graph-health.json" || fail 'graph_health_unavailable'
+    curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/settings/llm/config" -o "${WORK_DIR}/llm-config.json" || fail 'llm_config_unavailable'
+    curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/ai/knowledge/rag/stats" -o "${WORK_DIR}/rag-stats.json" || fail 'knowledge_backend_unavailable'
+    curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/traces?hours=24&limit=100" -o "${WORK_DIR}/traces.json" || fail 'trace_query_unavailable'
+    curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/logs/query?hours=24&limit=500" -o "${WORK_DIR}/logs.json" || fail 'log_query_unavailable'
+    node - "${WORK_DIR}" "${TENANT_ID}" "${CLUSTER_ID}" "${MARKER}" <<'NODE' || fail 'product_preconditions_failed'
 const fs = require('fs')
+const crypto = require('crypto')
 const [dir, tenant, cluster, marker] = process.argv.slice(2)
 const read = (name) => JSON.parse(fs.readFileSync(`${dir}/${name}`, 'utf8'))
 const clustersBody = read('clusters.json')
@@ -77,8 +86,10 @@ if (!clusters.some((c) => c.cluster_id === cluster && c.tenant_id === tenant)) p
 if (!JSON.stringify(read('graph-health.json')).match(/healthy|ready|ok/i)) process.exit(1)
 if (!read('llm-config.json').configured) process.exit(1)
 if (!JSON.stringify(read('rag-stats.json')).match(/ready|healthy|available|count|total/i)) process.exit(1)
-if (!JSON.stringify(read('traces.json')).includes(marker) || !JSON.stringify(read('logs.json')).includes(marker)) process.exit(1)
+const expectedTraceID = crypto.createHash('sha256').update(`${marker}/1`).digest('hex')
+if (!JSON.stringify(read('traces.json')).includes(expectedTraceID) || !JSON.stringify(read('logs.json')).includes(marker)) process.exit(1)
 NODE
+  fi
 fi
 
 if [[ -s "${WORK_DIR}/pods.json" ]]; then
