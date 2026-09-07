@@ -77,6 +77,7 @@ func main() {
 		strict     = flag.Bool("strict", false, "一次性生成 payments -> orders 严格测试链路")
 		marker     = flag.String("marker", os.Getenv("LOADGEN_MARKER"), "严格测试数据的唯一标记")
 		rounds     = flag.Int("rounds", 1, "严格测试模式的轮数")
+		tenantID   = flag.String("tenant-id", firstNonEmpty(os.Getenv("LOADGEN_TENANT_ID"), os.Getenv("AIOPS_SYSTEM_TENANT_ID")), "ingest 租户作用域")
 		caFile     = flag.String("ca-file", firstNonEmpty(os.Getenv("LOADGEN_TLS_CA_FILE"), os.Getenv("AIOPS_TLS_CLIENT_CA_FILE")), "mTLS CA 文件")
 		certFile   = flag.String("cert-file", firstNonEmpty(os.Getenv("LOADGEN_TLS_CERT_FILE"), os.Getenv("AIOPS_TLS_CERT_FILE")), "mTLS 客户端证书")
 		keyFile    = flag.String("key-file", firstNonEmpty(os.Getenv("LOADGEN_TLS_KEY_FILE"), os.Getenv("AIOPS_TLS_KEY_FILE")), "mTLS 客户端私钥")
@@ -108,11 +109,11 @@ func main() {
 		}
 		for round := 1; round <= max(1, *rounds); round++ {
 			batch := []otlpTrace{strictTrace(round, *marker, time.Now(), round%2 == 0)}
-			if err := postTraces(client, *ingest, *apiKey, batch); err != nil {
+			if err := postTraces(client, *ingest, *apiKey, *tenantID, batch); err != nil {
 				log.Fatalf("loadgen: strict trace post failed: %v", err)
 			}
 			logs := assembleLogs(round, []string{"payments", "orders"}, 4, 0.25, "steady", rngForStrict(round), *marker)
-			if err := postLogs(client, *ingest, *apiKey, logs); err != nil {
+			if err := postLogs(client, *ingest, *apiKey, *tenantID, logs); err != nil {
 				log.Fatalf("loadgen: strict log post failed: %v", err)
 			}
 			log.Printf("loadgen: strict round %d sent payments->orders trace and %d logs", round, len(logs))
@@ -138,7 +139,7 @@ func main() {
 		}
 		// 每轮组装一批 span（多个服务、成功/错误混合）
 		batch := assemble(round, svcList, n, *errorRate, *mode, rng)
-		if err := postTraces(client, *ingest, *apiKey, batch); err != nil {
+		if err := postTraces(client, *ingest, *apiKey, *tenantID, batch); err != nil {
 			log.Printf("loadgen: trace post error: %v", err)
 		} else {
 			log.Printf("loadgen: round %d sent %d spans (mode=%s)", round, n, *mode)
@@ -146,7 +147,7 @@ func main() {
 		// 同时生成日志（POST /v1/logs），供 log 规则（log_error_rate/log_keyword）验证
 		if *logEnabled {
 			logs := assembleLogs(round, svcList, *logQPS, *logErrRate, *mode, rng, "")
-			if err := postLogs(client, *ingest, *apiKey, logs); err != nil {
+			if err := postLogs(client, *ingest, *apiKey, *tenantID, logs); err != nil {
 				log.Printf("loadgen: log post error: %v", err)
 			} else {
 				log.Printf("loadgen: round %d sent %d logs (err_rate=%.2f)", round, len(logs), *logErrRate)
@@ -333,18 +334,14 @@ func singleTrace(round int, svc string, i int, errorRate float64, mode string, r
 }
 
 // postTraces 把一批 trace POST 到 ingest /v1/traces。
-func postTraces(client *http.Client, ingest, apiKey string, traces []otlpTrace) error {
+func postTraces(client *http.Client, ingest, apiKey, tenantID string, traces []otlpTrace) error {
 	body, err := json.Marshal(map[string]interface{}{"resourceSpans": flattenResourceSpans(traces)})
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", strings.TrimRight(ingest, "/")+"/v1/traces", bytes.NewReader(body))
+	req, err := newIngestRequest(http.MethodPost, strings.TrimRight(ingest, "/")+"/v1/traces", body, apiKey, tenantID)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("X-Api-Key", apiKey)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -428,7 +425,7 @@ func assembleLogs(round int, services []string, n int, errRate float64, mode str
 }
 
 // postLogs 把日志 POST 到 ingest /v1/logs。
-func postLogs(client *http.Client, ingest, apiKey string, logs []otlpLogRecord) error {
+func postLogs(client *http.Client, ingest, apiKey, tenantID string, logs []otlpLogRecord) error {
 	// 按服务分组为 resourceLogs（每个 resource 一个 service.name）
 	bySvc := map[string][]otlpLogRecord{}
 	for _, l := range logs {
@@ -457,13 +454,9 @@ func postLogs(client *http.Client, ingest, apiKey string, logs []otlpLogRecord) 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", strings.TrimRight(ingest, "/")+"/v1/logs", bytes.NewReader(body))
+	req, err := newIngestRequest(http.MethodPost, strings.TrimRight(ingest, "/")+"/v1/logs", body, apiKey, tenantID)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("X-Api-Key", apiKey)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -474,6 +467,21 @@ func postLogs(client *http.Client, ingest, apiKey string, logs []otlpLogRecord) 
 		return fmt.Errorf("ingest returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func newIngestRequest(method, url string, body []byte, apiKey, tenantID string) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("X-Api-Key", apiKey)
+	}
+	if tenantID != "" {
+		req.Header.Set("X-Tenant-ID", tenantID)
+	}
+	return req, nil
 }
 
 // envFloat 读取浮点环境变量，缺失或非法时返回默认值（P1-6 修复）。

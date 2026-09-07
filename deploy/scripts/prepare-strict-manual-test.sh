@@ -37,7 +37,7 @@ fi
 # The Pod already receives INGEST_API_KEY and AIOPS_TLS_* from Kubernetes Secrets.
 # No secret is copied to the shell command line or printed in output.
 kubectl exec -n observability "$INGEST_POD" -c ingest -- env LOADGEN_MARKER="$MARKER" /loadgen \
-  --strict --once --rounds 1 --marker "$MARKER" --ingest "$INGEST_URL" \
+  --strict --once --rounds 1 --marker "$MARKER" --tenant-id "$TENANT_ID" --ingest "$INGEST_URL" \
   --tls-server-name ingest.observability.svc.cluster.local
 
 ready=0

@@ -7,11 +7,28 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestIngestRequestCarriesTenantScope(t *testing.T) {
+	req, err := newIngestRequest(http.MethodPost, "https://ingest.test/v1/traces", []byte(`{}`), "api-key", "tenant-123")
+	if err != nil {
+		t.Fatalf("newIngestRequest() error = %v", err)
+	}
+	if got := req.Header.Get("X-Api-Key"); got != "api-key" {
+		t.Fatalf("X-Api-Key = %q, want api-key", got)
+	}
+	if got := req.Header.Get("X-Tenant-ID"); got != "tenant-123" {
+		t.Fatalf("X-Tenant-ID = %q, want tenant-123", got)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+}
 
 func TestStrictTraceContainsPaymentsOrdersParentChildAndMarker(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)

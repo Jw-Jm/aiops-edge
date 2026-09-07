@@ -39,15 +39,19 @@ ORIGINAL_SERVER="$(kubectl config view --raw --flatten --minify --context "${CON
 REACHABLE_PORT="${MANAGED_CLUSTER_API_PORT:-${ORIGINAL_SERVER##*:}}"
 [[ "${REACHABLE_PORT}" =~ ^[0-9]+$ ]] || { echo 'unable to resolve target API port' >&2; exit 1; }
 
+# The host can validate the real kind context through its loopback endpoint,
+# while the management Pod reaches the rewritten server address below. Probe
+# the target identity before rewriting the private kubeconfig; the public
+# registration request performs the second probe from the Query API boundary.
+TARGET_UID="$(kubectl --kubeconfig "${TARGET_KUBECONFIG}" get namespace kube-system -o jsonpath='{.metadata.uid}')"
+[[ -n "${TARGET_UID}" ]] || { echo 'target kube-system identity probe returned empty' >&2; exit 1; }
+
 # The management cluster reaches the host-published kind API through the
 # explicit host name; CA verification remains enabled with the original TLS
 # server name. No insecure-skip-tls-verify fallback is allowed.
 kubectl --kubeconfig "${TARGET_KUBECONFIG}" config set-cluster "${TARGET_CLUSTER}" \
   --server "https://${REACHABLE_HOST}:${REACHABLE_PORT}" \
   --tls-server-name "${TLS_SERVER_NAME}" >/dev/null
-
-TARGET_UID="$(kubectl --kubeconfig "${TARGET_KUBECONFIG}" get namespace kube-system -o jsonpath='{.metadata.uid}')"
-[[ -n "${TARGET_UID}" ]] || { echo 'target kube-system identity probe returned empty' >&2; exit 1; }
 
 # Create/update only the managed-cluster credential Secret. The command output
 # is discarded so the Secret payload cannot appear in CI logs.
@@ -78,8 +82,12 @@ process.stdout.write(JSON.stringify({
   type: 'kubernetes', capabilities: 'nodes,namespaces,events', labels: 'managed=true'
 }))
 NODE
-curl -fsS -b "${COOKIE_FILE}" -H 'Content-Type: application/json' \
-  --data-binary @"${WORK_DIR}/register.json" "${API_BASE}/clusters" -o "${WORK_DIR}/registration.json"
+REGISTRATION_STATUS="$(curl -sS -b "${COOKIE_FILE}" -H 'Content-Type: application/json' \
+  --data-binary @"${WORK_DIR}/register.json" -o "${WORK_DIR}/registration.json" -w '%{http_code}' "${API_BASE}/clusters")"
+if [[ "${REGISTRATION_STATUS}" != "201" && "${REGISTRATION_STATUS}" != "409" ]]; then
+  echo "cluster registration failed with HTTP ${REGISTRATION_STATUS}" >&2
+  exit 1
+fi
 
 curl -fsS -b "${COOKIE_FILE}" "${API_BASE}/clusters" -o "${WORK_DIR}/clusters.json"
 
@@ -87,13 +95,13 @@ node - "${WORK_DIR}/registration.json" "${WORK_DIR}/clusters.json" "${TENANT_ID}
 const fs = require('fs')
 const [file, listFile, tenant] = process.argv.slice(2)
 const body = JSON.parse(fs.readFileSync(file, 'utf8'))
-if (!body.cluster_id || body.cluster?.credential_ref !== 'k8s-secret://observability/aiops-managed-aiops-kind-02-kubeconfig') {
-  throw new Error('registration response does not contain the canonical cluster binding')
+if (Object.prototype.hasOwnProperty.call(body, 'kubeconfig') || Object.prototype.hasOwnProperty.call(body.cluster || {}, 'kubeconfig')) {
+  throw new Error('registration response leaked kubeconfig material')
 }
-if (JSON.stringify(body).includes('kubeconfig')) throw new Error('registration response leaked kubeconfig material')
 const list = JSON.parse(fs.readFileSync(listFile, 'utf8'))
 const clusters = Array.isArray(list) ? list : (list.clusters || list.data || [])
-const registered = clusters.find((item) => item.cluster_id === body.cluster_id)
+const registered = clusters.find((item) => item.slug === 'kind-aiops-kind-02' && item.credential_ref === 'k8s-secret://observability/aiops-managed-aiops-kind-02-kubeconfig')
 if (!registered || registered.tenant_id !== tenant) throw new Error('tenant-scoped cluster readback failed')
-process.stdout.write(`managed cluster registered: ${body.cluster_id}\n`)
+if (body.cluster && body.cluster.credential_ref !== registered.credential_ref) throw new Error('registration response credential binding mismatch')
+process.stdout.write(`managed cluster registered: ${registered.cluster_id}\n`)
 NODE
