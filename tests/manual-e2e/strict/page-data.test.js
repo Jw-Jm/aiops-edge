@@ -25,3 +25,22 @@ test('validateForecast accepts the documented empty-history response only when i
   assert.equal(validateForecast({ status: 200, body: { history: [], timestamps: [], forecasts: {} } }).ok, true)
   assert.equal(validateForecast({ status: 400, body: { error: 'metric must be cpu' } }).ok, false)
 })
+
+test('validateForecast accepts the documented history plus forecast timeline', () => {
+  const response = {
+    status: 200,
+    body: {
+      history: [10, 11, 12],
+      timestamps: [1, 2, 3, 4, 5],
+      forecasts: {
+        linear: { values: [13, 14] },
+        ewma: { values: [12.5, 13] },
+      },
+    },
+  }
+  assert.equal(validateForecast(response).ok, true)
+  assert.equal(validateForecast({
+    status: 200,
+    body: { ...response.body, timestamps: [1, 2, 3, 4] },
+  }).ok, false)
+})

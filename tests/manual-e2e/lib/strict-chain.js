@@ -43,6 +43,37 @@ async function postJson(request, route, body) {
 
 function ok(value) { return value && value.status >= 200 && value.status < 300 }
 
+function evaluateTelemetryReadiness({ marker, stats, traces, logs, services, serviceMap }) {
+  const expectedTraceID = crypto.createHash('sha256').update(`${marker}/1`).digest('hex')
+  const statsText = JSON.stringify(stats?.body || {})
+  const tracesText = JSON.stringify(traces?.body || {})
+  const logsText = JSON.stringify(logs?.body || {})
+  const servicesText = JSON.stringify(services?.body || {})
+  const mapText = JSON.stringify(serviceMap?.body || {})
+  const statusesOK = [stats, traces, logs, services, serviceMap].every((response) => response?.status === 200)
+  const trendReady = Array.isArray(stats?.body?.trend) && stats.body.trend.length > 0
+  const servicesReady = servicesText.includes('payments') && servicesText.includes('orders')
+  const traceReady = tracesText.includes(expectedTraceID)
+  const logsReady = logsText.includes(marker)
+  const topologyReady = /payments.*orders|orders.*payments/i.test(mapText)
+  return {
+    ready: statusesOK && trendReady && servicesReady && traceReady && logsReady && topologyReady,
+    marker_found: traceReady && logsReady,
+    expected_trace_id: expectedTraceID,
+    stats_status: stats?.status || 0,
+    trace_status: traces?.status || 0,
+    log_status: logs?.status || 0,
+    service_status: services?.status || 0,
+    map_status: serviceMap?.status || 0,
+    trend_ready: trendReady,
+    services_ready: servicesReady,
+    trace_ready: traceReady,
+    logs_ready: logsReady,
+    topology_ready: topologyReady,
+    checked_at: new Date().toISOString(),
+  }
+}
+
 async function waitForRun(request, runId) {
   const timeout = Number(process.env.STRICT_CHAIN_TIMEOUT_MS || 120000)
   const deadline = Date.now() + timeout
@@ -59,12 +90,14 @@ async function waitForRun(request, runId) {
 }
 
 async function ensureStrictChain(request) {
+  const currentRunId = process.env.TEST_RUN_ID || `strict-${Date.now()}`
+  const marker = process.env.STRICT_TELEMETRY_MARKER || `strict-${currentRunId}`
   const cached = readLedger()
-  if (cached && cached.marker && cached.checked_at) return cached
+  if (cached && cached.marker === marker && cached.checked_at && cached.telemetry_ready !== false) return cached
 
   const ledger = {
-    run_id: process.env.TEST_RUN_ID || `strict-${Date.now()}`,
-    marker: process.env.STRICT_TELEMETRY_MARKER || `strict-${process.env.TEST_RUN_ID || Date.now()}`,
+    run_id: currentRunId,
+    marker,
     tenant_id: ENV.tenantId,
     primary_cluster_id: ENV.clusterId,
     checked_at: new Date().toISOString(),
@@ -74,25 +107,29 @@ async function ensureStrictChain(request) {
   const record = (name, response, identity = {}) => {
     const body = response?.body || {}
     const id = body.run_id || body.action_id || body.case_id || body.report_id || body.id
-    ledger.artifacts[name] = { status: response?.status || 0, id, ...identity }
+    ledger.artifacts[name] = {
+      status: response?.status || 0,
+      id,
+      run_id: body.run_id,
+      action_id: body.action_id,
+      case_id: body.case_id,
+      report_id: body.report_id,
+      session_id: body.session_id || body.thread_id,
+      ...identity,
+    }
     ledger.checks.push({ name, pass: ok(response), status: response?.status || 0, id })
     return response
   }
 
   const [stats, traces, logs, services, serviceMap] = await Promise.all([
     getJson(request, '/dashboard/stats'),
-    getJson(request, '/traces?hours=24&limit=100'),
-    getJson(request, '/logs/query?service_name=payments&hours=24&limit=100'),
+    getJson(request, '/traces?service=payments&hours=24&limit=100'),
+    getJson(request, '/logs/query?service_name=payments&hours=24&limit=500'),
     getJson(request, '/services?hours=24&limit=200'),
     getJson(request, '/services/map?hours=24'),
   ])
-  const serialized = JSON.stringify({ stats, traces, logs, services, serviceMap })
-  ledger.telemetry_ready = serialized.includes(ledger.marker) && /payments/.test(serialized) && /orders/.test(serialized)
-  ledger.telemetry = {
-    stats_status: stats.status, trace_status: traces.status, log_status: logs.status,
-    service_status: services.status, map_status: serviceMap.status,
-    marker_found: serialized.includes(ledger.marker), checked_at: new Date().toISOString(),
-  }
+  ledger.telemetry = evaluateTelemetryReadiness({ marker: ledger.marker, stats, traces, logs, services, serviceMap })
+  ledger.telemetry_ready = ledger.telemetry.ready
   if (!ledger.telemetry_ready) {
     ledger.checks.push({ name: 'fresh_telemetry', pass: false, status: 0 })
     writeLedger(ledger)
@@ -177,4 +214,4 @@ function chainEvidence(ledger, artifactNames) {
   return artifactNames.every((name) => ledger?.artifacts?.[name]?.status >= 200 && ledger?.artifacts?.[name]?.status < 300)
 }
 
-module.exports = { ensureStrictChain, chainEvidence, getJson, postJson, readLedger, writeLedger }
+module.exports = { ensureStrictChain, chainEvidence, evaluateTelemetryReadiness, getJson, postJson, readLedger, writeLedger }

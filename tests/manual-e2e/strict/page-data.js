@@ -31,12 +31,23 @@ function validateTraceRows(rows) {
 function validateForecast(response) {
   if (response.status !== 200) return { ok: false, reason: `forecast status ${response.status}` }
   const body = response.body || {}
-  if (!Array.isArray(body.history) || !Array.isArray(body.timestamps) || typeof body.forecasts !== 'object') {
+  const linear = body.forecasts?.linear?.values
+  const ewma = body.forecasts?.ewma?.values
+  if (!Array.isArray(body.history) || !Array.isArray(body.timestamps) || typeof body.forecasts !== 'object' || body.forecasts === null) {
     return { ok: false, reason: 'forecast arrays are missing' }
   }
-  if (body.history.length === 0) return { ok: true, empty: true }
-  if (body.history.length !== body.timestamps.length) return { ok: false, reason: 'history/timestamp length mismatch' }
-  return { ok: true, empty: false }
+  if (body.history.length === 0) {
+    const empty = body.timestamps.length === 0 &&
+      (linear === undefined || Array.isArray(linear) && linear.length === 0) &&
+      (ewma === undefined || Array.isArray(ewma) && ewma.length === 0)
+    return empty ? { ok: true, empty: true } : { ok: false, reason: 'empty forecast contains points' }
+  }
+  if (!Array.isArray(linear) || !Array.isArray(ewma)) return { ok: false, reason: 'forecast arrays are missing' }
+  if (linear.length === 0 || linear.length !== ewma.length) return { ok: false, reason: 'forecast horizon length mismatch' }
+  if (body.timestamps.length !== body.history.length + linear.length) {
+    return { ok: false, reason: 'history plus forecast timestamp length mismatch' }
+  }
+  return { ok: true, empty: false, horizon: linear.length }
 }
 
 async function requestJson(request, apiBase, route) {

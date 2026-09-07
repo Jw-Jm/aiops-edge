@@ -5,6 +5,7 @@ const { classifyCase } = require('./result-policy')
 const { summarizeItems, writeSummaryAtomic } = require('./summarize')
 const { runPageData, requestJson, extractItems } = require('./page-data')
 const { runBackend } = require('./backend')
+const { runStrictActionLoop } = require('./action')
 const { ensureStrictChain } = require('../lib/strict-chain')
 const { ENV, ROOT, withSession, makeCollector, spaNav } = require('../lib/laneD-runner')
 
@@ -66,8 +67,8 @@ async function run() {
     items.push(result('PF-LOGIC-002', [check('two_canonical_clusters', twoClusters, `clusters=${clusterRows.length}`)], ledger))
     items.push(result('PF-FLOW-007', [check('two_canonical_clusters', twoClusters, `clusters=${clusterRows.length}`)], ledger))
 
-    const runId = ledger.artifacts?.run_readback?.body?.run_id || ledger.artifacts?.run?.body?.run_id || '__e2e_no_run__'
-    const evidenceId = ledger.artifacts?.evidence?.body?.evidence_id || ledger.artifacts?.evidence?.body?.id || '__e2e_no_evidence__'
+    const runId = ledger.artifacts?.run_readback?.run_id || ledger.artifacts?.run?.run_id || '__e2e_no_run__'
+    const evidenceId = ledger.artifacts?.evidence?.id || '__e2e_no_evidence__'
     for (const [id, routeTemplate] of STRICT_PAGE_ROUTES) {
       const route = routeTemplate.replace('__RUN__', runId).replace('__EVID__', evidenceId)
       await spaNav(page, route)
@@ -118,6 +119,14 @@ async function run() {
       const checks = names.map((name) => check(`artifact_${name}`, ledger.artifacts?.[name]?.status >= 200 && ledger.artifacts?.[name]?.status < 300, `${name}=${ledger.artifacts?.[name]?.status || 0}`))
       items.push(result(id, checks, ledger))
     }
+
+    const actionCase = await runStrictActionLoop({
+      admin: page.request,
+      ledger,
+      tenantId: ENV.tenantId,
+      clusterId: ENV.clusterId,
+    })
+    items.push(result('PF-LOGIC-010', actionCase.checks, ledger))
   })
 
   const byId = new Map(items.map((item) => [item.id, item]))
