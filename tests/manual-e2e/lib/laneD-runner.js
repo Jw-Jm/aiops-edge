@@ -15,7 +15,7 @@ const ROOT = path.resolve(__dirname, '..', '..', '..', 'test-results', RUN_ID)
 // Mirrors GLOBAL_PATHS in observability-frontend/src/api/client.ts — requests
 // to these paths are cluster-agnostic and legitimately carry no cluster_id.
 const GLOBAL_PATHS = [
-  '/clusters', '/users', '/ops/tasks', '/ops/audit-logs', '/ops/reports',
+  '/clusters', '/users', '/ops/audit-logs', '/ops/reports',
   '/ops/changes', '/node/health', '/ipmi', '/settings', '/auth', '/slo',
   '/ai/sessions', '/ai/session', '/ai/runs', '/ai/actions', '/ai/skills',
   '/ai/workflows', '/ai/flows', '/mcp', '/grafana', '/system',

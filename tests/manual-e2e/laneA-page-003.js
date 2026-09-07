@@ -22,7 +22,10 @@ runLaneA({
     check('resource_progress_bars', (await page.locator('.ant-progress').count()) > 0, 'CPU/内存/磁盘资源条')
     check('node_top5_pane', (await page.getByText('节点资源 TOP5').count()) > 0)
     check('trend_pane', (await page.getByText('调用与错误趋势').count()) > 0)
-    check('trend_chart_canvas', (await page.locator('canvas').count()) >= 1, 'ECharts 趋势图渲染')
+    const trendCanvasCount = await page.locator('canvas').count()
+    const trendEmpty = (await page.getByText(/暂无趋势数据|暂无调用数据|暂无数据/).count()) > 0
+    check('trend_chart_or_intentional_empty', trendCanvasCount >= 1 || trendEmpty,
+      trendCanvasCount >= 1 ? 'ECharts 趋势图渲染' : '24h 无数据，显示产品空态；完整用例由严格门禁按 telemetry 前置条件分类')
     check('active_alerts_pane', (await page.getByText('活跃告警').count()) > 0)
 
     // CPU/内存排序切换

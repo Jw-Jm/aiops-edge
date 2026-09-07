@@ -20,6 +20,9 @@ queryApi:
   authRequireFirstLoginPasswordChange: false
   k8sInsecureSkipVerify: "true"
   localCredentialSecretName: aiops-local-cluster-kubeconfig
+  credentialSecretNames:
+    - aiops-local-cluster-kubeconfig
+    - aiops-managed-aiops-kind-02-kubeconfig
 ingest:
   enabled: true
 aiOrchestrator:

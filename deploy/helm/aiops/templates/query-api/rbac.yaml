@@ -66,7 +66,8 @@ roleRef:
   kind: ClusterRole
   name: query-api-http-node-reader
   apiGroup: rbac.authorization.k8s.io
-{{- if .Values.queryApi.localCredentialSecretName }}
+{{- $credentialSecretNames := .Values.queryApi.credentialSecretNames | default list }}
+{{- if or (gt (len $credentialSecretNames) 0) .Values.queryApi.localCredentialSecretName }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -78,7 +79,14 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
-  resourceNames: [{{ .Values.queryApi.localCredentialSecretName | quote }}]
+  resourceNames:
+  {{- if gt (len $credentialSecretNames) 0 }}
+  {{- range $credentialSecretNames }}
+    - {{ . | quote }}
+  {{- end }}
+  {{- else }}
+    - {{ .Values.queryApi.localCredentialSecretName | quote }}
+  {{- end }}
   verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

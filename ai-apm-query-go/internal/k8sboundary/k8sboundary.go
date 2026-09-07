@@ -225,6 +225,24 @@ func (c *Client) KubePods(namespace string) ([]map[string]interface{}, error) {
 	return kubePods(c.kubeconfig, namespace)
 }
 
+// KubeNamespaces returns namespace names for this validated client.
+func (c *Client) KubeNamespaces() ([]string, error) {
+	out, err := kubectlJSON(c.kubeconfig, "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.TrimSpace(string(out))), nil
+}
+
+// KubeEvents returns warning/error events for this validated client.
+func (c *Client) KubeEvents() ([]map[string]interface{}, error) {
+	out, err := kubectlJSON(c.kubeconfig, "get", "events", "-A", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	return parseKubeEvents([]byte(out)), nil
+}
+
 // KubeGraphObjects returns the complete, allow-listed resource snapshot used
 // by the graph reconcile builder.  It never reads Secrets or accepts an
 // arbitrary resource name; every object is fetched through this already
@@ -522,6 +540,53 @@ func kubePods(kubeconfig, namespace string) ([]map[string]interface{}, error) {
 		})
 	}
 	return pods, nil
+}
+
+func parseKubeEvents(raw []byte) []map[string]interface{} {
+	var res struct {
+		Items []struct {
+			LastTimestamp  string `json:"lastTimestamp"`
+			EventTime      string `json:"eventTime"`
+			FirstTimestamp string `json:"firstTimestamp"`
+			Type           string `json:"type"`
+			Reason         string `json:"reason"`
+			Message        string `json:"message"`
+			Count          int32  `json:"count"`
+			Involved       struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"involvedObject"`
+			Regarding struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"regarding"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return []map[string]interface{}{}
+	}
+	result := []map[string]interface{}{}
+	for _, item := range res.Items {
+		if item.Type == "Normal" {
+			continue
+		}
+		ts := item.LastTimestamp
+		if ts == "" {
+			ts = item.EventTime
+		}
+		if ts == "" {
+			ts = item.FirstTimestamp
+		}
+		kind, name := item.Involved.Kind, item.Involved.Name
+		if kind == "" && name == "" {
+			kind, name = item.Regarding.Kind, item.Regarding.Name
+		}
+		result = append(result, map[string]interface{}{
+			"last_timestamp": ts, "type": item.Type, "reason": item.Reason,
+			"message": item.Message, "count": item.Count, "involved_object": kind + "/" + name,
+		})
+	}
+	return result
 }
 
 // kubeGraphObjects reads only the canonical Kubernetes graph resource set.

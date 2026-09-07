@@ -1,0 +1,35 @@
+# Resource-bounded real-AI overlay. Apply after values-local-validation.yaml;
+# provider keys remain in the egress proxy Secret and are never copied to the
+# gateway, worker, browser, or repository.
+global:
+  environment: local
+  imageTag: "local-strict"
+
+aiOrchestrator:
+  llmMock: "false"
+  # Browser Chat gateway stays available; durable investigations run in the
+  # dedicated worker below.
+  investigationRuntimeEnabled: "0"
+
+investigationWorker:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "1536Mi" }
+
+llmEgressProxy:
+  enabled: true
+  replicas: 1
+
+aiActionExecutor:
+  enabled: true
+  replicas: 1
+  executionMode: approved
+  realMutation: true
+  targetNamespaces:
+    - aiops-canary
+    - aiops-action-test
+
+deepflow:
+  enabled: false

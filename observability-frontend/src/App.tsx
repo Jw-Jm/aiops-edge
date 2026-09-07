@@ -269,6 +269,7 @@ function AppLayout() {
                     <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>暂无告警</div>
                   ) : (recentAlerts || []).slice(0, 6).map((a: any) => (
                     <div key={a.id || a.alert_id || a.title} onClick={() => navigate(`/alerts/events`)}
+                      data-testid="notification-alert-item"
                       style={{ display: 'flex', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-soft)', cursor: 'pointer', alignItems: 'flex-start' }}>
                       <span style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0, background: a.severity === 'critical' ? 'var(--danger)' : a.severity === 'warning' ? 'var(--warning)' : 'var(--primary)' }} />
                       <div style={{ flex: 1, minWidth: 0 }}>

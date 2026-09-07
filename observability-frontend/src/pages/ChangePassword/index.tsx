@@ -11,6 +11,20 @@ interface ChangePasswordForm {
   confirm_password: string
 }
 
+const PASSWORD_ERROR_MESSAGES: Record<string, string> = {
+  invalid_current_password: '当前密码不正确',
+  password_mismatch: '两次输入的新密码不一致',
+  password_policy: '新密码不符合密码策略',
+  password_change_required: '请先完成密码修改',
+}
+
+export function humanizePasswordError(value: unknown): string {
+  const code = typeof value === 'string' ? value : ''
+  if (PASSWORD_ERROR_MESSAGES[code]) return PASSWORD_ERROR_MESSAGES[code]
+  if (code && !/^[a-z0-9_.-]+$/i.test(code)) return code
+  return '密码修改失败，请重试'
+}
+
 const ChangePassword: React.FC = () => {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
@@ -30,7 +44,7 @@ const ChangePassword: React.FC = () => {
       message.success('密码修改成功，请继续使用系统')
       navigate('/overview', { replace: true })
     } catch (err: any) {
-      message.error(err?.response?.data?.message || err?.response?.data?.error || '密码修改失败，请重试')
+      message.error(humanizePasswordError(err?.response?.data?.error || err?.response?.data?.message))
     } finally {
       setLoading(false)
     }

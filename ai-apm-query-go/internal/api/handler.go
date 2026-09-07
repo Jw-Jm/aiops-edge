@@ -163,7 +163,9 @@ type Handler struct {
 
 	// kubeRepo 是 kubernetes 资源域 domain repository（P6.2d），包装既有 K8s Access Boundary。
 	// handler 不直接承担 API URL/资源查询/错误映射。
-	kubeRepo *query.KubernetesRepository
+	kubeRepo         *query.KubernetesRepository
+	clusterRegistrar *k8sboundary.ClusterRegistrar
+	clusterClients   *k8sboundary.ClusterClientManager
 
 	// changeRepo 是 changes 资源域 domain repository（P6.2d mandatory gap）。
 	// 按冻结 SoT（ClickHouse change_records）查询，不经 ProxyAI。
@@ -255,11 +257,11 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.topoRepo = query.NewTopologyRepository(&h.repo)
 	h.resourceRepo = query.NewResourceRepository(&h.repo)
 	// P6.2d：Kubernetes 走既有 K8s Access Boundary（k8sboundary），复用而非重建底层访问。
-	manager := k8sboundary.NewClusterClientManager(
-		k8sboundary.NewSecretResolver(os.Getenv("ADMIN_KUBECONFIG")),
-		k8sboundary.NewKubectlIdentityReader(),
-		&store.ClusterDAO{},
-	)
+	clusterCredentials := k8sboundary.NewSecretResolver(os.Getenv("ADMIN_KUBECONFIG"))
+	clusterIdentities := k8sboundary.NewKubectlIdentityReader()
+	manager := k8sboundary.NewClusterClientManager(clusterCredentials, clusterIdentities, &store.ClusterDAO{})
+	h.clusterClients = manager
+	h.clusterRegistrar = k8sboundary.NewClusterRegistrar(clusterCredentials, clusterIdentities, &store.ClusterDAO{})
 	h.kubeRepo = query.NewKubernetesRepository(boundaryAccessor{manager: manager})
 	h.actionPreflight = NewActionPreflightService(queryActionTargetResolver{repo: h.kubeRepo})
 	h.changeRepo = query.NewChangeRepository(&h.repo)

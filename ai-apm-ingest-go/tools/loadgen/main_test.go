@@ -1,125 +1,92 @@
 package main
 
 import (
-	"math/rand"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestSingleTraceSteadyStructure(t *testing.T) {
-	rng := rand.New(rand.NewSource(1))
-	tr := singleTrace(1, "payments", 1, 0.5, "steady", rng)
-	if len(tr.ResourceSpans) != 1 {
-		t.Fatalf("expected 1 resourceSpans, got %d", len(tr.ResourceSpans))
+func TestStrictTraceContainsPaymentsOrdersParentChildAndMarker(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	trace := strictTrace(7, "strict-run-7", now, true)
+	if len(trace.ResourceSpans) != 2 {
+		t.Fatalf("strictTrace resource spans = %d, want 2", len(trace.ResourceSpans))
 	}
-	spans := tr.ResourceSpans[0].ScopeSpans[0].Spans
-	if len(spans) != 1 {
-		t.Fatalf("expected 1 span, got %d", len(spans))
-	}
-	sp := spans[0]
-	if sp.Kind != 1 {
-		t.Fatalf("expected kind SERVER(1), got %d", sp.Kind)
-	}
-	if sp.StartTimeUnixNano == "" || sp.EndTimeUnixNano == "" {
-		t.Fatalf("missing timestamps")
-	}
-	// 服务的 resource 属性
-	attrs := tr.ResourceSpans[0].Resource.Attributes
-	if len(attrs) == 0 || attrs[0]["key"] != "service.name" {
-		t.Fatalf("missing service.name attribute")
-	}
-}
 
-func TestSingleTraceErrorModeAlwaysError(t *testing.T) {
-	rng := rand.New(rand.NewSource(2))
-	allErr := true
-	for i := 0; i < 50; i++ {
-		tr := singleTrace(i, "orders", i, 0.0, "error", rng)
-		sp := tr.ResourceSpans[0].ScopeSpans[0].Spans[0]
-		if sp.Status["code"] != 2 {
-			allErr = false
-			break
+	var root, child *otlpSpan
+	services := map[string]bool{}
+	for _, resourceSpan := range trace.ResourceSpans {
+		service := resourceStringAttribute(resourceSpan.Resource.Attributes, "service.name")
+		services[service] = true
+		for i := range resourceSpan.ScopeSpans[0].Spans {
+			span := &resourceSpan.ScopeSpans[0].Spans[i]
+			if span.ParentSpanID == "" {
+				root = span
+			} else {
+				child = span
+			}
+			if resourceStringAttribute(span.Attributes, "aiops.test.marker") != "strict-run-7" {
+				t.Fatalf("span marker = %q, want strict-run-7", resourceStringAttribute(span.Attributes, "aiops.test.marker"))
+			}
 		}
 	}
-	if !allErr {
-		t.Fatalf("error mode should always produce status.code=2")
+	if !services["payments"] || !services["orders"] {
+		t.Fatalf("services = %#v, want payments and orders", services)
+	}
+	if root == nil || child == nil || child.ParentSpanID != root.SpanID {
+		t.Fatalf("parent/child relation is not explainable: root=%#v child=%#v", root, child)
+	}
+	if root.Status["code"] != float64(0) || child.Status["code"] != float64(2) {
+		t.Fatalf("strict trace status = root %#v child %#v, want mixed success/error", root.Status, child.Status)
 	}
 }
 
-func TestFlattenResourceSpans(t *testing.T) {
-	rng := rand.New(rand.NewSource(3))
-	a := singleTrace(1, "a", 1, 0, "steady", rng)
-	b := singleTrace(1, "b", 2, 0, "steady", rng)
-	out := flattenResourceSpans([]otlpTrace{a, b})
-	if len(out) != 2 {
-		t.Fatalf("expected 2 resourceSpans, got %d", len(out))
+func TestStrictMTLSClientLoadsCAAndClientCertificate(t *testing.T) {
+	dir := t.TempDir()
+	ca, cert, key := writeTestCertificate(t, dir)
+	client, err := newMTLSClient(ca, cert, key)
+	if err != nil {
+		t.Fatalf("newMTLSClient() error = %v", err)
+	}
+	if client.Transport == nil {
+		t.Fatal("newMTLSClient() transport is nil")
 	}
 }
 
-func TestSpanIDStableAndUnique(t *testing.T) {
-	rng := rand.New(rand.NewSource(4))
-	tr := singleTrace(1, "payments", 5, 0, "steady", rng)
-	sp := tr.ResourceSpans[0].ScopeSpans[0].Spans[0]
-	// spanID 应稳定唯一且为十六进制
-	if len(sp.SpanID) != 16 {
-		t.Fatalf("spanID len = %d, want 16", len(sp.SpanID))
+func writeTestCertificate(t *testing.T, dir string) (string, string, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_ = time.Now()
-}
-
-func TestAssembleLogsErrorModeHighErr(t *testing.T) {
-	rng := rand.New(rand.NewSource(5))
-	logs := assembleLogs(1, []string{"payments"}, 100, 0.1, "error", rng)
-	if len(logs) != 100 {
-		t.Fatalf("expected 100 logs, got %d", len(logs))
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "strict-loadgen.test"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		IsCA:         true,
 	}
-	// error 模式下大部分应为 ERROR/FATAL
-	errCnt := 0
-	for _, l := range logs {
-		if l.SeverityText == "ERROR" || l.SeverityText == "FATAL" {
-			errCnt++
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	caPath := filepath.Join(dir, "ca.crt")
+	certPath := filepath.Join(dir, "tls.crt")
+	keyPath := filepath.Join(dir, "tls.key")
+	for path, data := range map[string][]byte{caPath: certPEM, certPath: certPEM, keyPath: keyPEM} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if errCnt < 50 {
-		t.Fatalf("error mode should produce high error logs, got %d/100", errCnt)
-	}
-	// 每条日志带 service.name 属性
-	hasSvc := false
-	for _, a := range logs[0].Attributes {
-		if a["key"] == "service.name" {
-			hasSvc = true
-		}
-	}
-	if !hasSvc {
-		t.Fatal("log should carry service.name attribute")
-	}
-}
-
-func TestAssembleLogsSteadyLowErr(t *testing.T) {
-	rng := rand.New(rand.NewSource(6))
-	logs := assembleLogs(1, []string{"orders"}, 200, 0.05, "steady", rng)
-	errCnt := 0
-	for _, l := range logs {
-		if l.SeverityText == "ERROR" || l.SeverityText == "FATAL" {
-			errCnt++
-		}
-	}
-	// steady 模式错误比例应较低（~5% ± 容差）
-	if errCnt > 60 {
-		t.Fatalf("steady mode should have low error rate, got %d/200", errCnt)
-	}
-}
-
-func TestAssembleLogsFatalIncluded(t *testing.T) {
-	rng := rand.New(rand.NewSource(7))
-	logs := assembleLogs(1, []string{"checkout"}, 500, 0.9, "steady", rng)
-	fatalCnt := 0
-	for _, l := range logs {
-		if l.SeverityText == "FATAL" {
-			fatalCnt++
-		}
-	}
-	if fatalCnt == 0 {
-		t.Fatal("high error rate should include some FATAL logs")
-	}
+	return caPath, certPath, keyPath
 }

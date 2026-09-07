@@ -76,6 +76,8 @@ function ClusterManager() {
   const [events, setEvents] = useState<unknown[]>([])
   const [detailErrors, setDetailErrors] = useState<{ nodes?: string; namespaces?: string; events?: string }>({})
 
+  const clusterRef = (c: ClusterItem) => c.cluster_id || String(c.id ?? '')
+
   const load = async () => {
     setLoading(true)
     try {
@@ -96,7 +98,7 @@ function ClusterManager() {
   // 这里直接走 api 实例显式传 cluster_id）。
   useEffect(() => {
     if (!detail) return
-    api.get('/nodes/metrics', { params: { cluster_id: String(detail.id) } }).then((r) => {
+      api.get('/nodes/metrics', { params: { cluster_id: clusterRef(detail) } }).then((r) => {
       const m: Record<string, any> = {}
       ;(r.data?.nodes || []).forEach((n: any) => { m[n.node] = n })
       setNodeMetrics(m)
@@ -107,8 +109,8 @@ function ClusterManager() {
   const onSubmit = async () => {
     const v = await form.validateFields()
     try {
-      await createCluster(v)
-      message.success('集群已添加')
+      const response = await createCluster(v)
+      message.success(`集群已添加（${response.data?.cluster_id || '已注册'}）`)
       setOpen(false)
       form.resetFields()
       load()
@@ -127,7 +129,7 @@ function ClusterManager() {
   const loadNodes = async (c: ClusterItem) => {
     setDetailErrors((prev) => ({ ...prev, nodes: '' }))
     try {
-      const r = await listClusterNodes(c.id)
+      const r = await listClusterNodes(clusterRef(c))
       const d = r.data
       setDetailErrors((prev) => ({ ...prev, nodes: clusterDetailError(d) }))
       setNodes(Array.isArray(d) ? d : (d?.nodes ?? []))
@@ -140,7 +142,7 @@ function ClusterManager() {
   const loadNamespaces = async (c: ClusterItem) => {
     setDetailErrors((prev) => ({ ...prev, namespaces: '' }))
     try {
-      const r = await getClusterNamespaces(c.id)
+      const r = await getClusterNamespaces(clusterRef(c))
       const d = r.data
       setDetailErrors((prev) => ({ ...prev, namespaces: clusterDetailError(d) }))
       setNamespaces(Array.isArray(d) ? d : (d?.namespaces ?? []))
@@ -153,7 +155,7 @@ function ClusterManager() {
   const loadEvents = async (c: ClusterItem) => {
     setDetailErrors((prev) => ({ ...prev, events: '' }))
     try {
-      const r = await getClusterEvents(c.id)
+      const r = await getClusterEvents(clusterRef(c))
       const d = r.data
       setDetailErrors((prev) => ({ ...prev, events: clusterDetailError(d) }))
       setEvents(Array.isArray(d) ? d : (d?.events ?? []))
@@ -182,7 +184,7 @@ function ClusterManager() {
         </Space>
       </div>
       <Table
-        rowKey="id"
+        rowKey={(row) => clusterRef(row)}
         size="small"
         loading={loading}
         dataSource={list}
@@ -197,7 +199,7 @@ function ClusterManager() {
           { title: '操作', width: 200, render: (_, r) => (
             <Space size={0}>
               <Button type="link" size="small" onClick={() => viewDetail(r)}>查看</Button>
-              <Popconfirm title="确认删除该集群？" onConfirm={async () => { await deleteCluster(r.id); message.success('已删除'); load() }}>
+              <Popconfirm title="确认删除该集群？" onConfirm={async () => { await deleteCluster(r.id ?? 0); message.success('已删除'); load() }}>
                 <Button type="link" size="small" danger>删除</Button>
               </Popconfirm>
             </Space>
@@ -208,11 +210,13 @@ function ClusterManager() {
       <Modal title="纳管集群" open={open} onOk={onSubmit} onCancel={() => setOpen(false)} okText="添加" width={620}>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="集群名称" rules={[{ required: true, message: '请输入集群名称' }]}><Input placeholder="如 production-cluster" /></Form.Item>
-          <Form.Item name="provider" label="提供商"><Select options={[{ value: 'k8s', label: 'Kubernetes' }, { value: 'openshift', label: 'OpenShift' }, { value: 'k3s', label: 'K3s' }]} /></Form.Item>
-          <Form.Item name="api_server" label="API Server 地址"><Input placeholder="https://192.168.1.10:6443" /></Form.Item>
-          <Form.Item name="kubeconfig" label="Kubeconfig" rules={[{ required: true, message: '请粘贴 kubeconfig' }]}>
-            <Input.TextArea rows={8} placeholder="粘贴 kubeconfig 内容（含 server / certificate-authority-data / client-certificate-data / client-key-data）" />
+          <Form.Item name="slug" label="集群标识" rules={[{ required: true, message: '请输入集群标识' }]}><Input placeholder="如 kind-aiops-kind-02" /></Form.Item>
+          <Form.Item name="type" label="类型" initialValue="kubernetes"><Select options={[{ value: 'kubernetes', label: 'Kubernetes' }, { value: 'openshift', label: 'OpenShift' }, { value: 'k3s', label: 'K3s' }]} /></Form.Item>
+          <Form.Item name="credential_ref" label="凭据引用" rules={[{ required: true, message: '请输入凭据引用' }]}>
+            <Input placeholder="k8s-secret://observability/aiops-managed-cluster-kubeconfig" />
           </Form.Item>
+          <Alert type="info" showIcon message="浏览器不会接收或提交 kubeconfig；凭据必须预先存入管理集群 Secret，并以 credential_ref 引用。" style={{ marginBottom: 16 }} />
+          <Form.Item name="environment" label="环境"><Input placeholder="如 local / production" /></Form.Item>
           <Form.Item name="region" label="区域"><Input placeholder="可选：如 cn-south-1" /></Form.Item>
         </Form>
       </Modal>

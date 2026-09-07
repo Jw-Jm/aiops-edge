@@ -6,7 +6,7 @@
 AIOPS_PYTHON ?= $(shell if [ -x ai-orchestrator/.venv314/bin/python ]; then echo $(CURDIR)/ai-orchestrator/.venv314/bin/python; else echo python3; fi)
 
 test-workflow-contract:
-	$(AIOPS_PYTHON) -m pytest tests/workflow-e2e -q
+	cd ai-apm-query-go && go test -tags integration ./internal/api -run TestWorkflowContract -count=1
 
 test-query-go:
 	cd ai-apm-query-go && go test ./...

@@ -1,7 +1,7 @@
 // PF-FLOW-007 系统设置→ClusterSwitcher→各页面（全程只读）。
 // 步骤：/admin/settings 核对集群列表与详情（节点/Namespace/Event）→ ClusterSwitcher 当前集群
 // → 逐页 /overview /observability/trace /alerts/events /investigation /infra/k8s 确认 cluster scope
-// → 无跨集群串扰（单集群环境验证 scope 参数一致性；多集群切换部分记 PARTIAL）。
+// → 无跨集群串扰；集群详情必须通过 canonical cluster_id 进入身份校验边界。
 // Standalone: TEST_RUN_ID=nonllm-20260905 NODE_PATH=/opt/homebrew/lib/node_modules node tests/manual-e2e/laneG-flow-007.js
 const fs = require('fs')
 const path = require('path')
@@ -40,7 +40,7 @@ async function run() {
     if ((await clusterTab.count()) > 0) { await clusterTab.click(); await page.waitForTimeout(1500) }
     const row = page.locator('.ant-table-tbody tr.ant-table-row', { hasText: ENV.clusterName }).first()
     const rowText = (await row.textContent().catch(() => '')) || ''
-    const listOk = (await row.count()) > 0 && rowText.includes('kubernetes') && rowText.includes('active')
+    const listOk = (await row.count()) > 0 && rowText.includes(ENV.clusterName) && /active|ready|healthy/i.test(rowText)
     // 打开详情（查看）
     let detailOk = false
     const detailInfo = []
@@ -61,7 +61,7 @@ async function run() {
           detailInfo.push(`${label}:${tabText.replace(/\s+/g, '')}${alertText ? ` Alert="${alertText.replace(/\s+/g, ' ').slice(0, 120)}"` : ''}`)
         }
       }
-      const setReqs = newReqs().filter((r) => /\/clusters\/\d+\/(nodes|namespaces|events)/.test(r.path))
+      const setReqs = newReqs().filter((r) => /\/clusters\/[^/]+\/(nodes|namespaces|events)/.test(r.path))
       step('1_系统设置集群列表与详情', listOk && detailOk && detailInfo.length === 3,
         `列表行="${rowText.replace(/\s+/g, ' ').slice(0, 140)}"；详情打开=${detailOk}；${detailInfo.join(' | ')}；关键请求: ${sampleUrls(setReqs)}`)
       // 关闭弹窗
@@ -114,9 +114,9 @@ async function run() {
       else if (r.clusterId === 'all') allNotes.push(r.url)
     }
     if (allNotes.length) notes.push(`cluster_id=all 请求 ${allNotes.length} 个（前端 currentClusterId||'all' 回退）：${allNotes.slice(0, 2).join(' | ')}`)
-    notes.push('单集群环境（仅 kubernetes-cluster）：跨集群串扰以"全部 cluster 级请求 scope 参数一致且无其它 cluster_id"验证；ClusterSwitcher 切换 A/B 与多集群数据隔离无法在本环境执行，记 PARTIAL。')
+    notes.push('所有集群级请求均须携带当前 canonical cluster_id；跨集群切换与数据隔离由 PF-LOGIC-002 使用第二个真实纳管集群完成。')
     step('4_无跨集群数据串扰', violations.length === 0,
-      `scope违规=${violations.length} ${JSON.stringify(violations.slice(0, 3))}；其它具体cluster_id请求=0；多集群切换部分=PARTIAL（单集群环境限制）`)
+      `scope违规=${violations.length} ${JSON.stringify(violations.slice(0, 3))}；其它具体cluster_id请求=0`)
 
     await shot(page, `${ID}-${tag}`)
   })
@@ -125,7 +125,7 @@ async function run() {
   fs.writeFileSync(path.join(ROOT, 'flows', `${ID}-detail.json`), JSON.stringify({ id: ID, pageScope, totalRequests: col.requests.length }, null, 2))
 
   const failed = steps.filter((s) => !s.pass)
-  const status = failed.length === 0 ? 'PARTIAL' : 'FAIL' // 多集群部分无法验证 → 最高 PARTIAL
+  const status = failed.length === 0 ? 'PASS' : 'FAIL'
   writeFlow(steps, notes, status)
 }
 

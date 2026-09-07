@@ -4,6 +4,7 @@
 // The shared harness ROOT resolves to <repo>/test-results/<RUN_ID>/ (merged
 // with other lanes), so per-page JSONs are mirrored here as well.
 const fs = require('fs')
+const path = require('path')
 const { ROOT, runPageTest } = require('./harness')
 
 async function runLaneA(opts) {

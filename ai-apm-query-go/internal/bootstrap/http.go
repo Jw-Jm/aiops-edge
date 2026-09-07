@@ -17,9 +17,9 @@ func newHTTPServer(handler *api.Handler, port int) *http.Server {
 	authHandler := api.AuthMiddleware(corsHandler)
 	protected := internalMTLS(authHandler)
 	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           protected,
-		ReadTimeout:       30 * time.Second,
+		Addr:        fmt.Sprintf(":%d", port),
+		Handler:     protected,
+		ReadTimeout: 30 * time.Second,
 		// 慢客户端写超时兜底（审核 R4）：WriteTimeout=0 时慢连接可无限占用。
 		// SSE 是唯一长写响应，sse_proxy.go 内用 ResponseController 续期 deadline。
 		WriteTimeout:      5 * time.Minute,
@@ -53,7 +53,9 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	mux.HandleFunc("/api/v1/devices", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
 	mux.HandleFunc("/api/v1/devices/", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
 
-	mux.HandleFunc("/api/v1/clusters", handler.ClusterList)
+	// GET remains a tenant-scoped read; POST is checked against the authoritative
+	// MySQL admin role before the canonical registration boundary is reached.
+	mux.HandleFunc("/api/v1/clusters", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 	mux.HandleFunc("/api/v1/clusters/", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 
 	mux.HandleFunc("/livez", health.Livez)

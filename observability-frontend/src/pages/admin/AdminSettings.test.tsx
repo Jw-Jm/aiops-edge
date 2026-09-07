@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import AdminSettings from './AdminSettings'
-import { getLLMAdminConfig, saveLLMSettings, testLLMConnection } from '../../api/client'
+import { getLLMAdminConfig, saveLLMSettings, testLLMConnection, listClusters, createCluster } from '../../api/client'
 
 vi.mock('../../api/client', () => ({
   default: { get: vi.fn() },
@@ -58,5 +58,24 @@ describe('AdminSettings LLM configuration', () => {
     await waitFor(() => expect(testLLMConnection).toHaveBeenCalledTimes(2))
     expect(saveLLMSettings).not.toHaveBeenCalled()
     expect(screen.getByText('API key invalid')).toBeInTheDocument()
+  })
+
+  it('registers a managed cluster by credential_ref without accepting kubeconfig text', async () => {
+    vi.mocked(listClusters).mockResolvedValue({ data: { clusters: [] } } as never)
+    vi.mocked(createCluster).mockResolvedValue({ data: { cluster_id: '11111111-1111-4111-8111-111111111111' } } as never)
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AdminSettings /></MemoryRouter>)
+
+    fireEvent.click(screen.getByRole('tab', { name: '纳管集群' }))
+    fireEvent.click(await screen.findByRole('button', { name: '+ 纳管集群' }))
+    fireEvent.change(screen.getByLabelText('集群名称'), { target: { value: 'kind-aiops-kind-02' } })
+    fireEvent.change(screen.getByLabelText('集群标识'), { target: { value: 'kind-aiops-kind-02' } })
+    fireEvent.change(screen.getByLabelText('凭据引用'), { target: { value: 'k8s-secret://observability/aiops-managed-aiops-kind-02-kubeconfig' } })
+    fireEvent.click(screen.getByRole('button', { name: /添.*加/ }))
+
+    await waitFor(() => expect(createCluster).toHaveBeenCalledWith(expect.objectContaining({
+      slug: 'kind-aiops-kind-02',
+      credential_ref: 'k8s-secret://observability/aiops-managed-aiops-kind-02-kubeconfig',
+    })))
+    expect(vi.mocked(createCluster).mock.calls[0][0]).not.toHaveProperty('kubeconfig')
   })
 })

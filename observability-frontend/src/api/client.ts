@@ -30,7 +30,6 @@ export const setActiveScope = (tenantId: string, clusterId?: string) =>
 const GLOBAL_PATHS = [
   '/clusters',
   '/users',
-  '/ops/tasks',
   '/ops/audit-logs',
   '/ops/reports',
   '/ops/changes',
@@ -288,12 +287,8 @@ export const listFlows = () => api.get('/ai/flows')
 export const getFlow = (key: string) => api.get(`/ai/flows/${encodeURIComponent(key)}`)
 export const runFlow = (key: string, params: Record<string, unknown>) => api.post(`/ai/flows/${encodeURIComponent(key)}/run`, params)
 
-// ===== Task Approval =====
-export const approveTask = (id: string) => api.post(`/ops/tasks/${id}/approve`)
-// reject 可选携带 reason 写入审计；不传时保持原行为（向后兼容）
-export const rejectTask = (id: string, reason?: string) =>
-  api.post(`/ops/tasks/${id}/reject`, reason ? { reason } : undefined)
-export const listApprovalTasks = (params?: Record<string, unknown>) => api.get('/ops/tasks', { params })
+// ===== Canonical Action Approval =====
+// 审批中心只使用 /ai/actions；ActionProjection 的状态机由后端统一维护。
 export const genRecoveryPlan = (data: Record<string, unknown>) => api.post('/ops/recovery/plan', data)
 export const getRecoveryPolicy = () => api.get('/ops/recovery/policy')
 export const saveRecoveryPolicy = (data: Record<string, unknown>) => api.put('/ops/recovery/policy', data)
@@ -552,8 +547,8 @@ export const listArtifacts = (params?: { limit?: number; type_filter?: string })
 
 // ===== 集群管理 =====
 export interface ClusterItem {
-  id: number; cluster_id?: string; tenant_id?: string; slug?: string
-  name: string; provider: string; region: string; environment?: string; version: string
+  id?: number; cluster_id?: string; tenant_id?: string; slug?: string
+  name: string; provider?: string; region: string; environment?: string; version: string
   node_count: number; status: string; lifecycle_status?: string; api_server: string
 }
 export interface ClusterNodeItem {
@@ -563,7 +558,7 @@ export const listClusters = () => api.get('/clusters')
 export const syncClusters = () => api.post('/clusters/sync')
 export const updateCluster = (id: number, data: Record<string, unknown>) => api.put(`/clusters/${id}`, data)
 export const deleteCluster = (id: number) => api.delete(`/clusters/${id}`)
-export const listClusterNodes = (id: number) => api.get(`/clusters/${id}/nodes`)
+export const listClusterNodes = (id: string | number) => api.get(`/clusters/${encodeURIComponent(String(id))}/nodes`)
 export interface NodeMetric {
   node?: string; cpu_usage_pct?: number; mem_usage_pct?: number
   cpu_capacity?: number; mem_capacity?: number; cpu_usage?: number; mem_usage?: number
@@ -602,33 +597,6 @@ export const getChanges = (params?: Record<string, unknown>) => api.get('/ops/ch
 export const postChange = (data: Record<string, unknown>) => api.post('/ops/changes', data)
 
 // ===== 知识图谱 =====
-// 字段对齐后端 kg_api.kg_graph_full：节点 {id:int,type,name,props}，边 {id:int,src:int,dst:int,type,props}。
-// 兼容旧写法 source/target（部分 mock/降级路径可能使用），实际以 src/dst 为准。
-export interface KgNode { id?: string | number; name: string; type?: string; props?: Record<string, unknown> }
-export interface KgEdge {
-  id?: number
-  source?: string | number
-  target?: string | number
-  src?: string | number
-  dst?: string | number
-  type?: string
-  value?: number
-  calls?: number
-  errors?: number
-  props?: { calls?: number; errors?: number; cluster_id?: string; created_by?: string; [k: string]: unknown }
-}
-export interface KgGraph {
-  nodes?: KgNode[]
-  edges?: KgEdge[]
-  links?: KgEdge[]
-  cluster_id?: string
-  unavailable?: boolean  // 后端 API 未就绪标记（兼容旧容错路径）
-}
-// B12: 移除 .catch 吞错——错误传播到调用方（KnowledgeGraph 经 ErrorState 展示 + 重试），
-// 不再静默返回空图，避免"加载失败"与"无数据"混淆。
-export const getKgGraph = (params?: Record<string, unknown>) =>
-  api.get<KgGraph>('/ai/kg/graph', { params })
-
 // ===== 系统健康组件（平台健康页）=====
 export interface SystemComponent {
   name: string; type: string; status: string; latency_ms?: number; detail?: string
@@ -657,8 +625,8 @@ export const updateUserScope = (id: number, data: Record<string, unknown>) => ap
 
 // ===== Admin: 集群 kubeconfig 多集群 =====
 export const createCluster = (data: Record<string, unknown>) => api.post('/clusters', data)
-export const getClusterNamespaces = (id: number) => api.get(`/clusters/${id}/namespaces`)
-export const getClusterEvents = (id: number) => api.get(`/clusters/${id}/events`)
+export const getClusterNamespaces = (id: string | number) => api.get(`/clusters/${encodeURIComponent(String(id))}/namespaces`)
+export const getClusterEvents = (id: string | number) => api.get(`/clusters/${encodeURIComponent(String(id))}/events`)
 
 // ===== 容量预测（Capacity Forecast）=====
 export interface ForecastSeries {

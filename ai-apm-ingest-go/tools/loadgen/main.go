@@ -16,6 +16,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -30,14 +33,14 @@ import (
 
 // otlpSpan 构造 OTLP JSON trace 的一个 span。
 type otlpSpan struct {
-	TraceID           string                 `json:"traceId"`
-	SpanID            string                 `json:"spanId"`
-	ParentSpanID      string                 `json:"parentSpanId"`
-	Name              string                 `json:"name"`
-	Kind              int                    `json:"kind"`
-	StartTimeUnixNano string                 `json:"startTimeUnixNano"`
-	EndTimeUnixNano   string                 `json:"endTimeUnixNano"`
-	Status            map[string]interface{} `json:"status"`
+	TraceID           string                   `json:"traceId"`
+	SpanID            string                   `json:"spanId"`
+	ParentSpanID      string                   `json:"parentSpanId"`
+	Name              string                   `json:"name"`
+	Kind              int                      `json:"kind"`
+	StartTimeUnixNano string                   `json:"startTimeUnixNano"`
+	EndTimeUnixNano   string                   `json:"endTimeUnixNano"`
+	Status            map[string]interface{}   `json:"status"`
 	Attributes        []map[string]interface{} `json:"attributes"`
 }
 
@@ -46,7 +49,7 @@ type otlpTrace struct {
 }
 
 type resourceSpans struct {
-	Resource   resource   `json:"resource"`
+	Resource   resource     `json:"resource"`
 	ScopeSpans []scopeSpans `json:"scopeSpans"`
 }
 
@@ -60,17 +63,24 @@ type scopeSpans struct {
 
 func main() {
 	var (
-		ingest        = flag.String("ingest", os.Getenv("LOADGEN_INGEST"), "ingest /v1/traces 地址，如 http://ingest:8080")
-		apiKey        = flag.String("api-key", os.Getenv("LOADGEN_API_KEY"), "ingest 鉴权 API key")
-		services      = flag.String("services", os.Getenv("LOADGEN_SERVICES"), "逗号分隔的服务名，默认 payments")
-		errorRate     = flag.Float64("error-rate", envFloat("LOADGEN_ERROR_RATE", 0.05), "错误 span 比例 0-1")
-		mode          = flag.String("mode", os.Getenv("LOADGEN_MODE"), "steady|spike|error")
-		interval      = flag.Duration("interval", 10*time.Second, "投喂间隔")
-		qps           = flag.Int("qps", 20, "每轮 span 数量（QPS 基数）")
-		logEnabled    = flag.Bool("log-enabled", true, "是否同时生成日志（POST /v1/logs）")
-		logQPS        = flag.Int("log-qps", 30, "每轮日志条数")
-		logErrRate    = flag.Float64("log-err-rate", 0.1, "错误日志(ERROR/FATAL)比例 0-1")
-		once          = flag.Bool("once", false, "只投喂一轮后退出（调试用）")
+		ingest     = flag.String("ingest", os.Getenv("LOADGEN_INGEST"), "ingest /v1/traces 地址，如 http://ingest:8080")
+		apiKey     = flag.String("api-key", loadgenAPIKey(), "ingest 鉴权 API key")
+		services   = flag.String("services", os.Getenv("LOADGEN_SERVICES"), "逗号分隔的服务名，默认 payments")
+		errorRate  = flag.Float64("error-rate", envFloat("LOADGEN_ERROR_RATE", 0.05), "错误 span 比例 0-1")
+		mode       = flag.String("mode", os.Getenv("LOADGEN_MODE"), "steady|spike|error")
+		interval   = flag.Duration("interval", 10*time.Second, "投喂间隔")
+		qps        = flag.Int("qps", 20, "每轮 span 数量（QPS 基数）")
+		logEnabled = flag.Bool("log-enabled", true, "是否同时生成日志（POST /v1/logs）")
+		logQPS     = flag.Int("log-qps", 30, "每轮日志条数")
+		logErrRate = flag.Float64("log-err-rate", 0.1, "错误日志(ERROR/FATAL)比例 0-1")
+		once       = flag.Bool("once", false, "只投喂一轮后退出（调试用）")
+		strict     = flag.Bool("strict", false, "一次性生成 payments -> orders 严格测试链路")
+		marker     = flag.String("marker", os.Getenv("LOADGEN_MARKER"), "严格测试数据的唯一标记")
+		rounds     = flag.Int("rounds", 1, "严格测试模式的轮数")
+		caFile     = flag.String("ca-file", firstNonEmpty(os.Getenv("LOADGEN_TLS_CA_FILE"), os.Getenv("AIOPS_TLS_CLIENT_CA_FILE")), "mTLS CA 文件")
+		certFile   = flag.String("cert-file", firstNonEmpty(os.Getenv("LOADGEN_TLS_CERT_FILE"), os.Getenv("AIOPS_TLS_CERT_FILE")), "mTLS 客户端证书")
+		keyFile    = flag.String("key-file", firstNonEmpty(os.Getenv("LOADGEN_TLS_KEY_FILE"), os.Getenv("AIOPS_TLS_KEY_FILE")), "mTLS 客户端私钥")
+		serverName = flag.String("tls-server-name", os.Getenv("LOADGEN_TLS_SERVER_NAME"), "TLS server name")
 	)
 	flag.Parse()
 
@@ -86,6 +96,28 @@ func main() {
 	svcList := strings.Split(*services, ",")
 	for i := range svcList {
 		svcList[i] = strings.TrimSpace(svcList[i])
+	}
+
+	if *strict {
+		if *marker == "" {
+			*marker = fmt.Sprintf("strict-%d", time.Now().UnixNano())
+		}
+		client, err := strictHTTPClient(*caFile, *certFile, *keyFile, *serverName)
+		if err != nil {
+			log.Fatalf("loadgen: mTLS client setup failed: %v", err)
+		}
+		for round := 1; round <= max(1, *rounds); round++ {
+			batch := []otlpTrace{strictTrace(round, *marker, time.Now(), round%2 == 0)}
+			if err := postTraces(client, *ingest, *apiKey, batch); err != nil {
+				log.Fatalf("loadgen: strict trace post failed: %v", err)
+			}
+			logs := assembleLogs(round, []string{"payments", "orders"}, 4, 0.25, "steady", rngForStrict(round), *marker)
+			if err := postLogs(client, *ingest, *apiKey, logs); err != nil {
+				log.Fatalf("loadgen: strict log post failed: %v", err)
+			}
+			log.Printf("loadgen: strict round %d sent payments->orders trace and %d logs", round, len(logs))
+		}
+		return
 	}
 
 	log.Printf("loadgen: ingest=%s services=%v error_rate=%.2f mode=%s interval=%s",
@@ -113,7 +145,7 @@ func main() {
 		}
 		// 同时生成日志（POST /v1/logs），供 log 规则（log_error_rate/log_keyword）验证
 		if *logEnabled {
-			logs := assembleLogs(round, svcList, *logQPS, *logErrRate, *mode, rng)
+			logs := assembleLogs(round, svcList, *logQPS, *logErrRate, *mode, rng, "")
 			if err := postLogs(client, *ingest, *apiKey, logs); err != nil {
 				log.Printf("loadgen: log post error: %v", err)
 			} else {
@@ -125,6 +157,119 @@ func main() {
 		}
 		time.Sleep(*interval)
 	}
+}
+
+func loadgenAPIKey() string {
+	return firstNonEmpty(os.Getenv("LOADGEN_API_KEY"), os.Getenv("INGEST_API_KEY"))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func rngForStrict(round int) *rand.Rand {
+	return rand.New(rand.NewSource(int64(round) * 1009))
+}
+
+func strictHTTPClient(caFile, certFile, keyFile, serverName string) (*http.Client, error) {
+	if caFile == "" && certFile == "" && keyFile == "" {
+		return &http.Client{Timeout: 15 * time.Second}, nil
+	}
+	return newMTLSClientWithServerName(caFile, certFile, keyFile, serverName)
+}
+
+func newMTLSClient(caFile, certFile, keyFile string) (*http.Client, error) {
+	return newMTLSClientWithServerName(caFile, certFile, keyFile, "")
+}
+
+func newMTLSClientWithServerName(caFile, certFile, keyFile, serverName string) (*http.Client, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load client certificate: %w", err)
+	}
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read client CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("client CA contains no certificate")
+	}
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      roots,
+			ServerName:   serverName,
+		}},
+	}, nil
+}
+
+func strictTrace(round int, marker string, now time.Time, childError bool) otlpTrace {
+	traceDigest := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", marker, round)))
+	traceID := fmt.Sprintf("%x", traceDigest)
+	rootID := fmt.Sprintf("%016x", round*2+1)
+	childID := fmt.Sprintf("%016x", round*2+2)
+	start := now.Add(-150 * time.Millisecond).UnixNano()
+	rootEnd := start + 80*1_000_000
+	childEnd := start + 60*1_000_000
+	root := otlpSpan{
+		TraceID: traceID, SpanID: rootID, Name: "POST /payments", Kind: 1,
+		StartTimeUnixNano: fmt.Sprintf("%d", start), EndTimeUnixNano: fmt.Sprintf("%d", rootEnd),
+		Status: map[string]interface{}{"code": float64(0)}, Attributes: strictAttributes(marker, "payments"),
+	}
+	childStatus := float64(0)
+	childName := "POST /orders"
+	if childError {
+		childStatus = 2
+		childName = "POST /orders/error"
+	}
+	child := otlpSpan{
+		TraceID: traceID, SpanID: childID, ParentSpanID: rootID, Name: childName, Kind: 1,
+		StartTimeUnixNano: fmt.Sprintf("%d", start+10*1_000_000), EndTimeUnixNano: fmt.Sprintf("%d", childEnd),
+		Status: map[string]interface{}{"code": childStatus}, Attributes: strictAttributes(marker, "orders"),
+	}
+	return otlpTrace{ResourceSpans: []resourceSpans{
+		{Resource: resource{Attributes: resourceAttributes("payments")}, ScopeSpans: []scopeSpans{{Spans: []otlpSpan{root}}}},
+		{Resource: resource{Attributes: resourceAttributes("orders")}, ScopeSpans: []scopeSpans{{Spans: []otlpSpan{child}}}},
+	}}
+}
+
+func resourceAttributes(service string) []map[string]interface{} {
+	return []map[string]interface{}{{"key": "service.name", "value": map[string]interface{}{"stringValue": service}}}
+}
+
+func strictAttributes(marker, service string) []map[string]interface{} {
+	return append(resourceAttributes(service), map[string]interface{}{"key": "aiops.test.marker", "value": map[string]interface{}{"stringValue": marker}})
+}
+
+func resourceStringAttribute(attributes []map[string]interface{}, key string) string {
+	for _, attribute := range attributes {
+		if attribute["key"] != key {
+			continue
+		}
+		value, ok := attribute["value"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if text, ok := value["stringValue"].(string); ok {
+			return text
+		}
+	}
+	return ""
 }
 
 // assemble 生成一批 OTLP trace。
@@ -225,9 +370,9 @@ func flattenResourceSpans(traces []otlpTrace) []resourceSpans {
 
 // otlpLogRecord 构造 OTLP JSON 的一条日志。
 type otlpLogRecord struct {
-	TimeUnixNano string                 `json:"timeUnixNano"`
-	SeverityText string                 `json:"severityText"`
-	Body         map[string]interface{} `json:"body"`
+	TimeUnixNano string                   `json:"timeUnixNano"`
+	SeverityText string                   `json:"severityText"`
+	Body         map[string]interface{}   `json:"body"`
 	Attributes   []map[string]interface{} `json:"attributes"`
 }
 
@@ -236,8 +381,8 @@ type otlpLogRequest struct {
 }
 
 type logResourceSpans struct {
-	Resource   resource     `json:"resource"`
-	ScopeLogs  []logScopeSpans `json:"scopeLogs"`
+	Resource  resource        `json:"resource"`
+	ScopeLogs []logScopeSpans `json:"scopeLogs"`
 }
 
 type logScopeSpans struct {
@@ -245,7 +390,7 @@ type logScopeSpans struct {
 }
 
 // assembleLogs 生成一批日志（含 INFO/ERROR/FATAL 混合），供 log 规则验证。
-func assembleLogs(round int, services []string, n int, errRate float64, mode string, rng *rand.Rand) []otlpLogRecord {
+func assembleLogs(round int, services []string, n int, errRate float64, mode string, rng *rand.Rand, marker string) []otlpLogRecord {
 	var out []otlpLogRecord
 	// error 模式：高错误日志比例
 	effErr := errRate
@@ -268,11 +413,15 @@ func assembleLogs(round int, services []string, n int, errRate float64, mode str
 		} else if sev == "FATAL" {
 			body = "FATAL: out of memory, process aborted"
 		}
+		attributes := []map[string]interface{}{{"key": "service.name", "value": map[string]interface{}{"stringValue": svc}}}
+		if marker != "" {
+			attributes = append(attributes, map[string]interface{}{"key": "aiops.test.marker", "value": map[string]interface{}{"stringValue": marker}})
+		}
 		out = append(out, otlpLogRecord{
 			TimeUnixNano: fmt.Sprintf("%d", time.Now().Add(-2*time.Second).UnixNano()),
 			SeverityText: sev,
 			Body:         map[string]interface{}{"stringValue": body},
-			Attributes:   []map[string]interface{}{{"key": "service.name", "value": map[string]interface{}{"stringValue": svc}}},
+			Attributes:   attributes,
 		})
 	}
 	return out

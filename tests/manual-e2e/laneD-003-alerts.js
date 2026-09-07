@@ -49,7 +49,7 @@ async function run() {
     const headerOk = panelVisible && (await panel.locator('text=告警通知').count()) > 0
     check('notification_dropdown_opens', panelVisible && headerOk)
     const emptyState = (await panel.locator('text=暂无告警').count()) > 0
-    const items = await panel.locator('.ant-dropdown:not(.ant-dropdown-hidden) > div > div:nth-child(2) > div').count()
+    const items = await panel.locator('[data-testid="notification-alert-item"]').count()
     result.dropdown = { visible: panelVisible, emptyState, itemCount: items, expected }
     if (expected === 0) {
       check('empty_alert_state_shown', emptyState, `暂无告警 visible=${emptyState}`)

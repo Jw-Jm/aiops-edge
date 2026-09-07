@@ -36,6 +36,7 @@ export default function GraphContextPanel({ context }: GraphContextPanelProps) {
         <Descriptions.Item label="关系数">{count(context.edges)}</Descriptions.Item>
         <Descriptions.Item label="传播路径数">{count(context.propagation_paths)}</Descriptions.Item>
       </Descriptions>
+      {context.status === 'not_generated' && <Alert type="info" showIcon message="该历史调查尚未生成 Graph Context，以下为可用的部分结果。" />}
       {warnings.length > 0 && <Alert type="warning" showIcon message={`Graph Context 警告：${warnings.join('、')}`} />}
     </Card>
   )
