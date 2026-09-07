@@ -48,11 +48,12 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   curl -fsS -b "$COOKIE_FILE" "$API_BASE/dashboard/stats" -o "$WORK_DIR/stats.json"
   curl -fsS -b "$COOKIE_FILE" "$API_BASE/services?hours=24&limit=200" -o "$WORK_DIR/services.json"
   curl -fsS -b "$COOKIE_FILE" "$API_BASE/traces?service=payments&hours=24&limit=50" -o "$WORK_DIR/traces.json"
-  curl -fsS -b "$COOKIE_FILE" "$API_BASE/logs/query?service_name=payments&hours=24&limit=50" -o "$WORK_DIR/logs.json"
+  curl -fsS -b "$COOKIE_FILE" "$API_BASE/logs/query?service_name=payments&hours=24&limit=500" -o "$WORK_DIR/logs.json"
   curl -fsS -b "$COOKIE_FILE" "$API_BASE/services/map?hours=24" -o "$WORK_DIR/service-map.json"
 
   if node - "$WORK_DIR" "$MARKER" <<'NODE'
 const fs = require('fs')
+const crypto = require('crypto')
 const dir = process.argv[2]
 const marker = process.argv[3]
 const read = (name) => JSON.parse(fs.readFileSync(`${dir}/${name}`, 'utf8'))
@@ -63,7 +64,8 @@ const logs = JSON.stringify(read('logs.json'))
 const map = JSON.stringify(read('service-map.json'))
 const trend = Array.isArray(stats.trend) && stats.trend.length > 0
 const servicesReady = services.includes('payments') && services.includes('orders')
-const tracesReady = traces.includes(marker) || traces.includes('payments')
+const expectedTraceID = crypto.createHash('sha256').update(`${marker}/1`).digest('hex')
+const tracesReady = traces.includes(expectedTraceID)
 const logsReady = logs.includes(marker)
 const topologyReady = /payments.*orders|orders.*payments/.test(map)
 process.exit(trend && servicesReady && tracesReady && logsReady && topologyReady ? 0 : 1)
