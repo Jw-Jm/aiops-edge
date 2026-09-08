@@ -23,6 +23,21 @@ const lifecycle = (action: ActionProjection) => [
   { label: '回滚', value: action.rollback_summary || '未提供' },
 ]
 
+function snapshotFrom(action: ActionProjection, key: 'before_snapshot' | 'after_snapshot'): unknown {
+  const direct = action[key]
+  if (direct != null) return direct
+  const result = action.result
+  if (result && typeof result === 'object') {
+    return result[key] ?? (key === 'before_snapshot' ? result.before : result.after)
+  }
+  return null
+}
+
+function formatDetail(value: unknown): string {
+  if (value == null || value === '') return '未提供'
+  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+}
+
 const ActionCenter: React.FC = () => {
   const role = useAuthStore((state) => state.role)
   const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
@@ -90,6 +105,8 @@ const ActionCenter: React.FC = () => {
           { key: 'preflight', label: '预检', children: selected.preflight_status || '未提供' },
           { key: 'hash', label: 'Action Hash / Schema', children: `${selected.action_hash || '未提供'} · ${selected.hash_schema_version || '未提供'}` },
           { key: 'policy', label: 'Policy / 规范化参数', children: `${selected.policy_version || '未提供'} · ${selected.params ? JSON.stringify(selected.params) : '未提供'}` },
+          { key: 'before', label: '执行前快照', children: formatDetail(snapshotFrom(selected, 'before_snapshot')) },
+          { key: 'after', label: '执行后快照', children: formatDetail(snapshotFrom(selected, 'after_snapshot')) },
           { key: 'people', label: '创建人 / 审批人 / 时间', children: `${selected.created_by || '未提供'} / ${selected.approved_by || '未提供'} / ${selected.approved_at || selected.created_at || '未提供'}` },
           { key: 'rollback', label: '回滚策略', children: selected.rollback_summary || '未提供' },
           { key: 'verify', label: '验证条件', children: selected.verification_status || '未提供' },

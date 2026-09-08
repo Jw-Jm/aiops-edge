@@ -65,7 +65,8 @@ const EvidenceDetailView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, evidenceId])
 
-  const factBody = String(evidence?.fact ?? '')
+  // query-api uses the canonical summary field; fact remains for legacy rows.
+  const factBody = String(evidence?.fact ?? evidence?.summary ?? '')
   const metaEntries = Object.entries(evidence ?? {}).filter(([k]) => k !== 'fact')
 
   return (

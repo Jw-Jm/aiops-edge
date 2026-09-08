@@ -100,18 +100,22 @@ const ServiceObservability: React.FC<{ embedded?: boolean }> = ({ embedded = fal
         setOverview(nextOverview); setMapData(nextMap); setHealth(healthResponse.data)
         const rows = nextMap.services.map((service) => ({ ...service, service: service.service_name }))
         setServices(rows)
-        setSelectedService((current) => rows.some((row) => row.service === current) ? current : rows[0]?.service || '')
-        setSelectedEntityUID((current) => rows.find((row) => row.service === current)?.entity_uid || rows[0]?.entity_uid || '')
+        const requested = scopeContext.resource?.id
+        const requestedRow = rows.find((row) => row.entity_uid === requested || row.service === requested)
+        setSelectedService((current) => rows.some((row) => row.service === current) ? current : requestedRow?.service || rows[0]?.service || '')
+        setSelectedEntityUID((current) => rows.find((row) => row.entity_uid === current)?.entity_uid || requestedRow?.entity_uid || rows[0]?.entity_uid || '')
       } else {
         const [serviceResponse, healthResponse] = await Promise.all([getServices({ minutes: timeRange }), getGraphHealth()])
         const rows = normalizeLegacyServices(serviceResponse.data); setServices(rows); setMapData(legacyMap(rows)); setHealth(healthResponse.data)
-        setSelectedService((current) => rows.some((row) => row.service === current) ? current : rows[0]?.service || '')
+        const requested = scopeContext.resource?.id
+        const requestedRow = rows.find((row) => row.entity_uid === requested || row.service === requested)
+        setSelectedService((current) => rows.some((row) => row.service === current) ? current : requestedRow?.service || rows[0]?.service || '')
       }
     } catch {
       setError('服务摘要或服务地图暂时不可用，请检查 query-api 与事实数据源状态。')
       setServices([]); setMapData(undefined); setOverview(undefined)
     } finally { setLoading(false) }
-  }, [applicationFilter, namespaceFilter, timeRange])
+  }, [applicationFilter, namespaceFilter, scopeContext.resource?.id, timeRange])
 
   const loadMatrix = useCallback(async () => {
     if (typeof getServiceDependencyMatrix !== 'function') return
@@ -140,7 +144,7 @@ const ServiceObservability: React.FC<{ embedded?: boolean }> = ({ embedded = fal
     const row = services.find((service) => service.service === selectedService)
     if (row?.entity_uid) setSelectedEntityUID(row.entity_uid)
     if (selectedService) setScopeResource?.({ type: 'service', id: row?.entity_uid || selectedService, label: selectedService })
-    else setScopeResource?.(undefined)
+    else if (services.length > 0) setScopeResource?.(undefined)
   }, [selectedService, services, setScopeResource])
 
   // Compatibility fallback for old deployments that have not exposed the

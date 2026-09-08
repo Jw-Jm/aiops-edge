@@ -29,9 +29,9 @@ const statusTone: Record<string, 'default' | 'processing' | 'success' | 'warning
 }
 const queueViews = [
   { key: 'needs_action', label: '需要我处理', statuses: ['awaiting_confirmation', 'awaiting_approval', 'failed', 'regressed'] },
-  { key: 'investigating', label: '正在调查', statuses: ['created', 'planning', 'investigating', 'executing', 'verifying'] },
-  { key: 'verification', label: '待验证', statuses: ['success', 'partial'] },
-  { key: 'ended', label: '已结束', statuses: ['cancelled'] },
+  { key: 'investigating', label: '正在调查', statuses: ['created', 'planning', 'investigating', 'executing'] },
+  { key: 'verification', label: '待验证', statuses: ['verifying', 'partial'] },
+  { key: 'ended', label: '已结束', statuses: ['success', 'cancelled'] },
 ]
 
 const InvestigationCenter: React.FC = () => {
@@ -101,7 +101,8 @@ const InvestigationCenter: React.FC = () => {
   // in front so a just-created investigation is immediately discoverable.
   const defaultView = runs.some((run) => queueViews[0].statuses.includes(run.status))
     ? 'needs_action'
-    : runs.some((run) => queueViews[1].statuses.includes(run.status)) ? 'investigating' : 'needs_action'
+    : runs.some((run) => queueViews[1].statuses.includes(run.status)) ? 'investigating'
+      : runs.some((run) => queueViews[2].statuses.includes(run.status)) ? 'verification' : 'ended'
   const requested = params.get('view') || defaultView
   const activeView = queueViews.some((view) => view.key === requested) ? requested : 'needs_action'
 

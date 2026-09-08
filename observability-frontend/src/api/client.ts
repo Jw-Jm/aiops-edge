@@ -163,6 +163,9 @@ export interface ActionProjection {
   approved_by?: string
   approved_at?: string
   params?: Record<string, unknown>
+  result?: Record<string, unknown> | null
+  before_snapshot?: Record<string, unknown> | null
+  after_snapshot?: Record<string, unknown> | null
   error_code?: string
   created_at?: string
   updated_at?: string
@@ -257,6 +260,18 @@ export interface RunEvidence {
   source: string
   reliability: number | string
   fact: string
+  // query-api canonical projection (legacy aliases above remain for old rows)
+  evidence_id?: string
+  evidence_type?: string
+  source_ref?: string
+  summary?: string
+  collected_at?: string
+  observed_at?: string
+  source_reliability?: number | string | null
+  quality?: string
+  metadata?: Record<string, unknown>
+  supports?: string[]
+  contradicts?: string[]
   [k: string]: unknown
 }
 export const listRunEvidences = (runId: string, params: { tenant_id: string; cluster_id: string }) =>

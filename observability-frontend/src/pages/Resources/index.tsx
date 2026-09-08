@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import { Tabs } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { Breadcrumb, PageHeader } from '../../components/ui/PageKit'
@@ -9,6 +9,7 @@ import Hardware from '../infra/Hardware'
 import Capacity from '../capacity/Capacity'
 import ResourceRelationships from '../observability/ResourceRelationships'
 import ResourceCenter from './ResourceCenter'
+import { useScopeStore } from '../../store/scopeStore'
 
 const views = [
   { key: 'services', label: '服务', children: <ServiceObservability embedded /> },
@@ -21,10 +22,21 @@ const views = [
 
 const Resources: React.FC = () => {
   const [params, setParams] = useSearchParams()
+  const setScopeResource = useScopeStore((state) => state.setResource)
   const kind = params.get('kind')
+  const resourceId = params.get('resource')
   const kindView: Record<string, string> = { service: 'services', vm: 'vms', kubernetes: 'kubernetes', hardware: 'hardware' }
   const requested = params.get('view') || (kind ? kindView[kind] : undefined) || 'services'
   const activeKey = views.some((view) => view.key === requested) ? requested : 'services'
+
+  // Investigation snapshots intentionally link back to the current global
+  // scope. Consume the resource query explicitly so the identity/chain panes
+  // open on that resource instead of silently selecting the first row.
+  useEffect(() => {
+    if (!resourceId) return
+    const type = kind === 'resource' || !kind ? 'service' : kind
+    setScopeResource({ type, id: resourceId, label: resourceId })
+  }, [kind, resourceId, setScopeResource])
 
   return (
     <div>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Badge, Button, Card, Col, Collapse, Descriptions, Drawer, Row, Space, Steps, Tag, Typography } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getRun, listRunEvidences, listRunTools, RunTool, streamRunEvents } from '../../api/client'
+import { getRun, listRunEvidences, listRunTools, RunEvidence, RunTool, streamRunEvents } from '../../api/client'
 import { getRunGraphContext } from '../../api/knowledgeGraph'
 import { PageHeader } from '../../components/ui/PageKit'
 import GraphContextPanel from '../../components/graph/GraphContextPanel'
@@ -21,7 +21,7 @@ interface InvestigationDetail {
   intent: string
   status: string
   plan: { step: string; tool: string; status: string }[]
-  evidence: { id: string; type: string; source: string; reliability: number | string; fact: string }[]
+  evidence: { id: string; type: string; source: string; reliability: number | string | null; fact: string; observedAt: string; quality: string; supports: string[]; contradicts: string[] }[]
   hypothesis: { id: string; claim: string; support: number; contradictions: string[]; missing: string[] }[]
   rootCause: string
   confidence: number
@@ -39,6 +39,34 @@ const EMPTY_DETAIL: InvestigationDetail = {
   rootCause: 'unknown',
   confidence: 0,
   action: { status: 'created', risk: 'R0', approver: null, execution: null, verification: null },
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : []
+}
+
+/** Normalize the query-api Evidence projection without inventing facts. */
+function normalizeEvidence(rawEvidence: RunEvidence) {
+  const raw = rawEvidence as unknown as Record<string, unknown>
+  const metadata = raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+    ? raw.metadata as Record<string, unknown>
+    : {}
+  const reliabilityValue = raw.reliability ?? raw.source_reliability ?? metadata.reliability ?? metadata.source_reliability
+  const reliability = typeof reliabilityValue === 'number'
+    ? reliabilityValue
+    : typeof reliabilityValue === 'string' && Number.isFinite(Number(reliabilityValue)) ? Number(reliabilityValue) : null
+  const quality = String(raw.quality ?? metadata.quality ?? metadata.result_quality ?? 'unknown')
+  return {
+    id: String(raw.evidence_id ?? raw.id ?? ''),
+    type: String(raw.evidence_type ?? raw.type ?? raw.layer ?? 'unknown'),
+    source: String(raw.source ?? raw.source_ref ?? 'unknown'),
+    reliability,
+    fact: String(raw.fact ?? raw.summary ?? raw.finding ?? ''),
+    observedAt: String(raw.observed_at ?? raw.collected_at ?? raw.created_at ?? ''),
+    quality,
+    supports: stringArray(raw.supports ?? metadata.supports ?? metadata.supporting_evidence),
+    contradicts: stringArray(raw.contradicts ?? metadata.contradicts ?? metadata.contradicting_evidence),
+  }
 }
 
 const InvestigationDetailView: React.FC = () => {
@@ -85,13 +113,7 @@ const InvestigationDetailView: React.FC = () => {
           if (!cancelled && Array.isArray(evResp.data?.evidences)) {
             // 后端条目为 RCA evidence_chain 原始 dict + evidence_id：
             // {layer, finding, ...} → 前端 {id, type, source, reliability, fact}
-            evidence = evResp.data.evidences.map((e) => ({
-              id: String(e.evidence_id ?? e.id ?? ''),
-              type: String(e.type ?? e.layer ?? 'unknown'),
-              source: String(e.source ?? 'rca'),
-              reliability: (e.reliability as number | string) ?? '-',
-              fact: String(e.fact ?? e.finding ?? ''),
-            }))
+            evidence = evResp.data.evidences.map(normalizeEvidence)
           }
         } catch { /* 拉取失败 → 空态 */ }
         if (cancelled) return
@@ -109,7 +131,7 @@ const InvestigationDetailView: React.FC = () => {
           target_resource_id: r.target_resource_id, intent: r.intent, status: r.status,
           root_cause: r.root_cause, confidence: r.confidence, created_at: r.created_at,
           environment: r.environment, namespace: r.namespace, query_window_start: r.query_window_start, query_window_end: r.query_window_end,
-          evidence: evidence.map((item) => ({ evidence_id: item.id, type: item.type, source: item.source, fact: item.fact, source_reliability: typeof item.reliability === 'number' ? item.reliability : null })),
+          evidence: evidence.map((item) => ({ evidence_id: item.id, type: item.type, source: item.source, fact: item.fact, observed_at: item.observedAt, source_reliability: typeof item.reliability === 'number' ? item.reliability : null, quality: item.quality, supports: item.supports, contradicts: item.contradicts })),
           hypotheses: hypotheses.map((h: any) => ({ hypothesis_id: String(h.hypothesis_id ?? ''), content: String(h.content ?? ''), confidence: Number(h.confidence ?? 0), missing_evidence: h.missing_evidence ?? [], contradicting_evidence: h.contradicting_evidence ?? [] })),
           action: latestAction ? { status: String(latestAction.status ?? 'proposed'), risk: String(latestAction.authoritative_risk ?? 'unknown'), execution: latestAction.execution_status ?? null, verification: latestVerification?.status ?? null } : undefined,
         }))
