@@ -26,8 +26,11 @@ async function run() {
         await detailButton.click()
         await page.waitForTimeout(300)
         check('resource_version_visible', await page.getByText(/ResourceVersion/).isVisible().catch(() => false))
-        check('preflight_visible', await page.getByText('预检').isVisible().catch(() => false))
-        check('source_run_visible', await page.getByText(/来源 Run/).isVisible().catch(() => false))
+        // The drawer repeats lifecycle labels that are also present in the table/timeline.
+        // Use the last visible match so strict-mode does not turn a real drawer field
+        // into a false negative.
+        check('preflight_visible', await page.getByText('预检', { exact: true }).last().isVisible().catch(() => false))
+        check('source_run_visible', await page.getByText(/来源 Run/).last().isVisible().catch(() => false))
         if (process.env.RUN_E2E_MUTATIONS === '1' && await page.getByRole('button', { name: '批准执行' }).count()) {
           await page.getByRole('button', { name: '批准执行' }).click()
           await page.getByRole('button', { name: '确认' }).click()
