@@ -268,6 +268,7 @@ body {
 .evidence-timeline__item:last-child { border-bottom: 0; }
 .evidence-timeline__item[role="button"] { cursor: pointer; }
 .evidence-timeline__item[role="button"]:hover { background: var(--surface-2); }
+.evidence-timeline__links { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 .insufficient-evidence { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--warning); border-radius: 6px; color: var(--warning); background: var(--warning-soft); }
 .link-button { margin-top: 8px; padding: 0; border: 0; color: var(--primary); background: transparent; cursor: pointer; }
 .report-template section { padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
@@ -277,8 +278,12 @@ body {
 .investigation-grid { display: grid; grid-template-columns: 264px minmax(420px, 1fr) 352px; align-items: start; }
 .investigation-grid > .ant-col { max-width: none; width: auto; flex: none; }
 
-@media (max-width: 1180px) {
+@media (max-width: 1279px) {
+  /* 1024–1279px: keep the workbench's primary issue queue and work queue
+     vertically stacked as specified for the compact desktop layout. */
   .overview-work-queues { grid-template-columns: 1fr; }
+}
+@media (max-width: 1180px) {
   .scope-bar__summary { display: none; }
 }
 @media (max-width: 1439px) and (min-width: 1280px) {
@@ -315,6 +320,15 @@ body {
 .ant-segmented { background: var(--surface-2) !important; border: 1px solid var(--border); padding: 3px; }
 .ant-segmented-item { color: var(--text-secondary) !important; }
 .ant-segmented-item-selected { background: var(--primary) !important; color: #fff !important; }
+
+/* Ant preset colors are mapped to the product semantic palette so status
+   colors remain consistent across legacy and IA pages. Text labels remain
+   present on every status tag; color is never the sole signal. */
+.ant-tag-blue { color: var(--primary); border-color: rgba(49,87,213,.28); background: var(--primary-soft); }
+.ant-tag-red { color: var(--danger); border-color: rgba(201,54,43,.28); background: var(--danger-soft); }
+.ant-tag-orange { color: var(--warning); border-color: rgba(196,104,22,.30); background: var(--warning-soft); }
+.ant-tag-gold { color: var(--risk); border-color: rgba(164,111,10,.30); background: rgba(164,111,10,.10); }
+.ant-tag-green { color: var(--success); border-color: rgba(24,134,75,.28); background: var(--success-soft); }
 
 /* 登录页 */
 .login-bg { min-height: 100vh; display: flex; background: var(--bg); }

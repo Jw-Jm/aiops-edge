@@ -20,10 +20,10 @@ describe('investigation view model', () => {
       root_cause: '配置变更', confidence: 0.9,
       evidence: [
         { evidence_id: 'e1', observed_at: '2026-09-08T20:29:00Z', type: 'logs', source: 'loki', fact: 'older', source_reliability: 0.8 },
-        { evidence_id: 'e2', observed_at: '2026-09-08T20:31:00Z', type: 'metrics', source: 'prometheus', fact: 'newer', source_reliability: 0.96 },
+        { evidence_id: 'e2', observed_at: '2026-09-08T20:31:00Z', type: 'metrics', source: 'prometheus', fact: 'newer', source_reliability: 0.96, quality: 'complete', supports: ['h1'] },
       ], hypotheses: [], created_at: '2026-09-08T20:00:00Z',
     })
     expect(vm.evidence.map((item) => item.id)).toEqual(['e2', 'e1'])
-    expect(vm.evidence[0]).toMatchObject({ source: 'prometheus', reliability: 0.96 })
+    expect(vm.evidence[0]).toMatchObject({ source: 'prometheus', reliability: 0.96, quality: 'complete', supports: ['h1'] })
   })
 })

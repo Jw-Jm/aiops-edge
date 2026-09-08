@@ -34,7 +34,7 @@ export interface InvestigationViewModel {
   scope: { tenantId: string; clusterId: string; resourceId: string; environment: string; namespace: string; timeRange?: { mode: 'absolute'; start: string; end: string } }
   intent: string
   status: string
-  evidence: Array<{ id: string; observedAt: string; type: string; source: string; fact: string; reliability: number | null; quality: string; contradicts: string[] }>
+  evidence: Array<{ id: string; observedAt: string; type: string; source: string; fact: string; reliability: number | null; quality: string; supports: string[]; contradicts: string[] }>
   hypotheses: Array<{ id: string; claim: string; confidence: number; missing: string[]; contradicts: string[] }>
   conclusion: { state: 'confirmed' | 'insufficient_evidence' | 'unknown'; title: string; confidence: number; rootCause: string }
   action?: { status: string; risk: string; execution?: string | null; verification?: string | null }
@@ -50,6 +50,7 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
     fact: String(item.fact ?? ''),
     reliability: item.source_reliability == null ? null : Number(item.source_reliability),
     quality: String(item.quality ?? 'unknown'),
+    supports: item.supports ?? [],
     contradicts: item.contradicts ?? [],
   })).sort((a, b) => b.observedAt.localeCompare(a.observedAt))
   const hypotheses = (snapshot.hypotheses ?? []).map((item, index) => ({
