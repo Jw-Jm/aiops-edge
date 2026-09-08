@@ -1,6 +1,6 @@
 // PF-LOGIC-003 服务→Trace→日志→关系关联逻辑。
 // 选真实服务（/dashboard/stats top_services → payments），在服务全景/Trace/日志/关系图
-// 定位同一服务，核对 identity 一致。图接口 503（已知缺陷）则关系图子项如实记录。
+// 定位同一服务，核对 identity 一致。分布式 Trace 允许跨服务 span，不要求所有 span 同名。
 // Standalone: TEST_RUN_ID=nonllm-20260905 NODE_PATH=/opt/homebrew/lib/node_modules node tests/manual-e2e/laneE-logic-003.js
 const { ENV, spaNav, makeCollector, shot, withSession } = require('./lib/laneD-runner')
 const { writeResult, apiRetry } = require('./lib/laneE')
@@ -44,11 +44,12 @@ async function run() {
       const d = await apiRetry(page, 'get', `/traces/${traces[0].trace_id}?cluster_id=${ENV.clusterId}`)
       try {
         const spans = JSON.parse(d.body)?.spans || []
-        spanSvcOk = spans.length > 0 && spans.every((s) => s.service_name === SVC)
+        spanSvcOk = spans.length > 0 && spans.some((s) => s.service_name === SVC)
+          && spans.every((s) => Boolean(s.service_name))
         spanSample = JSON.stringify(spans.map((s) => s.service_name))
       } catch { spanSample = 'parse-error' }
     }
-    check('trace_spans_service_identity_consistent', spanSvcOk, `trace 详情 spans service_name=${spanSample}，期望全部为 "${SVC}"`)
+    check('trace_contains_target_service_identity', spanSvcOk, `trace 详情 spans service_name=${spanSample}，应包含目标服务 "${SVC}" 且每个 span 有服务 identity`)
 
     await spaNav(page, '/observability/trace')
     await page.waitForTimeout(3000)
@@ -77,12 +78,15 @@ async function run() {
     try { kgEntity = (JSON.parse(kgResp.body)?.items || [])[0] } catch {}
     check('relationship_graph_locates_service', kgResp.status === 200 && kgEntity?.name === SVC,
       `GET /ai/kg/entities/search?q=${SVC}(cluster_id) -> ${kgResp.status}，实体=${JSON.stringify(kgEntity ? { uid: kgEntity.entity_uid.slice(0, 60) + '…', type: kgEntity.entity_type, name: kgEntity.name, tenant: kgEntity.tenant_id, cluster: kgEntity.cluster_id } : kgResp.body.slice(0, 120))}`)
-    // 已知缺陷边界：不带 cluster_id 的图检索请求 503（如页面挂载首帧未附 scope 时）
+    // Session scope is authoritative when cluster_id is omitted; the request
+    // must remain scoped rather than being rejected as an unscoped query.
     const kgNoScope = await apiRetry(page, 'get', `/ai/kg/entities/search?q=${SVC}&entity_type=service&limit=20`)
-    let kgCode = ''
-    try { kgCode = JSON.parse(kgNoScope.body)?.error?.code || '' } catch {}
-    check('graph_search_without_cluster_id_503_defect', kgNoScope.status === 503,
-      `已知缺陷边界（如实记录）：不带 cluster_id 的 GET /ai/kg/entities/search -> ${kgNoScope.status} code=${kgCode}（页面挂载首帧未附 scope 的请求同样 503）`)
+    let kgNoScopeEntity = null
+    try { kgNoScopeEntity = (JSON.parse(kgNoScope.body)?.items || [])[0] } catch {}
+    check('graph_search_uses_session_scope_without_explicit_query_scope',
+      kgNoScope.status === 200 && kgNoScopeEntity?.name === SVC
+        && kgNoScopeEntity?.cluster_id === ENV.clusterId,
+      `不带 cluster_id 的检索使用会话 scope -> ${kgNoScope.status}，实体=${JSON.stringify(kgNoScopeEntity ? { name: kgNoScopeEntity.name, cluster: kgNoScopeEntity.cluster_id } : kgNoScope.body.slice(0, 160))}`)
     const mapResp = await apiRetry(page, 'get', `/services/map?cluster_id=${ENV.clusterId}`)
     let mapWarn = ''
     try { mapWarn = (JSON.parse(mapResp.body)?.warnings || []).join(',') } catch {}
@@ -110,7 +114,7 @@ async function run() {
     check('service_identity_consistent_across_pages',
       svcNames.includes(SVC) && spanSvcOk && logSvcOk,
       `服务名 "${SVC}" 在 /services、trace spans、logs 中一致；关系图因 503 缺失该维度`)
-    notes.push(`选定服务=${SVC}（来自 /dashboard/stats top_services）；Trace/日志/服务清单 identity 一致；关系图维度因 /ai/kg/* 503（已知缺陷）不可验证。`)
+    notes.push(`选定服务=${SVC}（来自 /dashboard/stats top_services）；服务清单、Trace、日志和关系图均按 canonical identity 核对。`)
   })
 
   const pass = checks.filter((c) => c.pass).length

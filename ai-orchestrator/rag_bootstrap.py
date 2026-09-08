@@ -27,10 +27,13 @@ def create_or_validate_collections(persist_dir: str) -> list[str]:
     res = RAGStore.ensure_collections(persist_dir=persist_dir)
     if res is None:
         raise SystemExit("[RAG-BOOTSTRAP] 嵌入器或目录不可用, 无法创建 collection")
-    client, ef = res
+    client, _ = res
     ready = []
     for name in (CASE_COLLECTION, PLAYBOOK_COLLECTION):
-        col = client.get_collection(name, embedding_function=ef)
+        # The collection may have been created by an older image with a
+        # different persisted EF.  ensure_collections already validated it;
+        # read without overriding that persisted configuration.
+        col = client.get_collection(name)
         print(f"[RAG-BOOTSTRAP] {name}: ready, count={col.count()}")
         ready.append(name)
     return ready

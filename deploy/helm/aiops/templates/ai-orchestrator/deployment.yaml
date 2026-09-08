@@ -48,6 +48,25 @@ spec:
           volumeMounts:
             {{- include "aiops.mtlsVolumeMount" . | nindent 12 }}
           {{- end }}
+        # Chroma collections are a deployment prerequisite. Keep creation
+        # outside the runtime process so a missing collection cannot degrade
+        # into a false-success knowledge write.
+        - name: rag-bootstrap
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          image: {{ include "aiops.imageWithGlobalTag" (dict "image" (tpl .Values.aiOrchestrator.image .) "tag" .Values.global.imageTag "digest" (.Values.global.imageDigests.aiOrchestrator | default "") "env" (.Values.global.environment | default "")) | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "rag_bootstrap"]
+          args: ["--persist-dir", "/var/lib/aiops/ops-cases"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/aiops
       containers:
         - name: ai-orchestrator
           securityContext:
