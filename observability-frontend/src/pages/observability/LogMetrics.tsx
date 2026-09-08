@@ -4,6 +4,7 @@ import { queryLogs, aggregateLogs, getServices } from '../../api/client'
 import { extractServiceNames } from './Trace'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
+import { DEFAULT_SCOPE_CONTEXT } from '../../features/scope/types'
 
 interface LogRow { ts: string; level: string; service_name: string; message: string; [k: string]: any }
 interface AggRow { [k: string]: any; count?: number }
@@ -13,6 +14,7 @@ const LEVEL_TONE: Record<string, string> = { error: 'var(--danger)', warning: 'v
 // 2.8 日志页重设计：数据源选择 + 级别过滤 + 时间范围（集群过滤由全局 ClusterSwitcher 注入）
 const LogMetrics: React.FC = () => {
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const scopeContext = useScopeStore((s) => s.context) ?? DEFAULT_SCOPE_CONTEXT
   const [mode, setMode] = useState<'logs' | 'aggregate'>('logs')
   // Raw Logs SoT is VictoriaLogs in the production reader mode. ClickHouse
   // remains the derived-analytics store and is intentionally not exposed as
@@ -32,6 +34,7 @@ const LogMetrics: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const requestSeq = useRef(0)
+  const scopeHours = scopeContext.timeRange.mode === 'relative' ? Math.max(1, Math.ceil(scopeContext.timeRange.minutes / 60)) : hours
 
   // A7: 筛选条件变更时自动触发查询（与模式切换一致）。overrides 让 onChange 立即生效，
   // 避免 setState 异步导致 search() 读到旧值。
@@ -45,7 +48,7 @@ const LogMetrics: React.FC = () => {
     setErr('')
     const src = overrides.source ?? source
     const lv = overrides.level ?? level
-    const hr = overrides.hours ?? hours
+    const hr = overrides.hours ?? scopeHours
     const hh = overrides.hideHealth ?? hideHealth
     const sv = overrides.service ?? service
     const p: Record<string, unknown> = {
@@ -56,6 +59,7 @@ const LogMetrics: React.FC = () => {
       ...(lv !== 'all' ? { level: lv } : {}),
       // PF-FLOW-001: 服务筛选参数
       ...(sv ? { service: sv } : {}),
+      ...(scopeContext.namespace ? { namespace: scopeContext.namespace } : {}),
       // 修复(P2-3)：过滤健康检查探针日志（/health、/ready、/v1/query）
       ...(hh ? { exclude_health: true } : {}),
     }
@@ -101,7 +105,10 @@ const LogMetrics: React.FC = () => {
   }
 
   // P3-2 首次加载自动查询
-  useEffect(() => { search() }, [activeClusterId])
+  useEffect(() => {
+    setHours(scopeHours)
+    search(undefined, { hours: scopeHours })
+  }, [activeClusterId, scopeContext.namespace, scopeContext.timeRange])
 
   // PF-FLOW-001: 服务下拉选项（复用 /services 活跃服务列表，与 Trace 页一致）
   useEffect(() => {

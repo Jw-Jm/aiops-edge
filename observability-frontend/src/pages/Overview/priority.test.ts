@@ -19,5 +19,7 @@ describe('operational issue priority', () => {
   it('selects a lifecycle-aware primary action', () => {
     expect(issueAction(issue({ runId: undefined }))).toEqual({ label: '开始调查', href: '/investigation/new?source=overview&resource=svc%2Fissue&symptom=error%20rate%20increased' })
     expect(issueAction(issue({ runId: 'run-1' }))).toEqual({ label: '查看调查', href: '/investigation/run-1' })
+    expect(issueAction(issue({ lifecycle: 'awaiting_approval', runId: 'run-1' }))).toEqual({ label: '查看处置', href: '/actions' })
+    expect(issueAction(issue({ lifecycle: 'recovered', runId: 'run-1' }))).toEqual({ label: '查看验证', href: '/investigation/run-1' })
   })
 })

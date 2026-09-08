@@ -156,8 +156,8 @@ function shot(page, name) {
 }
 
 // 会话封装。seedScope=true（默认）时对齐 harness.runPageTest 行为：
-//  - addInitScript 在应用启动前写入 localStorage 'aiops-ui-v3'（请求拦截器
-//    从内存 scopeRuntime 读该值，未 seed 时不会给请求附加 cluster_id）；
+//  - addInitScript 在应用启动前写入 localStorage 'aiops-scope-preference'。
+//    该值仅作为非权威偏好，活动授权 Scope 仍由 GET /me/POST /me/scope 决定；
 //  - route 门闸挂起 /api/v1 数据请求，直到 UI 登录 + POST /me/scope 完成
 //    （全新 UI 登录会重置服务端 active scope，避免挂载即 403 的爆发）。
 // seedScope=false 供 PF-UI-002 使用：不预置、不门闸，走纯 UI 选择集群的真实流程。
@@ -166,7 +166,7 @@ async function withSession({ viewport, col, seedScope = true }, fn) {
   const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } })
   if (seedScope) {
     await context.addInitScript((clusterId) => {
-      try { localStorage.setItem('aiops-ui-v3', JSON.stringify({ state: { collapsed: false, aiDockOpen: false, currentClusterId: clusterId }, version: 0 })) } catch {}
+      try { localStorage.setItem('aiops-scope-preference', JSON.stringify({ state: { preferredClusterId: clusterId }, version: 0 })) } catch {}
     }, ENV.clusterId)
   }
   let scopeReady = !seedScope

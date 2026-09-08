@@ -29,7 +29,7 @@ function sparkPts(arr: number[], w = 120, h = 40): string {
 }
 
 const pct = (value?: number) => Number.isFinite(value) ? Math.max(0, Math.min(100, Number(value))) : null
-const usageColor = (value?: number) => (value ?? 0) > 80 ? '#dc2626' : (value ?? 0) > 60 ? '#d97706' : '#16a34a'
+const usageColor = (value?: number) => (value ?? 0) > 80 ? '#c9362b' : (value ?? 0) > 60 ? '#c46816' : '#18864b'
 const formatCapacity = (value?: number) => value == null || !Number.isFinite(value) ? '—' : `${value}`
 
 const Overview: React.FC = () => {
@@ -99,7 +99,8 @@ const Overview: React.FC = () => {
     const matchingRun = runs.find((run) => run.target_resource_id && run.target_resource_id === item.service)
     const start = item.first_timestamp ? Date.parse(item.first_timestamp) : NaN
     const end = item.last_timestamp ? Date.parse(item.last_timestamp) : NaN
-    return { id: String(item.id || `${item.rule_name || 'alert'}-${index}`), title: item.rule_name || `${item.service || '资源'} 告警`, severity, affectedServices: 1, durationMinutes: Number.isFinite(start) && Number.isFinite(end) && end >= start ? Math.round((end - start) / 60000) : 0, recentChange: false, runId: matchingRun?.run_id, resourceId: item.service || 'unknown', symptom: item.message || `${item.service || '资源'} 出现${severity === 'critical' ? '严重' : '异常'}告警`, startedAt: item.first_timestamp || item.last_timestamp }
+    const lifecycle = matchingRun?.status === 'awaiting_approval' ? 'awaiting_approval' : matchingRun && ['success', 'partial'].includes(matchingRun.status) ? 'recovered' : matchingRun ? 'investigating' : 'uninvestigated'
+    return { id: String(item.id || `${item.rule_name || 'alert'}-${index}`), title: item.rule_name || `${item.service || '资源'} 告警`, severity, affectedServices: 1, durationMinutes: Number.isFinite(start) && Number.isFinite(end) && end >= start ? Math.round((end - start) / 60000) : 0, recentChange: false, lifecycle, runId: matchingRun?.run_id, resourceId: item.service || 'unknown', symptom: item.message || `${item.service || '资源'} 出现${severity === 'critical' ? '严重' : '异常'}告警`, startedAt: item.first_timestamp || item.last_timestamp }
   })), [activeAlerts, runs])
   const trend = stats?.trend || []
   // A6: 服务数口径与拓扑视图一致（后端 /dashboard/stats 同时返回 services 与 topology_services，
@@ -127,7 +128,7 @@ const Overview: React.FC = () => {
     const chart = echarts.getInstanceByDom(el) || echarts.init(el)
     chart.setOption({
       animationDuration: 650, tooltip: { trigger: 'axis', confine: true },
-      legend: { top: 0, right: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: '#52606d', fontSize: 12 } },
+      legend: { top: 0, right: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: '#5b667a', fontSize: 12 } },
       grid: { left: 42, right: 48, top: 34, bottom: 28 },
       xAxis: { type: 'category', boundaryGap: false, data: trend.map((p) => p.t), axisLabel: { color: '#7a8794', fontSize: 11 } },
       yAxis: [
@@ -135,8 +136,8 @@ const Overview: React.FC = () => {
         { type: 'value', name: '错误率', nameTextStyle: { color: '#7a8794' }, axisLabel: { color: '#7a8794', formatter: '{value}%' }, splitLine: { show: false } },
       ],
       series: [
-        { name: '调用量', type: 'line', smooth: true, symbol: 'none', data: trend.map((p) => p.calls), lineStyle: { width: 2, color: '#2f54eb' }, areaStyle: { color: 'rgba(47,84,235,.08)' } },
-        { name: '错误率', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none', data: trend.map((p) => p.calls ? Number(((p.errors / p.calls) * 100).toFixed(2)) : 0), lineStyle: { width: 2, color: '#dc2626' } },
+        { name: '调用量', type: 'line', smooth: true, symbol: 'none', data: trend.map((p) => p.calls), lineStyle: { width: 2, color: '#3157d5' }, areaStyle: { color: 'rgba(49,87,213,.08)' } },
+        { name: '错误率', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none', data: trend.map((p) => p.calls ? Number(((p.errors / p.calls) * 100).toFixed(2)) : 0), lineStyle: { width: 2, color: '#c9362b' } },
       ],
     })
     const resize = () => chart.resize()

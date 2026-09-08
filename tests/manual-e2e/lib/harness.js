@@ -101,7 +101,7 @@ async function uiLoginAndScope(page) {
 
 // Core page runner. actions(page, ctx) may perform page-specific interactions;
 // each check pushed via ctx.check(name, pass, detail).
-async function runPageTest({ id, route, actions, consoleAllowlist = [], netAllowlist = [], category = 'pages', notes = [], uiCluster = true }) {
+async function runPageTest({ id, route, actions, consoleAllowlist = [], netAllowlist = [], category = 'pages', notes = [], uiCluster = true, viewports = ENV.viewports }) {
   ensureDirs()
   const state = await getStorageState()
   const browser = await chromium.launch()
@@ -113,16 +113,17 @@ async function runPageTest({ id, route, actions, consoleAllowlist = [], netAllow
   }
   const ctxCheck = (name, pass, detail = '') => result.checks.push({ name, pass: !!pass, detail: String(detail).slice(0, 500) })
 
-  for (const vp of ENV.viewports) {
+  for (const vp of viewports) {
     const tag = `${vp.width}x${vp.height}`
     const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height }, storageState: state })
     // The UI request interceptor takes the cluster scope from the in-memory
-    // uiStore (hydrated from localStorage 'aiops-ui-v3'). Seed it before app
-    // boot so page data requests are authorized; uiCluster=false leaves the
-    // scope unset (used to test the "cluster not selected" restriction).
+    // The active authorization scope is server-owned and hydrated from GET
+    // /me. Seed only the non-authoritative cluster preference used by the
+    // scope store; uiCluster=false leaves it unset (used to test the
+    // "cluster not selected" restriction).
     if (uiCluster) {
       await context.addInitScript((clusterId) => {
-        try { localStorage.setItem('aiops-ui-v3', JSON.stringify({ state: { collapsed: false, aiDockOpen: false, currentClusterId: clusterId }, version: 0 })) } catch {}
+        try { localStorage.setItem('aiops-scope-preference', JSON.stringify({ state: { preferredClusterId: clusterId }, version: 0 })) } catch {}
       }, ENV.clusterId)
     }
     const page = await context.newPage()

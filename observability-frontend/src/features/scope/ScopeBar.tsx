@@ -1,5 +1,6 @@
 import React from 'react'
 import { Select, Space, Tag } from 'antd'
+import { Link } from 'react-router-dom'
 import { useScopeStore } from '../../store/scopeStore'
 import { formatTimeRange, type RunScopeSnapshot } from './types'
 
@@ -27,6 +28,7 @@ export function ScopeBar({ snapshot }: ScopeBarProps) {
       <div className="scope-bar scope-bar--snapshot" aria-label="调查快照">
         <Tag color="default">调查快照</Tag>
         <span>{snapshotParts.join(' / ')}</span>
+        {snapshot.resource && <Link to={`/resources?kind=${encodeURIComponent(snapshot.resource.type)}&resource=${encodeURIComponent(snapshot.resource.id)}`}>在当前全局范围查看资源</Link>}
       </div>
     )
   }

@@ -61,6 +61,8 @@ function AppLayout() {
   const [clock, setClock] = useState('')
   const [compact, setCompact] = useState(false)
   const [narrow, setNarrow] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [alertCount, setAlertCount] = useState<number | null>(null)
   // 修复 5.7：通知抽屉需要最近告警明细，与 alertCount 一并拉取
   const [recentAlerts, setRecentAlerts] = useState<any[]>([])
@@ -106,6 +108,18 @@ function AppLayout() {
     return () => window.removeEventListener('resize', updateViewport)
   }, [])
 
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setSearchOpen(true)
+      }
+      if (event.key === 'Escape') setSearchOpen(false)
+    }
+    window.addEventListener('keydown', onShortcut)
+    return () => window.removeEventListener('keydown', onShortcut)
+  }, [])
+
   // 高亮当前路由
   const pathname = location.pathname
   const auth = useAuthStore()
@@ -117,6 +131,16 @@ function AppLayout() {
     || visibleNav.find((it) => pathname.startsWith(it.path + '/'))?.path
     || (pathname.startsWith('/observability/') || pathname.startsWith('/alerts/') || pathname.startsWith('/capacity') || pathname.startsWith('/infra/') || pathname.startsWith('/hardware') || pathname.startsWith('/changes') ? '/resources' : '/overview')
   const currentLabel = visibleNav.find((m) => m.path === selectedKey)?.label || ''
+  const searchItems = [
+    ...visibleNav.map((item) => ({ label: item.label, path: item.path, description: '工作流页面' })),
+    { label: 'AI 运维助手', path: '/ai/chat', description: '自然语言问答与调查草稿' },
+  ]
+  const matchingSearchItems = searchItems.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+  const goToSearchItem = (path: string) => {
+    setSearchOpen(false)
+    setSearchQuery('')
+    navigate(path)
+  }
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -132,7 +156,7 @@ function AppLayout() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
       {/* 侧栏 */}
-      <aside className="sidebar" style={{ width: isCollapsed ? 64 : 232, flexShrink: 0, transition: 'width .2s' }}>
+      <aside className="sidebar" style={{ width: isCollapsed ? 64 : 216, flexShrink: 0, transition: 'width .2s' }}>
         <div className="brand" style={{ padding: isCollapsed ? '16px 12px' : undefined, justifyContent: isCollapsed ? 'center' : undefined }}>
           <div className="brand__logo">观</div>
           {!isCollapsed && (
@@ -156,7 +180,7 @@ function AppLayout() {
           <nav className="nav">
             {visibleNav.map((it) => (
               <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
-                onClick={() => navigate(it.path)} title={isCollapsed ? it.label : undefined}>
+                onClick={() => navigate(it.path)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); navigate(it.path) } }} role="button" tabIndex={0} title={isCollapsed ? it.label : undefined}>
                 <AppIcon name={it.icon} />
                 {!isCollapsed && <span>{it.label}</span>}
                 {!isCollapsed && it.badge && (
@@ -177,8 +201,25 @@ function AppLayout() {
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* 顶栏 */}
-        <header className="topbar">
-          <ScopeBar />
+        <header className="topbar topbar--stacked">
+          <div className="topbar__search-wrap">
+            <button type="button" className="topbar__search" aria-label="全局搜索" aria-expanded={searchOpen} onClick={() => setSearchOpen((open) => !open)}>
+              <AppIcon name="search" />
+              <span>全局搜索</span>
+              <kbd>⌘K</kbd>
+            </button>
+            {searchOpen && <div className="cmdk-popover" role="dialog" aria-label="全局搜索面板">
+              <input autoFocus className="cmdk-popover__input" aria-label="搜索页面" placeholder="搜索工作流页面" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => {
+                if (event.key === 'Enter' && matchingSearchItems[0]) goToSearchItem(matchingSearchItems[0].path)
+                if (event.key === 'Escape') setSearchOpen(false)
+              }} />
+              <div className="cmdk-popover__list" role="listbox" aria-label="搜索结果">
+                {matchingSearchItems.map((item) => <button type="button" role="option" key={item.path} className="cmdk-popover__item" onClick={() => goToSearchItem(item.path)}><AppIcon name="search" /><span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}
+                {matchingSearchItems.length === 0 && <div className="cmdk-popover__empty">没有匹配的页面</div>}
+              </div>
+            </div>}
+          </div>
+          <div className="topbar__scope"><ScopeBar /></div>
           <div className="topbar__spacer" />
           {currentLabel && <span className="topbar__label" style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>{currentLabel}</span>}
           {/* 修复 5.7：通知按钮从"直接跳转告警页"改为下拉抽屉，展示最近告警，点击进入告警事件页 */}

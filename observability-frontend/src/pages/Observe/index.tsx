@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo } from 'react'
 import { Alert, Button, Empty as AntEmpty, Table, Tabs, Tag } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -82,7 +82,11 @@ const Observe: React.FC = () => {
     { key: 'changes', label: '变更', children: <Changes /> },
     { key: 'grafana', label: 'Grafana', children: <Grafana /> },
   ]
-  const activeKey = items.some((item) => item.key === requested) ? requested : 'problems'
+  const knownView = items.some((item) => item.key === requested)
+  const activeKey = knownView ? requested : 'alerts'
+  useEffect(() => {
+    if (!knownView) setParams({ view: 'alerts' }, { replace: true })
+  }, [knownView, setParams])
   return (
     <div>
       <Breadcrumb items={[{ t: '观测' }, { t: '问题与信号' }]} />

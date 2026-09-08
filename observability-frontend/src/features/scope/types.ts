@@ -18,11 +18,14 @@ export interface ScopeContext {
   timeRange: TimeRange
 }
 
-export interface RunScopeSnapshot extends Omit<ScopeContext, 'timeRange'> {
+export interface RunScopeSnapshot {
   mode: 'snapshot'
   runId: string
   tenantId: string
   clusterId: string
+  environment: string
+  namespace?: string
+  resource?: ResourceRef
   timeRange?: TimeRange
 }
 

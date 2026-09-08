@@ -25,4 +25,10 @@ describe('Observe unified entry', () => {
     await waitFor(() => expect(getAlertAggregation).toHaveBeenCalled())
     expect(screen.getByText('暂无问题')).toBeInTheDocument()
   })
+
+  it('falls back unknown views to the raw alert queue', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe?view=not-a-view']}><Observe /></MemoryRouter></QueryClientProvider>)
+    expect(screen.getByRole('tab', { name: '原始告警' })).toHaveAttribute('aria-selected', 'true')
+  })
 })

@@ -14,6 +14,8 @@ import ServiceMatrixView from './service/ServiceMatrixView'
 import ServiceListView from './service/ServiceListView'
 import ServiceExploreView from './service/ServiceExploreView'
 import ServiceSummary from './service/ServiceSummary'
+import { DEFAULT_SCOPE_CONTEXT } from '../../features/scope/types'
+import MainFailureChain from '../Resources/MainFailureChain'
 
 type ServiceRow = PanoramaService & { service: string; avg_latency_ms: number }
 const EMPTY_GRAPH: GraphSubgraph = { center_entity_uid: '', vertices: [], edges: [], meta: { contract_version: 'graph-dto-v1', schema_version: 0, partial: false, stale: true, generated_at: '', warning_codes: [] } }
@@ -42,8 +44,14 @@ function legacyMap(rows: ServiceRow[]): ServiceMapResponse {
   return { group_by: 'namespace', groups: [...groups.values()], services: rows, aggregated_edges: [], topology_revision: 'legacy-fallback' }
 }
 
-const ServiceObservability: React.FC = () => {
+const ServiceObservability: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  // Older host/test shells may only expose authScope; production provides the
+  // full context. Keep a deterministic read-only fallback during migration.
+  const scopeContext = useScopeStore((state) => state.context) ?? DEFAULT_SCOPE_CONTEXT
+  const setScopeNamespace = useScopeStore((state) => state.setNamespace)
+  const setScopeResource = useScopeStore((state) => state.setResource)
+  const setScopeTimeRange = useScopeStore((state) => state.setTimeRange)
   const [timeRange, setTimeRange] = useState(60)
   const [services, setServices] = useState<ServiceRow[]>([])
   const [selectedService, setSelectedService] = useState('')
@@ -69,6 +77,11 @@ const ServiceObservability: React.FC = () => {
   const [dependencyLoading, setDependencyLoading] = useState(false)
   const [error, setError] = useState('')
   const [structureRefresh, setStructureRefresh] = useState(0)
+
+  useEffect(() => {
+    if (scopeContext.timeRange.mode === 'relative') setTimeRange(scopeContext.timeRange.minutes)
+    setNamespaceFilter(scopeContext.namespace)
+  }, [scopeContext.namespace, scopeContext.timeRange])
 
   const loadOverview = useCallback(async () => {
     setLoading(true); setError('')
@@ -115,7 +128,9 @@ const ServiceObservability: React.FC = () => {
   useEffect(() => {
     const row = services.find((service) => service.service === selectedService)
     if (row?.entity_uid) setSelectedEntityUID(row.entity_uid)
-  }, [selectedService, services])
+    if (selectedService) setScopeResource?.({ type: 'service', id: row?.entity_uid || selectedService, label: selectedService })
+    else setScopeResource?.(undefined)
+  }, [selectedService, services, setScopeResource])
 
   // Compatibility fallback for old deployments that have not exposed the
   // panorama contracts yet: resolve the selected service through the typed
@@ -152,11 +167,11 @@ const ServiceObservability: React.FC = () => {
   const fallbackGraph = graph.vertices.length > 0 ? graph : EMPTY_GRAPH
 
   return <div className="page">
-    <Breadcrumb items={[{ t: '可观测性' }, { t: '服务全景' }]} />
-    <PageHeader title="服务全景" desc="服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索。默认地图按 Application/Namespace 聚合，原始关系仅在专家探索中展开。" actions={<Space wrap><Select aria-label="时间范围" value={timeRange} onChange={setTimeRange} options={[{ value: 15, label: '近 15 分钟' }, { value: 60, label: '近 1 小时' }, { value: 1440, label: '近 24 小时' }]} /><Select allowClear aria-label="命名空间" placeholder="命名空间" value={namespaceFilter || undefined} onChange={(value) => setNamespaceFilter(value || '')} options={[...new Set(services.map((service) => service.namespace).filter(Boolean))].map((value) => ({ value, label: value }))} /><Select allowClear aria-label="应用" placeholder="应用" value={applicationFilter || undefined} onChange={(value) => setApplicationFilter(value || '')} options={[...new Map(services.filter((service) => service.application_uid).map((service) => [service.application_uid, service.application_name || service.application_uid])).entries()].map(([value, label]) => ({ value, label }))} /><Select allowClear aria-label="健康状态" placeholder="健康状态" value={healthFilter || undefined} onChange={(value) => setHealthFilter(value || '')} options={[{ value: 'healthy', label: '健康' }, { value: 'degraded', label: '降级' }, { value: 'critical', label: '严重' }]} /><Checkbox checked={onlyAbnormal} onChange={(event) => setOnlyAbnormal(event.target.checked)}>仅看异常</Checkbox><Button onClick={() => void loadOverview()}>刷新摘要</Button></Space>} />
+    {!embedded && <><Breadcrumb items={[{ t: '可观测性' }, { t: '服务全景' }]} /><PageHeader title="服务全景" desc="服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索。默认地图按 Application/Namespace 聚合，原始关系仅在专家探索中展开。" actions={<Space wrap><Select aria-label="时间范围" value={timeRange} onChange={(value) => { setTimeRange(value); setScopeTimeRange?.({ mode: 'relative', minutes: value as 15 | 60 | 1440 }) }} options={[{ value: 15, label: '近 15 分钟' }, { value: 60, label: '近 1 小时' }, { value: 1440, label: '近 24 小时' }]} /><Select allowClear aria-label="命名空间" placeholder="命名空间" value={namespaceFilter || undefined} onChange={(value) => { setNamespaceFilter(value || ''); setScopeNamespace?.(value || '') }} options={[...new Set(services.map((service) => service.namespace).filter(Boolean))].map((value) => ({ value, label: value }))} /><Select allowClear aria-label="应用" placeholder="应用" value={applicationFilter || undefined} onChange={(value) => setApplicationFilter(value || '')} options={[...new Map(services.filter((service) => service.application_uid).map((service) => [service.application_uid, service.application_name || service.application_uid])).entries()].map(([value, label]) => ({ value, label }))} /><Select allowClear aria-label="健康状态" placeholder="健康状态" value={healthFilter || undefined} onChange={(value) => setHealthFilter(value || '')} options={[{ value: 'healthy', label: '健康' }, { value: 'degraded', label: '降级' }, { value: 'critical', label: '严重' }]} /><Checkbox checked={onlyAbnormal} onChange={(event) => setOnlyAbnormal(event.target.checked)}>仅看异常</Checkbox><Button onClick={() => void loadOverview()}>刷新摘要</Button></Space>} /></>}
     {error && <Alert type="warning" showIcon message={error} style={{ marginBottom: 16 }} />}
     <section aria-label="服务摘要"><ServiceSummary overview={overview} services={services} health={health} timeRange={timeRange} loading={loading} /></section>
     <section aria-label="服务地图" style={{ marginTop: 16 }}><Card title="服务地图" loading={mapLoading} extra={<Space><Select aria-label="地图分组" size="small" value={mapData?.group_by || 'application'} options={[{ value: 'application', label: '按 Application' }, { value: 'namespace', label: '按 Namespace' }]} onChange={async (group_by) => { const selectedGroup = group_by as 'application' | 'namespace'; setMapLoading(true); try { if (typeof getServiceMap === 'function') setMapData((await getServiceMap({ minutes: timeRange, group_by: selectedGroup, ...(namespaceFilter ? { namespace: namespaceFilter } : {}), ...(applicationFilter ? { application_uid: applicationFilter } : {}) })).data) } finally { setMapLoading(false) } }} /><Button size="small" onClick={() => void loadOverview()}>刷新摘要</Button></Space>}>{mapData ? <ServiceMapView data={mapData} selectedService={selectedService} onServiceSelect={setSelectedService} /> : <AntEmpty description="暂无服务地图数据" />}</Card><div style={{ marginTop: 12 }}><GraphSummary subgraph={fallbackGraph} health={health} /></div></section>
+    <section style={{ marginTop: 16 }}><MainFailureChain center={selectedService ? { type: 'service', id: selectedEntityUID || selectedService, label: selectedService } : undefined} upstream={(dependency?.upstream || []).map((entity) => ({ type: entity.entity_type || 'resource', id: entity.entity_uid, label: entity.name }))} downstream={(dependency?.downstream || []).map((entity) => ({ type: entity.entity_type || 'resource', id: entity.entity_uid, label: entity.name }))} /></section>
     <section style={{ marginTop: 16 }}><ServiceDependencyView data={dependency} onEntitySelect={(entity) => { setSelectedEntityUID(entity.entity_uid); setSelectedService(entity.name) }} /></section>
     <section style={{ marginTop: 16 }}><Card loading={matrixLoading} extra={<Button size="small" onClick={() => void loadMatrix()}>刷新矩阵</Button>}><ServiceMatrixView matrix={matrix} vertices={fallbackGraph.vertices} edges={fallbackGraph.edges} onCellSelect={(cell) => { setSelectedService(cell.target_service); setSelectedEntityUID(cell.target_uid) }} /></Card></section>
     <section aria-label="服务列表" style={{ marginTop: 16 }}><ServiceListView services={services} selectedService={selectedService} search={serviceFilter} health={healthFilter} onlyAbnormal={onlyAbnormal} onSearchChange={setServiceFilter} onSelect={(row) => { setSelectedService(row.service); if (row.entity_uid) setSelectedEntityUID(row.entity_uid) }} /></section>

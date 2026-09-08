@@ -1,59 +1,46 @@
-// =====================================================================
-//  设计令牌 v3.0 —— 纯亮色极简（白天友好）· 冷静靛蓝单主色
-//  AIOps 可观测平台 · 符合运维用户习惯：信息密度优先、专注扫视
-// =====================================================================
 import { theme, type ThemeConfig } from 'antd'
 
-export const token: Record<string, any> = {
-  colorPrimary: '#2f54eb',
-  colorInfo: '#2f54eb',
-  colorSuccess: '#16a34a',
-  colorWarning: '#d97706',
-  colorError: '#dc2626',
-  // 文字
-  colorText: '#1f2d3d',
-  colorTextSecondary: '#52606d',
-  colorTextTertiary: '#7a8794',
-  colorTextQuaternary: '#a3aebe',
-  // 表面 / 背景
-  colorBgLayout: '#f4f6f9',
+export const token = {
+  // Product design tokens (kept explicit so CSS and Ant components share one palette).
+  colorBg: '#f5f7fa',
+  colorSurface: '#ffffff',
+  colorSurfaceSecondary: '#f8fafc',
+  colorBgLayout: '#f5f7fa',
   colorBgContainer: '#ffffff',
   colorBgElevated: '#ffffff',
-  colorBgSpotlight: '#eef2f7',
-  // 边框
-  colorBorder: '#e5e9f0',
-  colorBorderSecondary: '#eef2f7',
-  colorSplit: '#e5e9f0',
-  // 品牌相关
-  colorPrimaryHover: '#1d39c4',
-  colorPrimaryActive: '#2139a1',
-  colorPrimaryBg: 'rgba(47,84,235,.08)',
-  colorPrimaryBgHover: 'rgba(47,84,235,.14)',
-  colorLink: '#2f54eb',
-  colorLinkHover: '#1d39c4',
-  // 几何 / 字体
+  colorText: '#172033',
+  colorTextSecondary: '#5b667a',
+  colorTextTertiary: '#5b667a',
+  colorBorder: '#dde3ea',
+  colorBorderSecondary: '#dde3ea',
+  colorSplit: '#dde3ea',
+  colorPrimary: '#3157d5',
+  colorInfo: '#3157d5',
+  colorError: '#c9362b',
+  colorWarning: '#c46816',
+  colorRisk: '#a46f0a',
+  colorSuccess: '#18864b',
+  colorLink: '#3157d5',
+  radiusCard: 8,
   borderRadius: 8,
-  borderRadiusLG: 12,
+  borderRadiusLG: 8,
   borderRadiusSM: 6,
-  fontSize: 13,
   controlHeight: 36,
-  fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif',
-}
+  minClickTarget: 36,
+} as const
 
 export function getThemeConfig(): ThemeConfig {
   return {
     algorithm: theme.defaultAlgorithm,
     token,
     components: {
-      Layout: { siderBg: 'transparent', headerBg: 'transparent', bodyBg: 'transparent', triggerBg: 'transparent', triggerColor: '#7a8794' },
-      Menu: {
-        itemSelectedBg: 'rgba(47,84,235,.10)',
-        itemSelectedColor: '#1f2d3d',
-        itemColor: '#52606d',
-      },
-      Card: { borderRadiusLG: 12 },
-      Table: { headerBg: 'rgba(0,0,0,.02)', rowHoverBg: 'rgba(47,84,235,.04)' },
-      Button: { primaryShadow: '0 2px 6px rgba(47,84,235,.20)' },
+      Layout: { siderBg: 'transparent', headerBg: 'transparent', bodyBg: 'transparent', triggerBg: 'transparent', triggerColor: '#5b667a' },
+      Menu: { itemSelectedBg: '#eef2ff', itemSelectedColor: '#172033', itemColor: '#5b667a' },
+      Card: { borderRadiusLG: 8 },
+      Table: { headerBg: '#f8fafc', rowHoverBg: '#f8fafc' },
+      Button: { primaryShadow: 'none' },
     },
   }
 }
+
+export default token

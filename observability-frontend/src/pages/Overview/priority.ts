@@ -5,6 +5,7 @@ export interface OperationalIssue {
   affectedServices: number
   durationMinutes: number
   recentChange: boolean
+  lifecycle?: 'uninvestigated' | 'investigating' | 'awaiting_approval' | 'recovered'
   runId?: string
   resourceId: string
   symptom: string
@@ -22,5 +23,7 @@ export function rankOperationalIssues(items: OperationalIssue[]): OperationalIss
 }
 
 export function issueAction(issue: OperationalIssue): { label: string; href: string } {
+  if (issue.lifecycle === 'awaiting_approval') return { label: '查看处置', href: '/actions' }
+  if (issue.lifecycle === 'recovered') return { label: '查看验证', href: issue.runId ? `/investigation/${issue.runId}` : '/investigation' }
   return issue.runId ? { label: '查看调查', href: `/investigation/${issue.runId}` } : { label: '开始调查', href: `/investigation/new?source=overview&resource=${encodeURIComponent(issue.resourceId)}&symptom=${encodeURIComponent(issue.symptom)}` }
 }

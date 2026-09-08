@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Badge, Button, Card, Table, Typography } from 'antd'
-import { useNavigate } from 'react-router-dom'
+import { Badge, Button, Card, Table, Tabs, Typography } from 'antd'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { listRuns } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
@@ -14,7 +14,7 @@ interface InvestigationRun {
   clusterId: string
   resourceId: string
   symptom: string
-  status: 'planning' | 'investigating' | 'awaiting_approval' | 'executing' | 'success' | 'failed' | 'cancelled'
+  status: 'created' | 'planning' | 'investigating' | 'awaiting_confirmation' | 'awaiting_approval' | 'executing' | 'verifying' | 'success' | 'partial' | 'failed' | 'regressed' | 'cancelled'
   rootCause: string | null
   confidence: number | null
   createdBy: string
@@ -24,12 +24,19 @@ interface InvestigationRun {
 // P12.2：调查中心以 Run 为主对象，展示用户人工发起的调查。
 // 数据源：GET /api/v1/ai/runs（真实数据源；无数据/失败显示空列表，不降级伪造 DEMO）
 const statusTone: Record<string, 'default' | 'processing' | 'success' | 'warning' | 'error'> = {
-  planning: 'processing', investigating: 'processing', awaiting_approval: 'warning',
-  executing: 'processing', success: 'success', failed: 'error', cancelled: 'default',
+  created: 'processing', planning: 'processing', investigating: 'processing', awaiting_confirmation: 'warning', awaiting_approval: 'warning',
+  executing: 'processing', verifying: 'processing', success: 'success', partial: 'warning', failed: 'error', regressed: 'error', cancelled: 'default',
 }
+const queueViews = [
+  { key: 'needs_action', label: '需要我处理', statuses: ['awaiting_confirmation', 'awaiting_approval', 'failed', 'regressed'] },
+  { key: 'investigating', label: '正在调查', statuses: ['created', 'planning', 'investigating', 'executing', 'verifying'] },
+  { key: 'verification', label: '待验证', statuses: ['success', 'partial'] },
+  { key: 'ended', label: '已结束', statuses: ['cancelled'] },
+]
 
 const InvestigationCenter: React.FC = () => {
   const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [runs, setRuns] = useState<InvestigationRun[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -65,9 +72,10 @@ const InvestigationCenter: React.FC = () => {
   useEffect(() => { void load() }, [load])
 
   const columns = useMemo(() => [
-    { title: 'Run ID', dataIndex: 'runId', key: 'runId', render: (v: string) => <Text code>{v}</Text> },
     { title: '资源', dataIndex: 'resourceId', key: 'resourceId' },
     { title: '症状', dataIndex: 'symptom', key: 'symptom', ellipsis: true },
+    { title: '影响', key: 'impact', render: () => <Text type="secondary">未提供</Text> },
+    { title: '持续时间', key: 'duration', render: () => <Text type="secondary">未提供</Text> },
     {
       title: '状态', dataIndex: 'status', key: 'status',
       render: (v: InvestigationRun['status']) => (
@@ -78,6 +86,7 @@ const InvestigationCenter: React.FC = () => {
     { title: '置信度', dataIndex: 'confidence', key: 'confidence', render: (v: number | null) => v == null ? <Text type="secondary">—</Text> : `${(v * 100).toFixed(0)}%` },
     { title: '发起人', dataIndex: 'createdBy', key: 'createdBy' },
     { title: '发起时间', dataIndex: 'createdAt', key: 'createdAt' },
+    { title: 'Run ID', dataIndex: 'runId', key: 'runId', render: (v: string) => <Text code>{v}</Text> },
     {
       title: '操作', key: 'action',
       render: (_: unknown, r: InvestigationRun) => (
@@ -87,6 +96,14 @@ const InvestigationCenter: React.FC = () => {
       ),
     },
   ], [navigate])
+
+  // Keep the action queue first when it has work; otherwise put an active run
+  // in front so a just-created investigation is immediately discoverable.
+  const defaultView = runs.some((run) => queueViews[0].statuses.includes(run.status))
+    ? 'needs_action'
+    : runs.some((run) => queueViews[1].statuses.includes(run.status)) ? 'investigating' : 'needs_action'
+  const requested = params.get('view') || defaultView
+  const activeView = queueViews.some((view) => view.key === requested) ? requested : 'needs_action'
 
   return (
     <div>
@@ -100,9 +117,7 @@ const InvestigationCenter: React.FC = () => {
         }
       />
       <Card size="small">
-        {error
-          ? <ErrorState message={error} onRetry={() => { void load() }} />
-          : <Table<InvestigationRun> rowKey="runId" columns={columns} dataSource={runs} pagination={{ pageSize: 10 }} />}
+        {error ? <ErrorState message={error} onRetry={() => { void load() }} /> : <Tabs activeKey={activeView} items={queueViews.map((view) => ({ key: view.key, label: `${view.label} (${runs.filter((run) => view.statuses.includes(run.status)).length})`, children: <Table<InvestigationRun> rowKey="runId" columns={columns} dataSource={runs.filter((run) => view.statuses.includes(run.status))} pagination={{ pageSize: 10 }} /> }))} onChange={(key) => setParams({ view: key })} destroyOnHidden />}
       </Card>
     </div>
   )

@@ -17,10 +17,10 @@ export default function ClusterSwitcher() {
   // 修复 5.9：option label 增加集群状态图标（● 健康 / ● 降级 / ● 失联 / ● 未知），便于运维一眼识别集群可用性
   const statusDot = (s: string) => {
     const st = String(s || '').toLowerCase()
-    if (['healthy', 'active', 'ready', 'running', 'ok'].includes(st)) return { color: '#16a34a', label: '健康' }
-    if (['degraded', 'warning'].includes(st)) return { color: '#d97706', label: '降级' }
-    if (['down', 'error', 'offline', 'disconnected'].includes(st)) return { color: '#dc2626', label: '失联' }
-    return { color: '#a3aebe', label: '未知' }
+    if (['healthy', 'active', 'ready', 'running', 'ok'].includes(st)) return { color: '#18864b', label: '健康' }
+    if (['degraded', 'warning'].includes(st)) return { color: '#c46816', label: '降级' }
+    if (['down', 'error', 'offline', 'disconnected'].includes(st)) return { color: '#c9362b', label: '失联' }
+    return { color: '#5b667a', label: '未知' }
   }
   const options = clusters.map((c) => {
       const value = c.cluster_id

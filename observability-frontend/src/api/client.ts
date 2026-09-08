@@ -105,6 +105,10 @@ export interface RunSummary {
   action_mode?: string
   target_type?: string | null
   target_resource_id?: string | null
+  environment?: string | null
+  namespace?: string | null
+  query_window_start?: string | null
+  query_window_end?: string | null
   created_at?: string | null
   root_cause?: string | null
   confidence?: number | null
@@ -155,6 +159,9 @@ export interface ActionProjection {
   approval_status?: string
   verification_status?: string
   rollback_summary?: string
+  created_by?: string
+  approved_by?: string
+  approved_at?: string
   params?: Record<string, unknown>
   error_code?: string
   created_at?: string

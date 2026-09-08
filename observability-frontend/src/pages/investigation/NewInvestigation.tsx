@@ -6,7 +6,14 @@ import { PageHeader } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
 import ScopeBar from '../../features/scope/ScopeBar'
 import { draftFromSearchParams } from '../../features/investigation/draft'
-import { formatTimeRange } from '../../features/scope/types'
+import { formatTimeRange, type TimeRange } from '../../features/scope/types'
+
+function absoluteWindow(range: TimeRange): { start: string; end: string } {
+  if (range.mode === 'absolute') return { start: range.start, end: range.end }
+  const end = new Date()
+  const start = new Date(end.getTime() - range.minutes * 60_000)
+  return { start: start.toISOString(), end: end.toISOString() }
+}
 
 // P12.4：用户显式触发 AI 调查入口。deep-link exact tenant/canonical cluster/resource/time；
 // 仅查看页面/切换资源/收到新告警不得产生 AI Run（触发必须是显式按钮）。
@@ -32,9 +39,10 @@ const NewInvestigation: React.FC = () => {
     })
   }, [activeClusterId, context.namespace, context.resource?.id, draft.actionMode, draft.namespace, draft.resourceId, draft.symptom, draft.targetType, form])
 
-  const onFinish = (values: { resourceId: string; symptom: string; clusterId: string; targetType: string; actionMode: 'read_only' | 'propose' }) => {
+  const onFinish = (values: { resourceId: string; symptom: string; clusterId: string; namespace?: string; targetType: string; actionMode: 'read_only' | 'propose' }) => {
     const clusterId = activeClusterId || values.clusterId
     if (!clusterId) { message.warning('请先选择已授权集群'); return }
+    const window = absoluteWindow(context.timeRange)
     setSubmitting(true)
     // P12：真实触发 POST /api/v1/ai/runs（显式按钮才创建，服务器重新鉴权）
     createRun({
@@ -44,6 +52,9 @@ const NewInvestigation: React.FC = () => {
       target_type: values.targetType,
       intent: values.symptom,
       message: values.symptom,
+      namespace: values.namespace || context.namespace || undefined,
+      query_window_start: window.start,
+      query_window_end: window.end,
       action_mode: values.actionMode || 'read_only',
       principal_type: 'user',
     })
@@ -80,6 +91,7 @@ const NewInvestigation: React.FC = () => {
         <Card size="small" title="调查目标" style={{ marginTop: 12 }}>
           <Form form={form} layout="vertical" onFinish={onFinish}>
           <Form.Item name="clusterId" hidden><Input /></Form.Item>
+          <Form.Item name="namespace" hidden><Input /></Form.Item>
           <Form.Item name="targetType" label="目标类型" rules={[{ required: true }]}>
             <Select
               options={[

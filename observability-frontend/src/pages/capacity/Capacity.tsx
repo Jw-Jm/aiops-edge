@@ -95,12 +95,12 @@ const Capacity: React.FC = () => {
         legend: { bottom: 0 },
         grid: { left: 40, right: 20, top: 30, bottom: 40 },
         xAxis: { type: 'category', data: x, axisLabel: { color: '#7a8794' } },
-        yAxis: { type: 'value', axisLabel: { color: '#7a8794' }, splitLine: { lineStyle: { color: '#eef2f7' } } },
+        yAxis: { type: 'value', axisLabel: { color: '#7a8794' }, splitLine: { lineStyle: { color: '#dde3ea' } } },
         series: [
-          { name: '历史', type: 'line', data: d.history, symbol: 'none', itemStyle: { color: '#2f54eb' } },
-          { name: '线性预测', type: 'line', data: d.forecasts.linear.values, symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#16a34a' } },
-          { name: 'EWMA 预测', type: 'line', data: d.forecasts.ewma.values, symbol: 'none', lineStyle: { type: 'dotted' }, itemStyle: { color: '#d97706' } },
-          { name: '阈值', type: 'line', data: d.history.map(() => d.threshold), symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#dc2626' } },
+          { name: '历史', type: 'line', data: d.history, symbol: 'none', itemStyle: { color: '#3157d5' } },
+          { name: '线性预测', type: 'line', data: d.forecasts.linear.values, symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#18864b' } },
+          { name: 'EWMA 预测', type: 'line', data: d.forecasts.ewma.values, symbol: 'none', lineStyle: { type: 'dotted' }, itemStyle: { color: '#c46816' } },
+          { name: '阈值', type: 'line', data: d.history.map(() => d.threshold), symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#c9362b' } },
         ],
       })
       charts.push(ch)
