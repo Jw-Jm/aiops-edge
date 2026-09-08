@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Drawer, Popconfirm, message } from 'antd'
+import { Alert, Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Drawer, Popconfirm, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { getAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
@@ -12,6 +12,7 @@ const AlertRules: React.FC = () => {
   const navigate = useNavigate()
   const [data, setData] = useState<Rule[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Rule | null>(null) // B3: 编辑中的规则（null = 新建）
   const [view, setView] = useState<Rule | null>(null) // 2.11 规则查看
@@ -21,13 +22,18 @@ const AlertRules: React.FC = () => {
     if (!activeClusterId) {
       setData([])
       setLoading(false)
+      setError('')
       return
     }
     setLoading(true)
+    setError('')
     getAlertRules().then((r) => {
       const d = Array.isArray(r.data) ? r.data : r.data?.rules || r.data?.data || []
       setData(d)
-    }).catch(() => setData([])).finally(() => setLoading(false))
+    }).catch((e) => {
+      setData([])
+      setError(e?.response?.data?.error || e?.message || '告警规则加载失败')
+    }).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [activeClusterId])
 
@@ -116,6 +122,7 @@ const AlertRules: React.FC = () => {
       <Breadcrumb items={[{ t: '告警' }, { t: '告警规则' }]} />
       <PageHeader title="告警规则" desc="管理阈值、异常检测、燃烧速率等告警策略"
         actions={<Button type="primary" onClick={openCreate}>新建规则</Button>} />
+      {error && <Alert type="error" showIcon role="alert" message="告警规则读取失败" description={error} action={<Button size="small" onClick={load}>重试</Button>} style={{ marginBottom: 12 }} />}
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey="id" loading={loading} columns={cols} dataSource={data} size="middle"
           pagination={false} locale={{ emptyText: <Empty text="暂无告警规则" /> }} />

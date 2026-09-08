@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Segmented, Button, Space, Drawer, Spin } from 'antd'
+import { Alert, Table, Segmented, Button, Space, Drawer, Spin } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { getAlertEvents, rcaAlertAnalysis, deleteAlertEvent } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
@@ -21,6 +21,7 @@ const AlertEvents: React.FC = () => {
   const [status, setStatus] = useState<string>('current') // 默认当前告警（firing/acknowledged），已解决事件不展示，避免历史累积干扰
   const [data, setData] = useState<AlertEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [detail, setDetail] = useState<AlertEvent | null>(null)
   const [rca, setRca] = useState('')
   const [rcaLoading, setRcaLoading] = useState(false)
@@ -33,16 +34,21 @@ const AlertEvents: React.FC = () => {
     if (!activeClusterId) {
       setData([])
       setLoading(false)
+      setError('')
       return
     }
     setLoading(true)
+    setError('')
     const params: Record<string, unknown> = { limit: 200 }
     if (ruleFilter) params.rule = ruleFilter
     if (serviceFilter) params.service = serviceFilter
     getAlertEvents(params).then((r) => {
       const d = Array.isArray(r.data) ? r.data : r.data?.events || r.data?.data || []
       setData(d)
-    }).catch(() => setData([])).finally(() => setLoading(false))
+    }).catch((e) => {
+      setData([])
+      setError(e?.response?.data?.error || e?.message || '告警事件加载失败')
+    }).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [ruleFilter, serviceFilter, activeClusterId])
 
@@ -170,6 +176,7 @@ const AlertEvents: React.FC = () => {
           <Segmented value={status} onChange={(v) => setStatus(v as string)} options={[{ label: '当前告警', value: 'current' }, { label: '历史告警', value: 'resolved' }, { label: '全部', value: 'all' }]} />
           <Segmented value={sev} onChange={(v) => setSev(v as string)} options={[{ label: '全部', value: 'all' }, { label: '严重', value: 'critical' }, { label: '警告', value: 'warning' }, { label: '信息', value: 'info' }]} />
         </Space>} />
+      {error && <Alert type="error" showIcon role="alert" message="告警事件读取失败" description={error} action={<Button size="small" onClick={load}>重试</Button>} style={{ marginBottom: 12 }} />}
 
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey={(r: any, idx?: number) => `${r?.id ?? 'evt'}-${idx ?? 0}`} loading={loading} columns={cols} dataSource={filtered} size="middle"

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Switch, message, Popconfirm } from 'antd'
+import { Alert, Table, Button, Modal, Form, Input, Select, Switch, message, Popconfirm } from 'antd'
 import { listUsers, createUser, updateUser, deleteUser } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 
@@ -14,6 +14,7 @@ const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ valu
 const AdminUsers: React.FC = () => {
   const [data, setData] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<any>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -22,7 +23,11 @@ const AdminUsers: React.FC = () => {
 
   const load = () => {
     setLoading(true)
-    listUsers().then((r) => setData(Array.isArray(r.data) ? r.data : r.data?.users || r.data?.data || [])).catch(() => setData([])).finally(() => setLoading(false))
+    setError('')
+    listUsers().then((r) => setData(Array.isArray(r.data) ? r.data : r.data?.users || r.data?.data || [])).catch((e) => {
+      setData([])
+      setError(e?.response?.data?.error || e?.message || '用户列表加载失败')
+    }).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
 
@@ -82,6 +87,7 @@ const AdminUsers: React.FC = () => {
       <Breadcrumb items={[{ t: '系统管理' }, { t: '用户管理' }]} />
       <PageHeader title="用户管理" desc="平台用户、角色与访问控制"
         actions={<Button type="primary" onClick={openCreate}>新增用户</Button>} />
+      {error && <Alert type="error" showIcon role="alert" message="用户数据读取失败" description={error} action={<Button size="small" onClick={load}>重试</Button>} style={{ marginBottom: 12 }} />}
       <div className="card" style={{ padding: 0 }}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-soft)' }}>
           <Input allowClear placeholder="按用户名 / 显示名 / 邮箱搜索" value={search}
