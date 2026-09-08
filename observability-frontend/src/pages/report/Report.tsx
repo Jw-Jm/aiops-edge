@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Button, message, Tag, Drawer, Space } from 'antd'
+import { Alert, Table, Button, message, Tag, Drawer, Space } from 'antd'
 import { BookOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import { listReports, addKnowledgeCase } from '../../api/client'
@@ -13,20 +13,28 @@ const Report: React.FC = () => {
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [data, setData] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [reloadToken, setReloadToken] = useState(0)
   const [preview, setPreview] = useState<Report | null>(null) // 2.18 预览
 
   useEffect(() => {
     if (!activeClusterId) {
       setData([])
       setLoading(false)
+      setError('')
       return
     }
     const load = () => {
+      setError('')
+      setLoading(true)
       listReports({ limit: 100 }).then((r) => {
         // /ops/reports/history 返回 { history: [{task_id, service_name, report_type, verdict, risk_score, summary, created_at}] }
         const d = Array.isArray(r.data) ? r.data : r.data?.history || r.data?.reports || r.data?.data || []
         setData(d)
-      }).catch(() => setData([])).finally(() => setLoading(false))
+      }).catch((e: any) => {
+        setData([])
+        setError(e?.response?.data?.error || e?.message || '报告数据加载失败')
+      }).finally(() => setLoading(false))
     }
     load()
     // Issue7: 30s 轮询刷新，使 AI 对话新生成的巡检/诊断报告自动出现在报告中心，无需手动刷新
@@ -39,7 +47,7 @@ const Report: React.FC = () => {
     document.addEventListener('visibilitychange', onVis)
     start()
     return () => { document.removeEventListener('visibilitychange', onVis); stop() }
-  }, [activeClusterId])
+  }, [activeClusterId, reloadToken])
 
   const taskIdOf = (r: any) => r.task_id || r.id || ''
   const reportTypeName = (rt?: string) =>
@@ -115,6 +123,7 @@ const Report: React.FC = () => {
 
   return (
     <div>
+      {error && <Alert type="error" showIcon role="alert" message="报告数据读取失败" description={error} action={<Button size="small" onClick={() => setReloadToken((value) => value + 1)}>重试</Button>} style={{ marginBottom: 12 }} />}
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey={taskIdOf} loading={loading} columns={cols} dataSource={data} size="middle"
           pagination={{ pageSize: 20 }} locale={{ emptyText: <Empty text="暂无报告" /> }} />

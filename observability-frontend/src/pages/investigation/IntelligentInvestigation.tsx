@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Badge, Button, Card, Col, Collapse, Descriptions, Drawer, Row, Space, Steps, Tag, Typography } from 'antd'
+import { Alert, Badge, Button, Card, Col, Collapse, Descriptions, Drawer, Row, Space, Spin, Steps, Tag, Typography } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getRun, listRunEvidences, listRunTools, RunEvidence, RunTool, streamRunEvents } from '../../api/client'
 import { getRunGraphContext } from '../../api/knowledgeGraph'
@@ -80,6 +80,10 @@ const InvestigationDetailView: React.FC = () => {
   const [viewModel, setViewModel] = useState<InvestigationViewModel | null>(null)
   const [impactDrawerOpen, setImpactDrawerOpen] = useState(false)
   const [compactInvestigation, setCompactInvestigation] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [dataWarning, setDataWarning] = useState('')
+  const [reloadToken, setReloadToken] = useState(0)
 
   useEffect(() => {
     const update = () => setCompactInvestigation(window.innerWidth < 1280)
@@ -89,16 +93,23 @@ const InvestigationDetailView: React.FC = () => {
 
   useEffect(() => {
     // P12：接真实 Run 详情 GET /api/v1/ai/runs/:id；无数据/API 失败保持空态（不伪造 DEMO，不自动创建 Run）
-    if (!runId) return
+    if (!runId) {
+      setLoadError('缺少调查 Run 标识')
+      setLoading(false)
+      return
+    }
     let cancelled = false
     const controller = new AbortController()
+    setLoading(true)
+    setLoadError('')
+    setDataWarning('')
     // C2-4：拉取真实 ToolRun（只读工具执行事实）。
     listRunTools(runId)
       .then((resp) => { if (!cancelled && Array.isArray(resp.data?.tools)) setTools(resp.data.tools) })
-      .catch(() => { if (!cancelled) setTools([]) })
+      .catch(() => { if (!cancelled) { setTools([]); setDataWarning('ToolRun 数据暂时不可用，已保留调查快照。') } })
     getRunGraphContext(runId)
       .then((resp) => { if (!cancelled) setGraphContext(resp.data ?? null) })
-      .catch(() => { if (!cancelled) setGraphContext(null) })
+      .catch(() => { if (!cancelled) { setGraphContext(null); setDataWarning('影响面数据暂时不可用，已保留调查快照。') } })
     getRun(runId)
       .then(async (resp) => {
         const r = resp.data?.run
@@ -115,7 +126,7 @@ const InvestigationDetailView: React.FC = () => {
             // {layer, finding, ...} → 前端 {id, type, source, reliability, fact}
             evidence = evResp.data.evidences.map(normalizeEvidence)
           }
-        } catch { /* 拉取失败 → 空态 */ }
+        } catch { if (!cancelled) setDataWarning('Evidence 数据暂时不可用，已保留调查快照。') }
         if (cancelled) return
         const planSteps = Array.isArray(r.plan_steps) ? r.plan_steps : []
         const actions = Array.isArray(r.actions) ? r.actions : []
@@ -165,7 +176,13 @@ const InvestigationDetailView: React.FC = () => {
           } : { status: 'created', risk: 'R0', approver: null, execution: null, verification: null },
         })
       })
-      .catch(() => { if (!cancelled) setDetail(EMPTY_DETAIL) })
+      .catch((error: any) => {
+        if (!cancelled) {
+          setDetail(EMPTY_DETAIL)
+          setViewModel(null)
+          setLoadError(error?.response?.data?.error || error?.message || '调查 Run 读取失败')
+        }
+      })
     streamRunEvents(runId, (event) => {
       if (cancelled) return
       const type = event.event_type ?? event.error ?? ''
@@ -174,7 +191,7 @@ const InvestigationDetailView: React.FC = () => {
       if (payload?.status) setDetail((previous) => ({ ...previous, status: payload.status ?? previous.status }))
     }, controller.signal).catch(() => { /* details remain the durable source */ })
     return () => { cancelled = true; controller.abort() }
-  }, [runId])
+  }, [runId, reloadToken])
 
   const d = detail
 
@@ -185,6 +202,9 @@ const InvestigationDetailView: React.FC = () => {
         desc={`Run ${runId ?? d.runId}`}
         actions={<Button onClick={() => window.history.back()}>返回</Button>}
       />
+      {loadError && <Alert type="error" showIcon role="alert" message="调查数据读取失败" description={loadError} action={<Button size="small" onClick={() => setReloadToken((value) => value + 1)}>重试</Button>} style={{ marginBottom: 12 }} />}
+      {!loadError && dataWarning && <Alert type="warning" showIcon message="调查部分数据不可用" description={dataWarning} action={<Button size="small" onClick={() => setReloadToken((value) => value + 1)}>重新读取</Button>} style={{ marginBottom: 12 }} />}
+      {loading && !viewModel && <Card><div style={{ textAlign: 'center', padding: 48 }}><Spin tip="正在读取调查快照…" /></div></Card>}
       {viewModel && <>
         <ScopeBar snapshot={{ mode: 'snapshot', runId: viewModel.runId, tenantId: viewModel.scope.tenantId, clusterId: viewModel.scope.clusterId, environment: viewModel.scope.environment, namespace: viewModel.scope.namespace, resource: viewModel.scope.resourceId ? { type: 'resource', id: viewModel.scope.resourceId, label: viewModel.scope.resourceId } : undefined, timeRange: viewModel.scope.timeRange }} />
         {compactInvestigation && <Button style={{ margin: '12px 0' }} onClick={() => setImpactDrawerOpen(true)}>查看影响面</Button>}
