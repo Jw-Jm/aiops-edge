@@ -70,4 +70,18 @@ describe('scopeStore server-owned active scope', () => {
     expect(resetQueries).toHaveBeenCalledTimes(1)
     resetQueries.mockRestore()
   })
+
+  it('clears child scope when namespace changes and keeps a selected resource explicit', () => {
+    useScopeStore.setState({
+      context: {
+        environment: 'prod', namespace: 'payment',
+        resource: { type: 'service', id: 'payment-api', label: 'payment-api' },
+        timeRange: { mode: 'relative', minutes: 60 },
+      },
+    })
+    useScopeStore.getState().setNamespace('checkout')
+    expect(useScopeStore.getState().context).toMatchObject({ namespace: 'checkout', resource: undefined })
+    useScopeStore.getState().setResource({ type: 'service', id: 'checkout-api', label: 'checkout-api' })
+    expect(useScopeStore.getState().context.resource?.id).toBe('checkout-api')
+  })
 })

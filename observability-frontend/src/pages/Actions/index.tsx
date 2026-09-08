@@ -2,14 +2,14 @@ import React from 'react'
 import { Tabs } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { Breadcrumb, PageHeader } from '../../components/ui/PageKit'
-import Approvals from '../admin/Approvals'
+import ActionCenter from './ActionCenter'
 import K8sActions from '../infra/K8sActions'
 import AiChat from '../ai/AiChat'
 
 const Actions: React.FC = () => {
   const [params, setParams] = useSearchParams()
   const items = [
-    { key: 'queue', label: '动作队列', children: <Approvals /> },
+    { key: 'queue', label: '动作队列', children: <ActionCenter /> },
     { key: 'kubernetes', label: 'Kubernetes 处置', children: <K8sActions /> },
     { key: 'assistant', label: 'AI 处置建议', children: <AiChat /> },
   ]

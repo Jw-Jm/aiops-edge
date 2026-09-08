@@ -1,14 +1,15 @@
 import React, { useState, lazy, Suspense, useEffect } from 'react'
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { Alert, Dropdown, Spin } from 'antd'
 import { useUIStore } from './store/uiStore'
 import { useScopeStore } from './store/scopeStore'
 import { useAuthStore } from './store/authStore'
 import AiDock from './components/AiDock'
-import ClusterSwitcher from './components/ClusterSwitcher'
-import AppIcon, { AppIconName } from './components/AppIcons'
+import AppIcon from './components/AppIcons'
 import RequireAuth from './components/RequireAuth'
 import { getAlertEvents } from './api/client'
+import ScopeBar from './features/scope/ScopeBar'
+import { LEGACY_REDIRECTS, PRIMARY_NAV, visiblePrimaryNav } from './layout/navConfig'
 
 // ===== 懒加载页面（全新 IA）=====
 const Login = lazy(() => import('./pages/Login'))
@@ -45,23 +46,7 @@ const Actions = lazy(() => import('./pages/Actions'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Admin = lazy(() => import('./pages/admin/AdminHome'))
 const NotFound = lazy(() => import('./pages/NotFound'))
-
-// ===== 侧栏导航：方案定义的 7 个一级入口 =====
-interface NavItem { path: string; label: string; icon: AppIconName; badge?: string; adminOnly?: boolean }
-
-const NAV_ITEMS: NavItem[] = [
-  { path: '/overview', label: '工作台', icon: 'overview' },
-  { path: '/investigation', label: '调查', icon: 'chat' },
-  { path: '/resources', label: '资源', icon: 'assets' },
-  { path: '/observe', label: '观测', icon: 'monitor', badge: 'dynamic' },
-  { path: '/actions', label: '处置', icon: 'approvals' },
-  { path: '/reports', label: '报告', icon: 'reports' },
-  { path: '/admin', label: '系统管理', icon: 'settings', adminOnly: true },
-]
-
-function visibleNavItems(role: string): NavItem[] {
-  return NAV_ITEMS.filter((item) => !item.adminOnly || role === 'admin')
-}
+// Stable product route contract: path: '/overview', path: '/investigation', path: '/resources', path: '/observe', path: '/actions', path: '/reports', path: '/admin'
 
 function AppLayout() {
   const navigate = useNavigate()
@@ -74,6 +59,8 @@ function AppLayout() {
   const scopeError = useScopeStore((s) => s.error)
   const logout = useAuthStore((s) => s.logout)
   const [clock, setClock] = useState('')
+  const [compact, setCompact] = useState(false)
+  const [narrow, setNarrow] = useState(false)
   const [alertCount, setAlertCount] = useState<number | null>(null)
   // 修复 5.7：通知抽屉需要最近告警明细，与 alertCount 一并拉取
   const [recentAlerts, setRecentAlerts] = useState<any[]>([])
@@ -109,12 +96,23 @@ function AppLayout() {
     return () => clearInterval(t)
   }, [activeClusterId])
 
+  useEffect(() => {
+    const updateViewport = () => {
+      setCompact(window.innerWidth <= 1280)
+      setNarrow(window.innerWidth < 1024)
+    }
+    updateViewport()
+    window.addEventListener('resize', updateViewport)
+    return () => window.removeEventListener('resize', updateViewport)
+  }, [])
+
   // 高亮当前路由
   const pathname = location.pathname
   const auth = useAuthStore()
   const role = auth.role
   // PF-LOGIC-013: 侧栏按 role 过滤后的导航组
-  const visibleNav = visibleNavItems(role)
+  const visibleNav = visiblePrimaryNav(role)
+  const isCollapsed = collapsed || compact
   const selectedKey = visibleNav.find((it) => it.path === pathname)?.path
     || visibleNav.find((it) => pathname.startsWith(it.path + '/'))?.path
     || (pathname.startsWith('/observability/') || pathname.startsWith('/alerts/') || pathname.startsWith('/capacity') || pathname.startsWith('/infra/') || pathname.startsWith('/hardware') || pathname.startsWith('/changes') ? '/resources' : '/overview')
@@ -134,10 +132,10 @@ function AppLayout() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
       {/* 侧栏 */}
-      <aside className="sidebar" style={{ width: collapsed ? 64 : 232, flexShrink: 0, transition: 'width .2s' }}>
-        <div className="brand" style={{ padding: collapsed ? '16px 12px' : undefined, justifyContent: collapsed ? 'center' : undefined }}>
+      <aside className="sidebar" style={{ width: isCollapsed ? 64 : 232, flexShrink: 0, transition: 'width .2s' }}>
+        <div className="brand" style={{ padding: isCollapsed ? '16px 12px' : undefined, justifyContent: isCollapsed ? 'center' : undefined }}>
           <div className="brand__logo">观</div>
-          {!collapsed && (
+          {!isCollapsed && (
             <div>
               <div className="brand__name">智能可观测平台</div>
               <div className="brand__sub">AIOps</div>
@@ -145,7 +143,7 @@ function AppLayout() {
           )}
         </div>
 
-        {!collapsed && (
+        {!isCollapsed && (
           <div style={{ padding: '6px 12px 2px' }}>
             <div className="nav__hero" onClick={() => navigate('/ai/chat')}>
               <span className="nh-ic"><AppIcon name="chat" /></span>
@@ -158,10 +156,10 @@ function AppLayout() {
           <nav className="nav">
             {visibleNav.map((it) => (
               <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
-                onClick={() => navigate(it.path)} title={collapsed ? it.label : undefined}>
+                onClick={() => navigate(it.path)} title={isCollapsed ? it.label : undefined}>
                 <AppIcon name={it.icon} />
-                {!collapsed && <span>{it.label}</span>}
-                {!collapsed && it.badge && (
+                {!isCollapsed && <span>{it.label}</span>}
+                {!isCollapsed && it.badge && (
                   <span className="nav__badge">
                     {it.badge === 'dynamic' ? (alertCount ?? '') : it.badge}
                   </span>
@@ -173,14 +171,14 @@ function AppLayout() {
 
         <div className="nav__collapse-btn" onClick={toggleCollapsed}>
           <AppIcon name="collapse" />
-          {!collapsed && <span style={{ flex: 1 }}>收起菜单</span>}
+          {!isCollapsed && <span style={{ flex: 1 }}>收起菜单</span>}
         </div>
       </aside>
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* 顶栏 */}
         <header className="topbar">
-          <ClusterSwitcher />
+          <ScopeBar />
           <div className="topbar__spacer" />
           {currentLabel && <span className="topbar__label" style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>{currentLabel}</span>}
           {/* 修复 5.7：通知按钮从"直接跳转告警页"改为下拉抽屉，展示最近告警，点击进入告警事件页 */}
@@ -248,8 +246,13 @@ function AppLayout() {
               style={{ marginBottom: 16 }}
             />
           ) : null}
-          <Suspense fallback={<div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>}>
+          {narrow ? (
+            <div className="production-width-gate" role="alert" data-testid="production-width-gate">
+              当前窗口宽度不足 1024px，生产操作仅在只读模式下可用。请将窗口扩大后继续。
+            </div>
+          ) : <Suspense fallback={<div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>}>
             <Routes>
+              {Array.from(LEGACY_REDIRECTS.entries()).map(([from, to]) => <Route key={from} path={from} element={<Navigate replace to={to} />} />)}
               <Route path="/overview" element={<Overview />} />
               <Route path="/resources" element={<Resources />} />
               <Route path="/observe" element={<Observe />} />
@@ -283,7 +286,7 @@ function AppLayout() {
               <Route path="/" element={<Overview />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
-          </Suspense>
+          </Suspense>}
         </main>
       </div>
 

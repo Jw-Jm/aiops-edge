@@ -4,7 +4,7 @@ import { BookOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
 import { listReports, addKnowledgeCase } from '../../api/client'
 import api from '../../api/client'
-import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
+import { Empty } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
 
 interface Report { id?: string; task_id?: string; service_name?: string; report_type?: string; verdict?: string; risk_score?: number; summary?: string; created_at?: string; title?: string; status?: string; cluster_id?: string }
@@ -111,8 +111,6 @@ const Report: React.FC = () => {
 
   return (
     <div>
-      <Breadcrumb items={[{ t: '报告' }, { t: '报告中心' }]} />
-      <PageHeader title="报告中心" desc="诊断报告 / 巡检报告的生成与下载" />
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey={taskIdOf} loading={loading} columns={cols} dataSource={data} size="middle"
           pagination={{ pageSize: 20 }} locale={{ emptyText: <Empty text="暂无报告" /> }} />
@@ -132,8 +130,13 @@ const Report: React.FC = () => {
               {preview.created_at && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{preview.created_at.slice(0, 19).replace('T', ' ')}</span>}
             </Space>
             {/* 修复 5.1：markdown 渲染摘要，保留标题/列表/粗体等结构 */}
-            <div className="markdown-body" style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--text)' }}>
-              <ReactMarkdown>{preview.summary || '暂无摘要'}</ReactMarkdown>
+            <div className="report-template" style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--text)' }}>
+              <section><h4>结论摘要</h4><ReactMarkdown>{preview.summary || '未提供'}</ReactMarkdown></section>
+              <section><h4>影响范围</h4><p>{preview.service_name ? `服务：${preview.service_name}` : '未提供'}</p></section>
+              <section><h4>根因与证据</h4><p>{preview.verdict || '未提供；请从关联调查 Run 查看原始证据。'}</p></section>
+              <section><h4>处置建议</h4><p>未提供</p></section>
+              <section><h4>验证结果</h4><p>未提供</p></section>
+              <section><h4>审计信息</h4><p>{preview.created_at ? `生成时间：${preview.created_at.slice(0, 19).replace('T', ' ')}` : '未提供'}</p></section>
             </div>
           </div>
         )}

@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { getMe, setActiveScope } from '../api/client'
 import { setScopeCluster } from '../api/scopeRuntime'
 import { resetScopeQueries } from '../query/client'
+import { DEFAULT_SCOPE_CONTEXT, type Environment, type ResourceRef, type ScopeContext, type TimeRange } from '../features/scope/types'
 
 export interface AuthScope {
   tenantId: string
@@ -19,6 +20,7 @@ export interface ScopeCluster {
 
 interface ScopeState {
   authScope: AuthScope | null
+  context: ScopeContext
   preferredClusterId: string
   clusters: ScopeCluster[]
   loading: boolean
@@ -27,6 +29,10 @@ interface ScopeState {
   initialize: () => Promise<void>
   switchCluster: (clusterId: string) => Promise<void>
   setPreferredCluster: (clusterId: string) => void
+  setEnvironment: (environment: Environment) => void
+  setNamespace: (namespace: string) => void
+  setResource: (resource?: ResourceRef) => void
+  setTimeRange: (timeRange: TimeRange) => void
   isReady: () => boolean
 }
 
@@ -50,6 +56,7 @@ export const useScopeStore = create<ScopeState>()(
   persist(
     (set, get) => ({
       authScope: null,
+      context: DEFAULT_SCOPE_CONTEXT,
       preferredClusterId: '',
       clusters: [],
       loading: false,
@@ -64,6 +71,7 @@ export const useScopeStore = create<ScopeState>()(
           set({
             authScope: nextScope,
             clusters: projectClusters(response.data.available_clusters),
+            context: get().context,
             loading: false,
           })
         } catch (error) {
@@ -94,6 +102,7 @@ export const useScopeStore = create<ScopeState>()(
             authScope: confirmed,
             preferredClusterId: confirmed.activeClusterId,
             clusters: projectClusters(response.data.available_clusters),
+            context: { ...get().context, namespace: '', resource: undefined },
             switching: false,
           })
         } catch (error) {
@@ -107,6 +116,10 @@ export const useScopeStore = create<ScopeState>()(
         }
       },
       setPreferredCluster: (clusterId) => set({ preferredClusterId: clusterId }),
+      setEnvironment: (environment) => set((state) => ({ context: { ...state.context, environment } })),
+      setNamespace: (namespace) => set((state) => ({ context: { ...state.context, namespace, resource: undefined } })),
+      setResource: (resource) => set((state) => ({ context: { ...state.context, resource } })),
+      setTimeRange: (timeRange) => set((state) => ({ context: { ...state.context, timeRange } })),
       isReady: () => Boolean(get().authScope?.tenantId && get().authScope?.activeClusterId),
     }),
     {

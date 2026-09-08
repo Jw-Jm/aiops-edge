@@ -5,6 +5,9 @@ import { getRun, listRunEvidences, listRunTools, RunTool, streamRunEvents } from
 import { getRunGraphContext } from '../../api/knowledgeGraph'
 import { PageHeader } from '../../components/ui/PageKit'
 import GraphContextPanel from '../../components/graph/GraphContextPanel'
+import InvestigationShell from './InvestigationShell'
+import { toInvestigationViewModel, type InvestigationViewModel } from '../../features/investigation/model'
+import ScopeBar from '../../features/scope/ScopeBar'
 
 const { Text } = Typography
 
@@ -46,6 +49,7 @@ const InvestigationDetailView: React.FC = () => {
   const [tools, setTools] = useState<RunTool[]>([])
   const [graphContext, setGraphContext] = useState<Record<string, unknown> | null>(null)
   const [lastEvent, setLastEvent] = useState('')
+  const [viewModel, setViewModel] = useState<InvestigationViewModel | null>(null)
 
   useEffect(() => {
     // P12：接真实 Run 详情 GET /api/v1/ai/runs/:id；无数据/API 失败保持空态（不伪造 DEMO，不自动创建 Run）
@@ -92,6 +96,14 @@ const InvestigationDetailView: React.FC = () => {
           ? approvals.filter((a: any) => a.action_id === latestAction.action_id).slice(-1)[0]
           : undefined
         const latestVerification = r.latest_verification ?? (Array.isArray(r.verifications) ? r.verifications[r.verifications.length - 1] : undefined)
+        setViewModel(toInvestigationViewModel({
+          run_id: r.run_id, tenant_id: r.tenant_id ?? undefined, primary_cluster_id: r.primary_cluster_id ?? undefined,
+          target_resource_id: r.target_resource_id, intent: r.intent, status: r.status,
+          root_cause: r.root_cause, confidence: r.confidence, created_at: r.created_at,
+          evidence: evidence.map((item) => ({ evidence_id: item.id, type: item.type, source: item.source, fact: item.fact, source_reliability: typeof item.reliability === 'number' ? item.reliability : null })),
+          hypotheses: hypotheses.map((h: any) => ({ hypothesis_id: String(h.hypothesis_id ?? ''), content: String(h.content ?? ''), confidence: Number(h.confidence ?? 0), missing_evidence: h.missing_evidence ?? [], contradicting_evidence: h.contradicting_evidence ?? [] })),
+          action: latestAction ? { status: String(latestAction.status ?? 'proposed'), risk: String(latestAction.authoritative_risk ?? 'unknown'), execution: latestAction.execution_status ?? null, verification: latestVerification?.status ?? null } : undefined,
+        }))
         setDetail({
           runId: r.run_id,
           scope: {
@@ -142,7 +154,12 @@ const InvestigationDetailView: React.FC = () => {
         desc={`Run ${runId ?? d.runId}`}
         actions={<Button onClick={() => window.history.back()}>返回</Button>}
       />
-      <Row gutter={16}>
+      {viewModel && <>
+        <ScopeBar snapshot={{ mode: 'snapshot', runId: viewModel.runId, tenantId: viewModel.scope.tenantId, clusterId: viewModel.scope.clusterId, environment: 'unknown', namespace: '', resource: viewModel.scope.resourceId ? { type: 'resource', id: viewModel.scope.resourceId, label: viewModel.scope.resourceId } : undefined }} />
+        <InvestigationShell model={viewModel} graphContext={graphContext} tools={tools} onOpenAction={() => navigate('/actions')} onEvidenceClick={(id) => navigate(`/investigation/${viewModel.runId}/evidence/${encodeURIComponent(id)}`)} />
+        <Card size="small" style={{ marginTop: 16 }} aria-live="polite"><Text strong>执行事件</Text><div style={{ marginTop: 6 }}>{lastEvent || <Text type="secondary">暂无事件</Text>}</div></Card>
+      </>}
+      <Row gutter={16} style={{ display: 'none' }} aria-hidden="true">
         <Col span={24}>
           <Card title="Scope 与 Intent" size="small">
             <Descriptions size="small" column={3}>

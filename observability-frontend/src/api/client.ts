@@ -149,6 +149,12 @@ export interface ActionProjection {
   namespace: string
   operation: string
   execution_status: string
+  risk_score?: number
+  risk_level?: string
+  impact_summary?: string
+  approval_status?: string
+  verification_status?: string
+  rollback_summary?: string
   params?: Record<string, unknown>
   error_code?: string
   created_at?: string

@@ -20,7 +20,9 @@ const views = [
 
 const Resources: React.FC = () => {
   const [params, setParams] = useSearchParams()
-  const requested = params.get('view') || 'services'
+  const kind = params.get('kind')
+  const kindView: Record<string, string> = { service: 'services', vm: 'vms', kubernetes: 'kubernetes', hardware: 'hardware' }
+  const requested = params.get('view') || (kind ? kindView[kind] : undefined) || 'services'
   const activeKey = views.some((view) => view.key === requested) ? requested : 'services'
 
   return (

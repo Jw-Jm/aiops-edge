@@ -5,10 +5,14 @@ import { useNavigate } from 'react-router-dom'
 import {
   DashboardAlertEvent, DashboardResources, DashboardStats, NodeMetric,
   getAlertEvents, getDashboardResources, getDashboardStats, getNodeMetrics,
+  listActions, listRuns, type ActionProjection, type RunSummary,
 } from '../../api/client'
 import { Breadcrumb, Empty, PageHeader, PaneCard, StatCard, StatusBadge } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
 import { useScopeStore } from '../../store/scopeStore'
+import IssueQueue from './IssueQueue'
+import WorkQueue from './WorkQueue'
+import { rankOperationalIssues, type OperationalIssue } from './priority'
 
 const severityRank: Record<string, number> = { critical: 3, 严重: 3, warning: 2, 警告: 2, info: 1, 信息: 1 }
 const severityLabel = (value?: string) => {
@@ -37,6 +41,8 @@ const Overview: React.FC = () => {
   const [resources, setResources] = useState<DashboardResources | null>(null)
   const [nodes, setNodes] = useState<NodeMetric[]>([])
   const [alerts, setAlerts] = useState<DashboardAlertEvent[]>([])
+  const [runs, setRuns] = useState<RunSummary[]>([])
+  const [actions, setActions] = useState<ActionProjection[]>([])
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [nodeSort, setNodeSort] = useState<'cpu' | 'memory'>('cpu')
@@ -52,6 +58,8 @@ const Overview: React.FC = () => {
       setResources(null)
       setNodes([])
       setAlerts([])
+      setRuns([])
+      setActions([])
       return
     }
     setLoading(true)
@@ -69,6 +77,8 @@ const Overview: React.FC = () => {
         const data = r.data
         setAlerts(Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : []))
       }).catch((e) => { setAlerts([]); recordError('alerts', e, '告警数据加载失败') }),
+      (() => { try { return listRuns({ cluster_id: activeClusterId, limit: 50 }).then((r) => setRuns(r.data?.runs ?? [])).catch((e) => { setRuns([]); recordError('runs', e, '调查队列加载失败') }) } catch { setRuns([]); return Promise.resolve() } })(),
+      (() => { try { return listActions({ limit: 100 }).then((r) => setActions(r.data?.actions ?? [])).catch((e) => { setActions([]); recordError('actions', e, '动作队列加载失败') }) } catch { setActions([]); return Promise.resolve() } })(),
     ]).finally(() => setLoading(false))
   }
 
@@ -84,6 +94,13 @@ const Overview: React.FC = () => {
   }, [nodes, nodeSort])
   const displayedNodes = showAllNodes ? sortedNodes : sortedNodes.slice(0, 5)
   const activeAlerts = useMemo(() => alerts.filter((a) => isActive(a.status)).sort((a, b) => (severityRank[String(b.severity || 'warning').toLowerCase()] || 2) - (severityRank[String(a.severity || 'warning').toLowerCase()] || 2)), [alerts])
+  const operationalIssues = useMemo<OperationalIssue[]>(() => rankOperationalIssues(activeAlerts.map((item, index) => {
+    const severity = severityRank[String(item.severity || 'warning').toLowerCase()] === 3 ? 'critical' : severityRank[String(item.severity || 'warning').toLowerCase()] === 1 ? 'info' : 'warning'
+    const matchingRun = runs.find((run) => run.target_resource_id && run.target_resource_id === item.service)
+    const start = item.first_timestamp ? Date.parse(item.first_timestamp) : NaN
+    const end = item.last_timestamp ? Date.parse(item.last_timestamp) : NaN
+    return { id: String(item.id || `${item.rule_name || 'alert'}-${index}`), title: item.rule_name || `${item.service || '资源'} 告警`, severity, affectedServices: 1, durationMinutes: Number.isFinite(start) && Number.isFinite(end) && end >= start ? Math.round((end - start) / 60000) : 0, recentChange: false, runId: matchingRun?.run_id, resourceId: item.service || 'unknown', symptom: item.message || `${item.service || '资源'} 出现${severity === 'critical' ? '严重' : '异常'}告警`, startedAt: item.first_timestamp || item.last_timestamp }
+  })), [activeAlerts, runs])
   const trend = stats?.trend || []
   // A6: 服务数口径与拓扑视图一致（后端 /dashboard/stats 同时返回 services 与 topology_services，
   // 前者仅 trace 服务、后者含拓扑目录，总览卡片用 topology_services 才能与拓扑视图对得上）
@@ -134,6 +151,11 @@ const Overview: React.FC = () => {
     {errors.stats ? <ErrorState message={errors.stats} onRetry={load} /> : null}
     {stats?.data_gaps?.length ? <Alert showIcon type="warning" message={`检测到数据采集中断：${stats.data_gaps.length} 个时段无数据`} style={{ marginBottom: 16 }} /> : null}
 
+    <div className="overview-work-queues">
+      <IssueQueue issues={operationalIssues} loading={loading} onRetry={load} />
+      <WorkQueue runs={runs} actions={actions} loading={loading} />
+    </div>
+
     <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
       <Col xs={12} md={6}>{withGapTag(<StatCard label="服务数量" value={loading ? '…' : topologyServices} unit="个" spark={sparkPts(svcSparkSeries)} sparkColor="var(--primary)" />)}</Col>
       <Col xs={12} md={6}>{withGapTag(<StatCard label="调用总量" value={loading ? '…' : (stats?.total_calls ?? 0).toLocaleString()} unit="次" spark={sparkPts(trend.map((t) => t.calls))} sparkColor="var(--primary)" />)}</Col>
@@ -158,7 +180,7 @@ const Overview: React.FC = () => {
     </Row>
 
     <PaneCard title={<span>活跃告警 <Badge count={activeAlerts.length} showZero style={{ backgroundColor: activeAlerts.length ? 'var(--danger)' : 'var(--success)', marginLeft: 8 }} /></span>} action={<Button type="link" onClick={() => navigate('/alerts/events')}>查看全部 →</Button>}>
-      {errors.alerts ? <ErrorState message={errors.alerts} onRetry={load} /> : activeAlerts.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 900 }}>{activeAlerts.map((item, index) => { const question = `告警: ${item.rule_name || '未命名规则'} (${severityLabel(item.severity)}), 服务: ${item.service || '未知服务'}, 触发 ${item.count ?? 1} 次, 最近 ${item.last_timestamp || '未知时间'}, 消息: ${item.message || '无消息'}, 请分析根因并给出处置建议`; return <div key={`${item.rule_name}-${item.last_timestamp}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1.15fr .8fr .65fr .45fr 1fr minmax(180px, 2fr) auto', gap: 14, alignItems: 'center', padding: '12px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600 }}>{item.rule_name || '未命名规则'}</span><span>{item.service || '—'}</span><StatusBadge text={severityLabel(item.severity)} tone={severityTone(item.severity)} /><span>{item.count ?? 1} 次</span><span style={{ color: 'var(--text-muted)' }}>{item.last_timestamp || '—'}</span><Tooltip title={item.message || '—'}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.message || '—'}</span></Tooltip><Button type="link" size="small" onClick={() => navigate(`/ai/chat?q=${encodeURIComponent(question)}`)}>根因定位</Button></div> })}</div></div> : <div style={{ textAlign: 'center', padding: '28px 8px', color: 'var(--success)', fontSize: 13 }}>✓ 当前无活跃告警，系统健康</div>}
+      {errors.alerts ? <ErrorState message={errors.alerts} onRetry={load} /> : activeAlerts.length ? <div style={{ overflowX: 'auto' }}><div style={{ minWidth: 900 }}>{activeAlerts.map((item, index) => { const question = `告警: ${item.rule_name || '未命名规则'} (${severityLabel(item.severity)}), 服务: ${item.service || '未知服务'}, 触发 ${item.count ?? 1} 次, 最近 ${item.last_timestamp || '未知时间'}, 消息: ${item.message || '无消息'}, 请分析根因并给出处置建议`; return <div key={`${item.rule_name}-${item.last_timestamp}-${index}`} style={{ display: 'grid', gridTemplateColumns: '1.15fr .8fr .65fr .45fr 1fr minmax(180px, 2fr) auto', gap: 14, alignItems: 'center', padding: '12px 4px', borderBottom: '1px solid var(--border-soft)', fontSize: 12 }}><span style={{ fontWeight: 600 }}>{item.rule_name || '未命名规则'}</span><span>{item.service || '—'}</span><StatusBadge text={severityLabel(item.severity)} tone={severityTone(item.severity)} /><span>{item.count ?? 1} 次</span><span style={{ color: 'var(--text-muted)' }}>{item.last_timestamp || '—'}</span><Tooltip title={item.message || '—'}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.message || '—'}</span></Tooltip><Button type="link" size="small" onClick={() => navigate(`/investigation/new?source=alert&resource=${encodeURIComponent(item.service || '')}&symptom=${encodeURIComponent(question)}`)}>开始调查</Button></div> })}</div></div> : <div style={{ textAlign: 'center', padding: '28px 8px', color: 'var(--success)', fontSize: 13 }}>✓ 当前无活跃告警，系统健康</div>}
     </PaneCard>
   </div>
 }

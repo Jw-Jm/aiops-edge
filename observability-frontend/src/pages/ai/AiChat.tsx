@@ -477,8 +477,11 @@ const AiChat: React.FC = () => {
                     <div style={{ marginTop: 10 }}>
                       <Button type="primary" size="small"
                         icon={<ExperimentOutlined />}
-                        onClick={() => navigate('/investigation/new')}>
-                        创建结构化调查 (createRun)
+                        onClick={() => {
+                          const query = new URLSearchParams({ source: 'chat', clusterId: activeClusterId, targetType: 'service', symptom: symptomMsg?.content || '' })
+                          navigate(`/investigation/new?${query.toString()}`)
+                        }}>
+                        转为正式调查
                       </Button>
                     </div>
                   )}

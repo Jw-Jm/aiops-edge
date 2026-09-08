@@ -10,6 +10,7 @@ import Trace from '../observability/Trace'
 import LogMetrics from '../observability/LogMetrics'
 import Changes from '../infra/Changes'
 import Grafana from '../observability/Grafana'
+import AlertRules from '../alerts/AlertRules'
 import { useScopeStore } from '../../store/scopeStore'
 import { queryKeys } from '../../query/keys'
 
@@ -26,7 +27,11 @@ function toProblem(item: AlertAggregationItem): ProblemSummary {
     primary_resource: item.service,
     affected_resources: [item.service],
     started_at: item.latest_time,
-    duration_seconds: null,
+    duration_seconds: item.events?.length ? Math.max(...item.events.map((event) => {
+      const start = event.first_timestamp ? Date.parse(event.first_timestamp) : NaN
+      const end = event.last_timestamp ? Date.parse(event.last_timestamp) : NaN
+      return Number.isFinite(start) && Number.isFinite(end) && end >= start ? (end - start) / 1000 : 0
+    })) : null,
     evidence_summary: [`${item.service} 近期开启 ${item.total} 次告警事件`],
     recent_change: null,
     data_status: 'available',
@@ -47,7 +52,7 @@ const ProblemsView: React.FC = () => {
   const error = problemsQuery.error instanceof Error ? problemsQuery.error.message : ''
 
   const columns = useMemo(() => [
-    { title: '问题', dataIndex: 'title', key: 'title', render: (value: string, row: ProblemSummary) => <Button type="link" onClick={() => navigate(`/investigation/new?problem_id=${encodeURIComponent(row.problem_id)}&service=${encodeURIComponent(row.primary_resource || '')}`)}>{value}</Button> },
+    { title: '问题', dataIndex: 'title', key: 'title', render: (value: string, row: ProblemSummary) => <Button type="link" onClick={() => navigate(`/investigation/new?source=alert&problem_id=${encodeURIComponent(row.problem_id)}&service=${encodeURIComponent(row.primary_resource || '')}&symptom=${encodeURIComponent(value)}`)}>{value}</Button> },
     { title: '服务', dataIndex: 'primary_resource', key: 'primary_resource' },
     { title: '严重度', dataIndex: 'severity', key: 'severity', render: (value: string) => <StatusBadge text={value === 'critical' ? '严重' : value === 'warning' ? '警告' : '信息'} tone={value === 'critical' ? 'crit' : value === 'warning' ? 'warn' : 'info'} /> },
     { title: '健康', dataIndex: 'health', key: 'health', render: (value: string) => <Tag color={value === 'abnormal' ? 'red' : value === 'degraded' ? 'orange' : 'green'}>{value === 'abnormal' ? '异常' : value === 'degraded' ? '降级' : '健康'}</Tag> },
@@ -60,7 +65,7 @@ const ProblemsView: React.FC = () => {
   return (
     <div>
       {error ? <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void problemsQuery.refetch()}>重试</Button>} style={{ marginBottom: 12 }} /> : null}
-      <Table rowKey="id" loading={loading} columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} locale={{ emptyText: <AntEmpty description="暂无问题" /> }} />
+      <Table rowKey="problem_id" loading={loading} columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} locale={{ emptyText: <AntEmpty description="暂无问题" /> }} />
     </div>
   )
 }
@@ -71,6 +76,7 @@ const Observe: React.FC = () => {
   const items = [
     { key: 'problems', label: '问题', children: <ProblemsView /> },
     { key: 'alerts', label: '原始告警', children: <AlertEvents /> },
+    { key: 'rules', label: '告警规则', children: <AlertRules /> },
     { key: 'traces', label: '调用链', children: <Trace /> },
     { key: 'telemetry', label: '日志与指标', children: <LogMetrics /> },
     { key: 'changes', label: '变更', children: <Changes /> },
