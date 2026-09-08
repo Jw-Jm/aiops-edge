@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { listRuns } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 const { Text } = Typography
 
@@ -30,7 +30,7 @@ const statusTone: Record<string, 'default' | 'processing' | 'success' | 'warning
 
 const InvestigationCenter: React.FC = () => {
   const navigate = useNavigate()
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [runs, setRuns] = useState<InvestigationRun[]>([])
   const [error, setError] = useState<string | null>(null)
 
@@ -38,7 +38,8 @@ const InvestigationCenter: React.FC = () => {
     setError(null)
     try {
       // P12：接真实 Run 数据源 GET /api/v1/ai/runs；失败必须显式呈现，不伪造 DEMO 或健康空列表。
-      const resp = await listRuns()
+      if (!activeClusterId) { setRuns([]); return }
+      const resp = await listRuns({ cluster_id: activeClusterId })
       const list = resp.data?.runs ?? []
       setRuns(list.map((r) => ({
         runId: r.run_id,
@@ -59,7 +60,7 @@ const InvestigationCenter: React.FC = () => {
       setRuns([])
       setError(e?.response?.data?.error || e?.message || '调查数据加载失败')
     }
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   useEffect(() => { void load() }, [load])
 

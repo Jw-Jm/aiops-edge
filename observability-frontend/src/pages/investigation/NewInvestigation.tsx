@@ -3,14 +3,15 @@ import { Button, Card, Form, Input, Select, Space, message } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { createRun } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 // P12.4：用户显式触发 AI 调查入口。deep-link exact tenant/canonical cluster/resource/time；
 // 仅查看页面/切换资源/收到新告警不得产生 AI Run（触发必须是显式按钮）。
 const NewInvestigation: React.FC = () => {
   const navigate = useNavigate()
   const [form] = Form.useForm()
-  const clusters = useUIStore((s) => s.clusters)
+  const clusters = useScopeStore((s) => s.clusters)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [submitting, setSubmitting] = useState(false)
 
   const onFinish = (values: { resourceId: string; symptom: string; clusterId: string; targetType: string }) => {
@@ -44,7 +45,7 @@ const NewInvestigation: React.FC = () => {
         actions={<Button onClick={() => window.history.back()}>返回</Button>}
       />
       <Card size="small" style={{ maxWidth: 560 }}>
-        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ clusterId: clusters[0]?.cluster_id ?? '', targetType: 'service' }}>
+        <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ clusterId: activeClusterId ?? clusters[0]?.cluster_id ?? '', targetType: 'service' }}>
           <Form.Item name="clusterId" label="Canonical Cluster" rules={[{ required: true }]}>
             <Select
               placeholder="选择 canonical cluster"

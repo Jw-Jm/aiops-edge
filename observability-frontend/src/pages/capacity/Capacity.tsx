@@ -3,7 +3,7 @@ import { Select, Button, Space, Spin, Statistic, Row, Col, Empty, Tag } from 'an
 import * as echarts from 'echarts'
 import { getCapacityForecast, getCapacityInstances, CapacityForecast } from '../../api/client'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import ErrorState from '../../components/ErrorState'
 
 // A1: 区分"无数据"与"数值为 0"。后端空数据时返回 current:0 + 空 history（且后续版本带 has_data:false），
@@ -42,7 +42,7 @@ const ettTone = (d: CapacityForecast | null): string => {
 }
 
 const Capacity: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const chartRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [instances, setInstances] = useState<string[]>([])
   const [instance, setInstance] = useState('')
@@ -52,10 +52,16 @@ const Capacity: React.FC = () => {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    if (!activeClusterId) return
     getCapacityInstances().then((r) => setInstances(r.data?.instances || [])).catch(() => {})
-  }, [])
+  }, [activeClusterId])
 
   const load = () => {
+    if (!activeClusterId) {
+      setLoading(false)
+      setData({})
+      return
+    }
     setLoading(true)
     setErrors({})
     Promise.all(
@@ -72,7 +78,7 @@ const Capacity: React.FC = () => {
       setErrors(errMap)
     }).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [instance, horizon, currentClusterId])
+  useEffect(() => { load() }, [instance, horizon, activeClusterId])
 
   useEffect(() => {
     if (!Object.keys(data).length) return

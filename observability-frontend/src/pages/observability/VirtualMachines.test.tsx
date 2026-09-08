@@ -5,8 +5,8 @@ import VirtualMachines from './VirtualMachines'
 import { listVms } from '../../api/client'
 
 vi.mock('../../api/client', () => ({ listVms: vi.fn(), getVm: vi.fn() }))
-vi.mock('../../store/uiStore', () => ({
-  useUIStore: (selector: (state: { currentClusterId: string }) => unknown) => selector({ currentClusterId: 'all' }),
+vi.mock('../../store/scopeStore', () => ({
+  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null }) => unknown) => selector({ authScope: { activeClusterId: 'cluster-1' } }),
 }))
 
 describe('VirtualMachines authentic failure states', () => {

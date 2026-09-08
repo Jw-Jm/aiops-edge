@@ -3,12 +3,12 @@ import { Table, Button, Modal, Form, Input, Select, InputNumber, Switch, Drawer,
 import { useNavigate } from 'react-router-dom'
 import { getAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 interface Rule { id: string; name?: string; rule_name?: string; service?: string; service_name?: string; metric?: string; threshold?: number; severity?: string; enabled?: boolean; condition?: string; duration?: number; cooldown?: number; type?: string; anomaly_method?: string; baseline_seconds?: number; keyword?: string; slo_id?: string }
 
 const AlertRules: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const navigate = useNavigate()
   const [data, setData] = useState<Rule[]>([])
   const [loading, setLoading] = useState(true)
@@ -18,13 +18,18 @@ const AlertRules: React.FC = () => {
   const [form] = Form.useForm()
 
   const load = () => {
+    if (!activeClusterId) {
+      setData([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     getAlertRules().then((r) => {
       const d = Array.isArray(r.data) ? r.data : r.data?.rules || r.data?.data || []
       setData(d)
     }).catch(() => setData([])).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [currentClusterId])
+  useEffect(() => { load() }, [activeClusterId])
 
   const submit = async () => {
     // PF-PAGE-011: 空表单点"确定"时 validateFields 会 reject，

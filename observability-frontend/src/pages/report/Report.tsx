@@ -5,17 +5,18 @@ import ReactMarkdown from 'react-markdown'
 import { listReports, addKnowledgeCase } from '../../api/client'
 import api from '../../api/client'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 interface Report { id?: string; task_id?: string; service_name?: string; report_type?: string; verdict?: string; risk_score?: number; summary?: string; created_at?: string; title?: string; status?: string; cluster_id?: string }
 
 const Report: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [data, setData] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)
   const [preview, setPreview] = useState<Report | null>(null) // 2.18 预览
 
   useEffect(() => {
+    if (!activeClusterId) return
     const load = () => {
       listReports({ limit: 100 }).then((r) => {
         // /ops/reports/history 返回 { history: [{task_id, service_name, report_type, verdict, risk_score, summary, created_at}] }
@@ -25,7 +26,7 @@ const Report: React.FC = () => {
     }
     load()
     // Issue7: 30s 轮询刷新，使 AI 对话新生成的巡检/诊断报告自动出现在报告中心，无需手动刷新
-    // 需求：切换集群后同步刷新（currentClusterId 变化时重建 effect）
+    // 切换服务端 active scope 后重建 effect，报告列表不会跨作用域复用。
     // B12: Tab 隐藏时暂停轮询（visibilitychange），避免后台空转请求
     let timer: ReturnType<typeof setInterval> | null = null
     const start = () => { if (!timer) timer = setInterval(load, 30000) }
@@ -34,7 +35,7 @@ const Report: React.FC = () => {
     document.addEventListener('visibilitychange', onVis)
     start()
     return () => { document.removeEventListener('visibilitychange', onVis); stop() }
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   const taskIdOf = (r: any) => r.task_id || r.id || ''
   const reportTypeName = (rt?: string) =>

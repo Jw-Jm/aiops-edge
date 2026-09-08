@@ -5,8 +5,8 @@ import InvestigationCenter from './InvestigationCenter'
 import { listRuns } from '../../api/client'
 
 vi.mock('../../api/client', () => ({ listRuns: vi.fn() }))
-vi.mock('../../store/uiStore', () => ({
-  useUIStore: (selector: (state: { currentClusterId: string }) => unknown) => selector({ currentClusterId: 'all' }),
+vi.mock('../../store/scopeStore', () => ({
+  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null }) => unknown) => selector({ authScope: { activeClusterId: 'cluster-1' } }),
 }))
 
 describe('InvestigationCenter identity projection', () => {

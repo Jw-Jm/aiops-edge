@@ -3,7 +3,7 @@ import { Table, Segmented, Button, Space, Drawer, Spin } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { getAlertEvents, rcaAlertAnalysis, deleteAlertEvent } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import { normalizeSeverity, SEVERITY_LABELS } from '../../lib/severity'
 
 interface AlertEvent { id: string | number; severity?: string; labels?: any; summary?: string; description?: string; service_name?: string; startsAt?: string; status?: string }
@@ -15,7 +15,7 @@ const sevTone = (s: string): 'crit' | 'warn' | 'info' => {
 }
 
 const AlertEvents: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [searchParams] = useSearchParams()
   const [sev, setSev] = useState<string>('all')
   const [status, setStatus] = useState<string>('current') // 默认当前告警（firing/acknowledged），已解决事件不展示，避免历史累积干扰
@@ -30,6 +30,11 @@ const AlertEvents: React.FC = () => {
   const serviceFilter = searchParams.get('service') || ''
 
   const load = () => {
+    if (!activeClusterId) {
+      setData([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     const params: Record<string, unknown> = { limit: 200 }
     if (ruleFilter) params.rule = ruleFilter
@@ -39,7 +44,7 @@ const AlertEvents: React.FC = () => {
       setData(d)
     }).catch(() => setData([])).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [ruleFilter, serviceFilter, currentClusterId])
+  useEffect(() => { load() }, [ruleFilter, serviceFilter, activeClusterId])
 
   const severity = (e: AlertEvent) => e.severity || e.labels?.severity || e.labels?.level || 'warning'
   const eventStatus = (e: any) => e.status || e.state || (e.resolved_at ? 'resolved' : 'firing')

@@ -13,9 +13,9 @@ export { api }
 export interface MeResponse {
   user_id: string
   session_id: string
-  active_scope: { tenant_id: string; cluster_id: string }
+  active_scope: { tenant_id: string; cluster_id: string } | null
   available_tenants: string[]
-  available_clusters: Array<{ tenant_id: string; cluster_id: string; slug?: string; name: string; status?: string }>
+  available_clusters: Array<{ tenant_id: string; cluster_id: string; slug?: string; name: string; status?: string; node_count?: number }>
   capabilities: string[]
 }
 export const setActiveScope = (tenantId: string, clusterId?: string) =>
@@ -347,6 +347,16 @@ export interface DashboardAlertEvent {
 }
 export interface DashboardAlertResponse { data?: DashboardAlertEvent[]; events?: DashboardAlertEvent[]; total?: number }
 export const getAlertEvents = (params?: Record<string, unknown>) => api.get<DashboardAlertResponse | DashboardAlertEvent[]>('/alerts/events', { params })
+export interface AlertAggregationItem {
+  service: string
+  total: number
+  by_severity: Record<string, number>
+  latest_rule: string
+  latest_time: string
+  events: DashboardAlertEvent[]
+}
+export const getAlertAggregation = (params?: Record<string, unknown>) =>
+  api.get<{ data: AlertAggregationItem[] }>('/alerts/aggregation', { params })
 export const getAlertEventByID = (id: string) => api.get(`/alerts/events/${id}`)
 export const ackAlertEvent = (id: string) => api.post(`/alerts/events/${id}/ack`)
 export const resolveAlertEvent = (id: string) => api.post(`/alerts/events/${id}/resolve`)

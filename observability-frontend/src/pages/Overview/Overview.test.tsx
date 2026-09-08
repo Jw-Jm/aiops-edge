@@ -7,8 +7,8 @@ import { getAlertEvents, getDashboardResources, getDashboardStats, getNodeMetric
 vi.mock('../../api/client', () => ({
   getAlertEvents: vi.fn(), getDashboardResources: vi.fn(), getDashboardStats: vi.fn(), getNodeMetrics: vi.fn(),
 }))
-vi.mock('../../store/uiStore', () => ({
-  useUIStore: (selector: (state: { currentClusterId: string; clusters: never[] }) => unknown) => selector({ currentClusterId: 'all', clusters: [] }),
+vi.mock('../../store/scopeStore', () => ({
+  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null; clusters: never[] }) => unknown) => selector({ authScope: { activeClusterId: 'cluster-1' }, clusters: [] }),
 }))
 
 describe('Overview authentic failure states', () => {

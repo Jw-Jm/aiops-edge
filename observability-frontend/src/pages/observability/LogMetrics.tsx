@@ -3,7 +3,7 @@ import { Input, Button, Select, Space, Segmented, Tag, Table, Tooltip } from 'an
 import { queryLogs, aggregateLogs, getServices } from '../../api/client'
 import { extractServiceNames } from './Trace'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 interface LogRow { ts: string; level: string; service_name: string; message: string; [k: string]: any }
 interface AggRow { [k: string]: any; count?: number }
@@ -12,7 +12,7 @@ const LEVEL_TONE: Record<string, string> = { error: 'var(--danger)', warning: 'v
 
 // 2.8 日志页重设计：数据源选择 + 级别过滤 + 时间范围（集群过滤由全局 ClusterSwitcher 注入）
 const LogMetrics: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [mode, setMode] = useState<'logs' | 'aggregate'>('logs')
   // Raw Logs SoT is VictoriaLogs in the production reader mode. ClickHouse
   // remains the derived-analytics store and is intentionally not exposed as
@@ -36,6 +36,9 @@ const LogMetrics: React.FC = () => {
   // A7: 筛选条件变更时自动触发查询（与模式切换一致）。overrides 让 onChange 立即生效，
   // 避免 setState 异步导致 search() 读到旧值。
   const search = (targetMode?: 'logs' | 'aggregate', overrides: Partial<{ source: string; level: string; hours: number; hideHealth: boolean; service: string }> = {}) => {
+    if (!activeClusterId) {
+      setRows([]); setAggs([]); setLoading(false); return
+    }
     const requestId = ++requestSeq.current
     const m = targetMode || mode
     setLoading(true)
@@ -98,14 +101,14 @@ const LogMetrics: React.FC = () => {
   }
 
   // P3-2 首次加载自动查询
-  useEffect(() => { search() }, [currentClusterId])
+  useEffect(() => { search() }, [activeClusterId])
 
   // PF-FLOW-001: 服务下拉选项（复用 /services 活跃服务列表，与 Trace 页一致）
   useEffect(() => {
     getServices().then((r) => {
       setServices(extractServiceNames(r.data))
     }).catch(() => setServices([]))
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   const logCols = [
     { title: '时间', dataIndex: 'ts', key: 'ts', render: (v: string) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>{v}</span>, width: 165 },

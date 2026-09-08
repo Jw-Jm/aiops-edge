@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Drawer, Spin, Table, Tag, Select, Space, Button, Input } from 'antd'
 import { getTraces, getTraceDetail, getTraceContext, getServices } from '../../api/client'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
 
@@ -85,7 +85,7 @@ export function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number 
 }
 
 const Trace: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [data, setData] = useState<TraceRow[]>([])
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<any>(null)
@@ -106,6 +106,9 @@ const Trace: React.FC = () => {
   // B5 修复：服务端分页（后端支持 limit/offset），翻页不再失效；
   // 参数名对齐后端（service 而非 service_name），并携带时间范围 hours。
   const load = (s = svc, q = search, h = rangeHours, append = false) => {
+    if (!activeClusterId) {
+      setData([]); setLoading(false); setHasMore(false); return
+    }
     setLoading(true)
     if (!append) setError(null)
     const off = append ? offset : 0
@@ -123,14 +126,14 @@ const Trace: React.FC = () => {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [currentClusterId])
+  useEffect(() => { load() }, [activeClusterId])
 
   // B5: 服务下拉选项（复用 /services 活跃服务列表）
   useEffect(() => {
     getServices().then((r) => {
       setServices(extractServiceNames(r.data))
     }).catch(() => setServices([]))
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   const openDetail = (id: string) => {
     setSelectedTraceId(id)

@@ -1,23 +1,16 @@
-import React, { useEffect } from 'react'
-import { Select } from 'antd'
-import { useUIStore } from '../store/uiStore'
-import { setActiveScope } from '../api/client'
+import React from 'react'
+import { Alert, Select, Spin } from 'antd'
+import { useScopeStore } from '../store/scopeStore'
 
 // 全局集群选择器：多集群纳管入口。
 // 遵循亮色极简设计：复用 token 变量与 antd 标准组件，不引入新风格。
 export default function ClusterSwitcher() {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
-  const clusters = useUIStore((s) => s.clusters)
-  const setCurrentCluster = useUIStore((s) => s.setCurrentCluster)
-  const refreshClusters = useUIStore((s) => s.refreshClusters)
-
-  // 首次挂载拉取集群列表（幂等，不影响页面数据加载）
-  useEffect(() => {
-    if (clusters.length === 0) {
-      refreshClusters()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const clusters = useScopeStore((s) => s.clusters)
+  const switchCluster = useScopeStore((s) => s.switchCluster)
+  const loading = useScopeStore((s) => s.loading)
+  const switching = useScopeStore((s) => s.switching)
+  const error = useScopeStore((s) => s.error)
 
   // cluster_id 语义：始终使用后端返回的 canonical UUID。旧 numeric id/name
   // 不再被当成查询授权上下文，避免 UI 选择器把不可授权的 legacy ref 传给后端。
@@ -29,31 +22,15 @@ export default function ClusterSwitcher() {
     if (['down', 'error', 'offline', 'disconnected'].includes(st)) return { color: '#dc2626', label: '失联' }
     return { color: '#a3aebe', label: '未知' }
   }
-  // LOGIC-002: 统一的 scope 应用入口。onChange 处理切换；同值点击（antd Select
-  // 不触发 onChange）通过 option label 的 onClick 走同一入口，恢复/刷新 scope。
-  const applyScope = async (v: string) => {
-    const selected = clusters.find((c) => c.cluster_id === v)
-    if (!selected?.tenant_id) return
-    try {
-      await setActiveScope(selected.tenant_id, selected.cluster_id)
-      setCurrentCluster(v)
-    } catch {
-      // Keep the previous scope on a server-side authorization failure.
-    }
-  }
-
   const options = clusters.map((c) => {
-      const value = c.cluster_id || `legacy-${c.id}`
+      const value = c.cluster_id
       const d = statusDot(c.status)
       return {
         value,
         label: c.node_count
           ? `${c.name} (${c.node_count}节点)`
           : c.name,
-        // 用 ReactNode 渲染状态点，Select 支持
-        labelNode: <span
-          onClick={() => { if (value === currentClusterId) void applyScope(value) }}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        labelNode: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
           {c.name}
           {c.node_count ? ` (${c.node_count}节点)` : ''}
@@ -61,12 +38,17 @@ export default function ClusterSwitcher() {
       }
     })
 
+  if (error && clusters.length === 0) {
+    return <Alert banner type="error" message={error} style={{ maxWidth: 360 }} />
+  }
+
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      {(loading || switching) && <Spin size="small" aria-label="作用域加载中" />}
       <Select
-        value={currentClusterId}
+        value={activeClusterId || undefined}
         placeholder="选择作用域"
-        onChange={applyScope}
+        onChange={(value) => { void switchCluster(value) }}
         options={options.map((o) => ({ ...o, label: o.labelNode || o.label }))}
         style={{ minWidth: 130 }}
         size="small"

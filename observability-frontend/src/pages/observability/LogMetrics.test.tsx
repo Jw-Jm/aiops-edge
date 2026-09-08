@@ -5,8 +5,8 @@ import LogMetrics from './LogMetrics'
 import { aggregateLogs, getServices, queryLogs } from '../../api/client'
 
 vi.mock('../../api/client', () => ({ queryLogs: vi.fn(), aggregateLogs: vi.fn(), getServices: vi.fn() }))
-vi.mock('../../store/uiStore', () => ({
-  useUIStore: (selector: (state: { currentClusterId: string }) => unknown) => selector({ currentClusterId: 'all' }),
+vi.mock('../../store/scopeStore', () => ({
+  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null }) => unknown) => selector({ authScope: { activeClusterId: 'cluster-1' } }),
 }))
 
 describe('LogMetrics supported source projection', () => {

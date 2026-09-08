@@ -19,6 +19,9 @@ vi.mock('../../api/knowledgeGraph', () => ({
   getServiceDependencies: vi.fn(),
   getServiceDependencyMatrix: vi.fn(),
 }))
+vi.mock('../../store/scopeStore', () => ({
+  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null }) => unknown) => selector({ authScope: { activeClusterId: 'cluster-1' } }),
+}))
 
 import { getServices } from '../../api/client'
 import { getGraphHealth, getGraphImpact, getGraphNeighbors, getServiceDependencies, getServiceDependencyMatrix, getServiceMap, getServiceOverview, searchGraphEntities } from '../../api/knowledgeGraph'

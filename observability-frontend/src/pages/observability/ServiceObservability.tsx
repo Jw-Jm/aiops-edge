@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Empty as AntEmpty, Select, Space } from 'antd'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import { getGraphHealth, getGraphImpact, getGraphNeighbors, searchGraphEntities, getServiceDependencies, getServiceDependencyMatrix, getServiceMap, getServiceOverview } from '../../api/knowledgeGraph'
 import type { GraphHealth, GraphSubgraph } from '../../api/graphContracts'
 import type { PanoramaService, ServiceDependenciesResponse, ServiceMapResponse, ServiceMatrixResponse, ServiceOverviewResponse } from '../../api/knowledgeGraph'
@@ -43,7 +43,7 @@ function legacyMap(rows: ServiceRow[]): ServiceMapResponse {
 }
 
 const ServiceObservability: React.FC = () => {
-  const currentClusterId = useUIStore((state) => state.currentClusterId)
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
   const [timeRange, setTimeRange] = useState(60)
   const [services, setServices] = useState<ServiceRow[]>([])
   const [selectedService, setSelectedService] = useState('')
@@ -106,7 +106,10 @@ const ServiceObservability: React.FC = () => {
     try { setMatrix((await getServiceDependencyMatrix({ minutes: timeRange, limit: 200, ...(namespaceFilter ? { namespace: namespaceFilter } : {}), ...(applicationFilter ? { application_uid: applicationFilter } : {}) })).data) } catch { setError('调用矩阵暂时不可用，请检查 query-api。') } finally { setMatrixLoading(false) }
   }, [applicationFilter, namespaceFilter, timeRange])
 
-  useEffect(() => { void loadOverview(); void loadMatrix() }, [currentClusterId, loadMatrix, loadOverview])
+  useEffect(() => {
+    if (!activeClusterId) return
+    void loadOverview(); void loadMatrix()
+  }, [activeClusterId, loadMatrix, loadOverview])
   useEffect(() => { const timer = window.setInterval(() => { void loadOverview() }, 30_000); return () => window.clearInterval(timer) }, [loadOverview])
 
   useEffect(() => {

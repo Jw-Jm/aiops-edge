@@ -1,7 +1,8 @@
 import React, { useState, lazy, Suspense, useEffect } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { Dropdown, Spin } from 'antd'
+import { Alert, Dropdown, Spin } from 'antd'
 import { useUIStore } from './store/uiStore'
+import { useScopeStore } from './store/scopeStore'
 import { useAuthStore } from './store/authStore'
 import AiDock from './components/AiDock'
 import ClusterSwitcher from './components/ClusterSwitcher'
@@ -38,74 +39,28 @@ const NewInvestigation = lazy(() => import('./pages/investigation/NewInvestigati
 const EvidenceDetail = lazy(() => import('./pages/investigation/EvidenceDetail'))
 const ResourceRelationships = lazy(() => import('./pages/observability/ResourceRelationships'))
 const GraphOperations = lazy(() => import('./pages/admin/GraphOperations'))
+const Resources = lazy(() => import('./pages/Resources'))
+const Observe = lazy(() => import('./pages/Observe'))
+const Actions = lazy(() => import('./pages/Actions'))
+const Reports = lazy(() => import('./pages/Reports'))
+const Admin = lazy(() => import('./pages/admin/AdminHome'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
-// ===== 侧栏导航：7 大板块 =====
-interface NavItem { path: string; label: string; icon: AppIconName; badge?: string }
-interface NavGroup { title: string; collapsed?: boolean; footer?: boolean; adminOnly?: boolean; items: NavItem[] }
+// ===== 侧栏导航：方案定义的 7 个一级入口 =====
+interface NavItem { path: string; label: string; icon: AppIconName; badge?: string; adminOnly?: boolean }
 
-const NAV_GROUPS: NavGroup[] = [
-  {
-    title: '总览',
-    items: [{ path: '/overview', label: '工作台首页', icon: 'overview' }],
-  },
-  {
-    title: '可观测',
-    items: [
-      { path: '/observability/service', label: '服务全景', icon: 'topology' },
-      { path: '/observability/relationships', label: '资源关系', icon: 'topology' },
-      { path: '/observability/trace', label: '链路追踪', icon: 'traces' },
-      { path: '/observability/log', label: '日志与指标', icon: 'logs' },
-      { path: '/observability/vms', label: '虚拟机', icon: 'desktop' },
-      { path: '/observability/grafana', label: 'Grafana 面板', icon: 'gauge' },
-    ],
-  },
-  {
-    title: '告警',
-    items: [
-      { path: '/alerts/events', label: '告警事件', icon: 'alerts', badge: 'dynamic' },
-      { path: '/alerts/rules', label: '告警规则', icon: 'settings' },
-    ],
-  },
-  {
-    title: '智能调查',
-    items: [
-      // P12.1：六大导航收敛——AI Chat/Tool/Workflow/Graph 不再作为普通用户顶层主产品
-      { path: '/investigation', label: '调查中心', icon: 'chat' },
-    ],
-  },
-  {
-    title: '容量与资源',
-    items: [
-      { path: '/capacity', label: '容量预测', icon: 'capacity' },
-      { path: '/infra/k8s', label: 'K8s 运维', icon: 'k8s' },
-      { path: '/hardware', label: '硬件健康', icon: 'ipmi' },
-    ],
-  },
-  {
-    title: '报告',
-    items: [
-      { path: '/report', label: '报告中心', icon: 'reports' },
-      { path: '/changes', label: '变更时间线', icon: 'tasks' },
-    ],
-  },
-  {
-    title: '系统管理',
-    footer: true,
-    // PF-LOGIC-013: 管理员专属菜单，仅 role=admin 可见
-    adminOnly: true,
-    items: [
-      { path: '/admin/approvals', label: '审批中心', icon: 'approvals' },
-      { path: '/admin/users', label: '用户管理', icon: 'users' },
-      { path: '/admin/settings', label: '系统设置', icon: 'settings' },
-      { path: '/admin/graph-operations', label: '图谱运维', icon: 'settings' },
-    ],
-  },
+const NAV_ITEMS: NavItem[] = [
+  { path: '/overview', label: '工作台', icon: 'overview' },
+  { path: '/investigation', label: '调查', icon: 'chat' },
+  { path: '/resources', label: '资源', icon: 'assets' },
+  { path: '/observe', label: '观测', icon: 'monitor', badge: 'dynamic' },
+  { path: '/actions', label: '处置', icon: 'approvals' },
+  { path: '/reports', label: '报告', icon: 'reports' },
+  { path: '/admin', label: '系统管理', icon: 'settings', adminOnly: true },
 ]
 
-// PF-LOGIC-013: 按当前用户 role 过滤导航（admin 专属菜单仅 role=admin 可见）
-function visibleNavGroups(role: string): NavGroup[] {
-  return NAV_GROUPS.filter((g) => !g.adminOnly || role === 'admin')
+function visibleNavItems(role: string): NavItem[] {
+  return NAV_ITEMS.filter((item) => !item.adminOnly || role === 'admin')
 }
 
 function AppLayout() {
@@ -113,23 +68,25 @@ function AppLayout() {
   const location = useLocation()
   const collapsed = useUIStore((s) => s.collapsed)
   const toggleCollapsed = useUIStore((s) => s.toggleCollapsed)
-  const refreshClusters = useUIStore((s) => s.refreshClusters)
+  const initializeScope = useScopeStore((s) => s.initialize)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const scopeLoading = useScopeStore((s) => s.loading)
+  const scopeError = useScopeStore((s) => s.error)
   const logout = useAuthStore((s) => s.logout)
   const [clock, setClock] = useState('')
-  const [navCollapsed, setNavCollapsed] = useState<Record<string, boolean>>({})
   const [alertCount, setAlertCount] = useState<number | null>(null)
   // 修复 5.7：通知抽屉需要最近告警明细，与 alertCount 一并拉取
   const [recentAlerts, setRecentAlerts] = useState<any[]>([])
 
-  // 初始化拉取集群列表（多集群纳管入口）
+  // 初始化服务端 AuthScope；没有 active cluster 时页面保持 ScopeRequired。
   useEffect(() => {
-    refreshClusters()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    void initializeScope()
+  }, [initializeScope])
 
   // P3-1: 侧栏告警 badge 动态拉取真实告警数（替代硬编码 12）
   useEffect(() => {
     const loadAlerts = () => {
+      if (!activeClusterId) return
       getAlertEvents({ limit: 200 }).then((r) => {
         const d = r.data
         // 通知抽屉：优先取 events 数组，兼容分页对象
@@ -150,18 +107,17 @@ function AppLayout() {
     loadAlerts()
     const t = setInterval(loadAlerts, 30000) // 30s 刷新
     return () => clearInterval(t)
-  }, [])
+  }, [activeClusterId])
 
   // 高亮当前路由
   const pathname = location.pathname
   const auth = useAuthStore()
   const role = auth.role
   // PF-LOGIC-013: 侧栏按 role 过滤后的导航组
-  const navGroups = visibleNavGroups(role)
-  const visibleNav = navGroups.flatMap((g) => g.items)
+  const visibleNav = visibleNavItems(role)
   const selectedKey = visibleNav.find((it) => it.path === pathname)?.path
     || visibleNav.find((it) => pathname.startsWith(it.path + '/'))?.path
-    || '/overview'
+    || (pathname.startsWith('/observability/') || pathname.startsWith('/alerts/') || pathname.startsWith('/capacity') || pathname.startsWith('/infra/') || pathname.startsWith('/hardware') || pathname.startsWith('/changes') ? '/resources' : '/overview')
   const currentLabel = visibleNav.find((m) => m.path === selectedKey)?.label || ''
 
   useEffect(() => {
@@ -200,47 +156,19 @@ function AppLayout() {
 
         <div className="sidebar__scroll">
           <nav className="nav">
-            {navGroups.filter((g) => !g.footer).map((g) => {
-              const isCollapsed = navCollapsed[g.title]
-              return (
-                <div key={g.title} className={'nav__group' + (isCollapsed ? ' is-collapsed' : '')}>
-                  <div className="nav__group-label" onClick={() => setNavCollapsed((s) => ({ ...s, [g.title]: !s[g.title] }))}>
-                    <span>{g.title}</span>
-                    <span className="chev"><AppIcon name="chevron" size={12} /></span>
-                  </div>
-                  <div className="nav__group-items">
-                    {g.items.map((it) => (
-                      <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
-                        onClick={() => navigate(it.path)} title={collapsed ? it.label : undefined}>
-                        <AppIcon name={it.icon} />
-                        {!collapsed && <span>{it.label}</span>}
-                        {!collapsed && it.badge && (
-                          <span className="nav__badge">
-                            {it.badge === 'dynamic' ? (alertCount ?? '') : it.badge}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )
-            })}
+            {visibleNav.map((it) => (
+              <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
+                onClick={() => navigate(it.path)} title={collapsed ? it.label : undefined}>
+                <AppIcon name={it.icon} />
+                {!collapsed && <span>{it.label}</span>}
+                {!collapsed && it.badge && (
+                  <span className="nav__badge">
+                    {it.badge === 'dynamic' ? (alertCount ?? '') : it.badge}
+                  </span>
+                )}
+              </div>
+            ))}
           </nav>
-        </div>
-
-        <div className="nav__footer">
-          {navGroups.filter((g) => g.footer).map((g) => (
-            <div key={g.title}>
-              {!collapsed && <div className="nav__group-label">{g.title}</div>}
-              {g.items.map((it) => (
-                <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
-                  onClick={() => navigate(it.path)} title={collapsed ? it.label : undefined}>
-                  <AppIcon name={it.icon} />
-                  {!collapsed && <span>{it.label}</span>}
-                </div>
-              ))}
-            </div>
-          ))}
         </div>
 
         <div className="nav__collapse-btn" onClick={toggleCollapsed}>
@@ -311,9 +239,23 @@ function AppLayout() {
 
         {/* 内容区 */}
         <main style={{ flex: 1, padding: '20px 24px', overflow: 'auto', minHeight: 0 }}>
+          {!activeClusterId && !scopeLoading ? (
+            <Alert
+              showIcon
+              type={scopeError ? 'error' : 'warning'}
+              message={scopeError ? '作用域加载失败' : '请选择作用域'}
+              description={scopeError || '当前页面不会展示跨集群混合数据。请先在右上角选择一个服务端已授权的集群。'}
+              style={{ marginBottom: 16 }}
+            />
+          ) : null}
           <Suspense fallback={<div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>}>
             <Routes>
               <Route path="/overview" element={<Overview />} />
+              <Route path="/resources" element={<Resources />} />
+              <Route path="/observe" element={<Observe />} />
+              <Route path="/actions" element={<Actions />} />
+              <Route path="/reports" element={<Reports />} />
+              <Route path="/admin" element={<Admin />} />
               <Route path="/observability/service" element={<ServiceObservability />} />
               <Route path="/observability/relationships" element={<ResourceRelationships />} />
               <Route path="/observability/trace" element={<Trace />} />

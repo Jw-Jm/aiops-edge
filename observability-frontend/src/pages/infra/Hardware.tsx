@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Table, Tag, Spin, Space } from 'antd'
 import { listNodeHealth, listIpmiSensors, listIpmiEvents } from '../../api/client'
 import { PageHeader, Breadcrumb, Empty, StatusBadge, StatusTone } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 // 状态 → 展示（兼容 healthy/degraded/fault、ok/warning/critical、normal/warn/error 等多套取值）
 function healthTone(s?: string): { tone: StatusTone; label: string } {
@@ -39,7 +39,7 @@ function worstStatus(parts: (string | undefined)[]): string {
 }
 
 const Hardware: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
 
   // ① 节点硬件健康（部件可用性，按 node 透视成一行）
   const [health, setHealth] = useState<any[]>([])
@@ -52,6 +52,11 @@ const Hardware: React.FC = () => {
   const [eventLoading, setEventLoading] = useState(true)
 
   useEffect(() => {
+    if (!activeClusterId) {
+      setHealth([]); setSensors([]); setEvents([])
+      setHealthLoading(false); setSensorLoading(false); setEventLoading(false)
+      return
+    }
     let alive = true
     setHealthLoading(true); setSensorLoading(true); setEventLoading(true)
     listNodeHealth()
@@ -82,7 +87,7 @@ const Hardware: React.FC = () => {
       .finally(() => { if (alive) setEventLoading(false) })
 
     return () => { alive = false }
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   // 节点健康透视：component 行 → 每节点一行（cpu/memory/disk/network/temperature/power 列）
   const healthRows = useMemo(() => {

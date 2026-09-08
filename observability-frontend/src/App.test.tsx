@@ -9,4 +9,10 @@ describe('production shell', () => {
   it('exposes a stable semantic locator for each notification entry', () => {
     expect(source).toContain('data-testid="notification-alert-item"')
   })
+
+  it('keeps the seven product entry points stable', () => {
+    for (const path of ['/overview', '/investigation', '/resources', '/observe', '/actions', '/reports', '/admin']) {
+      expect(source).toContain(`path: '${path}'`)
+    }
+  })
 })

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Table, Button, Modal, Form, Input, Select, Tag, Space, Empty as AntdEmpty, message } from 'antd'
 import { getChanges, postChange } from '../../api/client'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 // 变更类型 → 颜色（后端返回任意字符串也能兜底显示）
 const CHANGE_TYPES: { value: string; label: string; color: string }[] = [
@@ -31,8 +31,8 @@ function fmtTime(v?: string): string {
 }
 
 const Changes: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
-  const clusters = useUIStore((s) => s.clusters)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const clusters = useScopeStore((s) => s.clusters)
 
   const [rows, setRows] = useState<any[]>([])
   const [total, setTotal] = useState(0)
@@ -48,8 +48,14 @@ const Changes: React.FC = () => {
   const [changeType, setChangeType] = useState('')
 
   const load = () => {
+    if (!activeClusterId) {
+      setRows([])
+      setTotal(0)
+      setLoading(false)
+      return
+    }
     setLoading(true)
-    getChanges({ page, page_size: pageSize, service, change_type: changeType })
+    getChanges({ cluster_id: activeClusterId, page, page_size: pageSize, service, change_type: changeType })
       .then((r) => {
         const d = r.data
         const list = Array.isArray(d) ? d : d?.changes ?? d?.items ?? d?.data ?? []
@@ -59,7 +65,7 @@ const Changes: React.FC = () => {
       .catch(() => { setRows([]); setTotal(0) })
       .finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [currentClusterId, page, service, changeType])
+  useEffect(() => { load() }, [activeClusterId, page, service, changeType])
 
   const submit = async () => {
     let v: Record<string, string>
@@ -97,7 +103,7 @@ const Changes: React.FC = () => {
     {
       title: '集群', dataIndex: 'cluster_id', key: 'cluster_id', width: 130,
       render: (v: string) => {
-        const c = clusters.find((x) => String(x.id) === String(v))
+        const c = clusters.find((x) => String(x.cluster_id) === String(v))
         return <span style={{ fontSize: 12 }}>{c?.name ?? v ?? '-'}</span>
       },
     },
@@ -108,8 +114,7 @@ const Changes: React.FC = () => {
   ]
 
   const clusterOptions = [
-    ...clusters.map((c) => ({ value: String(c.id), label: c.name })),
-    { value: 'default', label: 'default' },
+    ...clusters.map((c) => ({ value: String(c.cluster_id), label: c.name })),
   ]
 
   return (

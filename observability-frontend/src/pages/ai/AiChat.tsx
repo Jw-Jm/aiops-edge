@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm'
 import api, { getSession, finalReport, addKnowledgeCase } from '../../api/client'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 // canonical UUID 校验（与 Query API AuthMiddleware canonicalUUID 一致），用于判断
 // 是否已选择 concrete cluster（F-07 / A0-04：拒绝把 'all' 当可发送的 cluster）。
@@ -74,8 +74,8 @@ const AiChat: React.FC = () => {
   const [loading, setLoading] = useState(false)
   // A0-04（F-07）：concrete cluster 来自 UIStore（与 ClusterSwitcher 一致），
   // 不依赖 localStorage 手解；无 concrete cluster（'all'/空）时禁用发送。
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
-  const hasConcreteCluster = !!currentClusterId && CANONICAL_UUID_RE.test(currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const hasConcreteCluster = !!activeClusterId && CANONICAL_UUID_RE.test(activeClusterId)
   const [progress, setProgress] = useState('')
   const [toolActivity, setToolActivity] = useState<ToolActivity[]>([])
   // P0-1: 后端 SSE notice 事件（type=notice, level=warning, text=...）→ 消息区顶部黄色提示条
@@ -182,7 +182,7 @@ const AiChat: React.FC = () => {
         message.warning('请先在顶部集群选择器选择具体集群后，再发起 AI 对话')
         return
       }
-      const clusterId = currentClusterId
+      const clusterId = activeClusterId
       // B12 修复：统一走共享 api 实例（复用其 baseURL / token / 拦截器逻辑），
       // SSE 流式响应保留 fetch 实现（axios 不便于流式读取）。
       const resp = await fetch(`${api.defaults.baseURL}/ai/chat`, {

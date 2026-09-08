@@ -8,7 +8,7 @@ import {
 } from '../../api/client'
 import { Breadcrumb, Empty, PageHeader, PaneCard, StatCard, StatusBadge } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 const severityRank: Record<string, number> = { critical: 3, 严重: 3, warning: 2, 警告: 2, info: 1, 信息: 1 }
 const severityLabel = (value?: string) => {
@@ -31,8 +31,8 @@ const formatCapacity = (value?: number) => value == null || !Number.isFinite(val
 const Overview: React.FC = () => {
   const navigate = useNavigate()
   const trendRef = useRef<HTMLDivElement | null>(null)
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
-  const clusters = useUIStore((s) => s.clusters)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const clusters = useScopeStore((s) => s.clusters)
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [resources, setResources] = useState<DashboardResources | null>(null)
   const [nodes, setNodes] = useState<NodeMetric[]>([])
@@ -43,9 +43,17 @@ const Overview: React.FC = () => {
   const [showAllNodes, setShowAllNodes] = useState(false)
 
   // Cluster selection is a canonical UUID; labels are display-only.
-  const clusterName = currentClusterId === 'all' ? '全部集群' : (clusters.find((c) => c.cluster_id === currentClusterId)?.name || currentClusterId)
+  const clusterName = clusters.find((c) => c.cluster_id === activeClusterId)?.name || activeClusterId || '请选择作用域'
 
   const load = () => {
+    if (!activeClusterId) {
+      setLoading(false)
+      setStats(null)
+      setResources(null)
+      setNodes([])
+      setAlerts([])
+      return
+    }
     setLoading(true)
     setErrors({})
     const recordError = (key: string, error: any, fallback: string) => {
@@ -53,7 +61,7 @@ const Overview: React.FC = () => {
     }
     Promise.all([
       getDashboardStats().then((r) => setStats(r.data)).catch((e) => { setStats(null); recordError('stats', e, '总览统计加载失败') }),
-      getDashboardResources({ cluster_id: currentClusterId || 'all' }).then((r) => setResources(r.data)).catch((e) => { setResources(null); recordError('resources', e, '资源数据加载失败') }),
+      getDashboardResources({ cluster_id: activeClusterId }).then((r) => setResources(r.data)).catch((e) => { setResources(null); recordError('resources', e, '资源数据加载失败') }),
       getNodeMetrics().then((r) => setNodes(Array.isArray(r.data?.nodes) ? r.data.nodes : [])).catch((e) => { setNodes([]); recordError('nodes', e, '节点数据加载失败') }),
       // B12: 活跃告警 limit 由 200 提至 1000，覆盖大集群多规则场景，避免活跃告警被静默截断。
       // 后续应改为服务端分页统计（见 C2）。
@@ -68,7 +76,7 @@ const Overview: React.FC = () => {
     load()
     const timer = window.setInterval(load, 60000)
     return () => window.clearInterval(timer)
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   const sortedNodes = useMemo(() => {
     const key = nodeSort === 'cpu' ? 'cpu_usage_pct' : 'mem_usage_pct'
