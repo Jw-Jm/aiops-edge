@@ -16,7 +16,11 @@ const Report: React.FC = () => {
   const [preview, setPreview] = useState<Report | null>(null) // 2.18 预览
 
   useEffect(() => {
-    if (!activeClusterId) return
+    if (!activeClusterId) {
+      setData([])
+      setLoading(false)
+      return
+    }
     const load = () => {
       listReports({ limit: 100 }).then((r) => {
         // /ops/reports/history 返回 { history: [{task_id, service_name, report_type, verdict, risk_score, summary, created_at}] }

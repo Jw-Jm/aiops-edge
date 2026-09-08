@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { decideAction, getAction, listActions, type ActionProjection } from '../../api/client'
 import { canDecideAction, toActionViewModel } from './actionModel'
 import { useAuthStore } from '../../store/authStore'
+import { useScopeStore } from '../../store/scopeStore'
 
 const actionTabs = [
   { key: 'proposed', label: '待审批' },
@@ -24,6 +25,7 @@ const lifecycle = (action: ActionProjection) => [
 
 const ActionCenter: React.FC = () => {
   const role = useAuthStore((state) => state.role)
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
   const [actions, setActions] = useState<ActionProjection[]>([])
   const [selected, setSelected] = useState<ActionProjection | null>(null)
   const [pendingDecision, setPendingDecision] = useState<'approved' | 'rejected' | null>(null)
@@ -32,11 +34,15 @@ const ActionCenter: React.FC = () => {
   const [deciding, setDeciding] = useState(false)
 
   const load = useCallback(() => {
+    if (!activeClusterId) {
+      setActions([]); setLoading(false); setError('')
+      return
+    }
     setLoading(true); setError('')
     listActions({ limit: 100 }).then((response) => setActions(response.data?.actions ?? []))
       .catch((e) => setError(e?.response?.data?.error || e?.message || '动作加载失败'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [activeClusterId])
   useEffect(() => { load() }, [load])
 
   const columns = useMemo(() => [

@@ -120,7 +120,18 @@ const ServiceObservability: React.FC<{ embedded?: boolean }> = ({ embedded = fal
   }, [applicationFilter, namespaceFilter, timeRange])
 
   useEffect(() => {
-    if (!activeClusterId) return
+    if (!activeClusterId) {
+      setLoading(false)
+      setMapLoading(false)
+      setMatrixLoading(false)
+      setDependencyLoading(false)
+      setServices([])
+      setMapData(undefined)
+      setOverview(undefined)
+      setMatrix(undefined)
+      setDependency(undefined)
+      return
+    }
     void loadOverview(); void loadMatrix()
   }, [activeClusterId, loadMatrix, loadOverview])
   useEffect(() => { const timer = window.setInterval(() => { void loadOverview() }, 30_000); return () => window.clearInterval(timer) }, [loadOverview])
