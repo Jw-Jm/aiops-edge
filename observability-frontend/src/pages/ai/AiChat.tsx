@@ -75,6 +75,7 @@ const AiChat: React.FC = () => {
   // A0-04（F-07）：concrete cluster 来自 UIStore（与 ClusterSwitcher 一致），
   // 不依赖 localStorage 手解；无 concrete cluster（'all'/空）时禁用发送。
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const scopeContext = useScopeStore((s) => s.context)
   const hasConcreteCluster = !!activeClusterId && CANONICAL_UUID_RE.test(activeClusterId)
   const [progress, setProgress] = useState('')
   const [toolActivity, setToolActivity] = useState<ToolActivity[]>([])
@@ -189,7 +190,11 @@ const AiChat: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, turn_id: turnId, cluster_id: clusterId, exec_result: execResult || '' }),
+        body: JSON.stringify({
+          intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, turn_id: turnId,
+          cluster_id: clusterId, environment: scopeContext.environment, namespace: scopeContext.namespace,
+          resource_id: scopeContext.resource?.id || '', time_range: scopeContext.timeRange, exec_result: execResult || '',
+        }),
         signal: controller.signal,
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -478,7 +483,9 @@ const AiChat: React.FC = () => {
                       <Button type="primary" size="small"
                         icon={<ExperimentOutlined />}
                         onClick={() => {
-                          const query = new URLSearchParams({ source: 'chat', clusterId: activeClusterId, targetType: 'service', symptom: symptomMsg?.content || '' })
+                          const query = new URLSearchParams({ source: 'chat', clusterId: activeClusterId, targetType: scopeContext.resource?.type || 'service', symptom: symptomMsg?.content || '' })
+                          if (scopeContext.namespace) query.set('namespace', scopeContext.namespace)
+                          if (scopeContext.resource?.id) query.set('resourceId', scopeContext.resource.id)
                           navigate(`/investigation/new?${query.toString()}`)
                         }}>
                         转为正式调查
