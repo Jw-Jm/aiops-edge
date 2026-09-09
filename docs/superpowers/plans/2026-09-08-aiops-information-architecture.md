@@ -60,7 +60,7 @@ export const SELECTABLE_RESOURCE_TYPES = {
 } as const
 ~~~
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 resourceDomain.test.ts 覆盖：
 
@@ -69,13 +69,13 @@ export const SELECTABLE_RESOURCE_TYPES = {
 - cpu、dimm、alert、change、case、sel_event、migration 均不可作为一级选择结果。
 - toPlatformResourceRef 在 cluster 不一致或类型不可选时返回明确错误。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/features/resources/resourceDomain.test.ts
 
 Expected: FAIL，模块尚不存在。
 
-- [ ] **Step 3: 实现纯函数**
+- [x] **Step 3: 实现纯函数**
 
 在 resourceDomain.ts 导出：
 
@@ -89,11 +89,11 @@ export function toPlatformResourceRef(entity: GraphEntity, activeClusterId: stri
 
 toPlatformResourceRef 必须校验 entity.cluster_id === activeClusterId；Kubernetes 资源可投影 namespace，其他域不携带空 namespace。
 
-- [ ] **Step 4: 收紧 Graph 类型**
+- [x] **Step 4: 收紧 Graph 类型**
 
 保留 Graph DTO 对未知服务端类型的容错，但业务函数不把未知字符串视为可选资源。增加 GraphEntityTypeKnown 联合类型，GraphEntity.entity_type 仍允许未知 string 进入“不可识别类型”降级态。
 
-- [ ] **Step 5: 运行测试与类型检查**
+- [x] **Step 5: 运行测试与类型检查**
 
 Run: cd observability-frontend && npm run test:run -- src/features/resources/resourceDomain.test.ts src/api/knowledgeGraph.test.ts
 
@@ -101,7 +101,7 @@ Run: cd observability-frontend && npm run build
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ~~~bash
 git add observability-frontend/src/features/resources observability-frontend/src/api/graphContracts.ts
@@ -138,7 +138,7 @@ type ResourceReadMeta struct {
 }
 ~~~
 
-- [ ] **Step 1: 写 handler 失败测试**
+- [x] **Step 1: 写 handler 失败测试**
 
 resource_catalog_test.go 使用 graph.NewMemoryRepository 注入 Handler，覆盖：
 
@@ -149,13 +149,13 @@ resource_catalog_test.go 使用 graph.NewMemoryRepository 注入 Handler，覆�
 - Detail 的 UID 跨集群返回 GRAPH_SCOPE_VIOLATION 对应的 403，不存在返回 404。
 - graphRepo 不可用返回 503、partial=false、warning_codes 包含 RESOURCE_CATALOG_UNAVAILABLE。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: cd ai-apm-query-go && go test ./internal/api -run 'TestResource(Catalog|Summary|Detail)'
 
 Expected: FAIL，三个 handler 尚未注册。
 
-- [ ] **Step 3: 实现只读投影**
+- [x] **Step 3: 实现只读投影**
 
 在 resource_catalog.go 定义：
 
@@ -174,7 +174,7 @@ func (h *Handler) ResourceDetail(w http.ResponseWriter, r *http.Request)
 - Catalog 首版 cursor 编码最后一个 name_key + entity_uid；排序固定为 health priority、name_key、entity_uid。
 - meta.stale 基于同步时间阈值，partial 只来自明确来源缺失，不把空集合判为 partial。
 
-- [ ] **Step 4: 注册公开只读路由**
+- [x] **Step 4: 注册公开只读路由**
 
 在 http.go 注册：
 
@@ -186,13 +186,13 @@ mux.HandleFunc("/api/v1/resources/detail", handler.ResourceDetail)
 
 更新 auth_internal_route_test.go，证明它们走浏览器公开认证中间件，不进入内部 capability 路由。
 
-- [ ] **Step 5: 运行后端验证**
+- [x] **Step 5: 运行后端验证**
 
 Run: cd ai-apm-query-go && go test ./internal/api ./internal/graph ./internal/bootstrap
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ~~~bash
 git add ai-apm-query-go/internal/api/resource_catalog.go ai-apm-query-go/internal/api/resource_catalog_test.go ai-apm-query-go/internal/api/auth_internal_route_test.go ai-apm-query-go/internal/bootstrap/http.go
@@ -233,17 +233,17 @@ export function getResourceSummary(signal?: AbortSignal): Promise<ResourceSummar
 export function getResourceDetail(uid: string, signal?: AbortSignal): Promise<ResourceDetailResponse>
 ~~~
 
-- [ ] **Step 1: 写 URL、解码和错误语义测试**
+- [x] **Step 1: 写 URL、解码和错误语义测试**
 
 覆盖 q/domain/type/health/limit/cursor 编码、uid 双斜杠与中文编码、403/404/503 到 forbidden/notFound/unavailable 的稳定映射，以及 partial/stale/warning_codes 原样保留。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/api/resources.test.ts src/query/keys.test.ts
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现 API 与 query key**
+- [x] **Step 3: 实现 API 与 query key**
 
 新增：
 
@@ -256,7 +256,7 @@ queryKeys.resourceGraph(context, entityUid, mode, depth, domains, relations)
 
 所有 key 均通过现有 scope(context) 包含 tenantId、activeClusterId、entityUid、from、to；filters 使用排序后的稳定序列化结果。
 
-- [ ] **Step 4: 运行验证并提交**
+- [x] **Step 4: 运行验证并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/api/resources.test.ts src/query/keys.test.ts
 
@@ -297,7 +297,7 @@ export interface RunScopeSnapshot extends ActiveScope {
 }
 ~~~
 
-- [ ] **Step 1: 先把测试改成目标行为**
+- [x] **Step 1: 先把测试改成目标行为**
 
 覆盖：
 
@@ -308,17 +308,17 @@ export interface RunScopeSnapshot extends ActiveScope {
 - 持久化只保存 preferredClusterId，不保存授权 Scope 或资源。
 - resetScopeQueries 在切换前取消旧请求，回读成功后再发新范围查询。
 
-- [ ] **Step 2: 运行测试并确认旧实现失败**
+- [x] **Step 2: 运行测试并确认旧实现失败**
 
 Run: cd observability-frontend && npm run test:run -- src/store/scopeStore.test.ts
 
 Expected: FAIL，旧环境和 Namespace API 仍存在。
 
-- [ ] **Step 3: 实现新 Scope store**
+- [x] **Step 3: 实现新 Scope store**
 
 保留 authScope 服务端事实与 context UI 状态也可以，但导出的 useActiveScope 必须只产生 tenantId、clusterId、resource、timeRange。删除 Environment、ScopeContext.namespace、DEFAULT_SCOPE_CONTEXT.environment。
 
-- [ ] **Step 4: 实现 Run/Chat 兼容适配器**
+- [x] **Step 4: 实现 Run/Chat 兼容适配器**
 
 ~~~ts
 export function toLegacyRunScope(scope: ActiveScope): {
@@ -334,13 +334,13 @@ export function toLegacyRunScope(scope: ActiveScope): {
 
 相对时间以提交瞬间转换成绝对 UTC；namespace 只从 Kubernetes resource.namespace 投影。
 
-- [ ] **Step 5: 搜索并消除越界读取**
+- [x] **Step 5: 搜索并消除越界读取**
 
 Run: rg -n 'setEnvironment|setNamespace|context\.environment|context\.namespace' observability-frontend/src
 
 Expected: 结果为 0。environment='prod' 只允许以 runScopeAdapter.ts 返回字段和 runScopeAdapter.test.ts 断言的形式存在，不再通过 context 读取。
 
-- [ ] **Step 6: 运行测试、构建并提交**
+- [x] **Step 6: 运行测试、构建并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/store/scopeStore.test.ts src/features/scope/runScopeAdapter.test.ts src/query/client.test.ts
 
@@ -376,7 +376,7 @@ export interface ResourcePickerProps {
 }
 ~~~
 
-- [ ] **Step 1: 写交互失败测试**
+- [x] **Step 1: 写交互失败测试**
 
 覆盖：
 
@@ -388,21 +388,21 @@ export interface ResourcePickerProps {
 - 403 清空选中资源并显示 role=alert；切换集群期间选择器禁用。
 - URL resource 参数刷新恢复，非法或跨集群 UID 被移除而不是选第一条。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/features/scope/ScopeBar.test.tsx src/features/scope/ResourcePicker.test.tsx
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现控件与样式**
+- [x] **Step 3: 实现控件与样式**
 
 使用 Ant Design Select/Popover/Segmented 现有组件；结果行最小高度 52px，名称一行、类型与路径一行、状态为带文字的 Tag。资源值使用 entity UID，不使用 name。
 
-- [ ] **Step 4: 补齐键盘和状态**
+- [x] **Step 4: 补齐键盘和状态**
 
 Tab 进入、方向键移动、Enter 选择、Escape 关闭；本任务先使用等高 Ant Design Skeleton、Empty 和 Alert 保证交互完整，Task 6 再统一替换为 DataState，并复跑本任务测试。
 
-- [ ] **Step 5: 运行测试、构建并提交**
+- [x] **Step 5: 运行测试、构建并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/features/scope/ScopeBar.test.tsx src/features/scope/ResourcePicker.test.tsx
 
@@ -449,23 +449,23 @@ export const operationsPalette = {
 } as const
 ~~~
 
-- [ ] **Step 1: 写 Token 与状态组件失败测试**
+- [x] **Step 1: 写 Token 与状态组件失败测试**
 
 覆盖颜色值、圆角 8px、表格行高 44px、点击目标最小 36px；DataState 六种 kind 均有标题、说明和准确 ARIA；错误态可重试；RawDataPanel 默认折叠、格式化、复制、超过 200KB 截断并提示。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/theme/tokens.test.ts src/components/display/DataState.test.tsx src/components/display/RawDataPanel.test.tsx
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现组件和 CSS primitives**
+- [x] **Step 3: 实现组件和 CSS primitives**
 
 DataState 的 kind 固定为 loading | empty | error | partial | stale | forbidden。页面骨架使用 .page-grid、.page-header、.surface-card、.resource-layout、.context-panel；禁止页面继续新增散落的主色和阴影常量。
 
 将 ScopeBar 和 ResourcePicker 的临时 Skeleton、Empty、Alert 替换为 DataState，并保持 Task 5 已通过的键盘与错误语义不变。
 
-- [ ] **Step 4: 加入响应式与减少动态效果**
+- [x] **Step 4: 加入响应式与减少动态效果**
 
 - >=1440px：侧栏 216px，资源 264px / minmax(0,1fr) / 336px。
 - 1280–1439px：侧栏 64px，资源 224px / minmax(0,1fr) / 304px。
@@ -473,7 +473,7 @@ DataState 的 kind 固定为 loading | empty | error | partial | stale | forbidd
 - <1024px：显示只读提示并隐藏生产处置主按钮。
 - prefers-reduced-motion 下关闭非必要 transition 和图布局动画。
 
-- [ ] **Step 5: 运行验证并提交**
+- [x] **Step 5: 运行验证并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/theme/tokens.test.ts src/components/display src/features/scope/ScopeBar.test.tsx src/features/scope/ResourcePicker.test.tsx
 
@@ -503,7 +503,7 @@ git commit -m "feat(frontend): unify visual tokens and data states"
 - Create: observability-frontend/src/pages/Resources/resourceDetailModel.ts
 - Create: observability-frontend/src/pages/Resources/resourceDetailModel.test.ts
 
-- [ ] **Step 1: 写页面与投影失败测试**
+- [x] **Step 1: 写页面与投影失败测试**
 
 覆盖：
 
@@ -514,21 +514,21 @@ git commit -m "feat(frontend): unify visual tokens and data states"
 - 没有字段显示“未提供”和来源，不显示“未知 Namespace/Node”。
 - 后端 capability 决定“进入处置”是否出现。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/pages/Resources
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现集群全景**
+- [x] **Step 3: 实现集群全景**
 
 ClusterPanorama 使用 getResourceSummary，并将五域卡控制在同一高度。异常队列排序固定为 severity、impactCount、duration、recentChange；集群级问题使用“集群范围”标签。
 
-- [ ] **Step 4: 实现目录和深链**
+- [x] **Step 4: 实现目录和深链**
 
 ResourceDirectory 使用 catalog 游标分页；domain/type/health/q 写入 URL。resource 使用 encodeURIComponent(entity UID)；后退/前进必须恢复选择与滚动位置。
 
-- [ ] **Step 5: 实现类型化详情**
+- [x] **Step 5: 实现类型化详情**
 
 resourceDetailModel.ts 导出：
 
@@ -539,7 +539,7 @@ export function projectResourceDetail(detail: ResourceDetailResponse): DetailSec
 
 仅展示对应类型白名单字段；身份、健康、关键指标、事件、变更、依赖、调查、动作和数据质量使用统一 Section。
 
-- [ ] **Step 6: 运行测试、构建并提交**
+- [x] **Step 6: 运行测试、构建并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/pages/Resources src/api/resources.test.ts
 
@@ -592,7 +592,7 @@ export function buildGraphDisplayModel(
 ): GraphDisplayModel
 ~~~
 
-- [ ] **Step 1: 写纯模型失败测试**
+- [x] **Step 1: 写纯模型失败测试**
 
 覆盖：
 
@@ -604,29 +604,29 @@ export function buildGraphDisplayModel(
 - physical_server、k8s_node、vm 的 iconKey 和 typeLabel 不同。
 - relationRows 与当前可见节点/边等价。
 
-- [ ] **Step 2: 运行模型测试并确认失败**
+- [x] **Step 2: 运行模型测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/components/graph/graphPresentation.test.ts
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现 GraphMap 生命周期与节点视觉**
+- [x] **Step 3: 实现 GraphMap 生命周期与节点视觉**
 
 节点改为中性卡片形态：类型图标、最多两行名称、中文类型、健康角标；选中态使用蓝色外环。缩放低于 0.65 隐藏边标签，选中或放大时恢复。节点超过 50 或 prefers-reduced-motion 时关闭动画。effect cleanup 必须 destroy G6 实例并解绑 ResizeObserver。
 
-- [ ] **Step 4: 实现工具栏、图例和过滤**
+- [x] **Step 4: 实现工具栏、图例和过滤**
 
 GraphToolbar 固定提供适应画布、放大、缩小、回到中心、全屏、深度 1–3、资源域、关系过滤。所有 icon button 有中文 aria-label 和 tooltip；过滤不能改变原始 Graph DTO。
 
-- [ ] **Step 5: 实现等价关系列表和上下文面板**
+- [x] **Step 5: 实现等价关系列表和上下文面板**
 
 GraphRelationList 支持键盘、排序和定位节点。GraphContextPanel 显示身份、健康、邻居、影响、证据、数据质量、capability；GraphMap 失败时关系列表和资源详情仍可用。
 
-- [ ] **Step 6: 实现六类图谱状态**
+- [x] **Step 6: 实现六类图谱状态**
 
 loading 使用与画布等高骨架；empty 提供刷新同步；error 展示来源、request ID 和重试；partial 展示已加载数量与 warning code；stale 展示快照时间；forbidden 不泄露隐藏节点数量。
 
-- [ ] **Step 7: 运行图谱测试、构建并提交**
+- [x] **Step 7: 运行图谱测试、构建并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/components/graph src/pages/Resources/MainFailureChain.test.tsx
 
@@ -653,29 +653,29 @@ git commit -m "feat(frontend): redesign resource knowledge graph"
 - Modify: observability-frontend/src/pages/Observe/index.tsx
 - Modify: observability-frontend/src/pages/Observe/index.test.tsx
 
-- [ ] **Step 1: 写工作台失败测试**
+- [x] **Step 1: 写工作台失败测试**
 
 覆盖全部五域问题不会因 service 为空被丢弃；问题项显示 typed resource、集群、影响、持续时间、数据质量、变更、调查/处置状态；主动作严格由状态机映射。首屏 8/4 网格，普通资源 KPI 在第二层。
 
-- [ ] **Step 2: 写观测中心失败测试**
+- [x] **Step 2: 写观测中心失败测试**
 
 覆盖默认“问题”视图；告警、指标、日志、Trace、事件、变更继承当前 cluster/resource/timeRange；选中资源显示明确 filter chip；空、来源错误、部分、陈旧不被映射为健康；Grafana 仅为专家入口。
 
-- [ ] **Step 3: 运行测试并确认失败**
+- [x] **Step 3: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/pages/Overview src/pages/Observe
 
 Expected: FAIL。
 
-- [ ] **Step 4: 实现资源问题投影与页面**
+- [x] **Step 4: 实现资源问题投影与页面**
 
 priority.ts 的排序输入使用 severity、impactCount、durationMs、hasRecentChange；缺少 resource 时显式生成 cluster-scope view model，不伪造 service。
 
-- [ ] **Step 5: 统一观测查询范围与显示状态**
+- [x] **Step 5: 统一观测查询范围与显示状态**
 
 每个 Tab 使用 queryKeys 中相同 ActiveScope；切换 Tab 保留 URL，但不保留上个资源的数据。所有图表补标题、单位、时间范围、来源、最后更新时间，并区分零值和无数据。
 
-- [ ] **Step 6: 运行测试、构建并提交**
+- [x] **Step 6: 运行测试、构建并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/pages/Overview src/pages/Observe
 
@@ -705,33 +705,33 @@ git commit -m "feat(frontend): make overview and observe resource-first"
 - Modify: observability-frontend/src/pages/investigation/IntelligentInvestigation.test.tsx
 - Modify: observability-frontend/src/pages/ai/AiChat.tsx
 
-- [ ] **Step 1: 写草稿与创建行为失败测试**
+- [x] **Step 1: 写草稿与创建行为失败测试**
 
 覆盖问题、资源、Chat 三个来源都能生成 PlatformResourceRef；页面加载不创建 Run；用户提交时 toLegacyRunScope 固定 prod、Kubernetes 才投影 namespace、相对时间冻结为绝对 UTC。
 
-- [ ] **Step 2: 写 Run 只读快照失败测试**
+- [x] **Step 2: 写 Run 只读快照失败测试**
 
 打开 Run 只显示 cluster/resource type/name/absolute window；不得调用 setResource、switchCluster 或 setTimeRange。主故障链只使用持久化 graph-context；insufficient_evidence 时不显示确定性根因措辞。
 
-- [ ] **Step 3: 运行测试并确认失败**
+- [x] **Step 3: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/features/investigation src/pages/investigation
 
 Expected: FAIL。
 
-- [ ] **Step 4: 实现新建调查与队列**
+- [x] **Step 4: 实现新建调查与队列**
 
 表单资源字段使用 ResourcePicker，不再使用自由文本 resourceId；targetType 由资源决定且只读。集群级调查通过单独“集群范围”选项创建，不伪造 k8s_cluster 为普通资源。
 
-- [ ] **Step 5: 实现三栏调查工作台**
+- [x] **Step 5: 实现三栏调查工作台**
 
 左栏资源身份/影响链/冻结 Scope/变更；中栏 Evidence 时间线与 RawDataPanel；右栏结论/候选假设/反证/缺失证据/建议动作。1024–1279px 将左右栏收为 Tabs。
 
-- [ ] **Step 6: 收敛 Chat**
+- [x] **Step 6: 收敛 Chat**
 
 Chat 顶部展示活动资源标签；只读查询携带 typed UID。转调查只生成 draft URL，不能直接创建 Action 或 Run；切换集群后清除旧 Chat 资源引用。
 
-- [ ] **Step 7: 运行测试、构建并提交**
+- [x] **Step 7: 运行测试、构建并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/features/investigation src/pages/investigation src/pages/ai
 
@@ -757,7 +757,7 @@ git commit -m "feat(frontend): bind investigations to typed resources"
 - Modify: observability-frontend/src/pages/Reports/index.tsx
 - Create: observability-frontend/src/pages/Reports/index.test.tsx
 
-- [ ] **Step 1: 写 capability 和动作审计失败测试**
+- [x] **Step 1: 写 capability 和动作审计失败测试**
 
 覆盖：
 
@@ -767,21 +767,21 @@ git commit -m "feat(frontend): bind investigations to typed resources"
 - 决策携带 action_version 和 idempotency key；资源版本变化显示“需要重新预检”。
 - 列表与详情展示 typed target、来源 Run、风险、预检、审批、执行、验证、回滚。
 
-- [ ] **Step 2: 写报告失败测试**
+- [x] **Step 2: 写报告失败测试**
 
 报告标题和摘要以资源事件为主语，包含资源身份、集群、影响链、证据、根因、动作、恢复验证、容量趋势；只有 type=service 时才使用“服务”称谓。
 
-- [ ] **Step 3: 运行测试并确认失败**
+- [x] **Step 3: 运行测试并确认失败**
 
 Run: cd observability-frontend && npm run test:run -- src/pages/Actions src/pages/Reports
 
 Expected: FAIL。
 
-- [ ] **Step 4: 实现动作与报告页面**
+- [x] **Step 4: 实现动作与报告页面**
 
 资源详情只链接 /actions?resource=<uid>；审批和执行表单全部留在 ActionCenter。报告中的图表使用统一单位和状态；缺失证据展示 partial，不生成前端推断文本。
 
-- [ ] **Step 5: 运行测试、构建并提交**
+- [x] **Step 5: 运行测试、构建并提交**
 
 Run: cd observability-frontend && npm run test:run -- src/pages/Actions src/pages/Reports
 
@@ -812,7 +812,7 @@ git commit -m "feat(frontend): align actions and reports to resources"
 - Modify: tests/manual-e2e/lib/harness.js
 - Create: docs/superpowers/verification/2026-09-09-aiops-resource-operations.md
 
-- [ ] **Step 1: 写导航和旧深链测试**
+- [x] **Step 1: 写导航和旧深链测试**
 
 一级导航固定为工作台、调查、资源、观测、处置、报告；管理员追加系统管理。验证：
 
@@ -825,17 +825,17 @@ git commit -m "feat(frontend): align actions and reports to resources"
 /capacity                     -> /resources?view=capacity
 ~~~
 
-- [ ] **Step 2: 运行单元测试并确认路由差异**
+- [x] **Step 2: 运行单元测试并确认路由差异**
 
 Run: cd observability-frontend && npm run test:run -- src/layout/navConfig.test.ts src/App.test.tsx
 
 Expected: 在实现前至少一个新目标失败。
 
-- [ ] **Step 3: 更新壳层与路由**
+- [x] **Step 3: 更新壳层与路由**
 
 顶部第一行仅放全局搜索、通知、用户；第二行固定 Scope Bar。页面标题区最多两个主动作。旧路由使用 Navigate replace，保留查询参数中与新模型兼容的 resource/timeRange。
 
-- [ ] **Step 4: 编写五条 Playwright 主链**
+- [x] **Step 4: 编写五条 Playwright 主链**
 
 ia-resources.js：
 
@@ -853,7 +853,7 @@ ia-actions.js：
 
 每条链在 harness 中采集 1440×900、1280×720、1024×768；截图名称固定为 route--viewport--state.png。
 
-- [ ] **Step 5: 执行自动验证**
+- [x] **Step 5: 执行自动验证**
 
 Run: cd observability-frontend && npm run test:run
 
@@ -873,7 +873,7 @@ Run: node tests/manual-e2e/ia-actions.js
 
 Expected: 全部 PASS。
 
-- [ ] **Step 6: 逐页人工视觉验收**
+- [x] **Step 6: 逐页人工视觉验收**
 
 在 verification 文档记录每个视口的：
 
@@ -886,13 +886,13 @@ Expected: 全部 PASS。
 
 任何一项失败都回到对应任务修复并重跑该页面截图，不以“功能可用”替代视觉通过。
 
-- [ ] **Step 7: 检查旧概念与原始显示**
+- [x] **Step 7: 检查旧概念与原始显示**
 
 Run: rg -n "prod.*staging|staging.*test|setEnvironment|全局命名空间|context\.namespace|JSON\.stringify\(" observability-frontend/src
 
 Expected: environment 选项、全局 Namespace 和主界面 JSON.stringify 为 0；RawDataPanel 内受控格式化可作为唯一例外并由测试覆盖。
 
-- [ ] **Step 8: 完成验证记录并提交**
+- [x] **Step 8: 完成验证记录并提交**
 
 verification 文档写入测试命令、退出码、截图目录、已知非阻塞限制和回滚点。最终检查：
 
