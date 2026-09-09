@@ -62,6 +62,9 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	mux.HandleFunc("/readyz", health.Readyz)
 	mux.HandleFunc("/health", health.Livez)
 	mux.HandleFunc("/api/v1/resources/resolve", handler.ResolveResource)
+	mux.HandleFunc("/api/v1/resources/catalog", handler.ResourceCatalog)
+	mux.HandleFunc("/api/v1/resources/summary", handler.ResourceSummary)
+	mux.HandleFunc("/api/v1/resources/detail", handler.ResourceDetail)
 
 	mux.HandleFunc("/api/v1/services/overview", handler.ServicePanoramaOverview)
 	mux.HandleFunc("/api/v1/services/map", handler.ServicePanoramaMap)
