@@ -14,7 +14,7 @@ func resourceCatalogTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	repo := graphpkg.NewMemoryRepository()
 	vertices := []graphpkg.Entity{
-		{EntityUID: "asset:server-01", EntityType: "physical_server", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "server-01", NameKey: "server-01", Source: "inventory", Status: "active", Health: "degraded", LastSeenMS: 100},
+		{EntityUID: "asset:server-01", EntityType: "physical_server", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "server-01", NameKey: "server-01", Source: "inventory", Status: "active", Health: "degraded", LastSeenMS: 100, Attrs: map[string]interface{}{"vendor": "Dell", "model": "R750", "serial_number": "SN-01", "provider_url": "https://internal.invalid"}},
 		{EntityUID: "k8s:node-01", EntityType: "k8s_node", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "node-01", NameKey: "node-01", Source: "k8s", Status: "active", Health: "healthy", LastSeenMS: 100},
 		{EntityUID: "k8s:pod-01", EntityType: "pod", TenantID: "tenant-a", ClusterID: "cluster-a", Namespace: "payments", Name: "api-01", NameKey: "api-01", Source: "k8s", Status: "active", Health: "critical", LastSeenMS: 100},
 		{EntityUID: "event:cpu-01", EntityType: "cpu", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "cpu-01", NameKey: "cpu-01", Source: "inventory", Status: "active", Health: "healthy", LastSeenMS: 100},
@@ -122,6 +122,28 @@ func TestResourceDetailRejectsCrossClusterAndReportsNotFound(t *testing.T) {
 	h.ResourceDetail(notFound, resourceRequest(http.MethodGet, "/api/v1/resources/detail?uid=asset%3Amissing"))
 	if notFound.Code != http.StatusNotFound {
 		t.Fatalf("not found status=%d body=%s", notFound.Code, notFound.Body.String())
+	}
+}
+
+func TestResourceDetailAllowListsOperationalAttributes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	resourceCatalogTestHandler(t).ResourceDetail(rec, resourceRequest(http.MethodGet, "/api/v1/resources/detail?uid=asset%3Aserver-01"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Attributes map[string]interface{} `json:"attributes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.Attributes["vendor"] != "Dell" || body.Data.Attributes["model"] != "R750" {
+		t.Fatalf("attributes=%+v", body.Data.Attributes)
+	}
+	if _, leaked := body.Data.Attributes["provider_url"]; leaked {
+		t.Fatalf("sensitive attribute leaked: %+v", body.Data.Attributes)
 	}
 }
 

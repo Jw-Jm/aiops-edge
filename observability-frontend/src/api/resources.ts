@@ -31,6 +31,7 @@ interface ResourceCatalogWireItem {
   resolution?: string
   last_seen_at?: string
   capabilities?: string[]
+  attributes?: Record<string, unknown>
 }
 
 interface ResourceCatalogWireResponse {
@@ -47,6 +48,7 @@ export interface ResourceCatalogItem extends PlatformResourceRef {
   resolution?: string
   lastSeenAt?: string
   capabilities?: string[]
+  attributes?: Record<string, unknown>
 }
 
 export interface ResourceCatalogResponse {
@@ -105,6 +107,7 @@ function mapItem(item: ResourceCatalogWireItem): ResourceCatalogItem {
     ...(item.resolution ? { resolution: item.resolution } : {}),
     ...(item.last_seen_at ? { lastSeenAt: item.last_seen_at } : {}),
     ...(item.capabilities ? { capabilities: item.capabilities } : {}),
+    ...(item.attributes ? { attributes: item.attributes } : {}),
   }
 }
 

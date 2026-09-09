@@ -20,18 +20,19 @@ type ResourceReadMeta struct {
 }
 
 type resourceCatalogItem struct {
-	UID          string   `json:"uid"`
-	ClusterID    string   `json:"cluster_id"`
-	Type         string   `json:"type"`
-	Domain       string   `json:"domain"`
-	Name         string   `json:"name"`
-	Namespace    string   `json:"namespace,omitempty"`
-	Location     string   `json:"location"`
-	Health       string   `json:"health"`
-	Source       string   `json:"source"`
-	Resolution   string   `json:"resolution,omitempty"`
-	LastSeenAt   string   `json:"last_seen_at,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	UID          string                 `json:"uid"`
+	ClusterID    string                 `json:"cluster_id"`
+	Type         string                 `json:"type"`
+	Domain       string                 `json:"domain"`
+	Name         string                 `json:"name"`
+	Namespace    string                 `json:"namespace,omitempty"`
+	Location     string                 `json:"location"`
+	Health       string                 `json:"health"`
+	Source       string                 `json:"source"`
+	Resolution   string                 `json:"resolution,omitempty"`
+	LastSeenAt   string                 `json:"last_seen_at,omitempty"`
+	Capabilities []string               `json:"capabilities,omitempty"`
+	Attributes   map[string]interface{} `json:"attributes,omitempty"`
 }
 
 type resourceDomainSummary struct {
@@ -249,6 +250,7 @@ func projectResourceCatalogItem(entity graphpkg.Entity) resourceCatalogItem {
 		Domain: resourceDomain(entity.EntityType), Name: entity.Name, Namespace: entity.Namespace,
 		Health: normalizeResourceHealth(entity.Health, entity.Status), Source: entity.Source,
 		Resolution: entity.Resolution, Location: entity.Name, Capabilities: resourceCapabilities(entity.Attrs),
+		Attributes: resourceDetailAttributes(entity),
 	}
 	if item.Namespace != "" {
 		item.Location = item.Namespace + " / " + item.Name
@@ -257,6 +259,36 @@ func projectResourceCatalogItem(entity graphpkg.Entity) resourceCatalogItem {
 		item.LastSeenAt = time.UnixMilli(entity.LastSeenMS).UTC().Format(time.RFC3339)
 	}
 	return item
+}
+
+// resourceDetailAttributes is deliberately allow-listed. Detail projections
+// may expose operational identity/capacity fields, but never provider URLs,
+// credentials, raw inventory payloads, or internal connection data.
+func resourceDetailAttributes(entity graphpkg.Entity) map[string]interface{} {
+	allowed := map[string]struct{}{}
+	switch entity.EntityType {
+	case "physical_server":
+		allowed = map[string]struct{}{"vendor": {}, "model": {}, "product_name": {}, "serial_number": {}, "bmc_identifier": {}, "component_health": {}}
+	case "k8s_node":
+		allowed = map[string]struct{}{"role": {}, "version": {}, "ready": {}, "taints": {}, "capacity": {}, "host": {}}
+	case "vm", "vmi":
+		allowed = map[string]struct{}{"namespace": {}, "node": {}, "cpu": {}, "memory": {}, "disk": {}, "network": {}, "migration": {}}
+	default:
+		return nil
+	}
+	if len(entity.Attrs) == 0 {
+		return nil
+	}
+	result := make(map[string]interface{})
+	for key, value := range entity.Attrs {
+		if _, ok := allowed[key]; ok {
+			result[key] = value
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func resourceCapabilities(attrs map[string]interface{}) []string {

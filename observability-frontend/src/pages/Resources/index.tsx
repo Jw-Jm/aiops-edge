@@ -1,45 +1,42 @@
-import React, { useEffect } from 'react'
+import React from 'react'
 import { Tabs } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { Breadcrumb, PageHeader } from '../../components/ui/PageKit'
-import ServiceObservability from '../observability/ServiceObservability'
-import K8sActions from '../infra/K8sActions'
-import VirtualMachines from '../observability/VirtualMachines'
-import Hardware from '../infra/Hardware'
 import Capacity from '../capacity/Capacity'
 import ResourceRelationships from '../observability/ResourceRelationships'
 import ResourceCenter from './ResourceCenter'
+import ClusterPanorama from './ClusterPanorama'
+import ResourceDirectory from './ResourceDirectory'
 import { useScopeStore } from '../../store/scopeStore'
-import { resourceDomainOf } from '../../features/resources/resourceDomain'
+import type { ResourceDomain } from '../../features/resources/types'
 
-const views = [
-  { key: 'services', label: '服务', children: <ServiceObservability embedded /> },
-  { key: 'kubernetes', label: 'Kubernetes', children: <K8sActions /> },
-  { key: 'vms', label: '虚拟机', children: <VirtualMachines /> },
-  { key: 'hardware', label: '硬件', children: <Hardware /> },
+const viewDefinitions: Array<{ key: string; label: string; domain?: ResourceDomain; children?: React.ReactNode }> = [
+  { key: 'panorama', label: '集群全景' },
+  { key: 'compute', label: '计算', domain: 'compute' },
+  { key: 'network', label: '网络', domain: 'network' },
+  { key: 'storage', label: '存储', domain: 'storage' },
+  { key: 'kubernetes', label: 'Kubernetes', domain: 'kubernetes' },
+  { key: 'application', label: '应用服务', domain: 'application' },
   { key: 'capacity', label: '容量', children: <Capacity /> },
-  { key: 'relationships', label: '关系', children: <ResourceRelationships /> },
+  { key: 'relationships', label: '关系探索', children: <ResourceRelationships /> },
 ]
 
 const Resources: React.FC = () => {
   const [params, setParams] = useSearchParams()
   const setScopeResource = useScopeStore((state) => state.setResource)
-  const activeClusterId = useScopeStore((state) => state.active?.clusterId || state.authScope?.activeClusterId || '')
-  const kind = params.get('kind')
-  const resourceId = params.get('resource')
-  const kindView: Record<string, string> = { service: 'services', vm: 'vms', kubernetes: 'kubernetes', hardware: 'hardware' }
-  const requested = params.get('view') || (kind ? kindView[kind] : undefined) || 'services'
-  const activeKey = views.some((view) => view.key === requested) ? requested : 'services'
-
-  // Investigation snapshots intentionally link back to the current global
-  // scope. Consume the resource query explicitly so the identity/chain panes
-  // open on that resource instead of silently selecting the first row.
-  useEffect(() => {
-    if (!resourceId) return
-    const type = kind === 'resource' || !kind ? 'service' : kind
-    const domain = resourceDomainOf(type) || 'application'
-    if (activeClusterId) setScopeResource({ clusterId: activeClusterId, uid: resourceId, type, domain, name: resourceId })
-  }, [activeClusterId, kind, resourceId, setScopeResource])
+  const active = useScopeStore((state) => state.active)
+  const activeClusterId = active.clusterId || useScopeStore.getState().authScope?.activeClusterId || ''
+  const requested = params.get('view') || 'panorama'
+  const activeKey = viewDefinitions.some((view) => view.key === requested) ? requested : 'panorama'
+  const views = viewDefinitions.map((view) => ({
+    key: view.key,
+    label: view.label,
+    children: view.key === 'panorama'
+      ? <ClusterPanorama clusterId={activeClusterId} />
+      : view.domain
+        ? <ResourceDirectory clusterId={activeClusterId} domain={view.domain} selected={active.resource} onSelect={setScopeResource} />
+        : view.children,
+  }))
 
   return (
     <div>
@@ -48,7 +45,7 @@ const Resources: React.FC = () => {
       <ResourceCenter><Tabs
           activeKey={activeKey}
           items={views}
-          onChange={(key) => setParams({ view: key })}
+          onChange={(key) => setParams((current) => { current.set('view', key); return current })}
           destroyOnHidden
         /></ResourceCenter>
     </div>
