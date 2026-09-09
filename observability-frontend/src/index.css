@@ -296,6 +296,24 @@ body {
 .resource-directory__row-main span { color: var(--text-secondary); font-size: 12px; }
 .resource-directory__row-main small { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .resource-center__panorama { min-width: 0; }
+.graph-map__omitted { position: absolute; right: 10px; bottom: 10px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); background: rgba(255,255,255,.92); font-size: 11px; }
+.graph-toolbar { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; }
+.graph-toolbar select { margin-left: 4px; min-height: 30px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface-1); }
+.graph-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; color: var(--text-muted); font-size: 11px; }
+.graph-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.graph-legend__dot { width: 8px; height: 8px; border-radius: 50%; }
+.graph-legend__dot--critical { background: var(--danger); }
+.graph-legend__dot--degraded { background: var(--warning); }
+.graph-legend__line { display: inline-block; width: 18px; border-top: 2px solid var(--text-muted); }
+.graph-legend__line--dashed { border-top-style: dashed; }
+.graph-relation-list { border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.graph-relation-list .section-heading { margin-bottom: 4px; }
+.graph-relation-list .section-heading button { border: 0; color: var(--primary); background: transparent; cursor: pointer; font-size: 11px; }
+.graph-relation-list__row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: center; width: 100%; padding: 7px 6px; border: 0; border-bottom: 1px solid var(--border-soft); color: var(--text-secondary); background: transparent; text-align: left; cursor: pointer; font-size: 12px; }
+.graph-relation-list__row:last-child { border-bottom: 0; }
+.graph-relation-list__row:hover, .graph-relation-list__row:focus-visible { background: var(--surface-2); outline: none; }
+.graph-relation-list__row em { color: var(--primary); font-style: normal; }
+.graph-relation-list__empty { padding: 12px; color: var(--text-muted); font-size: 12px; }
 .overview-work-queues { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 16px; margin-bottom: 20px; }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .priority-issue-card { border-left: 3px solid var(--danger); }

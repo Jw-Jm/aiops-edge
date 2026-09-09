@@ -22,7 +22,7 @@
 - Run 打开后使用冻结快照，禁止通过副作用改写活动 Scope。
 - Action 入口由服务端 capabilities 决定；无 capability 时只读。
 - 所有数据区域必须覆盖 loading、empty、error、partial、stale、forbidden 六类状态，且尺寸稳定。
-- 知识图谱默认上限 80 个节点、200 条边；超限必须聚合并显示省略数量，不得静默截断。
+- 知识图谱默认画布可视预算为 80 个节点、200 条边；超限必须聚合并显示省略数量，不得静默截断。该预算不限制后端实际资源总量，专家模式通过深度、域、关系过滤和分页展开继续读取。
 - 最小操作宽度 1024px；视觉验收视口固定为 1440×900、1280×720、1024×768。
 - 不更换 UI 框架，不改变数据库事实，不扩大自动执行权限，不删除旧深链兼容。
 
@@ -597,7 +597,7 @@ export function buildGraphDisplayModel(
 覆盖：
 
 - resource-relations 使用 radial；包含/宿主/绑定关系使用 hierarchy-tb；failure-chain 使用 dag-lr。
-- 节点按资源域分组，中心节点保留，超过 80/200 后生成“还有 N 个”聚合节点并计入 omittedByType。
+- 节点按资源域分组，中心节点保留，超过当前画布 80/200 可视预算后生成“还有 N 个”聚合节点并计入 omittedByType；真实图谱总量可大于该预算，后续通过专家模式按需展开。
 - critical/degraded/risk/healthy/unknown 使用独立边框和文字，不改变资源域类型色。
 - CONTAINS/HOSTS/RUNS_ON/USES_VOLUME/ATTACHED_TO/DEPENDS_ON 映射稳定中文标签。
 - 只有 propagates_failure=true 的故障链边使用红/橙；结构边中性实线、推测边虚线。
