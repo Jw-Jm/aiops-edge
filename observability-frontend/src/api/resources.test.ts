@@ -26,7 +26,7 @@ describe('resource API client', () => {
     const detail = await getResourceDetail('asset:server-01')
     expect(summary.meta).toMatchObject({ partial: true, stale: true, warningCodes: ['RESOURCE_GRAPH_LIMIT'] })
     expect(detail.data).toMatchObject({ clusterId: 'cluster-a', type: 'physical_server', capabilities: ['hardware.inspect'] })
-    expect(api.get).toHaveBeenLastCalledWith('/resources/detail', { params: { uid: 'asset%3Aserver-01' }, signal: undefined })
+    expect(api.get).toHaveBeenLastCalledWith('/resources/detail', { params: { uid: 'asset:server-01' }, signal: undefined })
   })
 
   it('normalizes authorization and backend failures into stable UI kinds', () => {

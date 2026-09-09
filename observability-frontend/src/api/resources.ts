@@ -119,7 +119,9 @@ export async function getResourceSummary(signal?: AbortSignal): Promise<Resource
 }
 
 export async function getResourceDetail(uid: string, signal?: AbortSignal): Promise<ResourceDetailResponse> {
-  const response = await api.get<{ data: ResourceCatalogWireItem; meta: ResourceReadMeta }>('/resources/detail', { params: { uid: encodeURIComponent(uid) }, signal })
+  // Axios serializes query parameters; passing the raw UID avoids double-encoding
+  // values such as `pod:namespace/name` before they reach the Query API.
+  const response = await api.get<{ data: ResourceCatalogWireItem; meta: ResourceReadMeta }>('/resources/detail', { params: { uid }, signal })
   return { data: mapItem(response.data.data), meta: mapMeta(response.data.meta) }
 }
 

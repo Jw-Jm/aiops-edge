@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { useScopeStore } from '../../store/scopeStore'
 import { formatTimeRange, type RunScopeSnapshot } from './types'
 import { resourceLocation, resourceTypeLabel } from '../resources/resourceDomain'
+import ResourcePicker from './ResourcePicker'
 
 interface ScopeBarProps {
   snapshot?: RunScopeSnapshot
@@ -18,6 +19,7 @@ export function ScopeBar({ snapshot }: ScopeBarProps) {
   const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? state.active.clusterId)
   const clusters = useScopeStore((state) => state.clusters)
   const switchCluster = useScopeStore((state) => state.switchCluster)
+  const switching = useScopeStore((state) => state.switching)
   const setResource = useScopeStore((state) => state.setResource)
   const setTimeRange = useScopeStore((state) => state.setTimeRange)
 
@@ -46,9 +48,7 @@ export function ScopeBar({ snapshot }: ScopeBarProps) {
       <Select aria-label="集群" size="small" placeholder="选择集群" value={activeClusterId || undefined}
         onChange={(value) => { void switchCluster(value) }} options={clusterOptions} />
       <span className="scope-bar__slash">/</span>
-      <Select aria-label="资源" size="small" allowClear placeholder="资源" value={active.resource?.uid}
-        onChange={(value) => { if (!value) setResource(undefined) }}
-        options={active.resource ? [{ value: active.resource.uid, label: `${resourceTypeLabel(active.resource.type)} · ${resourceLocation(active.resource)}` }] : []} />
+      <ResourcePicker clusterId={activeClusterId} value={active.resource} disabled={switching} onChange={setResource} />
       <span className="scope-bar__slash">/</span>
       <Select aria-label="时间范围" size="small" value={timeValue} onChange={(value) => {
         if (value === 'absolute') return
