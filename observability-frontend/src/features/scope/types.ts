@@ -1,38 +1,27 @@
-export type Environment = 'prod' | 'staging' | 'test' | 'dev' | 'unknown'
+import type { PlatformResourceRef } from '../resources/types'
+
 export type RelativeMinutes = 15 | 60 | 360 | 1440
 
 export type TimeRange =
   | { mode: 'relative'; minutes: RelativeMinutes }
   | { mode: 'absolute'; start: string; end: string }
 
-export interface ResourceRef {
-  type: string
-  id: string
-  label: string
-}
-
-export interface ScopeContext {
-  environment: Environment
-  namespace: string
-  resource?: ResourceRef
+export interface ActiveScope {
+  tenantId: string
+  clusterId: string
+  resource?: PlatformResourceRef
   timeRange: TimeRange
 }
 
-export interface RunScopeSnapshot {
+export interface RunScopeSnapshot extends ActiveScope {
   mode: 'snapshot'
   runId: string
-  tenantId: string
-  clusterId: string
-  environment: string
-  namespace?: string
-  resource?: ResourceRef
-  timeRange?: TimeRange
+  timeRange: Extract<TimeRange, { mode: 'absolute' }>
 }
 
-export const DEFAULT_SCOPE_CONTEXT: ScopeContext = {
-  environment: 'prod',
-  namespace: '',
-  resource: undefined,
+export const DEFAULT_ACTIVE_SCOPE: ActiveScope = {
+  tenantId: '',
+  clusterId: '',
   timeRange: { mode: 'relative', minutes: 60 },
 }
 

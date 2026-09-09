@@ -3,7 +3,8 @@ import { persist } from 'zustand/middleware'
 import { getMe, setActiveScope } from '../api/client'
 import { setScopeCluster } from '../api/scopeRuntime'
 import { resetScopeQueries } from '../query/client'
-import { DEFAULT_SCOPE_CONTEXT, type Environment, type ResourceRef, type ScopeContext, type TimeRange } from '../features/scope/types'
+import { DEFAULT_ACTIVE_SCOPE, type ActiveScope, type RunScopeSnapshot, type TimeRange } from '../features/scope/types'
+import type { PlatformResourceRef } from '../features/resources/types'
 
 export interface AuthScope {
   tenantId: string
@@ -20,7 +21,7 @@ export interface ScopeCluster {
 
 interface ScopeState {
   authScope: AuthScope | null
-  context: ScopeContext
+  active: ActiveScope
   preferredClusterId: string
   clusters: ScopeCluster[]
   loading: boolean
@@ -29,10 +30,9 @@ interface ScopeState {
   initialize: () => Promise<void>
   switchCluster: (clusterId: string) => Promise<void>
   setPreferredCluster: (clusterId: string) => void
-  setEnvironment: (environment: Environment) => void
-  setNamespace: (namespace: string) => void
-  setResource: (resource?: ResourceRef) => void
+  setResource: (resource?: PlatformResourceRef) => void
   setTimeRange: (timeRange: TimeRange) => void
+  snapshotForRun: (runId: string, window: Extract<TimeRange, { mode: 'absolute' }>) => RunScopeSnapshot
   isReady: () => boolean
 }
 
@@ -52,11 +52,20 @@ function projectClusters(data: Array<{ cluster_id: string; tenant_id?: string; n
     }))
 }
 
+function activeScopeFromAuth(authScope: AuthScope, previous: ActiveScope): ActiveScope {
+  return {
+    tenantId: authScope.tenantId,
+    clusterId: authScope.activeClusterId,
+    ...(previous.clusterId === authScope.activeClusterId && previous.resource?.clusterId === authScope.activeClusterId ? { resource: previous.resource } : {}),
+    timeRange: previous.timeRange,
+  }
+}
+
 export const useScopeStore = create<ScopeState>()(
   persist(
     (set, get) => ({
       authScope: null,
-      context: DEFAULT_SCOPE_CONTEXT,
+      active: DEFAULT_ACTIVE_SCOPE,
       preferredClusterId: '',
       clusters: [],
       loading: false,
@@ -68,12 +77,12 @@ export const useScopeStore = create<ScopeState>()(
           const response = await getMe()
           const nextScope = projectScope(response.data.active_scope)
           setScopeCluster(nextScope.activeClusterId)
-          set({
+          set((state) => ({
             authScope: nextScope,
+            active: activeScopeFromAuth(nextScope, state.active),
             clusters: projectClusters(response.data.available_clusters),
-            context: get().context,
             loading: false,
-          })
+          }))
         } catch (error) {
           set({ loading: false, error: error instanceof Error ? error.message : 'Scope 初始化失败' })
           throw error
@@ -83,12 +92,13 @@ export const useScopeStore = create<ScopeState>()(
         const target = get().clusters.find((cluster) => cluster.cluster_id === clusterId)
         if (!target) throw new Error('未找到可授权集群')
         const previousScope = get().authScope
+        const previousActive = get().active
         if (previousScope?.activeClusterId === clusterId) {
           set({ preferredClusterId: clusterId })
           return
         }
         await resetScopeQueries()
-        set({ switching: true, error: null, authScope: previousScope ? { ...previousScope, activeClusterId: '' } : null })
+        set({ switching: true, error: null, authScope: previousScope ? { ...previousScope, activeClusterId: '' } : null, active: { ...previousActive, clusterId: '', resource: undefined } })
         setScopeCluster('')
         try {
           await setActiveScope(target.tenant_id, target.cluster_id)
@@ -100,27 +110,29 @@ export const useScopeStore = create<ScopeState>()(
           setScopeCluster(confirmed.activeClusterId)
           set({
             authScope: confirmed,
+            active: { tenantId: confirmed.tenantId, clusterId: confirmed.activeClusterId, timeRange: previousActive.timeRange },
             preferredClusterId: confirmed.activeClusterId,
             clusters: projectClusters(response.data.available_clusters),
-            context: { ...get().context, namespace: '', resource: undefined },
             switching: false,
           })
         } catch (error) {
           setScopeCluster(previousScope?.activeClusterId ?? '')
-          set({
-            authScope: previousScope,
-            switching: false,
-            error: error instanceof Error ? error.message : 'Scope 切换失败',
-          })
+          set({ authScope: previousScope, active: previousActive, switching: false, error: error instanceof Error ? error.message : 'Scope 切换失败' })
           throw error
         }
       },
       setPreferredCluster: (clusterId) => set({ preferredClusterId: clusterId }),
-      setEnvironment: (environment) => set((state) => ({ context: { ...state.context, environment } })),
-      setNamespace: (namespace) => set((state) => ({ context: { ...state.context, namespace, resource: undefined } })),
-      setResource: (resource) => set((state) => ({ context: { ...state.context, resource } })),
-      setTimeRange: (timeRange) => set((state) => ({ context: { ...state.context, timeRange } })),
-      isReady: () => Boolean(get().authScope?.tenantId && get().authScope?.activeClusterId),
+      setResource: (resource) => {
+        const activeClusterId = get().active.clusterId || get().authScope?.activeClusterId || ''
+        if (resource && resource.clusterId !== activeClusterId) throw new Error('跨集群资源不能进入当前范围')
+        set((state) => ({ active: { ...state.active, resource } }))
+      },
+      setTimeRange: (timeRange) => set((state) => ({ active: { ...state.active, timeRange } })),
+      snapshotForRun: (runId, window) => {
+        const active = get().active
+        return { ...active, mode: 'snapshot', runId, timeRange: window }
+      },
+      isReady: () => Boolean(get().active.tenantId && get().active.clusterId),
     }),
     {
       name: 'aiops-scope-preference',

@@ -10,6 +10,7 @@ import Capacity from '../capacity/Capacity'
 import ResourceRelationships from '../observability/ResourceRelationships'
 import ResourceCenter from './ResourceCenter'
 import { useScopeStore } from '../../store/scopeStore'
+import { resourceDomainOf } from '../../features/resources/resourceDomain'
 
 const views = [
   { key: 'services', label: '服务', children: <ServiceObservability embedded /> },
@@ -23,6 +24,7 @@ const views = [
 const Resources: React.FC = () => {
   const [params, setParams] = useSearchParams()
   const setScopeResource = useScopeStore((state) => state.setResource)
+  const activeClusterId = useScopeStore((state) => state.active?.clusterId || state.authScope?.activeClusterId || '')
   const kind = params.get('kind')
   const resourceId = params.get('resource')
   const kindView: Record<string, string> = { service: 'services', vm: 'vms', kubernetes: 'kubernetes', hardware: 'hardware' }
@@ -35,8 +37,9 @@ const Resources: React.FC = () => {
   useEffect(() => {
     if (!resourceId) return
     const type = kind === 'resource' || !kind ? 'service' : kind
-    setScopeResource({ type, id: resourceId, label: resourceId })
-  }, [kind, resourceId, setScopeResource])
+    const domain = resourceDomainOf(type) || 'application'
+    if (activeClusterId) setScopeResource({ clusterId: activeClusterId, uid: resourceId, type, domain, name: resourceId })
+  }, [activeClusterId, kind, resourceId, setScopeResource])
 
   return (
     <div>

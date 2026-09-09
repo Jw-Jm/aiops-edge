@@ -4,7 +4,6 @@ import { getTraces, getTraceDetail, getTraceContext, getServices } from '../../a
 import { useScopeStore } from '../../store/scopeStore'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
-import { DEFAULT_SCOPE_CONTEXT } from '../../features/scope/types'
 
 interface TraceRow { trace_id: string; services?: any; max_ms?: number; spans?: number; start?: string; end?: string }
 
@@ -87,7 +86,7 @@ export function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number 
 
 const Trace: React.FC = () => {
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
-  const scopeContext = useScopeStore((s) => s.context) ?? DEFAULT_SCOPE_CONTEXT
+  const activeScope = useScopeStore((s) => s.active ?? { tenantId: '', clusterId: activeClusterId, timeRange: { mode: 'relative' as const, minutes: 60 } })
   const [data, setData] = useState<TraceRow[]>([])
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<any>(null)
@@ -104,7 +103,8 @@ const Trace: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const PAGE_SIZE = 50
-  const scopeHours = scopeContext.timeRange.mode === 'relative' ? Math.max(1, Math.ceil(scopeContext.timeRange.minutes / 60)) : rangeHours
+  const scopeNamespace = activeScope.resource?.domain === 'kubernetes' ? activeScope.resource.namespace : undefined
+  const scopeHours = activeScope.timeRange.mode === 'relative' ? Math.max(1, Math.ceil(activeScope.timeRange.minutes / 60)) : rangeHours
 
   // B5 修复：服务端分页（后端支持 limit/offset），翻页不再失效；
   // 参数名对齐后端（service 而非 service_name），并携带时间范围 hours。
@@ -115,7 +115,7 @@ const Trace: React.FC = () => {
     setLoading(true)
     if (!append) setError(null)
     const off = append ? offset : 0
-    getTraces({ limit: PAGE_SIZE, offset: off, service: s || undefined, search: q || undefined, hours: h, namespace: scopeContext.namespace || undefined })
+    getTraces({ limit: PAGE_SIZE, offset: off, service: s || undefined, search: q || undefined, hours: h, namespace: scopeNamespace || undefined })
       .then((r) => {
         const rows = Array.isArray(r.data) ? r.data : r.data?.data || []
         setData((prev) => (append ? [...prev, ...rows] : rows))
@@ -132,7 +132,7 @@ const Trace: React.FC = () => {
   useEffect(() => {
     setRangeHours(scopeHours)
     load(svc, search, scopeHours)
-  }, [activeClusterId, scopeContext.namespace, scopeContext.timeRange])
+  }, [activeClusterId, scopeNamespace, activeScope.timeRange.mode, activeScope.timeRange.mode === 'relative' ? activeScope.timeRange.minutes : activeScope.timeRange.start, activeScope.timeRange.mode === 'absolute' ? activeScope.timeRange.end : ''])
 
   // B5: 服务下拉选项（复用 /services 活跃服务列表）
   useEffect(() => {

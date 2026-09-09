@@ -32,6 +32,7 @@ describe('scopeStore server-owned active scope', () => {
       loading: false,
       switching: false,
       error: null,
+      active: { tenantId: '', clusterId: '', timeRange: { mode: 'relative', minutes: 60 } },
     })
   })
 
@@ -71,17 +72,28 @@ describe('scopeStore server-owned active scope', () => {
     resetQueries.mockRestore()
   })
 
-  it('clears child scope when namespace changes and keeps a selected resource explicit', () => {
+  it('clears the selected resource when the confirmed cluster changes', async () => {
     useScopeStore.setState({
-      context: {
-        environment: 'prod', namespace: 'payment',
-        resource: { type: 'service', id: 'payment-api', label: 'payment-api' },
-        timeRange: { mode: 'relative', minutes: 60 },
-      },
+      authScope: { tenantId: 'tenant-a', activeClusterId: 'cluster-a' },
+      active: { tenantId: 'tenant-a', clusterId: 'cluster-a', resource: { clusterId: 'cluster-a', uid: 'service:payment-api', type: 'service', domain: 'application', name: 'payment-api' }, timeRange: { mode: 'relative', minutes: 60 } },
+      clusters: me().data.available_clusters,
     })
-    useScopeStore.getState().setNamespace('checkout')
-    expect(useScopeStore.getState().context).toMatchObject({ namespace: 'checkout', resource: undefined })
-    useScopeStore.getState().setResource({ type: 'service', id: 'checkout-api', label: 'checkout-api' })
-    expect(useScopeStore.getState().context.resource?.id).toBe('checkout-api')
+    vi.mocked(setActiveScope).mockResolvedValue({ data: { active_scope: { tenant_id: 'tenant-a', cluster_id: 'cluster-b' } } } as never)
+    vi.mocked(getMe).mockResolvedValue(me('cluster-b') as never)
+
+    await useScopeStore.getState().switchCluster('cluster-b')
+
+    expect(useScopeStore.getState().active).toMatchObject({ tenantId: 'tenant-a', clusterId: 'cluster-b' })
+    expect(useScopeStore.getState().active).not.toHaveProperty('resource')
+  })
+
+  it('rejects a resource from another cluster and keeps namespace out of global scope', () => {
+    useScopeStore.setState({
+      authScope: { tenantId: 'tenant-a', activeClusterId: 'cluster-a' },
+      active: { tenantId: 'tenant-a', clusterId: 'cluster-a', timeRange: { mode: 'relative', minutes: 60 } },
+    })
+    expect(() => useScopeStore.getState().setResource({ clusterId: 'cluster-b', uid: 'pod:b', type: 'pod', domain: 'kubernetes', name: 'api' })).toThrow('跨集群资源')
+    expect('setNamespace' in useScopeStore.getState()).toBe(false)
+    expect('setEnvironment' in useScopeStore.getState()).toBe(false)
   })
 })

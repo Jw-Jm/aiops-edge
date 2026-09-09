@@ -75,7 +75,7 @@ const AiChat: React.FC = () => {
   // A0-04（F-07）：concrete cluster 来自 UIStore（与 ClusterSwitcher 一致），
   // 不依赖 localStorage 手解；无 concrete cluster（'all'/空）时禁用发送。
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
-  const scopeContext = useScopeStore((s) => s.context)
+  const activeScope = useScopeStore((s) => s.active)
   const hasConcreteCluster = !!activeClusterId && CANONICAL_UUID_RE.test(activeClusterId)
   const [progress, setProgress] = useState('')
   const [toolActivity, setToolActivity] = useState<ToolActivity[]>([])
@@ -192,8 +192,8 @@ const AiChat: React.FC = () => {
         credentials: 'include',
         body: JSON.stringify({
           intent: 'diagnosis', service: '', message: text, stream: true, session_id: sessionId, turn_id: turnId,
-          cluster_id: clusterId, environment: scopeContext.environment, namespace: scopeContext.namespace,
-          resource_id: scopeContext.resource?.id || '', time_range: scopeContext.timeRange, exec_result: execResult || '',
+          cluster_id: clusterId, environment: 'prod', namespace: activeScope.resource?.domain === 'kubernetes' ? activeScope.resource.namespace : undefined,
+          resource_id: activeScope.resource?.uid || '', resource_type: activeScope.resource?.type || '', time_range: activeScope.timeRange, exec_result: execResult || '',
         }),
         signal: controller.signal,
       })
@@ -483,9 +483,9 @@ const AiChat: React.FC = () => {
                       <Button type="primary" size="small"
                         icon={<ExperimentOutlined />}
                         onClick={() => {
-                          const query = new URLSearchParams({ source: 'chat', clusterId: activeClusterId, targetType: scopeContext.resource?.type || 'service', symptom: symptomMsg?.content || '' })
-                          if (scopeContext.namespace) query.set('namespace', scopeContext.namespace)
-                          if (scopeContext.resource?.id) query.set('resourceId', scopeContext.resource.id)
+                          const query = new URLSearchParams({ source: 'chat', clusterId: activeClusterId, targetType: activeScope.resource?.type || 'service', symptom: symptomMsg?.content || '' })
+                          if (activeScope.resource?.domain === 'kubernetes' && activeScope.resource.namespace) query.set('namespace', activeScope.resource.namespace)
+                          if (activeScope.resource?.uid) query.set('resourceId', activeScope.resource.uid)
                           navigate(`/investigation/new?${query.toString()}`)
                         }}>
                         转为正式调查

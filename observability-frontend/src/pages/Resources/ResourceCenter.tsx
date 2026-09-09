@@ -4,9 +4,9 @@ import ResourceIdentity from './ResourceIdentity'
 import MainFailureChain from './MainFailureChain'
 
 const ResourceCenter: React.FC<{ children: React.ReactNode; clusterName?: string }> = ({ children, clusterName }) => {
-  const context = useScopeStore((state) => state.context)
+  const active = useScopeStore((state) => state.active ?? { tenantId: '', clusterId: '', timeRange: { mode: 'relative' as const, minutes: 60 } })
   const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
-  return <><ResourceIdentity resource={context.resource} clusterName={clusterName || activeClusterId} /><MainFailureChain center={context.resource} /><div style={{ marginTop: 16 }}>{children}</div></>
+  return <><ResourceIdentity resource={active.resource} clusterName={clusterName || activeClusterId} /><MainFailureChain center={active.resource} /><div style={{ marginTop: 16 }}>{children}</div></>
 }
 
 export default ResourceCenter

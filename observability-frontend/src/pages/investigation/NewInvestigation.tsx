@@ -23,7 +23,8 @@ const NewInvestigation: React.FC = () => {
   const [form] = Form.useForm()
   const clusters = useScopeStore((s) => s.clusters)
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
-  const context = useScopeStore((s) => s.context)
+  const activeScope = useScopeStore((s) => s.active ?? { tenantId: '', clusterId: activeClusterId, timeRange: { mode: 'relative' as const, minutes: 60 } })
+  const selectedNamespace = activeScope.resource?.domain === 'kubernetes' ? activeScope.resource.namespace : undefined
   const activeCluster = clusters.find((cluster) => cluster.cluster_id === activeClusterId)
   const draft = draftFromSearchParams(searchParams)
   const [submitting, setSubmitting] = useState(false)
@@ -31,18 +32,18 @@ const NewInvestigation: React.FC = () => {
   useEffect(() => {
     form.setFieldsValue({
       clusterId: activeClusterId,
-      namespace: draft.namespace || context.namespace || undefined,
-      resourceId: draft.resourceId || context.resource?.id || undefined,
+      namespace: draft.namespace || selectedNamespace || undefined,
+      resourceId: draft.resourceId || activeScope.resource?.uid || undefined,
       symptom: draft.symptom || undefined,
-      targetType: draft.targetType || context.resource?.type || 'service',
+      targetType: draft.targetType || activeScope.resource?.type || 'service',
       actionMode: draft.actionMode || 'read_only',
     })
-  }, [activeClusterId, context.namespace, context.resource?.id, draft.actionMode, draft.namespace, draft.resourceId, draft.symptom, draft.targetType, form])
+  }, [activeClusterId, activeScope.resource?.type, activeScope.resource?.uid, draft.actionMode, draft.namespace, draft.resourceId, draft.symptom, draft.targetType, form, selectedNamespace])
 
   const onFinish = (values: { resourceId: string; symptom: string; clusterId: string; namespace?: string; targetType: string; actionMode: 'read_only' | 'propose' }) => {
     const clusterId = activeClusterId || values.clusterId
     if (!clusterId) { message.warning('请先选择已授权集群'); return }
-    const window = absoluteWindow(context.timeRange)
+    const window = absoluteWindow(activeScope.timeRange)
     setSubmitting(true)
     // P12：真实触发 POST /api/v1/ai/runs（显式按钮才创建，服务器重新鉴权）
     createRun({
@@ -52,7 +53,7 @@ const NewInvestigation: React.FC = () => {
       target_type: values.targetType,
       intent: values.symptom,
       message: values.symptom,
-      namespace: values.namespace || context.namespace || undefined,
+      namespace: values.namespace || selectedNamespace || undefined,
       query_window_start: window.start,
       query_window_end: window.end,
       action_mode: values.actionMode || 'read_only',
@@ -79,11 +80,11 @@ const NewInvestigation: React.FC = () => {
         <ScopeBar />
         <Card size="small" title="调查范围" style={{ marginTop: 12 }}>
           <Space wrap>
-            <Tag color="blue">环境：{context.environment}</Tag>
+            <Tag color="blue">生产环境</Tag>
             <Tag>集群：{activeCluster?.name || activeClusterId || '未选择'}</Tag>
-            {context.namespace && <Tag>命名空间：{context.namespace}</Tag>}
-            {(draft.resourceId || context.resource?.id) && <Tag>资源：{draft.resourceId || context.resource?.id}</Tag>}
-            <Tag>时间：{formatTimeRange(context.timeRange)}</Tag>
+            {selectedNamespace && <Tag>命名空间：{selectedNamespace}</Tag>}
+            {(draft.resourceId || activeScope.resource?.uid) && <Tag>资源：{draft.resourceId || activeScope.resource?.uid}</Tag>}
+            <Tag>时间：{formatTimeRange(activeScope.timeRange)}</Tag>
           </Space>
           {draft.problemId && <div style={{ marginTop: 10, color: 'var(--text-secondary)', fontSize: 12 }}>来源问题：{draft.problemId}</div>}
         </Card>

@@ -15,6 +15,7 @@ export interface InvestigationSnapshotInput {
   tenant_id?: string
   primary_cluster_id?: string
   target_resource_id?: string | null
+  target_resource_type?: string | null
   intent?: string
   status?: string
   root_cause?: string | null
@@ -31,7 +32,7 @@ export interface InvestigationSnapshotInput {
 
 export interface InvestigationViewModel {
   runId: string
-  scope: { tenantId: string; clusterId: string; resourceId: string; environment: string; namespace: string; timeRange?: { mode: 'absolute'; start: string; end: string } }
+  scope: { tenantId: string; clusterId: string; resourceId: string; resource?: PlatformResourceRef; timeRange?: { mode: 'absolute'; start: string; end: string } }
   intent: string
   status: string
   evidence: Array<{ id: string; observedAt: string; type: string; source: string; fact: string; reliability: number | null; quality: string; supports: string[]; contradicts: string[] }>
@@ -64,9 +65,26 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
   const insufficient = !rootCause || confidence < 0.8 || evidence.length === 0
   return {
     runId: snapshot.run_id,
-    scope: { tenantId: snapshot.tenant_id ?? '', clusterId: snapshot.primary_cluster_id ?? '', resourceId: snapshot.target_resource_id ?? 'investigation', environment: snapshot.environment ?? 'unknown', namespace: snapshot.namespace ?? '', timeRange: snapshot.query_window_start && snapshot.query_window_end ? { mode: 'absolute', start: snapshot.query_window_start, end: snapshot.query_window_end } : undefined },
+    scope: {
+      tenantId: snapshot.tenant_id ?? '',
+      clusterId: snapshot.primary_cluster_id ?? '',
+      resourceId: snapshot.target_resource_id ?? 'investigation',
+      ...(snapshot.target_resource_id && snapshot.primary_cluster_id ? {
+        resource: {
+          clusterId: snapshot.primary_cluster_id,
+          uid: snapshot.target_resource_id,
+          type: snapshot.target_resource_type || 'service',
+          domain: resourceDomainOf(snapshot.target_resource_type || 'service') || 'application',
+          name: snapshot.target_resource_id,
+          ...(snapshot.namespace && resourceDomainOf(snapshot.target_resource_type || 'service') === 'kubernetes' ? { namespace: snapshot.namespace } : {}),
+        },
+      } : {}),
+      timeRange: snapshot.query_window_start && snapshot.query_window_end ? { mode: 'absolute', start: snapshot.query_window_start, end: snapshot.query_window_end } : undefined,
+    },
     intent: snapshot.intent ?? '—', status: snapshot.status ?? 'created', evidence, hypotheses,
     conclusion: { state: insufficient ? 'insufficient_evidence' : 'confirmed', title: insufficient ? '证据不足，尚不能确认根因' : rootCause, confidence, rootCause },
     ...(snapshot.action ? { action: { status: snapshot.action.status ?? 'unknown', risk: snapshot.action.risk ?? 'unknown', execution: snapshot.action.execution, verification: snapshot.action.verification } } : {}),
   }
 }
+import { resourceDomainOf } from '../resources/resourceDomain'
+import type { PlatformResourceRef } from '../resources/types'
