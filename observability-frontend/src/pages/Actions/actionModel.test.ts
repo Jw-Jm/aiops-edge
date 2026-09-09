@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canDecideAction, toActionViewModel } from './actionModel'
+import { canControlResource, canDecideAction, toActionViewModel } from './actionModel'
 
 const action = (overrides: Record<string, unknown> = {}) => ({
   action_id: 'action-1', run_id: 'run-1', action_type: 'rollout_restart', action_hash: 'hash',
@@ -20,5 +20,14 @@ describe('action projection', () => {
     expect(canDecideAction('operator')).toBe(false)
     expect(canDecideAction('approver')).toBe(true)
     expect(canDecideAction('admin')).toBe(true)
+  })
+
+  it('requires a returned control capability for mutable resource types', () => {
+    expect(canControlResource('physical_server', [])).toBe(false)
+    expect(canControlResource('physical_server', ['hardware.action.execute'])).toBe(true)
+    expect(canControlResource('k8s_node', ['kubernetes.node.write'])).toBe(true)
+    expect(canControlResource('deployment', ['kubernetes.workload.write'])).toBe(true)
+    expect(canControlResource('vm', [])).toBe(false)
+    expect(canControlResource('pvc', ['storage.read'])).toBe(false)
   })
 })

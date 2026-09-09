@@ -6,8 +6,22 @@ import { listReports, addKnowledgeCase } from '../../api/client'
 import api from '../../api/client'
 import { Empty } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
+import { resourceDomainOf, resourceLocation, resourceTypeLabel } from '../../features/resources/resourceDomain'
+import type { PlatformResourceRef } from '../../features/resources/types'
 
-interface Report { id?: string; task_id?: string; service_name?: string; report_type?: string; verdict?: string; risk_score?: number; summary?: string; created_at?: string; title?: string; status?: string; cluster_id?: string }
+interface Report { id?: string; task_id?: string; service_name?: string; report_type?: string; verdict?: string; risk_score?: number; summary?: string; created_at?: string; title?: string; status?: string; cluster_id?: string; resource_uid?: string; resource_type?: string; resource_name?: string; namespace?: string; source_run_id?: string; impact_count?: number; duration_ms?: number; root_cause?: string; action_status?: string; verification_status?: string; evidence_count?: number }
+
+function reportResource(report: Report): PlatformResourceRef | undefined {
+  const domain = resourceDomainOf((report.resource_type || '') as never)
+  if (!report.resource_uid || !domain || report.resource_type === 'k8s_cluster') return undefined
+  return { clusterId: report.cluster_id || '', uid: report.resource_uid, type: report.resource_type as never, domain, name: report.resource_name || report.service_name || report.resource_uid, ...(domain === 'kubernetes' && report.namespace ? { namespace: report.namespace } : {}) }
+}
+
+export function reportSubject(report: Report): string {
+  const resource = reportResource(report)
+  if (resource) return `${resourceTypeLabel(resource.type)} · ${resourceLocation(resource)}`
+  return report.service_name ? `服务 · ${report.service_name}` : '集群范围'
+}
 
 const Report: React.FC = () => {
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
@@ -52,13 +66,13 @@ const Report: React.FC = () => {
   const taskIdOf = (r: any) => r.task_id || r.id || ''
   const reportTypeName = (rt?: string) =>
     rt === 'report' ? '诊断报告' : rt === 'inspection' ? '巡检报告' : (rt || '报告')
-  // 2.18 命名：类型 + 服务 + 短时间
+  // 2.18 命名：类型 + typed resource + 短时间
   const reportTitle = (r: any) => {
     const rt = reportTypeName(r.report_type)
-    const svc = r.service_name ? ` ${r.service_name}` : ''
+    const subject = reportSubject(r)
     // 2.18 用时间作后缀（去掉 task_id 随机字符串），如"诊断报告 order-svc 07-21 14:03"
     const t = r.created_at ? ` ${(r.created_at || '').slice(5, 16).replace('T', ' ')}` : ''
-    return `${rt}${svc}${t}`
+    return `${rt} · ${subject}${t}`
   }
 
   const download = (r: Report) => {
@@ -104,7 +118,11 @@ const Report: React.FC = () => {
 
   const cols = [
     { title: '报告', dataIndex: 'task_id', key: 'task_id', render: (_: any, r: any) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{reportTitle(r)}</span> },
+    { title: '资源事件', key: 'subject', render: (_: any, r: Report) => <span>{reportSubject(r)}</span> },
     { title: '集群', dataIndex: 'cluster_id', key: 'cluster_id', width: 130, render: (v: string) => v && v !== 'default' ? <Tag color="blue">{v}</Tag> : <span style={{ color: 'var(--text-muted)' }}>主集群</span> },
+    { title: '影响', key: 'impact', width: 90, render: (_: any, r: Report) => r.impact_count == null ? <span style={{ color: 'var(--text-muted)' }}>未提供</span> : `${r.impact_count} 个资源` },
+    { title: '持续', key: 'duration', width: 90, render: (_: any, r: Report) => r.duration_ms == null ? <span style={{ color: 'var(--text-muted)' }}>未提供</span> : `${Math.round(r.duration_ms / 60000)} 分钟` },
+    { title: '来源 Run', key: 'run', width: 150, render: (_: any, r: Report) => r.source_run_id ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{r.source_run_id}</span> : <span style={{ color: 'var(--text-muted)' }}>未提供</span> },
     { title: '时间', dataIndex: 'created_at', key: 'created_at', render: (v: string) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v ? v.slice(0, 19).replace('T', ' ') : '-'}</span> },
     { title: '操作', key: 'op', width: 220, render: (_: any, r: Report) => {
         const taskId = taskIdOf(r)
@@ -137,18 +155,19 @@ const Report: React.FC = () => {
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{reportTitle(preview)}</div>
             <Space style={{ marginBottom: 16, flexWrap: 'wrap' }}>
               <Tag color="blue">{reportTypeName(preview.report_type)}</Tag>
-              {preview.service_name && <Tag>服务：{preview.service_name}</Tag>}
+              <Tag>{reportSubject(preview)}</Tag>
               {preview.cluster_id && preview.cluster_id !== 'default' && <Tag>集群：{preview.cluster_id}</Tag>}
+              {preview.source_run_id && <Tag>来源 Run：{preview.source_run_id}</Tag>}
               {preview.verdict && <Tag color={preview.verdict === 'safe' || preview.verdict === 'pass' ? 'green' : 'orange'}>{String(preview.verdict)}</Tag>}
               {preview.created_at && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{preview.created_at.slice(0, 19).replace('T', ' ')}</span>}
             </Space>
             {/* 修复 5.1：markdown 渲染摘要，保留标题/列表/粗体等结构 */}
             <div className="report-template" style={{ fontSize: 13, lineHeight: 1.8, color: 'var(--text)' }}>
               <section><h4>结论摘要</h4><ReactMarkdown>{preview.summary || '未提供'}</ReactMarkdown></section>
-              <section><h4>影响范围</h4><p>{preview.service_name ? `服务：${preview.service_name}` : '未提供'}</p></section>
-              <section><h4>根因与证据</h4><p>{preview.verdict || '未提供；请从关联调查 Run 查看原始证据。'}</p></section>
-              <section><h4>处置建议</h4><p>未提供</p></section>
-              <section><h4>验证结果</h4><p>未提供</p></section>
+              <section><h4>影响范围</h4><p>{preview.impact_count == null ? '未提供' : `${preview.impact_count} 个资源`}{preview.duration_ms == null ? '' : ` · 持续 ${Math.round(preview.duration_ms / 60000)} 分钟`}</p></section>
+              <section><h4>根因与证据</h4><p>{preview.root_cause || preview.verdict || '未提供；请从关联调查 Run 查看原始证据。'}</p></section>
+              <section><h4>处置建议</h4><p>{preview.action_status || '未提供'}</p></section>
+              <section><h4>验证结果</h4><p>{preview.verification_status || '未提供'}</p></section>
               <section><h4>审计信息</h4><p>{preview.created_at ? `生成时间：${preview.created_at.slice(0, 19).replace('T', ' ')}` : '未提供'}</p></section>
             </div>
           </div>

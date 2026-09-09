@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Descriptions, Drawer, Empty, Modal, Space, Table, Tabs, Tag, Timeline, Typography, message } from 'antd'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { decideAction, getAction, listActions, type ActionProjection } from '../../api/client'
-import { canDecideAction, toActionViewModel } from './actionModel'
+import { canControlResource, canDecideAction, toActionViewModel } from './actionModel'
 import { useAuthStore } from '../../store/authStore'
 import { useScopeStore } from '../../store/scopeStore'
 
@@ -41,6 +41,9 @@ function formatDetail(value: unknown): string {
 const ActionCenter: React.FC = () => {
   const role = useAuthStore((state) => state.role)
   const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  const capabilities = useScopeStore((state) => state.capabilities)
+  const [searchParams] = useSearchParams()
+  const resourceFilter = searchParams.get('resource') || ''
   const [actions, setActions] = useState<ActionProjection[]>([])
   const [selected, setSelected] = useState<ActionProjection | null>(null)
   const [pendingDecision, setPendingDecision] = useState<'approved' | 'rejected' | null>(null)
@@ -54,14 +57,17 @@ const ActionCenter: React.FC = () => {
       return
     }
     setLoading(true); setError('')
-    listActions({ limit: 100 }).then((response) => setActions(response.data?.actions ?? []))
+      listActions({ limit: 100, ...(resourceFilter ? { resource_uid: resourceFilter } : {}) }).then((response) => {
+        const next = response.data?.actions ?? []
+        setActions(resourceFilter ? next.filter((action) => action.target_uid === resourceFilter) : next)
+      })
       .catch((e) => setError(e?.response?.data?.error || e?.message || '动作加载失败'))
       .finally(() => setLoading(false))
-  }, [activeClusterId])
+  }, [activeClusterId, resourceFilter])
   useEffect(() => { load() }, [load])
 
   const columns = useMemo(() => [
-    { title: '操作 / 目标', key: 'target', render: (_: unknown, row: ActionProjection) => <div><Typography.Text strong>{row.operation || row.action_type}</Typography.Text><div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{row.namespace ? `${row.namespace}/` : ''}{row.target_name}</div></div> },
+    { title: '操作 / 目标', key: 'target', render: (_: unknown, row: ActionProjection) => { const view = toActionViewModel(row); return <div><Typography.Text strong>{row.operation || row.action_type}</Typography.Text><div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{view.target}</div></div> } },
     { title: '来源 Run', dataIndex: 'run_id', render: (value: string) => <Link to={`/investigation/${value}`}>{value || '—'}</Link> },
     { title: '风险', key: 'risk', render: (_: unknown, row: ActionProjection) => <Tag color="gold">{toActionViewModel(row).risk.label}</Tag> },
     { title: '影响范围', key: 'impact', render: (_: unknown, row: ActionProjection) => toActionViewModel(row).impact },
@@ -88,7 +94,7 @@ const ActionCenter: React.FC = () => {
       message.success(decision === 'approved' ? '动作已批准' : '动作已拒绝')
       setSelected(null); load()
     } catch (e: any) {
-      message.error(e?.response?.status === 409 || e?.response?.status === 412 ? '动作版本已变化，请刷新后重试' : e?.response?.data?.error || '动作决策失败')
+      message.error(e?.response?.status === 403 ? '当前角色无权执行该动作' : e?.response?.status === 409 || e?.response?.status === 412 ? '资源版本已变化，需要重新预检' : e?.response?.data?.error || '动作决策失败')
     } finally { setDeciding(false) }
   }
   const refreshDetail = async () => { if (!selected) return; try { setSelected((await getAction(selected.action_id)).data) } catch { /* 保留当前快照 */ } }
@@ -112,7 +118,8 @@ const ActionCenter: React.FC = () => {
           { key: 'verify', label: '验证条件', children: selected.verification_status || '未提供' },
         ]} />
         <Timeline style={{ marginTop: 24 }} items={lifecycle(selected).map((step) => ({ children: <Space><Typography.Text strong>{step.label}</Typography.Text><Tag>{step.value}</Tag></Space> }))} />
-        {selected.status === 'proposed' && canDecideAction(role) && <Space><Button type="primary" loading={deciding} onClick={() => setPendingDecision('approved')}>批准执行</Button><Button danger loading={deciding} onClick={() => setPendingDecision('rejected')}>拒绝</Button></Space>}
+        {selected.status === 'proposed' && canDecideAction(role) && canControlResource(selected.target_resource_type, capabilities) && <Space><Button type="primary" loading={deciding} onClick={() => setPendingDecision('approved')}>批准执行</Button><Button danger loading={deciding} onClick={() => setPendingDecision('rejected')}>拒绝</Button></Space>}
+        {selected.status === 'proposed' && !canControlResource(selected.target_resource_type, capabilities) && <Tag color="default">当前能力只读：等待服务端 capability 授权</Tag>}
         <div style={{ marginTop: 20, color: 'var(--text-secondary)', fontSize: 12 }}>没有服务端字段时显示“未提供”，不使用前端推断。</div>
       </>}
     </Drawer>

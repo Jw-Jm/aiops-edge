@@ -27,6 +27,7 @@ describe('scopeStore server-owned active scope', () => {
     vi.clearAllMocks()
     useScopeStore.setState({
       authScope: null,
+      capabilities: [],
       preferredClusterId: '',
       clusters: [],
       loading: false,
@@ -43,6 +44,7 @@ describe('scopeStore server-owned active scope', () => {
 
     expect(getMe).toHaveBeenCalledTimes(1)
     expect(useScopeStore.getState().authScope).toEqual({ tenantId: 'tenant-a', activeClusterId: 'cluster-a' })
+    expect(useScopeStore.getState().capabilities).toEqual(['observability.service.read'])
     expect(useScopeStore.getState().preferredClusterId).toBe('')
   })
 

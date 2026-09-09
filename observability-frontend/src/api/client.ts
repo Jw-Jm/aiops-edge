@@ -170,7 +170,7 @@ export interface ActionProjection {
   created_at?: string
   updated_at?: string
 }
-export const listActions = (params?: { status?: string; limit?: number }) =>
+export const listActions = (params?: { status?: string; limit?: number; resource_uid?: string; resource_type?: string }) =>
   api.get<{ actions: ActionProjection[]; count: number }>('/ai/actions', { params })
 export const getAction = (actionId: string) =>
   api.get<ActionProjection>(`/ai/actions/${encodeURIComponent(actionId)}`)

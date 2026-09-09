@@ -21,6 +21,7 @@ export interface ScopeCluster {
 
 interface ScopeState {
   authScope: AuthScope | null
+  capabilities: string[]
   active: ActiveScope
   preferredClusterId: string
   clusters: ScopeCluster[]
@@ -65,6 +66,7 @@ export const useScopeStore = create<ScopeState>()(
   persist(
     (set, get) => ({
       authScope: null,
+      capabilities: [],
       active: DEFAULT_ACTIVE_SCOPE,
       preferredClusterId: '',
       clusters: [],
@@ -79,6 +81,7 @@ export const useScopeStore = create<ScopeState>()(
           setScopeCluster(nextScope.activeClusterId)
           set((state) => ({
             authScope: nextScope,
+            capabilities: Array.isArray(response.data.capabilities) ? response.data.capabilities : [],
             active: activeScopeFromAuth(nextScope, state.active),
             clusters: projectClusters(response.data.available_clusters),
             loading: false,
@@ -110,6 +113,7 @@ export const useScopeStore = create<ScopeState>()(
           setScopeCluster(confirmed.activeClusterId)
           set({
             authScope: confirmed,
+            capabilities: Array.isArray(response.data.capabilities) ? response.data.capabilities : get().capabilities,
             active: { tenantId: confirmed.tenantId, clusterId: confirmed.activeClusterId, timeRange: previousActive.timeRange },
             preferredClusterId: confirmed.activeClusterId,
             clusters: projectClusters(response.data.available_clusters),
