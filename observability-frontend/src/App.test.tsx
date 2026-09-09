@@ -15,4 +15,9 @@ describe('production shell', () => {
       expect(source).toContain(`path: '${path}'`)
     }
   })
+
+  it('uses a query-preserving compatibility redirect for legacy routes', () => {
+    expect(source).toContain('function LegacyRedirect')
+    expect(source).toContain('new URLSearchParams(location.search)')
+  })
 })

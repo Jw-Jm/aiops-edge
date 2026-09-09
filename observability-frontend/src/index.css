@@ -139,9 +139,6 @@ body {
 .topbar--stacked { height: auto; min-height: 88px; flex-wrap: wrap; row-gap: 0; align-content: center; }
 .topbar__scope { order: 2; flex: 0 0 100%; min-width: 0; padding: 4px 0 6px; border-top: 1px solid var(--border-soft); }
 .topbar__scope .scope-bar { max-width: 100%; }
-.env-switch { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 12px;
-  background: var(--success-soft); color: var(--success); font-weight: 500; }
-.env-switch .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
 .topbar__icon-btn { position: relative; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px;
   border-radius: 8px; color: var(--text-muted); cursor: pointer; transition: background var(--t-fast); }
 .topbar__icon-btn:hover { background: var(--surface-hover); color: var(--text); }

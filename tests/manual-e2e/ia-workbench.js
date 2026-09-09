@@ -21,6 +21,8 @@ async function run() {
       const check = (name, pass, detail = '') => result.checks.push({ name: `${tag}_${name}`, pass: !!pass, detail })
       check('no_horizontal_overflow', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2))
       check('issue_queue_visible', await page.getByTestId('issue-queue').isVisible().catch(() => false))
+      check('production_scope_bar_visible', await page.locator('.scope-bar').getByText('生产平台', { exact: true }).count().then((count) => count > 0).catch(() => false))
+      check('no_legacy_environment_selector', !(await page.locator('body').innerText()).match(/开发环境|测试环境|staging|dev/i))
       const startButton = page.getByRole('button', { name: '开始调查' }).first()
       if (await startButton.count()) {
         await startButton.click()
@@ -31,7 +33,7 @@ async function run() {
         check('empty_scope_is_explicit', await page.getByText('当前作用域暂无活跃问题').isVisible().catch(() => false))
         result.notes.push(`${tag}: 当前作用域没有活跃问题，未伪造调查入口数据`)
       }
-      await shot(page, `IA-WORKBENCH-001-${tag}`)
+      await shot(page, `overview--${tag}--default`)
     })
   }
   const summary = writeResult(result.id, result.category, result)

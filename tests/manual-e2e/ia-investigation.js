@@ -23,6 +23,7 @@ async function run() {
       await spaNav(page, '/ai/chat')
       await page.waitForTimeout(700)
       check('chat_visible', await page.getByText('AI 运维助手').first().isVisible().catch(() => false))
+      check('chat_scope_chip_visible', await page.getByLabel('Chat 活动资源').isVisible().catch(() => false))
       await spaNav(page, '/investigation/new?source=chat&targetType=service&symptom=分析%20payment-api%20跨服务根因')
       await page.waitForTimeout(500)
       check('draft_visible', await page.getByText('发起 AI 调查').first().isVisible().catch(() => false))
@@ -35,7 +36,7 @@ async function run() {
       } else {
         result.notes.push(`${tag}: 默认只验证草稿边界；设置 RUN_E2E_MUTATIONS=1 才提交真实 Run`)
       }
-      await shot(page, `IA-INVESTIGATION-001-${tag}`)
+      await shot(page, `investigation--${tag}--draft`)
     })
   }
   const summary = writeResult(result.id, result.category, result)

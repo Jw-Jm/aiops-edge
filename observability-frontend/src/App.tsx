@@ -48,6 +48,15 @@ const Admin = lazy(() => import('./pages/admin/AdminHome'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 // Stable product route contract: path: '/overview', path: '/investigation', path: '/resources', path: '/observe', path: '/actions', path: '/reports', path: '/admin'
 
+function LegacyRedirect({ target }: { target: string }) {
+  const location = useLocation()
+  const [pathname, targetSearch = ''] = target.split('?')
+  const merged = new URLSearchParams(location.search)
+  new URLSearchParams(targetSearch).forEach((value, key) => merged.set(key, value))
+  const query = merged.toString()
+  return <Navigate replace to={`${pathname}${query ? `?${query}` : ''}`} />
+}
+
 function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -58,7 +67,6 @@ function AppLayout() {
   const scopeLoading = useScopeStore((s) => s.loading)
   const scopeError = useScopeStore((s) => s.error)
   const logout = useAuthStore((s) => s.logout)
-  const [clock, setClock] = useState('')
   const [compact, setCompact] = useState(false)
   const [narrow, setNarrow] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -130,7 +138,6 @@ function AppLayout() {
   const selectedKey = visibleNav.find((it) => it.path === pathname)?.path
     || visibleNav.find((it) => pathname.startsWith(it.path + '/'))?.path
     || (pathname.startsWith('/observability/') || pathname.startsWith('/alerts/') || pathname.startsWith('/capacity') || pathname.startsWith('/infra/') || pathname.startsWith('/hardware') || pathname.startsWith('/changes') ? '/resources' : '/overview')
-  const currentLabel = visibleNav.find((m) => m.path === selectedKey)?.label || ''
   const searchItems = [
     ...visibleNav.map((item) => ({ label: item.label, path: item.path, description: '工作流页面' })),
     { label: 'AI 运维助手', path: '/ai/chat', description: '自然语言问答与调查草稿' },
@@ -141,14 +148,6 @@ function AppLayout() {
     setSearchQuery('')
     navigate(path)
   }
-
-  useEffect(() => {
-    const t = setInterval(() => {
-      const d = new Date()
-      setClock(`${d.toLocaleDateString('zh-CN')} ${d.toLocaleTimeString('zh-CN', { hour12: false })}`)
-    }, 1000)
-    return () => clearInterval(t)
-  }, [])
 
   const userLabel = auth.displayName || auth.username || '用户'
   const displayName = userLabel.slice(0, 1).toUpperCase()
@@ -221,7 +220,6 @@ function AppLayout() {
           </div>
           <div className="topbar__scope"><ScopeBar /></div>
           <div className="topbar__spacer" />
-          {currentLabel && <span className="topbar__label" style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 500 }}>{currentLabel}</span>}
           {/* 修复 5.7：通知按钮从"直接跳转告警页"改为下拉抽屉，展示最近告警，点击进入告警事件页 */}
           <Dropdown
             trigger={['click']}
@@ -254,7 +252,6 @@ function AppLayout() {
               <AppIcon name="bell" />
             </div>
           </Dropdown>
-          <span className="topbar__clock" style={{ fontSize: 12, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{clock}</span>
           <Dropdown
             menu={{
               items: [
@@ -293,7 +290,7 @@ function AppLayout() {
             </div>
           ) : <Suspense fallback={<div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>}>
             <Routes>
-              {Array.from(LEGACY_REDIRECTS.entries()).map(([from, to]) => <Route key={from} path={from} element={<Navigate replace to={to} />} />)}
+              {Array.from(LEGACY_REDIRECTS.entries()).map(([from, to]) => <Route key={from} path={from} element={<LegacyRedirect target={to} />} />)}
               <Route path="/overview" element={<Overview />} />
               <Route path="/resources" element={<Resources />} />
               <Route path="/observe" element={<Observe />} />

@@ -42,7 +42,7 @@ async function run() {
         check('empty_action_state_is_explicit', await page.getByText('暂无动作').isVisible().catch(() => false))
         result.notes.push(`${tag}: 当前作用域没有待审动作，未伪造动作记录`)
       }
-      await shot(page, `IA-ACTIONS-001-${tag}`)
+      await shot(page, `actions--${tag}--default`)
     })
   }
   const summary = writeResult(result.id, result.category, result)

@@ -13,6 +13,11 @@ describe('workflow navigation contract', () => {
 
   it('maps every legacy deep link to the workflow route', () => {
     expect(LEGACY_REDIRECTS.size).toBeGreaterThanOrEqual(14)
+    expect(legacyTarget('/observability/service')).toBe('/resources?domain=application')
+    expect(legacyTarget('/observability/relationships')).toBe('/resources?view=graph')
+    expect(legacyTarget('/observability/vms')).toBe('/resources?domain=compute&type=vm')
+    expect(legacyTarget('/infra/k8s')).toBe('/resources?domain=kubernetes')
+    expect(legacyTarget('/hardware')).toBe('/resources?domain=compute&type=physical_server')
     expect(legacyTarget('/observability/trace')).toBe('/observe?view=traces')
     expect(legacyTarget('/admin/approvals')).toBe('/actions')
     expect(legacyTarget('/unknown')).toBeNull()

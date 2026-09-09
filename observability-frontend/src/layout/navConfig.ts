@@ -19,11 +19,11 @@ export const PRIMARY_NAV: NavItem[] = [
 ]
 
 export const LEGACY_REDIRECTS = new Map<string, string>([
-  ['/observability/service', '/resources?kind=service'],
-  ['/observability/relationships', '/resources?view=relationships'],
-  ['/observability/vms', '/resources?kind=vm'],
-  ['/infra/k8s', '/resources?kind=kubernetes'],
-  ['/hardware', '/resources?kind=hardware'],
+  ['/observability/service', '/resources?domain=application'],
+  ['/observability/relationships', '/resources?view=graph'],
+  ['/observability/vms', '/resources?domain=compute&type=vm'],
+  ['/infra/k8s', '/resources?domain=kubernetes'],
+  ['/hardware', '/resources?domain=compute&type=physical_server'],
   ['/capacity', '/resources?view=capacity'],
   ['/alerts/events', '/observe?view=alerts'],
   ['/alerts/rules', '/observe?view=rules'],
