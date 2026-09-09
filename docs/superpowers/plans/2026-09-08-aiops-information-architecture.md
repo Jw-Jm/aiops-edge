@@ -1,5 +1,7 @@
 # AIOps Cloud Platform Resource Operations Implementation Plan
 
+> **历史记录：请勿继续执行。** 本计划对应 2026-09-08 的上一版“五域 + 全局资源 Scope”实现，已被 [2026-09-09 最终实施计划](./2026-09-09-aiops-cloud-platform-ui-final.md) 取代。已勾选项仅说明旧实现曾完成，不代表满足最终正式规格。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development for each implementation task and superpowers:verification-before-completion before every commit. Use superpowers:subagent-driven-development only when the user explicitly requests parallel agents. Track every checkbox in order.
 
 **Goal:** 将现有前端收敛为单一生产环境、多 Kubernetes 集群、集群严格拥有全部平台资源的智能运维平台，并让工作台、资源、观测、调查、处置、报告和知识图谱形成一致、美观、可审计的资源运维体验。
