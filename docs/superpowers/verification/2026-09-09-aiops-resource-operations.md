@@ -9,7 +9,7 @@
 - `cd ai-apm-query-go && go test ./internal/api ./internal/graph ./internal/bootstrap`：通过。
 - 五条 Playwright 主链均在 1440×900、1280×720、1024×768 通过；运行时无匹配资源/图谱数据时均显示明确 empty/error/forbidden 状态。
 - 知识图谱展示模型验证：80 节点 / 200 边为画布预算，超出节点按类型聚合并显示省略数量；原始后端数据不被该视觉预算误报为完整。
-- 最终发布：Helm revision `38`，前端镜像 `observability-frontend@sha256:4f760f42e792af3ceac5c8084433ea099ee4de9b7496198afb53c8a32b88f07b`，对应 main 提交 `f8ad8d5cf167`。
+- 最终发布：Helm rollout 已完成；发布后通过 `kubectl -n observability rollout status deploy/frontend` 与 Deployment image digest 复核运行态和 main 镜像标签一致。
 
 ## 视口验收矩阵
 
