@@ -5,6 +5,7 @@ import { decideAction, getAction, listActions, type ActionProjection } from '../
 import { canControlResource, canDecideAction, toActionViewModel } from './actionModel'
 import { useAuthStore } from '../../store/authStore'
 import { useScopeStore } from '../../store/scopeStore'
+import RawDataPanel from '../../components/display/RawDataPanel'
 
 const actionTabs = [
   { key: 'proposed', label: '待审批' },
@@ -33,9 +34,9 @@ function snapshotFrom(action: ActionProjection, key: 'before_snapshot' | 'after_
   return null
 }
 
-function formatDetail(value: unknown): string {
+function formatDetail(value: unknown): React.ReactNode {
   if (value == null || value === '') return '未提供'
-  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+  return typeof value === 'object' ? <RawDataPanel title="查看快照" data={value} /> : String(value)
 }
 
 const ActionCenter: React.FC = () => {
@@ -110,7 +111,7 @@ const ActionCenter: React.FC = () => {
           { key: 'rv', label: 'ResourceVersion', children: selected.resource_version || '未提供' },
           { key: 'preflight', label: '预检', children: selected.preflight_status || '未提供' },
           { key: 'hash', label: 'Action Hash / Schema', children: `${selected.action_hash || '未提供'} · ${selected.hash_schema_version || '未提供'}` },
-          { key: 'policy', label: 'Policy / 规范化参数', children: `${selected.policy_version || '未提供'} · ${selected.params ? JSON.stringify(selected.params) : '未提供'}` },
+          { key: 'policy', label: 'Policy / 规范化参数', children: <Space direction="vertical" size={4}><span>{selected.policy_version || '未提供'}</span>{selected.params ? <RawDataPanel title="查看规范化参数" data={selected.params} /> : <span>未提供</span>}</Space> },
           { key: 'before', label: '执行前快照', children: formatDetail(snapshotFrom(selected, 'before_snapshot')) },
           { key: 'after', label: '执行后快照', children: formatDetail(snapshotFrom(selected, 'after_snapshot')) },
           { key: 'people', label: '创建人 / 审批人 / 时间', children: `${selected.created_by || '未提供'} / ${selected.approved_by || '未提供'} / ${selected.approved_at || selected.created_at || '未提供'}` },

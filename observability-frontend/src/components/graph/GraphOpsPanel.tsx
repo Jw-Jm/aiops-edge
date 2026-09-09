@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Card, Tabs, Tag, Empty } from 'antd'
 import { getGraphOpsAliases, getGraphOpsOutbox, getGraphOpsShadowDiff, getGraphOpsSyncStates } from '../../api/knowledgeGraph'
+import RawDataPanel from '../display/RawDataPanel'
 
 // PF-PAGE-025: 四类数据源（sync/outbox/aliases/shadow）独立拉取，
 // 任一接口（如 /ai/kg/ops/aliases 503）失败只影响对应 Tab，
@@ -34,7 +35,7 @@ export default function GraphOpsPanel() {
         label: `${key} (${value.length})`,
         children: failed[key]
           ? <Empty description="数据不可用" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: 40 }} />
-          : <pre style={{ maxHeight: 360, overflow: 'auto' }}>{JSON.stringify(value, null, 2)}</pre>,
+          : <RawDataPanel title="查看原始数据" data={value} />,
       }))} />
     </Card>
   )

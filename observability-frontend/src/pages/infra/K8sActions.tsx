@@ -10,6 +10,7 @@ import {
 } from '../../api/k8s'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
+import RawDataPanel from '../../components/display/RawDataPanel'
 
 const { Text } = Typography
 
@@ -362,9 +363,7 @@ const K8sActions: React.FC = () => {
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
           目标：{kind}/{name}{namespace ? ` · ${namespace}` : ''}
         </div>
-        <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, whiteSpace: 'pre-wrap', background: 'var(--surface-2)', padding: 10, borderRadius: 6 }}>
-          {JSON.stringify({ action_id: actionRecord?.action_id, action_hash: actionRecord?.action_hash, params: actionRecord?.params }, null, 2)}
-        </pre>
+        <RawDataPanel title="查看 Canonical Action 载荷" data={{ action_id: actionRecord?.action_id, action_hash: actionRecord?.action_hash, params: actionRecord?.params }} />
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warning)' }}>该动作已通过 Canonical Action 审批，确认后将进入执行器；执行器当前配置为 disabled。</div>
       </Modal>
     </div>

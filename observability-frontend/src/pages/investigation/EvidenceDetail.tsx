@@ -3,6 +3,7 @@ import { Alert, Button, Card, Col, Descriptions, Row, Space, Spin, Tag, Typograp
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { getRun, getRunEvidence, RunEvidence } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
+import { formatStructuredValue } from '../../lib/structuredDisplay'
 
 const { Text } = Typography
 
@@ -116,7 +117,7 @@ const EvidenceDetailView: React.FC = () => {
 
 function formatValue(v: unknown): string {
   if (v === null || v === undefined || v === '') return '-'
-  if (typeof v === 'object') return JSON.stringify(v)
+  if (typeof v === 'object') return formatStructuredValue(v)
   return String(v)
 }
 

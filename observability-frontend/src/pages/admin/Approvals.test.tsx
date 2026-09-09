@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Approvals from './Approvals'
@@ -37,7 +37,9 @@ describe('canonical approval center', () => {
     expect(screen.getByTestId('canonical-action-fields')).toHaveTextContent('rv-42')
     expect(screen.getByTestId('canonical-action-fields')).toHaveTextContent('abc123')
     expect(screen.getByTestId('canonical-action-fields')).toHaveTextContent('7')
-    expect(screen.getByTestId('canonical-action-params')).toHaveTextContent('"replicas": 2')
+    const params = screen.getByTestId('canonical-action-params')
+    await user.click(within(params).getByRole('button', { name: '查看规范化参数' }))
+    expect(params).toHaveTextContent('"replicas": 2')
   })
 
   it('sends a server-derived decision without client approver or hash', async () => {

@@ -5,6 +5,7 @@ import { getAlertEvents, rcaAlertAnalysis, deleteAlertEvent } from '../../api/cl
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
 import { normalizeSeverity, SEVERITY_LABELS } from '../../lib/severity'
+import { formatStructuredValue } from '../../lib/structuredDisplay'
 
 interface AlertEvent { id: string | number; severity?: string; labels?: any; summary?: string; description?: string; service_name?: string; startsAt?: string; status?: string }
 
@@ -118,14 +119,14 @@ const AlertEvents: React.FC = () => {
       const impact = pick(['impact', 'affected', 'scope'])
       const sections: string[] = []
       if (typeof rootCause === 'string') sections.push('【可能根因】\n' + rootCause)
-      else if (rootCause) sections.push('【可能根因】\n' + JSON.stringify(rootCause))
+      else if (rootCause) sections.push('【可能根因】\n' + formatStructuredValue(rootCause))
       if (typeof reason === 'string') sections.push('\n【分析依据】\n' + reason)
-      else if (reason) sections.push('\n【分析依据】\n' + JSON.stringify(reason))
+      else if (reason) sections.push('\n【分析依据】\n' + formatStructuredValue(reason))
       if (typeof action === 'string') sections.push('\n【处置方案】\n' + action)
-      else if (action) sections.push('\n【处置方案】\n' + JSON.stringify(action))
+      else if (action) sections.push('\n【处置方案】\n' + formatStructuredValue(action))
       if (typeof impact === 'string') sections.push('\n【影响范围】\n' + impact)
       // 兜底：若有未解析的其余字段，补一行
-      if (sections.length === 0) return JSON.stringify(data, null, 2)
+      if (sections.length === 0) return formatStructuredValue(data)
       return sections.join('\n')
     }
     return raw
@@ -163,7 +164,7 @@ const AlertEvents: React.FC = () => {
       namespace: r.namespace || r.labels?.namespace || _infer_namespace(r) || '',
       count: r.count, last_timestamp: r.last_timestamp || r.first_timestamp || '',
     })
-      .then((res) => setRca(typeof res.data === 'string' ? res.data : JSON.stringify(res.data)))
+      .then((res) => setRca(typeof res.data === 'string' ? res.data : formatStructuredValue(res.data)))
       .catch((e) => setRca(`RCA 分析失败：${e?.response?.data?.error || e.message}`))
       .finally(() => setRcaLoading(false))
   }

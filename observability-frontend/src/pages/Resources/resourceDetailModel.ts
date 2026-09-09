@@ -1,4 +1,5 @@
 import type { ResourceCatalogItem, ResourceDetailResponse } from '../../api/resources'
+import { formatStructuredValue } from '../../lib/structuredDisplay'
 
 export interface DetailField {
   key: string
@@ -16,7 +17,7 @@ function display(value: unknown): string {
   if (value === undefined || value === null || value === '') return '未提供'
   if (typeof value === 'boolean') return value ? '是' : '否'
   if (Array.isArray(value)) return value.length ? value.map(display).join('、') : '无'
-  if (typeof value === 'object') return JSON.stringify(value)
+  if (typeof value === 'object') return formatStructuredValue(value)
   return String(value)
 }
 
@@ -51,4 +52,3 @@ export function projectResourceDetail(detail: ResourceDetailResponse): DetailSec
     { key: 'data-quality', title: '数据质量', fields: [field('partial', '部分数据', detail.meta.partial ? '是' : '否'), field('stale', '可能过期', detail.meta.stale ? '是' : '否'), field('warnings', '告警代码', detail.meta.warningCodes)] },
   ]
 }
-
