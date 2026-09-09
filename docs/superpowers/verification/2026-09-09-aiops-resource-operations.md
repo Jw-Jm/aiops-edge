@@ -15,11 +15,11 @@
 
 | 页面主链 | 1440×900 | 1280×720 | 1024×768 | 证据目录 |
 | --- | --- | --- | --- | --- |
-| 工作台 → 调查草稿 | PASS | PASS | PASS | `test-results/nonllm-20260909T043628Z/screenshots/overview--*` |
-| 资源中心 → typed 资源 | PASS | PASS | PASS | `test-results/nonllm-20260909T043651Z/screenshots/resources--*` |
-| 关系探索 → 图谱 | PASS | PASS | PASS | `test-results/nonllm-20260909T043719Z/screenshots/graph--*` |
-| 调查草稿 → Run 快照 | PASS | PASS | PASS | `test-results/nonllm-20260909T043914Z/screenshots/investigation--*` |
-| Run → 处置审计 | PASS | PASS | PASS | `test-results/nonllm-20260909T043938Z/screenshots/actions--*` |
+| 工作台 → 调查草稿 | PASS | PASS | PASS | `test-results/nonllm-20260909T044314Z/screenshots/overview--*` |
+| 资源中心 → typed 资源 | PASS | PASS | PASS | `test-results/nonllm-20260909T044324Z/screenshots/resources--*` |
+| 关系探索 → 图谱 | PASS | PASS | PASS | `test-results/nonllm-20260909T044333Z/screenshots/graph--*` |
+| 调查草稿 → Run 快照 | PASS | PASS | PASS | `test-results/nonllm-20260909T044513Z/screenshots/investigation--*` |
+| Run → 处置审计 | PASS | PASS | PASS | `test-results/nonllm-20260909T044522Z/screenshots/actions--*` |
 
 执行命令：
 
