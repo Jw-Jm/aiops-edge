@@ -23,4 +23,9 @@ describe('Resources unified entry', () => {
     expect(screen.getByText('应用服务')).toBeInTheDocument()
     expect(screen.getByText('关系探索')).toBeInTheDocument()
   })
+
+  it('accepts the public graph deep link', () => {
+    render(<MemoryRouter initialEntries={['/resources?view=graph']}><Resources /></MemoryRouter>)
+    expect(screen.getByText('资源关系')).toBeInTheDocument()
+  })
 })

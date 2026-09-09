@@ -26,7 +26,10 @@ const Resources: React.FC = () => {
   const setScopeResource = useScopeStore((state) => state.setResource)
   const active = useScopeStore((state) => state.active)
   const activeClusterId = active.clusterId || useScopeStore.getState().authScope?.activeClusterId || ''
-  const requested = params.get('view') || 'panorama'
+  // Keep the public deep-link contract (`view=graph`) while the tab key stays
+  // semantic and stable inside the resource center.
+  const requestedParam = params.get('view') || 'panorama'
+  const requested = requestedParam === 'graph' ? 'relationships' : requestedParam
   const activeKey = viewDefinitions.some((view) => view.key === requested) ? requested : 'panorama'
   const views = viewDefinitions.map((view) => ({
     key: view.key,
