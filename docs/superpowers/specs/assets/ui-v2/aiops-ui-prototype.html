@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AIOps UI V2 Design Prototype</title>
+  <style>
+    :root {
+      --bg: #f3f5f7;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --ink: #162033;
+      --muted: #5c687a;
+      --faint: #8792a2;
+      --line: #d9e0e7;
+      --line-soft: #e8edf2;
+      --blue: #2f5bd3;
+      --blue-soft: #eef3ff;
+      --red: #c83c35;
+      --red-soft: #fff1f0;
+      --orange: #c26a1b;
+      --orange-soft: #fff6eb;
+      --yellow: #a87708;
+      --yellow-soft: #fff9df;
+      --green: #168654;
+      --green-soft: #eaf8f0;
+      --gray: #6b7482;
+      --gray-soft: #f0f2f4;
+      --nav: 88px;
+      --top: 64px;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      color: var(--ink);
+      background: var(--bg);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      text-rendering: geometricPrecision;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    .muted { color: var(--muted); }
+    .faint { color: var(--faint); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .hide { display: none !important; }
+    .compact-only { display: none; }
+    .design-note {
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--muted);
+      background: var(--surface-soft);
+      font-size: 11px;
+      letter-spacing: .04em;
+    }
+    .shell { width: 100%; height: 100%; }
+    .nav-rail {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: var(--nav);
+      background: #121a29;
+      color: #c9d2e2;
+      z-index: 4;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      border-right: 1px solid #263044;
+    }
+    .brand {
+      height: var(--top);
+      width: 100%;
+      display: grid;
+      place-items: center;
+      border-bottom: 1px solid #263044;
+    }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #5f7ee3;
+      border-radius: 10px;
+      color: #fff;
+      font-weight: 750;
+      letter-spacing: -.05em;
+    }
+    .nav-list { width: 100%; padding: 14px 8px; display: grid; gap: 5px; }
+    .nav-item {
+      width: 72px;
+      height: 58px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #9da9ba;
+      display: grid;
+      place-items: center;
+      align-content: center;
+      gap: 3px;
+      font-size: 11px;
+    }
+    .nav-item span:first-child {
+      width: 24px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .nav-item.active { color: #fff; background: #22335b; }
+    .nav-bottom { margin-top: auto; padding-bottom: 14px; }
+    .topbar {
+      position: fixed;
+      left: var(--nav);
+      top: 0;
+      right: 0;
+      height: var(--top);
+      z-index: 3;
+      background: rgba(255,255,255,.98);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      padding: 0 28px;
+      gap: 14px;
+    }
+    .cluster-picker {
+      width: 310px;
+      height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px;
+      color: var(--ink);
+      text-align: left;
+    }
+    .cluster-picker .grow { flex: 1; min-width: 0; }
+    .cluster-picker strong { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cluster-picker small { color: var(--faint); font-size: 10px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--green); }
+    .dot.red { background: var(--red); }
+    .dot.orange { background: var(--orange); }
+    .dot.gray { background: var(--gray); }
+    .top-spacer { flex: 1; }
+    .time-control, .icon-button, .user-button {
+      height: 36px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 7px;
+      color: var(--muted);
+    }
+    .time-control { padding: 0 12px; }
+    .icon-button { width: 48px; }
+    .user-button { display: flex; align-items: center; gap: 8px; padding: 0 10px 0 5px; }
+    .avatar { width: 26px; height: 26px; border-radius: 6px; display: grid; place-items: center; background: var(--blue-soft); color: var(--blue); font-weight: 700; }
+    .workspace {
+      position: absolute;
+      left: var(--nav);
+      top: var(--top);
+      right: 0;
+      bottom: 0;
+      overflow: hidden;
+    }
+    .view { display: none; height: 100%; padding: 20px 28px 24px; overflow-x: hidden; overflow-y: auto; }
+    .view.active { display: block; }
+    .page-head { height: 55px; display: flex; align-items: flex-start; gap: 14px; }
+    .page-head h1 { margin: 0; font-size: 22px; line-height: 1.2; letter-spacing: -.02em; }
+    .page-head p { margin: 5px 0 0; color: var(--muted); }
+    .page-head .actions { margin-left: auto; display: flex; align-items: center; gap: 9px; }
+    .btn {
+      height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 13px;
+      background: var(--surface);
+      color: var(--ink);
+    }
+    .btn.primary { color: #fff; border-color: var(--blue); background: var(--blue); }
+    .btn.danger { color: var(--red); border-color: #efbeb9; background: var(--red-soft); }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+    .card-pad { padding: 16px; }
+    .section-title { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .section-title h2 { margin: 0; font-size: 15px; }
+    .section-title .right { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .status-chip, .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+      font-size: 11px;
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--muted);
+    }
+    .status-chip.critical { color: var(--red); border-color: #f0bbb7; background: var(--red-soft); }
+    .status-chip.degraded { color: var(--orange); border-color: #efd0ad; background: var(--orange-soft); }
+    .status-chip.healthy { color: var(--green); border-color: #b9e3cb; background: var(--green-soft); }
+    .status-chip.unknown { color: var(--gray); border-color: #d7dce2; background: var(--gray-soft); }
+    .health-band {
+      height: 124px;
+      display: grid;
+      grid-template-columns: 270px 1.3fr .85fr .7fr;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+    .health-band > div { padding: 17px 18px; border-right: 1px solid var(--line-soft); min-width: 0; }
+    .health-band > div:last-child { border-right: 0; }
+    .eyebrow { color: var(--muted); font-size: 11px; margin-bottom: 7px; }
+    .health-title { display: flex; align-items: center; gap: 10px; }
+    .health-title strong { font-size: 25px; letter-spacing: -.03em; }
+    .health-reason { margin-top: 7px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .big-number { font-size: 27px; line-height: 1; font-weight: 740; letter-spacing: -.03em; }
+    .fact-line { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+    .fact-line span { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
+    .fact-line b { font-size: 12px; color: var(--ink); }
+    .progress { height: 7px; margin-top: 13px; border-radius: 999px; background: #e8edf2; overflow: hidden; }
+    .progress > i { display: block; height: 100%; border-radius: inherit; background: var(--blue); }
+    .two-col { display: grid; grid-template-columns: 1.42fr 1fr; gap: 16px; }
+    .two-col.equal { grid-template-columns: 1fr 1fr; }
+    .platform-grid { margin-top: 16px; height: calc(100% - 195px); display: grid; grid-template-rows: minmax(250px, 1.25fr) minmax(194px, .9fr); gap: 16px; }
+    .table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    .table th { height: 32px; color: var(--faint); font-weight: 600; text-align: left; border-bottom: 1px solid var(--line-soft); font-size: 11px; }
+    .table td { height: 39px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; overflow-wrap: anywhere; }
+    .table tr:last-child td { border-bottom: 0; }
+    .name-cell strong { display: block; font-size: 12px; }
+    .name-cell small { color: var(--faint); font-size: 10px; }
+    .risk-item { padding: 12px 0; display: grid; grid-template-columns: 6px 1fr auto; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+    .risk-item:last-child { border-bottom: 0; }
+    .risk-bar { border-radius: 999px; background: var(--red); }
+    .risk-bar.orange { background: var(--orange); }
+    .risk-item strong { display: block; margin-bottom: 3px; font-size: 12px; }
+    .risk-item p { margin: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .component-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .component { min-height: 61px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--surface-soft); }
+    .component header { display: flex; align-items: center; justify-content: space-between; font-weight: 650; font-size: 11px; }
+    .component p { margin: 6px 0 0; color: var(--muted); font-size: 10px; }
+    .coverage-list { display: grid; gap: 12px; }
+    .coverage-row { display: grid; grid-template-columns: 72px 1fr 50px; gap: 9px; align-items: center; font-size: 11px; }
+    .coverage-row .progress { margin: 0; height: 6px; }
+    .cluster-summary { height: 104px; display: grid; grid-template-columns: 1.35fr repeat(4, .72fr); overflow: hidden; }
+    .cluster-summary > div { padding: 15px 17px; border-right: 1px solid var(--line-soft); }
+    .cluster-summary > div:last-child { border: 0; }
+    .cluster-summary h2 { margin: 5px 0 7px; font-size: 18px; }
+    .cluster-grid { height: calc(100% - 177px); margin-top: 14px; display: grid; grid-template-rows: 1.08fr .94fr .55fr; gap: 14px; }
+    .issue-list { display: grid; gap: 8px; }
+    .issue-row { display: grid; grid-template-columns: 5px 1fr 98px 80px; gap: 10px; align-items: center; min-height: 47px; padding: 8px 10px; border-radius: 7px; background: var(--surface-soft); }
+    .issue-row .severity { height: 28px; border-radius: 5px; background: var(--red); }
+    .issue-row strong { font-size: 12px; display: block; }
+    .issue-row small { color: var(--muted); font-size: 10px; }
+    .mini-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .mini-stat { padding: 11px; border: 1px solid var(--line-soft); background: var(--surface-soft); border-radius: 8px; }
+    .mini-stat b { display: block; font-size: 20px; margin: 3px 0; }
+    .plane-card { position: relative; overflow: hidden; padding: 15px 16px; }
+    .plane-head { display: flex; align-items: center; }
+    .plane-head h2 { margin: 0; font-size: 16px; }
+    .plane-head .right { margin-left: auto; }
+    .plane-facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 13px; }
+    .plane-fact { padding: 10px; border-left: 2px solid var(--blue); background: var(--surface-soft); }
+    .plane-fact.vm { border-color: #745bb6; }
+    .plane-fact b { display: block; font-size: 17px; }
+    .plane-fact span { color: var(--muted); font-size: 10px; }
+    .support-strip { display: grid; grid-template-columns: 190px repeat(4, 1fr); align-items: stretch; overflow: hidden; }
+    .support-strip > div { padding: 13px 15px; border-right: 1px solid var(--line-soft); }
+    .support-strip > div:last-child { border: 0; }
+    .support-strip b { display: block; font-size: 17px; margin-top: 5px; }
+    .tabs { height: 42px; display: flex; align-items: center; gap: 4px; padding: 4px; width: fit-content; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .tab { height: 32px; padding: 0 15px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; }
+    .tab.active { color: var(--blue); background: var(--blue-soft); font-weight: 650; }
+    .resource-layout { height: calc(100% - 109px); margin-top: 12px; display: grid; grid-template-columns: 224px minmax(470px, 1fr) 310px; gap: 14px; }
+    .filter-panel, .result-panel, .detail-panel { min-width: 0; overflow: hidden; }
+    .filter-group { padding: 14px; border-bottom: 1px solid var(--line-soft); }
+    .filter-group h3 { margin: 0 0 9px; font-size: 11px; color: var(--muted); }
+    .filter-option { height: 30px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+    .checkbox { width: 14px; height: 14px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+    .checkbox.checked { border-color: var(--blue); background: var(--blue); box-shadow: inset 0 0 0 3px #fff; }
+    .search-box { margin: 14px; height: 38px; border: 1px solid var(--line); border-radius: 7px; display: flex; align-items: center; padding: 0 10px; color: var(--faint); }
+    .result-head { padding: 12px 14px; display: flex; align-items: center; border-bottom: 1px solid var(--line-soft); }
+    .resource-row { min-height: 69px; padding: 10px 14px; display: grid; grid-template-columns: 36px 1fr 86px; gap: 11px; align-items: center; border-bottom: 1px solid var(--line-soft); }
+    .resource-row.selected { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+    .type-icon { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: var(--blue); background: #edf3ff; font-weight: 750; font-size: 11px; }
+    .type-icon.vm { color: #745bb6; background: #f2eefb; }
+    .resource-row strong { display: block; font-size: 12px; overflow-wrap: anywhere; }
+    .resource-row small { color: var(--muted); font-size: 10px; }
+    .detail-panel { padding: 16px; }
+    .detail-panel h2 { margin: 8px 0 3px; font-size: 17px; overflow-wrap: anywhere; }
+    .kv { display: grid; grid-template-columns: 82px 1fr; gap: 9px; padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+    .kv span:first-child { color: var(--muted); }
+    .detail-actions { display: flex; gap: 8px; margin-top: 14px; }
+    .resource-identity { min-height: 92px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; }
+    .resource-identity .type-icon { width: 46px; height: 46px; font-size: 13px; }
+    .resource-identity h1 { margin: 0 0 5px; font-size: 20px; overflow-wrap: anywhere; }
+    .resource-identity .identity-actions { margin-left: auto; display: flex; gap: 8px; }
+    .fact-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px; }
+    .fact-card { min-height: 80px; padding: 12px 14px; }
+    .fact-card b { display: block; font-size: 16px; margin: 4px 0; overflow-wrap: anywhere; }
+    .detail-workspace { height: calc(100% - 223px); margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) 318px; gap: 14px; }
+    .evidence-panel, .context-panel { overflow: hidden; }
+    .inner-tabs { height: 46px; padding: 0 14px; display: flex; align-items: flex-end; gap: 22px; border-bottom: 1px solid var(--line-soft); }
+    .inner-tabs span { height: 35px; padding-top: 9px; color: var(--muted); }
+    .inner-tabs span.active { color: var(--blue); border-bottom: 2px solid var(--blue); font-weight: 650; }
+    .metric-row { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; padding: 14px; }
+    .metric-box { height: 165px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; }
+    .metric-box h3 { margin: 0; font-size: 12px; }
+    .spark { width: 100%; height: 105px; margin-top: 10px; }
+    .spark .gridline { stroke: #e8edf2; stroke-width: 1; }
+    .spark .line { fill: none; stroke: var(--blue); stroke-width: 2; }
+    .event-row { padding: 10px 0; display: grid; grid-template-columns: 56px 1fr; gap: 8px; border-bottom: 1px solid var(--line-soft); }
+    .context-section { padding: 14px; border-bottom: 1px solid var(--line-soft); }
+    .context-section h3 { margin: 0 0 9px; font-size: 12px; }
+    .relation-pill { padding: 8px; margin-bottom: 7px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--surface-soft); overflow-wrap: anywhere; }
+    .observe-layout { height: calc(100% - 110px); margin-top: 12px; display: grid; grid-template-columns: minmax(0, 2fr) 340px; gap: 14px; }
+    .observe-main { overflow: hidden; }
+    .observe-chart { height: 286px; padding: 16px; }
+    .observe-chart svg { width: 100%; height: 220px; }
+    .axis { font-size: 10px; fill: var(--faint); }
+    .area { fill: #edf3ff; }
+    .line-main { fill: none; stroke: var(--blue); stroke-width: 2.2; }
+    .threshold { stroke: var(--orange); stroke-width: 1.2; stroke-dasharray: 5 4; }
+    .signal-list { padding: 0 16px 16px; }
+    .timeline { padding: 15px; }
+    .timeline-item { position: relative; padding: 0 0 15px 20px; border-left: 1px solid var(--line); }
+    .timeline-item::before { content: ""; position: absolute; left: -5px; top: 2px; width: 9px; height: 9px; border-radius: 50%; background: var(--orange); border: 2px solid #fff; }
+    .timeline-item strong { display: block; font-size: 11px; }
+    .timeline-item p { margin: 4px 0 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .scope-strip { height: 54px; padding: 0 14px; display: flex; align-items: center; gap: 9px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 8px; }
+    .investigation-layout { height: calc(100% - 127px); margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1.42fr) minmax(330px, 1fr); gap: 14px; }
+    .fault-chain { margin: 14px; height: 102px; border: 1px solid var(--line-soft); border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--surface-soft); }
+    .chain-node { width: 116px; min-height: 54px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; font-size: 10px; text-align: center; overflow-wrap: anywhere; }
+    .chain-node.critical { border-color: #e49d98; background: var(--red-soft); }
+    .chain-arrow { color: var(--orange); font-weight: 800; }
+    .hypothesis { margin: 10px 14px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; }
+    .hypothesis.active { border-color: #b9c9f3; background: var(--blue-soft); }
+    .hypothesis h3 { margin: 0 0 6px; font-size: 12px; }
+    .hypothesis p { margin: 0; color: var(--muted); font-size: 11px; }
+    .pipeline { height: 88px; display: grid; grid-template-columns: repeat(5, 1fr); overflow: hidden; }
+    .pipeline > div { padding: 14px 16px; border-right: 1px solid var(--line-soft); }
+    .pipeline > div:last-child { border: 0; }
+    .pipeline b { display: block; font-size: 22px; margin-top: 5px; }
+    .action-layout { height: calc(100% - 166px); margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, .8fr); gap: 14px; }
+    .action-row { padding: 12px 14px; min-height: 78px; display: grid; grid-template-columns: 1fr 94px 90px; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+    .action-row.selected { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+    .action-row strong { display: block; overflow-wrap: anywhere; }
+    .log-box { margin-top: 10px; padding: 10px; max-height: 112px; overflow: auto; border-radius: 7px; background: #101827; color: #cad5e6; font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .graph-layout { height: calc(100% - 110px); margin-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 14px; }
+    .graph-card { position: relative; min-width: 0; overflow: hidden; }
+    .graph-toolbar { height: 48px; padding: 0 12px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid var(--line-soft); }
+    .tool { height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--muted); font-size: 11px; }
+    .graph-canvas { position: absolute; left: 0; right: 0; top: 48px; bottom: 38px; background-color: #fbfcfe; background-image: radial-gradient(#dfe5ec 0.75px, transparent .75px); background-size: 18px 18px; overflow: hidden; }
+    .graph-lane { position: absolute; left: 34px; right: 34px; height: 119px; border: 1px dashed #d8e0ea; border-radius: 10px; background: rgba(255,255,255,.72); }
+    .graph-lane.container { top: 36px; }
+    .graph-lane.vm { top: 174px; }
+    .graph-lane.support { top: 312px; }
+    .lane-label { position: absolute; left: 12px; top: 9px; color: var(--muted); font-size: 10px; font-weight: 700; }
+    .edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .edges path { fill: none; stroke: #9aa8ba; stroke-width: 1.2; marker-end: url(#arrow); }
+    .edges path.alert { stroke: var(--orange); stroke-width: 1.7; }
+    .g-node { position: absolute; width: 116px; min-height: 47px; padding: 7px 9px; border: 1px solid #cbd5df; border-radius: 8px; background: #fff; z-index: 2; font-size: 9px; overflow-wrap: anywhere; }
+    .g-node strong { display: block; font-size: 10px; margin-bottom: 3px; }
+    .g-node.alert { border-color: #dfa87b; background: var(--orange-soft); }
+    .g-node.focus { border: 2px solid var(--blue); background: var(--blue-soft); }
+    .g-node.vm { border-left: 3px solid #745bb6; }
+    .g-node.container { border-left: 3px solid var(--blue); }
+    .g-node.support { border-left: 3px solid #718093; }
+    .graph-footer { position: absolute; left: 0; right: 0; bottom: 0; height: 38px; padding: 0 12px; display: flex; align-items: center; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 10px; background: #fff; }
+    .inspector { overflow: hidden; }
+    .inspector-head { padding: 15px; border-bottom: 1px solid var(--line-soft); }
+    .inspector-head h2 { margin: 7px 0 4px; font-size: 16px; overflow-wrap: anywhere; }
+    .report-layout { height: calc(100% - 72px); display: grid; grid-template-columns: 310px minmax(0,1fr); gap: 14px; }
+    .report-list { overflow: hidden; }
+    .report-item { padding: 13px; border-bottom: 1px solid var(--line-soft); }
+    .report-item.active { background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+    .report-item strong { display: block; font-size: 12px; overflow-wrap: anywhere; }
+    .report-body { padding: 18px 22px; overflow: hidden; }
+    .report-body h2 { margin: 0 0 5px; font-size: 18px; }
+    .report-sections { display: grid; grid-template-columns: 1.3fr .9fr; gap: 14px; margin-top: 15px; }
+    .report-section { border-top: 1px solid var(--line); padding-top: 12px; }
+    .report-section h3 { margin: 0 0 9px; font-size: 12px; }
+    .admin-layout { height: calc(100% - 72px); display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 14px; }
+    .settings-menu { padding: 10px; }
+    .settings-menu div { height: 40px; padding: 0 10px; display: flex; align-items: center; border-radius: 7px; color: var(--muted); }
+    .settings-menu div.active { color: var(--blue); background: var(--blue-soft); font-weight: 650; }
+    .settings-body { padding: 16px; overflow: hidden; }
+    .settings-body h2 { margin: 0 0 4px; font-size: 17px; }
+    .cluster-admin-row { min-height: 66px; display: grid; grid-template-columns: 1.2fr .7fr .7fr 120px; align-items: center; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+    .login-view { display: none; width: 100%; height: 100%; background: #f6f8fb; }
+    .login-view.active { display: grid; grid-template-columns: 1.15fr .85fr; }
+    .login-story { position: relative; padding: 95px 90px; color: #eef3ff; background: #111b2d; overflow: hidden; }
+    .login-story::after { content: ""; position: absolute; width: 600px; height: 600px; border: 1px solid #32425f; border-radius: 50%; left: -150px; bottom: -340px; }
+    .login-logo { display: flex; align-items: center; gap: 12px; }
+    .login-logo .brand-mark { width: 44px; height: 44px; }
+    .login-logo strong { font-size: 16px; color: #fff; }
+    .login-story h1 { margin: 110px 0 18px; max-width: 560px; color: #fff; font-size: 32px; line-height: 1.28; letter-spacing: -.03em; }
+    .login-story > p { max-width: 520px; color: #aebbd0; font-size: 15px; line-height: 1.7; }
+    .ability-list { margin-top: 48px; display: grid; gap: 18px; }
+    .ability { display: grid; grid-template-columns: 34px 1fr; gap: 12px; max-width: 500px; }
+    .ability i { width: 30px; height: 30px; border: 1px solid #4a5d7d; border-radius: 7px; display: grid; place-items: center; color: #adc0f6; font-style: normal; }
+    .ability strong { display: block; color: #fff; font-size: 13px; }
+    .ability span { color: #8fa0b9; font-size: 11px; }
+    .login-form-wrap { display: grid; place-items: center; padding: 60px; }
+    .login-form { width: min(380px, 100%); }
+    .login-form h2 { margin: 0 0 8px; font-size: 24px; }
+    .login-form > p { margin: 0 0 30px; color: var(--muted); }
+    .field { margin-bottom: 17px; }
+    .field label { display: block; margin-bottom: 7px; font-weight: 650; }
+    .input { height: 44px; border: 1px solid var(--line); border-radius: 8px; background: #fff; display: flex; align-items: center; padding: 0 12px; color: var(--faint); }
+    .login-submit { width: 100%; height: 44px; border: 0; border-radius: 8px; color: #fff; background: var(--blue); font-weight: 700; }
+    .login-foot { margin-top: 22px; color: var(--faint); font-size: 11px; text-align: center; }
+    @media (max-width: 1279px) {
+      :root { --nav: 72px; }
+      .nav-item { width: 56px; }
+      .topbar { padding: 0 20px; }
+      .view { padding-left: 20px; padding-right: 20px; }
+      .resource-layout { grid-template-columns: 188px minmax(420px,1fr) 276px; }
+      .detail-workspace { grid-template-columns: minmax(0,1fr) 280px; }
+      .graph-layout { grid-template-columns: minmax(0,1fr) 280px; }
+    }
+    @media (max-width: 1100px) {
+      .topbar .design-note { display: none; }
+      .cluster-picker { width: 270px; }
+      .user-button > span:last-child { display: none; }
+      .compact-only { display: inline-flex; align-items: center; }
+      .health-band { grid-template-columns: 1.1fr .9fr .9fr .8fr; }
+      .health-band > div { padding-left: 12px; padding-right: 12px; }
+      .resource-layout { grid-template-columns: minmax(0, 1fr); }
+      .resource-layout > .filter-panel,
+      .resource-layout > .detail-panel { display: none; }
+      .detail-workspace,
+      .observe-layout,
+      .investigation-layout,
+      .action-layout,
+      .graph-layout { grid-template-columns: minmax(0, 1fr); }
+      .detail-workspace > .context-panel,
+      .observe-layout > .timeline,
+      .investigation-layout > .context-panel,
+      .action-layout > .detail-panel,
+      .graph-layout > .inspector { display: none; }
+      .graph-toolbar .faint { display: none; }
+      .plane-facts { grid-template-columns: repeat(2, 1fr); }
+      .report-layout { grid-template-columns: 250px minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <section id="login" class="login-view mock-view">
+    <div class="login-story">
+      <div class="login-logo"><div class="brand-mark">AI</div><strong>AIOps Cloud Operations</strong></div>
+      <h1>从生产云平台健康出发，定位到每一个真实资源载体</h1>
+      <p>面向多个 Kubernetes 集群，统一观察容器、KubeVirt 虚拟机及其运行依赖，并将证据、调查和受控处置串成一条可审计链路。</p>
+      <div class="ability-list">
+        <div class="ability"><i>01</i><div><strong>多集群健康</strong><span>先判断平台与集群状态，再进入具体资源。</span></div></div>
+        <div class="ability"><i>02</i><div><strong>资源载体观测</strong><span>容器与 KubeVirt 同级呈现，关系完整可追溯。</span></div></div>
+        <div class="ability"><i>03</i><div><strong>调查与受控处置</strong><span>每个结论对应证据，每个动作经过审批与验证。</span></div></div>
+      </div>
+    </div>
+    <div class="login-form-wrap">
+      <div class="login-form">
+        <span class="design-note">DESIGN PREVIEW · 示例数据</span>
+        <h2 style="margin-top:18px">登录智能运维平台</h2>
+        <p>使用平台账号继续</p>
+        <div class="field"><label>用户名</label><div class="input">请输入用户名</div></div>
+        <div class="field"><label>密码</label><div class="input">请输入密码</div></div>
+        <button class="login-submit">登录</button>
+        <div class="login-foot">仅用于已授权的生产云平台运维人员</div>
+      </div>
+    </div>
+  </section>
+
+  <div id="shell" class="shell">
+    <aside class="nav-rail">
+      <div class="brand"><div class="brand-mark">AI</div></div>
+      <div class="nav-list">
+        <button class="nav-item" data-nav="platform"><span>总</span><span>平台总览</span></button>
+        <button class="nav-item" data-nav="cluster"><span>集</span><span>集群运维</span></button>
+        <button class="nav-item" data-nav="investigation"><span>查</span><span>调查</span></button>
+        <button class="nav-item" data-nav="actions"><span>处</span><span>处置</span></button>
+        <button class="nav-item" data-nav="reports"><span>报</span><span>报告</span></button>
+      </div>
+      <div class="nav-bottom"><button class="nav-item" data-nav="admin"><span>管</span><span>管理</span></button></div>
+    </aside>
+    <header class="topbar">
+      <button class="cluster-picker">
+        <span class="dot orange"></span>
+        <span class="grow"><strong id="cluster-name">cloud-sh-01</strong><small>Kubernetes 集群 · 降级</small></span>
+        <span>⌄</span>
+      </button>
+      <span class="design-note">DESIGN PREVIEW · 示例数据</span>
+      <div class="top-spacer"></div>
+      <button class="time-control">最近 1 小时　⌄</button>
+      <button class="icon-button" aria-label="通知">通知</button>
+      <button class="user-button"><span class="avatar">OP</span><span>运维员</span></button>
+    </header>
+    <main class="workspace">
+      <section id="platform" class="view mock-view" data-nav-section="platform">
+        <div class="page-head">
+          <div><h1>生产云平台健康</h1><p>全部纳管集群 · 平台聚合视图不受当前集群选择影响</p></div>
+          <div class="actions"><span class="design-note">更新于 10:32:14</span><button class="btn primary">选择集群</button></div>
+        </div>
+        <div class="health-band">
+          <div><div class="eyebrow">平台状态</div><div class="health-title"><span class="status-chip degraded">降级</span><strong>需要关注</strong></div><div class="health-reason">1 个集群严重，指标采集存在 2 个目标缺口</div></div>
+          <div><div class="eyebrow">纳管集群 · 12</div><div class="big-number">12</div><div class="fact-line"><span><i class="dot"></i><b>8</b> 健康</span><span><i class="dot orange"></i><b>2</b> 降级</span><span><i class="dot red"></i><b>1</b> 严重</span><span><i class="dot gray"></i><b>1</b> 未知</span></div></div>
+          <div><div class="eyebrow">采集覆盖</div><div class="big-number">118 / 120</div><div class="progress"><i style="width:98.3%"></i></div><div class="health-reason">98.3% · 缺少 2 个指标目标</div></div>
+          <div><div class="eyebrow">最新数据</div><div class="big-number">14 秒前</div><div class="health-reason">拓扑 31 秒前<br />规则 v2026.09.2</div></div>
+        </div>
+        <div class="platform-grid">
+          <div class="two-col">
+            <div class="card card-pad">
+              <div class="section-title"><h2>集群健康矩阵</h2><span class="right">按严重程度排序　查看全部 12 个 →</span></div>
+              <table class="table"><thead><tr><th style="width:32%">集群</th><th>状态</th><th>采集覆盖</th><th>异常载体</th><th>最新数据</th></tr></thead><tbody>
+                <tr><td class="name-cell"><strong>cloud-bj-02</strong><small>Kubernetes 1.31.4</small></td><td><span class="status-chip critical">严重</span></td><td>94 / 96</td><td>7</td><td>28 秒前</td></tr>
+                <tr><td class="name-cell"><strong>cloud-sh-01</strong><small>Kubernetes 1.31.4</small></td><td><span class="status-chip degraded">降级</span></td><td>100%</td><td>4</td><td>14 秒前</td></tr>
+                <tr><td class="name-cell"><strong>cloud-gz-edge</strong><small>Kubernetes 1.30.7</small></td><td><span class="status-chip unknown">未知</span></td><td>未完成</td><td>—</td><td>9 分钟前</td></tr>
+                <tr><td class="name-cell"><strong>cloud-hz-01</strong><small>Kubernetes 1.31.4</small></td><td><span class="status-chip healthy">健康</span></td><td>100%</td><td>0</td><td>11 秒前</td></tr>
+              </tbody></table>
+            </div>
+            <div class="card card-pad">
+              <div class="section-title"><h2>最高优先级风险</h2><span class="right">3 项</span></div>
+              <div class="risk-item"><i class="risk-bar"></i><div><strong>cloud-bj-02 · 虚拟机磁盘持续高延迟</strong><p>VM payment-db-07 · p99 86ms · 已持续 24 分钟</p></div><span class="status-chip critical">严重</span></div>
+              <div class="risk-item"><i class="risk-bar orange"></i><div><strong>cloud-sh-01 · Deployment 就绪副本不足</strong><p>order-api · 3/8 Ready · 变更后 11 分钟</p></div><span class="status-chip degraded">降级</span></div>
+              <div class="risk-item"><i class="risk-bar orange"></i><div><strong>平台指标采集存在覆盖缺口</strong><p>2 个目标未采集 · 影响 cloud-bj-02</p></div><span class="status-chip degraded">降级</span></div>
+            </div>
+          </div>
+          <div class="two-col">
+            <div class="card card-pad">
+              <div class="section-title"><h2>平台组件状态</h2><span class="right">7 个组件 · 1 个降级</span></div>
+              <div class="component-grid">
+                <div class="component"><header>资源同步 <span class="status-chip healthy">健康</span></header><p>12/12 集群 · 31 秒前</p></div>
+                <div class="component"><header>指标采集 <span class="status-chip degraded">降级</span></header><p>118/120 目标</p></div>
+                <div class="component"><header>日志采集 <span class="status-chip healthy">健康</span></header><p>12/12 集群</p></div>
+                <div class="component"><header>拓扑同步 <span class="status-chip healthy">健康</span></header><p>最近同步 31 秒前</p></div>
+                <div class="component"><header>调查 Worker <span class="status-chip healthy">健康</span></header><p>6 个运行中</p></div>
+                <div class="component"><header>处置控制器 <span class="status-chip healthy">健康</span></header><p>队列延迟 1.8 秒</p></div>
+              </div>
+            </div>
+            <div class="card card-pad">
+              <div class="section-title"><h2>数据覆盖与时效</h2><span class="right">完整分子 / 分母</span></div>
+              <div class="coverage-list">
+                <div class="coverage-row"><span>资源清单</span><div class="progress"><i style="width:100%"></i></div><b>12/12</b></div>
+                <div class="coverage-row"><span>指标</span><div class="progress"><i style="width:98.3%;background:var(--orange)"></i></div><b>118/120</b></div>
+                <div class="coverage-row"><span>日志</span><div class="progress"><i style="width:100%"></i></div><b>12/12</b></div>
+                <div class="coverage-row"><span>拓扑</span><div class="progress"><i style="width:91.7%"></i></div><b>11/12</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="cluster" class="view mock-view" data-nav-section="cluster">
+        <div class="page-head"><div><h1>cloud-sh-01</h1><p>集群详细总览 · Kubernetes 1.31.4 · 返回平台总览</p></div><div class="actions"><span class="status-chip degraded">降级</span><button class="btn primary">进入调查</button></div></div>
+        <div class="card cluster-summary">
+          <div><div class="eyebrow">集群状态</div><h2>部分工作负载未达到期望副本</h2><span class="muted">API 可达 · 采集完整 · 最近数据 14 秒前</span></div>
+          <div><div class="eyebrow">采集覆盖</div><div class="big-number">100%</div><div class="health-reason">48 / 48 目标</div></div>
+          <div><div class="eyebrow">异常载体</div><div class="big-number">4</div><div class="health-reason">1 严重 · 3 降级</div></div>
+          <div><div class="eyebrow">活跃调查</div><div class="big-number">3</div><div class="health-reason">1 个等待证据</div></div>
+          <div><div class="eyebrow">最近变更</div><div class="big-number">17</div><div class="health-reason">最近 1 小时</div></div>
+        </div>
+        <div class="cluster-grid">
+          <div class="two-col">
+            <div class="card card-pad"><div class="section-title"><h2>当前最重要问题</h2><span class="right">异常优先 · 查看全部 →</span></div><div class="issue-list">
+              <div class="issue-row"><i class="severity"></i><div><strong>Deployment / order-api 就绪副本不足</strong><small>commerce / 3 of 8 Ready · 变更后 11 分钟</small></div><span class="status-chip critical">严重</span><button class="btn">调查</button></div>
+              <div class="issue-row"><i class="severity" style="background:var(--orange)"></i><div><strong>VM / checkout-worker-03 磁盘延迟升高</strong><small>kubevirt-prod / p99 54ms · 持续 18 分钟</small></div><span class="status-chip degraded">降级</span><button class="btn">查看</button></div>
+              <div class="issue-row"><i class="severity" style="background:var(--orange)"></i><div><strong>Kubernetes Service / order-api 端点不足</strong><small>commerce / 3 of 8 endpoints ready</small></div><span class="status-chip degraded">降级</span><button class="btn">关系</button></div>
+            </div></div>
+            <div class="card card-pad"><div class="section-title"><h2>资源状态摘要</h2><span class="right">共 2,418 个载体</span></div><div class="mini-stat-grid">
+              <div class="mini-stat"><span class="muted">健康</span><b>2,397</b><small class="faint">99.1%</small></div><div class="mini-stat"><span class="muted">严重</span><b style="color:var(--red)">1</b><small class="faint">已进入调查</small></div>
+              <div class="mini-stat"><span class="muted">降级</span><b style="color:var(--orange)">12</b><small class="faint">4 个资源组</small></div><div class="mini-stat"><span class="muted">未知</span><b style="color:var(--gray)">8</b><small class="faint">数据陈旧</small></div>
+            </div></div>
+          </div>
+          <div class="two-col equal">
+            <div class="card plane-card"><div class="plane-head"><h2>容器资源</h2><div class="right"><span class="status-chip degraded">3 个异常</span></div></div><div class="plane-facts">
+              <div class="plane-fact"><b>186</b><span>工作负载</span></div><div class="plane-fact"><b>1,284</b><span>Pod / Container</span></div><div class="plane-fact"><b>142</b><span>Service / Ingress</span></div><div class="plane-fact"><b>96</b><span>PVC</span></div>
+            </div><div class="health-reason">首要风险：order-api 副本不足，影响 1 个 Kubernetes Service</div></div>
+            <div class="card plane-card"><div class="plane-head"><h2>KubeVirt 虚拟机</h2><div class="right"><span class="status-chip degraded">1 个异常</span></div></div><div class="plane-facts">
+              <div class="plane-fact vm"><b>74</b><span>VM</span></div><div class="plane-fact vm"><b>71</b><span>运行中 VMI</span></div><div class="plane-fact vm"><b>1</b><span>迁移中</span></div><div class="plane-fact vm"><b>1</b><span>磁盘异常</span></div>
+            </div><div class="health-reason">首要风险：checkout-worker-03 的数据盘 p99 延迟持续升高</div></div>
+          </div>
+          <div class="card support-strip"><div><div class="eyebrow">运行支撑</div><strong>该集群依赖</strong><small class="faint">异常会提升到问题队列</small></div><div><span class="muted">Kubernetes 节点</span><b>24</b><small class="faint">24 Ready</small></div><div><span class="muted">物理服务器</span><b>24</b><small class="faint">全部已映射</small></div><div><span class="muted">网络</span><b>18</b><small class="faint">1 个高丢包链路</small></div><div><span class="muted">存储</span><b>112</b><small class="faint">1 个延迟风险</small></div></div>
+        </div>
+      </section>
+
+      <section id="resources" class="view mock-view" data-nav-section="cluster">
+        <div class="page-head"><div><h1>资源目录</h1><p>cloud-sh-01 · 当前集群的真实资源载体</p></div><div class="actions"><button class="btn compact-only">筛选</button><span class="design-note">2,418 个结果</span><button class="btn">导出当前筛选</button></div></div>
+        <div class="tabs"><button class="tab active">容器资源</button><button class="tab">KubeVirt 虚拟机</button><button class="tab">运行支撑</button></div>
+        <div class="resource-layout">
+          <aside class="card filter-panel"><div class="search-box">搜索当前集群资源…</div><div class="filter-group"><h3>健康状态</h3><div class="filter-option"><i class="checkbox checked"></i>仅看异常 <span style="margin-left:auto">16</span></div><div class="filter-option"><i class="checkbox"></i>未知 <span style="margin-left:auto">8</span></div></div><div class="filter-group"><h3>资源类型</h3><div class="filter-option"><i class="checkbox checked"></i>Deployment</div><div class="filter-option"><i class="checkbox checked"></i>Pod / Container</div><div class="filter-option"><i class="checkbox checked"></i>Kubernetes Service</div><div class="filter-option"><i class="checkbox"></i>PVC</div></div><div class="filter-group"><h3>Namespace</h3><div class="filter-option"><i class="checkbox checked"></i>commerce</div><div class="filter-option"><i class="checkbox"></i>payments</div><div class="filter-option"><i class="checkbox"></i>platform</div></div></aside>
+          <section class="card result-panel"><div class="result-head"><strong>异常优先</strong><span class="muted" style="margin-left:8px">筛选后 16 个</span><span style="margin-left:auto" class="muted">1–6 / 16　‹　›</span></div>
+            <div class="resource-row selected"><div class="type-icon">DEP</div><div><strong>order-api</strong><small>Deployment · commerce · 3/8 Ready<br />11 分钟前发布镜像 v2.18.4</small></div><span class="status-chip critical">严重</span></div>
+            <div class="resource-row"><div class="type-icon">SVC</div><div><strong>order-api</strong><small>Kubernetes Service · commerce · 3/8 endpoints<br />ClusterIP 10.96.18.42</small></div><span class="status-chip degraded">降级</span></div>
+            <div class="resource-row"><div class="type-icon">POD</div><div><strong>order-api-69dff8b9c7-kwm2r</strong><small>Pod · commerce · CrashLoopBackOff<br />node-worker-07</small></div><span class="status-chip critical">严重</span></div>
+            <div class="resource-row"><div class="type-icon">POD</div><div><strong>pricing-sync-7f6df8bbd8-h8wtx</strong><small>Pod · commerce · restart 9<br />node-worker-11</small></div><span class="status-chip degraded">降级</span></div>
+            <div class="resource-row"><div class="type-icon">PVC</div><div><strong>order-cache-data</strong><small>PVC · commerce · 87% used<br />Bound / fast-rbd</small></div><span class="status-chip degraded">降级</span></div>
+            <div class="resource-row"><div class="type-icon">ING</div><div><strong>orders-public</strong><small>Ingress · commerce<br />orders.example.internal</small></div><span class="status-chip healthy">健康</span></div>
+          </section>
+          <aside class="card detail-panel"><span class="tag">Deployment</span><h2>order-api</h2><div class="muted">commerce / cloud-sh-01</div><div style="margin:12px 0"><span class="status-chip critical">严重 · 3/8 Ready</span></div><div class="kv"><span>状态依据</span><b>5 个副本未就绪</b></div><div class="kv"><span>镜像</span><span class="mono">registry.local/order-api:v2.18.4</span></div><div class="kv"><span>关联</span><span>8 Pod · 1 Service · 2 PVC</span></div><div class="kv"><span>最近变更</span><span>11 分钟前发布</span></div><div class="kv"><span>数据时间</span><span>14 秒前</span></div><div class="detail-actions"><button class="btn primary">查看详情</button><button class="btn">调查</button></div></aside>
+        </div>
+      </section>
+
+      <section id="resource-detail" class="view mock-view" data-nav-section="cluster">
+        <div class="resource-identity card"><div class="type-icon">DEP</div><div><h1>order-api</h1><div class="muted">Deployment · commerce · cloud-sh-01　<span class="status-chip critical">严重</span></div></div><div class="identity-actions"><span class="design-note">数据 14 秒前 · 资源同步</span><button class="btn">查看关系</button><button class="btn primary">创建调查</button></div></div>
+        <div class="fact-cards"><div class="card fact-card"><span class="muted">状态依据</span><b>5 个副本未就绪</b><small class="faint">期望 8 · 就绪 3</small></div><div class="card fact-card"><span class="muted">CPU 使用率</span><b>74.8%</b><small class="faint">请求量口径 · 最近 5 分钟</small></div><div class="card fact-card"><span class="muted">近期事件</span><b>12</b><small class="faint">3 个 Warning</small></div><div class="card fact-card"><span class="muted">最近变更</span><b>11 分钟前</b><small class="faint">image v2.18.4</small></div></div>
+        <div class="detail-workspace">
+          <section class="card evidence-panel"><div class="inner-tabs"><span class="active">概览</span><span>观测</span><span>事件与变更</span><span>关系</span><span>关联调查</span></div><div class="metric-row"><div class="metric-box"><h3>就绪副本 · 最近 1 小时</h3><svg class="spark" viewBox="0 0 520 105"><path class="gridline" d="M0 20H520M0 53H520M0 86H520"/><path class="line" d="M0 25 L65 24 L130 25 L195 23 L260 25 L315 24 L350 46 L390 69 L430 68 L470 73 L520 72"/><circle cx="520" cy="72" r="3" fill="var(--red)"/></svg><small class="faint">来源：kube-state-metrics · 期望值 8</small></div><div class="metric-box"><h3>关键事件</h3><div class="event-row"><span class="faint">10:21</span><span><b>ProgressDeadlineExceeded</b><br /><small class="muted">Deployment 未在期限内完成</small></span></div><div class="event-row"><span class="faint">10:18</span><span><b>BackOff</b><br /><small class="muted">容器重启退避</small></span></div></div></div><div class="signal-list"><div class="section-title"><h2>运行摘要</h2><span class="right">完整字段在对应内容区查看</span></div><div class="kv"><span>镜像</span><span class="mono">registry.local/order-api:v2.18.4</span></div><div class="kv"><span>选择器</span><span class="mono">app=order-api, release=stable</span></div><div class="kv"><span>业务标签</span><span>订单中心（来源：resource label）</span></div></div></section>
+          <aside class="card context-panel"><div class="context-section"><h3>关系与影响</h3><div class="relation-pill"><b>Kubernetes Service / order-api</b><br /><small class="muted">仅 3/8 endpoints ready</small></div><div class="relation-pill"><b>Pod / order-api-…-kwm2r</b><br /><small class="muted">CrashLoopBackOff · 直接异常</small></div><div class="relation-pill"><b>PVC / order-cache-data</b><br /><small class="muted">87% used · 风险</small></div></div><div class="context-section"><h3>可用能力</h3><div class="kv"><span>重启发布</span><span>需预检与审批</span></div><div class="kv"><span>调整副本</span><span>允许建议</span></div><button class="btn primary" style="width:100%;margin-top:10px">进入处置</button></div><div class="context-section"><h3>数据质量</h3><span class="status-chip healthy">完整</span><p class="muted">指标、事件、日志、拓扑均已同步。</p></div></aside>
+        </div>
+      </section>
+
+      <section id="observe" class="view mock-view" data-nav-section="cluster">
+        <div class="page-head"><div><h1>观测工作区</h1><p>cloud-sh-01 · 当前集群 · 最近 1 小时</p></div><div class="actions"><span class="tag">Deployment / order-api ×</span><button class="btn primary">基于当前证据调查</button></div></div>
+        <div class="tabs"><button class="tab active">问题</button><button class="tab">告警</button><button class="tab">指标</button><button class="tab">日志</button><button class="tab">Trace</button><button class="tab">事件</button><button class="tab">变更</button></div>
+        <div class="observe-layout"><section class="card observe-main"><div class="observe-chart"><div class="section-title"><h2>请求失败率与副本就绪变化</h2><span class="right">单位：% · 10:00–11:00 · 来源：Metrics</span></div><svg viewBox="0 0 760 220"><path d="M45 20V185H735" stroke="#ccd5df" fill="none"/><path d="M45 54H735M45 98H735M45 142H735" stroke="#edf1f4"/><path class="area" d="M45 170 L110 166 L175 168 L240 163 L305 160 L370 138 L435 110 L500 92 L565 74 L630 62 L700 56 L700 185 L45 185Z"/><path class="line-main" d="M45 170 L110 166 L175 168 L240 163 L305 160 L370 138 L435 110 L500 92 L565 74 L630 62 L700 56"/><path class="threshold" d="M45 98H735"/><text x="8" y="58" class="axis">5%</text><text x="8" y="102" class="axis">3%</text><text x="8" y="146" class="axis">1%</text><text x="45" y="205" class="axis">10:00</text><text x="370" y="205" class="axis">10:30</text><text x="695" y="205" class="axis">11:00</text><circle cx="700" cy="56" r="4" fill="var(--red)"/></svg></div><div class="signal-list"><div class="section-title"><h2>关联信号</h2><span class="right">6 项 · 按时间相关性排序</span></div><table class="table"><thead><tr><th>时间</th><th style="width:38%">证据</th><th>资源</th><th>数据质量</th></tr></thead><tbody><tr><td>10:21:04</td><td>ProgressDeadlineExceeded</td><td>Deployment / order-api</td><td><span class="status-chip healthy">完整</span></td></tr><tr><td>10:18:32</td><td>CrashLoopBackOff</td><td>Pod / order-api-…-kwm2r</td><td><span class="status-chip healthy">完整</span></td></tr><tr><td>10:15:18</td><td>镜像版本变更 v2.18.4</td><td>Deployment / order-api</td><td><span class="status-chip healthy">完整</span></td></tr></tbody></table></div></section><aside class="card timeline"><div class="section-title"><h2>异常时间线</h2><span class="right">10:15–现在</span></div><div class="timeline-item"><strong>10:21 · 发布超时</strong><p>Deployment 未达到期望副本数。</p></div><div class="timeline-item"><strong>10:18 · 容器连续重启</strong><p>新 Pod 健康检查失败，开始退避。</p></div><div class="timeline-item"><strong>10:15 · 镜像发布</strong><p>镜像从 v2.18.3 更新到 v2.18.4。</p></div><div class="context-section" style="padding-left:0;padding-right:0"><h3>数据质量</h3><p class="muted">指标、事件、变更完整；1 条 Trace 采样链路缺少下游 Span。</p><span class="status-chip degraded">部分 Trace</span></div></aside></div>
+      </section>
+
+      <section id="investigation" class="view mock-view" data-nav-section="investigation">
+        <div class="page-head"><div><h1>调查 RUN-20260909-0182</h1><p>Deployment / order-api 副本未就绪</p></div><div class="actions"><span class="status-chip degraded">调查中</span><button class="btn">生成报告草稿</button></div></div>
+        <div class="scope-strip"><strong>调查快照</strong><span class="tag">cloud-sh-01</span><span class="tag">Deployment / commerce / order-api</span><span class="tag">2026-09-09 10:00–11:00</span><span class="faint" style="margin-left:auto">只读 · 创建后不可被全局上下文改写</span></div>
+        <div class="investigation-layout"><section class="card evidence-panel"><div class="inner-tabs"><span class="active">证据时间线</span><span>主故障链</span><span>原始证据</span></div><div class="fault-chain"><div class="chain-node">镜像变更<br /><b>v2.18.4</b></div><span class="chain-arrow">→</span><div class="chain-node critical">Pod 启动失败<br /><b>5 个副本</b></div><span class="chain-arrow">→</span><div class="chain-node">Service 端点不足<br /><b>3 / 8</b></div><span class="chain-arrow">→</span><div class="chain-node">请求失败率<br /><b>6.8%</b></div></div><div class="timeline" style="padding-top:0"><div class="timeline-item"><strong>10:21:04 · Kubernetes Event</strong><p>ProgressDeadlineExceeded。证据来自集群事件，资源 UID 已确认。</p></div><div class="timeline-item"><strong>10:18:32 · Container Log</strong><p>启动探针连接超时；日志来自 order-api-69dff8b9c7-kwm2r。</p></div><div class="timeline-item"><strong>10:15:18 · Change</strong><p>Deployment 镜像从 v2.18.3 更新至 v2.18.4，提交人 platform-release-bot。</p></div></div></section><aside class="card context-panel"><div class="context-section"><h3>当前结论</h3><p style="margin:0 0 8px"><b>新版本容器启动探针失败，与副本下降在时间上高度一致。</b></p><span class="status-chip degraded">仍需验证配置差异</span></div><div class="hypothesis active"><h3>假设 1 · 启动探针配置不兼容</h3><p>支持证据 4 条，反证 0 条。需要对比 v2.18.3 与 v2.18.4 的探针配置。</p></div><div class="hypothesis"><h3>假设 2 · 节点资源不足</h3><p>节点 CPU 与内存无明显压力，当前证据较弱。</p></div><div class="context-section"><h3>建议动作</h3><p class="muted">回滚 Deployment 至 v2.18.3。执行前需预检当前版本和审批。</p><button class="btn primary" style="width:100%">创建处置建议</button></div></aside></div>
+      </section>
+
+      <section id="actions" class="view mock-view" data-nav-section="actions">
+        <div class="page-head"><div><h1>处置工作区</h1><p>cloud-sh-01 · 动作按风险、审批和验证状态组织</p></div><div class="actions"><button class="btn">动作审计</button></div></div>
+        <div class="card pipeline"><div><span class="muted">待预检</span><b>2</b></div><div><span class="muted">待审批</span><b>3</b></div><div><span class="muted">执行中</span><b>1</b></div><div><span class="muted">待验证</span><b>2</b></div><div><span class="muted">已完成 / 失败</span><b>18 / 1</b></div></div>
+        <div class="action-layout"><section class="card"><div class="result-head"><strong>动作队列</strong><span class="muted" style="margin-left:8px">最近 24 小时</span><span style="margin-left:auto" class="muted">按风险排序</span></div><div class="action-row selected"><div><strong>回滚 Deployment / order-api 至 v2.18.3</strong><small class="muted">RUN-20260909-0182 · commerce · 创建于 10:29</small></div><span class="status-chip degraded">待审批</span><span>中风险</span></div><div class="action-row"><div><strong>迁移 VM / checkout-worker-03</strong><small class="muted">RUN-20260909-0174 · kubevirt-prod · 创建于 10:18</small></div><span class="status-chip healthy">执行中</span><span>中风险</span></div><div class="action-row"><div><strong>隔离 Kubernetes 节点 / node-worker-12</strong><small class="muted">RUN-20260909-0166 · 创建于 09:48</small></div><span class="status-chip degraded">待预检</span><span>高风险</span></div><div class="action-row"><div><strong>扩容 PVC / order-cache-data</strong><small class="muted">RUN-20260909-0152 · commerce · 创建于 09:14</small></div><span class="status-chip unknown">待验证</span><span>低风险</span></div></section><aside class="card detail-panel"><span class="status-chip degraded">待审批</span><h2>回滚 order-api</h2><div class="muted">Deployment · commerce · cloud-sh-01</div><div class="kv"><span>目标版本</span><b>v2.18.3</b></div><div class="kv"><span>当前版本</span><span>v2.18.4 · 已预检</span></div><div class="kv"><span>风险</span><span>中等 · 短时连接重建</span></div><div class="kv"><span>回滚条件</span><span>5 分钟内就绪副本少于 7</span></div><div class="log-box">precheck: resource_version matched
+capability: rollout_undo allowed
+scope: cloud-sh-01 / commerce / order-api
+validation: replicas_ready >= 7</div><div class="detail-actions"><button class="btn danger">驳回</button><button class="btn primary">批准动作</button></div></aside></div>
+      </section>
+
+      <section id="graph" class="view mock-view" data-nav-section="cluster">
+        <div class="page-head"><div><h1>资源关系图谱</h1><p>cloud-sh-01 · 集群拓扑 · 容器与 KubeVirt 同级展示</p></div><div class="actions"><span class="design-note">已显示 14 / 2,418 个资源载体</span><button class="btn">切换关系列表</button></div></div>
+        <div class="tabs"><button class="tab active">集群拓扑</button><button class="tab">资源关系</button><button class="tab">主故障链</button></div>
+        <div class="graph-layout"><section class="card graph-card"><div class="graph-toolbar"><button class="tool">适应画布</button><button class="tool">−</button><button class="tool">+</button><button class="tool">回到中心</button><button class="tool">类型 ▾</button><button class="tool">关系 ▾</button><button class="tool">Namespace ▾</button><button class="tool compact-only">检查器</button><span class="faint" style="margin-left:auto">首屏渲染预算 80 节点 / 200 边 · 总量不受此限制</span></div><div class="graph-canvas">
+          <div class="graph-lane container"><span class="lane-label">容器资源</span></div><div class="graph-lane vm"><span class="lane-label">KubeVirt 虚拟机</span></div><div class="graph-lane support"><span class="lane-label">运行支撑</span></div>
+          <svg class="edges" viewBox="0 0 900 455" preserveAspectRatio="none"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa8ba"/></marker></defs><path class="alert" d="M195 95 C250 95 250 95 305 95"/><path d="M421 95 C475 95 475 95 530 95"/><path d="M648 95 C700 95 700 95 750 95"/><path d="M198 234 C280 234 280 234 365 234"/><path d="M482 234 C550 234 550 234 618 234"/><path d="M365 252 C365 305 365 305 365 360"/><path d="M618 252 C618 305 618 305 618 360"/><path d="M421 114 C421 230 421 230 421 354"/><path d="M750 114 C750 230 750 230 750 354"/></svg>
+          <div class="g-node container alert" style="left:95px;top:69px"><strong>Deployment</strong>order-api · 3/8 Ready</div><div class="g-node container focus" style="left:305px;top:69px"><strong>Pod 聚合 · 8</strong>5 异常 · 展开一页</div><div class="g-node container" style="left:530px;top:69px"><strong>Container 聚合 · 11</strong>5 重启异常</div><div class="g-node container" style="left:750px;top:69px"><strong>Kubernetes Service</strong>order-api · 3/8 Endpoint</div>
+          <div class="g-node vm" style="left:95px;top:208px"><strong>VM 聚合 · 74</strong>1 个磁盘异常</div><div class="g-node vm alert" style="left:365px;top:208px"><strong>VM</strong>checkout-worker-03</div><div class="g-node vm" style="left:618px;top:208px"><strong>VMI</strong>checkout-worker-03</div>
+          <div class="g-node support" style="left:95px;top:345px"><strong>K8s Node 聚合 · 24</strong>全部 Ready</div><div class="g-node support" style="left:365px;top:345px"><strong>Kubernetes Node</strong>node-worker-07</div><div class="g-node support" style="left:618px;top:345px"><strong>Physical Server</strong>srv-r12-u08</div><div class="g-node support" style="left:750px;top:345px"><strong>Storage Pool</strong>rbd-fast-01</div>
+        </div><div class="graph-footer">匹配总数 2,418 · 当前加载 14 · 聚合节点 4 · 可按页展开或切换完整关系列表</div></section><aside class="card inspector"><div class="inspector-head"><span class="tag">Pod 聚合</span><h2>order-api Pods</h2><p class="muted">commerce · 8 个资源</p><span class="status-chip critical">5 个异常</span></div><div class="context-section"><h3>聚合内容</h3><div class="kv"><span>总数</span><b>8</b></div><div class="kv"><span>健康</span><span>3</span></div><div class="kv"><span>严重</span><span style="color:var(--red)">5</span></div><div class="kv"><span>已加载</span><span>8 / 8</span></div></div><div class="context-section"><h3>主要关系</h3><div class="relation-pill">由 Deployment / order-api 管理</div><div class="relation-pill">被 Kubernetes Service / order-api 选择</div><div class="relation-pill">运行于 4 个 Kubernetes 节点</div><button class="btn primary" style="width:100%;margin-top:8px">展开这组资源</button></div></aside></div>
+      </section>
+
+      <section id="reports" class="view mock-view" data-nav-section="reports">
+        <div class="page-head"><div><h1>运维报告</h1><p>cloud-sh-01 · 以资源事件、证据和验证结果为主语</p></div><div class="actions"><button class="btn">筛选</button><button class="btn primary">生成周期报告</button></div></div>
+        <div class="report-layout"><aside class="card report-list"><div class="result-head"><strong>最近报告</strong><span class="muted" style="margin-left:auto">24 项</span></div><div class="report-item active"><strong>order-api 发布故障调查报告</strong><small class="muted">Deployment · commerce<br />2026-09-09 11:26</small></div><div class="report-item"><strong>checkout-worker-03 磁盘延迟事件</strong><small class="muted">KubeVirt VM · kubevirt-prod<br />2026-09-09 10:54</small></div><div class="report-item"><strong>cloud-sh-01 每日健康报告</strong><small class="muted">集群报告<br />2026-09-09 08:00</small></div></aside><article class="card report-body"><span class="tag">调查报告</span><h2>Deployment / order-api 发布故障</h2><p class="muted">cloud-sh-01 · commerce · RUN-20260909-0182 · 10:15–10:43</p><div class="fact-cards" style="grid-template-columns:repeat(3,1fr)"><div class="mini-stat"><span class="muted">影响持续</span><b>28 分钟</b><small>已恢复</small></div><div class="mini-stat"><span class="muted">影响资源</span><b>8 Pod</b><small>1 个 Kubernetes Service</small></div><div class="mini-stat"><span class="muted">验证结果</span><b style="color:var(--green)">通过</b><small>8/8 Ready</small></div></div><div class="report-sections"><div><div class="report-section"><h3>事件摘要</h3><p>镜像 v2.18.4 发布后，5 个 Pod 因启动探针失败进入重启退避，导致 Kubernetes Service 可用端点下降至 3/8。</p></div><div class="report-section"><h3>证据与根因</h3><p>Deployment 变更时间、容器日志、Kubernetes Event 和失败率变化在同一时间窗口内一致；确认新版本启动探针路径配置不兼容。</p></div></div><div><div class="report-section"><h3>处置</h3><p>经预检和审批，将 Deployment 回滚至 v2.18.3。</p></div><div class="report-section"><h3>恢复验证</h3><p>8/8 副本就绪，请求失败率恢复至 0.18%，连续 15 分钟无新增 BackOff。</p></div></div></div></article></div>
+      </section>
+
+      <section id="admin" class="view mock-view" data-nav-section="admin">
+        <div class="page-head"><div><h1>系统管理</h1><p>纳管、采集、能力策略和审计</p></div><div class="actions"><button class="btn primary">纳管 Kubernetes 集群</button></div></div>
+        <div class="admin-layout"><aside class="card settings-menu"><div class="active">纳管集群</div><div>采集器状态</div><div>图谱同步</div><div>能力策略</div><div>用户与角色</div><div>审计日志</div></aside><section class="card settings-body"><div class="section-title"><div><h2>纳管 Kubernetes 集群</h2><p class="muted" style="margin:4px 0 0">接入状态与健康状态分开显示</p></div><span class="right">12 个集群</span></div><div class="cluster-admin-row" style="min-height:38px;color:var(--faint);font-size:11px"><span>集群</span><span>接入状态</span><span>健康状态</span><span>最近同步</span></div><div class="cluster-admin-row"><div class="name-cell"><strong>cloud-bj-02</strong><small>Kubernetes 1.31.4 · 北京</small></div><span class="status-chip healthy">已纳管</span><span class="status-chip critical">严重</span><span>28 秒前</span></div><div class="cluster-admin-row"><div class="name-cell"><strong>cloud-sh-01</strong><small>Kubernetes 1.31.4 · 上海</small></div><span class="status-chip healthy">已纳管</span><span class="status-chip degraded">降级</span><span>14 秒前</span></div><div class="cluster-admin-row"><div class="name-cell"><strong>cloud-gz-edge</strong><small>Kubernetes 1.30.7 · 广州</small></div><span class="status-chip healthy">已纳管</span><span class="status-chip unknown">未知</span><span>9 分钟前</span></div><div class="cluster-admin-row"><div class="name-cell"><strong>cloud-hz-01</strong><small>Kubernetes 1.31.4 · 杭州</small></div><span class="status-chip healthy">已纳管</span><span class="status-chip healthy">健康</span><span>11 秒前</span></div><div class="context-section" style="margin-top:16px;padding-left:0"><h3>显示原则</h3><p class="muted">“已纳管”只说明连接和授权配置存在，不等于集群健康。健康必须来自独立的状态事实与数据时效。</p></div></section></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const requested = params.get('view') || 'platform';
+    const view = document.getElementById(requested) || document.getElementById('platform');
+    document.querySelectorAll('.mock-view').forEach((el) => el.classList.remove('active'));
+    view.classList.add('active');
+    if (view.id === 'login') document.getElementById('shell').classList.add('hide');
+    const navName = view.dataset.navSection;
+    if (navName) document.querySelector(`[data-nav="${navName}"]`)?.classList.add('active');
+    if (view.id === 'platform') {
+      document.getElementById('cluster-name').textContent = '选择 Kubernetes 集群';
+      document.querySelector('.cluster-picker small').textContent = '平台总览不受选择影响';
+      document.querySelector('.cluster-picker .dot').className = 'dot gray';
+    }
+    document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => {
+      const target = button.dataset.nav;
+      location.search = `?view=${target}`;
+    }));
+  </script>
+</body>
+</html>
