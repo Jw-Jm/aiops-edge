@@ -1,896 +1,923 @@
-# AIOps Information Architecture Implementation Plan
+# AIOps Cloud Platform Resource Operations Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development for each implementation task and superpowers:verification-before-completion before every commit. Use superpowers:subagent-driven-development only when the user explicitly requests parallel agents. Track every checkbox in order.
 
-**Goal:** 将现有按技术模块组织的前端重构为“工作台 → 调查 → 资源 → 观测 → 处置 → 报告”的运维闭环，并建立统一 Scope、调查快照和风险可审计交互。
+**Goal:** 将现有前端收敛为单一生产环境、多 Kubernetes 集群、集群严格拥有全部平台资源的智能运维平台，并让工作台、资源、观测、调查、处置、报告和知识图谱形成一致、美观、可审计的资源运维体验。
 
-**Architecture:** 保留 Query API、Investigation Run、Evidence 和 Action 的现有权威接口，在 React 前端新增壳层、路由兼容层与统一 Scope 模型。业务页面按工作流重新编排，原有服务、图谱、告警、Trace、日志、K8s、硬件、容量和报告能力通过聚合入口复用，避免后端破坏性迁移。
+**Architecture:** 以服务端确认的 tenant + cluster 为唯一授权根，以 typed resource + time range 为可选查询上下文。Query API 只增加资源目录、五域摘要和资源详情三个只读投影，复用现有 Graph Repository 与资产事实；Run、Evidence、Action 和 Graph DTO 继续是权威事实。前端通过一个 Scope store、一个资源类型系统、一个数据状态组件族和一套视觉 Token 统一所有页面。
 
-**Tech Stack:** React 18、TypeScript 5.6、React Router 6、Zustand 5、Ant Design 5、Vitest、Testing Library、Playwright、ECharts、AntV G6
+**Tech Stack:** Go 1.24、React 18、TypeScript 5.6、React Router 6、Zustand 5、TanStack Query 5、Ant Design 5、ECharts 5、AntV G6 5、Vitest、Testing Library、Playwright
 
-**Spec:** `docs/superpowers/specs/2026-09-08-aiops-information-architecture-design.md`
+**Spec:** [AIOps 云平台资源运维信息架构设计方案](../specs/2026-09-08-aiops-information-architecture-design.md)
 
 ## Global Constraints
 
-- 一级导航固定为工作台、调查、资源、观测、处置、报告；系统管理仅管理员可见。
-- 最小支持宽度为 1024px；视觉验收视口为 1440×900、1280×720、1024×768。
-- Cluster Scope 写入必须先成功调用 `/me/scope`，再更新本地活动 Scope。
-- Investigation Scope 是创建时冻结的只读快照；打开 Run 不得改变全局活动 Scope。
-- Chat 只做问答、受审计只读查询和 Investigation 草稿，不直接创建 Action 或执行环境变更。
-- Run、Evidence、Action 页面不得用演示数据或前端推断替代持久化事实。
-- Run/Evidence 延续 tenant + cluster + run 三元授权；Action 决策继续携带 `action_version` 和 idempotency key。
-- 状态色必须同时配文字；红=严重、橙=异常、黄=风险、绿=恢复、蓝=交互/信息。
-- 旧深链至少保留两个小版本并通过 React Router `Navigate` 转发。
-- 不新增 UI 框架，不重写 Query API，不修改 Investigation/Action 的数据库语义。
+- 全程在 main 分支工作；每个任务完成测试后独立提交，开始任务前确认工作树只有本计划产生的改动。
+- 产品只有生产环境。environment='prod' 只能存在于 Run/Chat 兼容适配器，不得出现在可选 UI、URL Scope 或持久化用户偏好中。
+- 集群是唯一授权根。Catalog、Detail、Graph、Observe、Run 和 Action 都不得接受客户端 tenant 扩权，也不得用资源名称替代 canonical cluster id。
+- Namespace 只属于 Kubernetes 资源或页面局部筛选，不能回到全局 Scope。
+- 物理服务器、Kubernetes 节点、虚拟机必须保持不同 type、图标、中文名称和详情字段。
+- 前端不拼接五套 API 推断资源身份；资源目录、摘要和详情使用新的只读 Query API 投影。
+- 所有 query key 至少包含 tenantId、clusterId、entityUid 和时间窗口；切换集群时先取消并清空旧查询。
+- Run 打开后使用冻结快照，禁止通过副作用改写活动 Scope。
+- Action 入口由服务端 capabilities 决定；无 capability 时只读。
+- 所有数据区域必须覆盖 loading、empty、error、partial、stale、forbidden 六类状态，且尺寸稳定。
+- 知识图谱默认上限 80 个节点、200 条边；超限必须聚合并显示省略数量，不得静默截断。
+- 最小操作宽度 1024px；视觉验收视口固定为 1440×900、1280×720、1024×768。
+- 不更换 UI 框架，不改变数据库事实，不扩大自动执行权限，不删除旧深链兼容。
 
 ---
 
-## File Structure
-
-新增或调整的文件按责任划分：
-
-- `src/layout/AppShell.tsx`：全局侧栏、顶部栏、Scope Bar 与页面内容区域。
-- `src/layout/LegacyAppShell.tsx`：迁移期保留的旧壳层，只用于 feature flag 回退。
-- `src/layout/navConfig.ts`：一级导航、权限和旧路由映射；不包含 UI 状态。
-- `src/features/scope/types.ts`：活动 Scope、Run Scope 与时间范围类型。
-- `src/features/scope/scopeStore.ts`：活动 Scope 的唯一可写 Zustand store。
-- `src/features/scope/ScopeBar.tsx`：活动 Scope 与只读 Run 快照两种呈现。
-- `src/features/scope/ScopeBoundary.tsx`：根据路由选择活动或冻结 Scope。
-- `src/features/investigation/draft.ts`：告警、资源、Chat 到 Investigation 草稿的纯函数。
-- `src/features/investigation/components/*`：三栏调查工作台的独立组件。
-- `src/pages/resources/ResourceCenter.tsx`：资源目录与详情聚合入口。
-- `src/pages/observe/ObserveCenter.tsx`：告警、Trace、日志、变更和 Grafana 的聚合入口。
-- `src/pages/actions/ActionCenter.tsx`：处置队列与 Action 详情。
-- `src/theme/tokens.ts` 与 `src/index.css`：新版语义 Token、密度和响应式布局。
-- `tests/manual-e2e/ia-*.js`：沿用仓库 Playwright harness 的三条产品主链和三档视口回归。
-
----
-
-### Task 1: 建立统一 Scope 模型与级联语义
+### Task 1: 建立唯一的资源类型系统
 
 **Files:**
 
-- Create: `observability-frontend/src/features/scope/types.ts`
-- Create: `observability-frontend/src/features/scope/scopeStore.ts`
-- Create: `observability-frontend/src/features/scope/scopeStore.test.ts`
-- Modify: `observability-frontend/src/store/uiStore.ts`
-- Modify: `observability-frontend/src/api/scopeRuntime.ts`
+- Create: observability-frontend/src/features/resources/types.ts
+- Create: observability-frontend/src/features/resources/resourceDomain.ts
+- Create: observability-frontend/src/features/resources/resourceDomain.test.ts
+- Modify: observability-frontend/src/api/graphContracts.ts
 
-**Interfaces:**
+**Stable contracts:**
 
-- Consumes: `getMe()`、`setActiveScope(tenantId, clusterId)`、现有 `ClusterOption`。
-- Produces: `ActiveScope`、`TimeRange`、`useScopeStore()`、`applyClusterScope(clusterId): Promise<boolean>`、`setNamespace(namespace)`、`setResource(resource)`、`setTimeRange(range)`。
+~~~ts
+export type ResourceDomain = 'compute' | 'network' | 'storage' | 'kubernetes' | 'application'
 
-- [ ] **Step 1: 写出级联清理和服务端成功后提交的失败测试**
+export interface PlatformResourceRef {
+  clusterId: string
+  uid: string
+  type: GraphEntityType
+  domain: ResourceDomain
+  name: string
+  namespace?: string
+}
 
-```ts
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useScopeStore } from './scopeStore'
-import * as client from '../../api/client'
+export const SELECTABLE_RESOURCE_TYPES = {
+  compute: ['physical_server', 'k8s_node', 'vm', 'vmi'],
+  network: ['switch', 'switch_port', 'nic', 'network', 'nad'],
+  storage: ['disk', 'storage_class', 'pv', 'pvc'],
+  kubernetes: ['namespace', 'deployment', 'replicaset', 'statefulset', 'daemonset', 'pod', 'container', 'k8s_service', 'endpoint_slice'],
+  application: ['business', 'application', 'service', 'middleware'],
+} as const
+~~~
 
-vi.mock('../../api/client', () => ({
-  setActiveScope: vi.fn(),
-  getMe: vi.fn(),
-}))
+- [ ] **Step 1: 写失败测试**
 
-describe('scopeStore', () => {
-  beforeEach(() => useScopeStore.getState().reset())
+在 resourceDomain.test.ts 覆盖：
 
-  it('clears namespace and resource after cluster changes', async () => {
-    useScopeStore.setState({
-      clusters: [{ id: 0, cluster_id: 'cluster-b', tenant_id: 'tenant-a', name: 'prod', status: 'ready', node_count: 3 }],
-      active: { tenantId: 'tenant-a', environment: 'prod', clusterId: 'cluster-a', namespace: 'payment', resource: { type: 'service', id: 'payment-api', label: 'payment-api' }, timeRange: { mode: 'relative', minutes: 60 } },
-    })
-    vi.mocked(client.setActiveScope).mockResolvedValue({} as never)
+- physical_server、k8s_node、vm 分别映射到 compute，但 displayName 不相同。
+- namespace 只映射到 kubernetes。
+- cpu、dimm、alert、change、case、sel_event、migration 均不可作为一级选择结果。
+- toPlatformResourceRef 在 cluster 不一致或类型不可选时返回明确错误。
 
-    expect(await useScopeStore.getState().applyClusterScope('cluster-b')).toBe(true)
-    expect(useScopeStore.getState().active).toMatchObject({ clusterId: 'cluster-b', namespace: '', resource: undefined })
-  })
+- [ ] **Step 2: 运行测试并确认失败**
 
-  it('keeps the previous scope when server authorization fails', async () => {
-    useScopeStore.setState({ active: { tenantId: 'tenant-a', environment: 'prod', clusterId: 'cluster-a', namespace: '', timeRange: { mode: 'relative', minutes: 60 } } })
-    vi.mocked(client.setActiveScope).mockRejectedValue(new Error('forbidden'))
+Run: cd observability-frontend && npm run test:run -- src/features/resources/resourceDomain.test.ts
 
-    expect(await useScopeStore.getState().applyClusterScope('cluster-b')).toBe(false)
-    expect(useScopeStore.getState().active.clusterId).toBe('cluster-a')
-  })
-})
-```
+Expected: FAIL，模块尚不存在。
 
-- [ ] **Step 2: 运行测试并确认新模块尚不存在**
+- [ ] **Step 3: 实现纯函数**
 
-Run: `cd observability-frontend && npm run test:run -- src/features/scope/scopeStore.test.ts`
+在 resourceDomain.ts 导出：
 
-Expected: FAIL，提示无法解析 `./scopeStore`。
+~~~ts
+export function resourceDomainOf(type: GraphEntityType): ResourceDomain | null
+export function isSelectableResourceType(type: GraphEntityType): boolean
+export function resourceTypeLabel(type: GraphEntityType): string
+export function resourceLocation(resource: PlatformResourceRef): string
+export function toPlatformResourceRef(entity: GraphEntity, activeClusterId: string): PlatformResourceRef
+~~~
 
-- [ ] **Step 3: 定义稳定类型**
+toPlatformResourceRef 必须校验 entity.cluster_id === activeClusterId；Kubernetes 资源可投影 namespace，其他域不携带空 namespace。
 
-```ts
-export type RelativeMinutes = 15 | 60 | 360 | 1440
-export type TimeRange =
-  | { mode: 'relative'; minutes: RelativeMinutes }
-  | { mode: 'absolute'; start: string; end: string }
+- [ ] **Step 4: 收紧 Graph 类型**
 
-export interface ResourceRef { type: string; id: string; label: string }
+保留 Graph DTO 对未知服务端类型的容错，但业务函数不把未知字符串视为可选资源。增加 GraphEntityTypeKnown 联合类型，GraphEntity.entity_type 仍允许未知 string 进入“不可识别类型”降级态。
+
+- [ ] **Step 5: 运行测试与类型检查**
+
+Run: cd observability-frontend && npm run test:run -- src/features/resources/resourceDomain.test.ts src/api/knowledgeGraph.test.ts
+
+Run: cd observability-frontend && npm run build
+
+Expected: PASS。
+
+- [ ] **Step 6: 提交**
+
+~~~bash
+git add observability-frontend/src/features/resources observability-frontend/src/api/graphContracts.ts
+git commit -m "feat(frontend): add typed platform resource model"
+~~~
+
+---
+
+### Task 2: 增加集群授权的资源只读投影
+
+**Files:**
+
+- Create: ai-apm-query-go/internal/api/resource_catalog.go
+- Create: ai-apm-query-go/internal/api/resource_catalog_test.go
+- Modify: ai-apm-query-go/internal/bootstrap/http.go
+- Modify: ai-apm-query-go/internal/api/auth_internal_route_test.go
+
+**HTTP contracts:**
+
+~~~text
+GET /api/v1/resources/catalog?domain=compute&type=physical_server&q=node&health=degraded&limit=50&cursor=<opaque>
+GET /api/v1/resources/summary
+GET /api/v1/resources/detail?uid=<url-encoded-entity-uid>
+~~~
+
+统一 envelope：
+
+~~~go
+type ResourceReadMeta struct {
+    GeneratedAt  time.Time `json:"generated_at"`
+    Partial      bool      `json:"partial"`
+    Stale        bool      `json:"stale"`
+    WarningCodes []string  `json:"warning_codes"`
+}
+~~~
+
+- [ ] **Step 1: 写 handler 失败测试**
+
+resource_catalog_test.go 使用 graph.NewMemoryRepository 注入 Handler，覆盖：
+
+- Catalog 只返回 request authorization context 中 tenant + cluster 的资源。
+- domain/type/health/q 过滤组合稳定，limit 范围为 1–100，cursor 为服务端编码游标。
+- cpu、dimm、alert、change、case、sel_event、migration 被排除。
+- Summary 固定返回 compute、network、storage、kubernetes、application 五项，即使某项 count 为 0。
+- Detail 的 UID 跨集群返回 GRAPH_SCOPE_VIOLATION 对应的 403，不存在返回 404。
+- graphRepo 不可用返回 503、partial=false、warning_codes 包含 RESOURCE_CATALOG_UNAVAILABLE。
+
+- [ ] **Step 2: 运行测试并确认失败**
+
+Run: cd ai-apm-query-go && go test ./internal/api -run 'TestResource(Catalog|Summary|Detail)'
+
+Expected: FAIL，三个 handler 尚未注册。
+
+- [ ] **Step 3: 实现只读投影**
+
+在 resource_catalog.go 定义：
+
+~~~go
+func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request)
+func (h *Handler) ResourceSummary(w http.ResponseWriter, r *http.Request)
+func (h *Handler) ResourceDetail(w http.ResponseWriter, r *http.Request)
+~~~
+
+实现要求：
+
+- 使用 RequestAuthorizationContext 和 graphScope 建立范围，不读取 tenant 查询参数。
+- 使用 GraphRepository.SearchEntities/GetEntity，UID 与 Graph DTO 一致。
+- 类型到五个域的映射由后端常量维护；resource_catalog_test.go 按设计文档 4.1 节锁定五组完整类型集合，前端 resourceDomain.test.ts 锁定相同集合。
+- Detail 只投影 entity attrs 中白名单字段、health、source、resolution、last_seen_ms 和 capabilities；不返回 provider URL、token、SQL、内部地址或原始栈。
+- Catalog 首版 cursor 编码最后一个 name_key + entity_uid；排序固定为 health priority、name_key、entity_uid。
+- meta.stale 基于同步时间阈值，partial 只来自明确来源缺失，不把空集合判为 partial。
+
+- [ ] **Step 4: 注册公开只读路由**
+
+在 http.go 注册：
+
+~~~go
+mux.HandleFunc("/api/v1/resources/catalog", handler.ResourceCatalog)
+mux.HandleFunc("/api/v1/resources/summary", handler.ResourceSummary)
+mux.HandleFunc("/api/v1/resources/detail", handler.ResourceDetail)
+~~~
+
+更新 auth_internal_route_test.go，证明它们走浏览器公开认证中间件，不进入内部 capability 路由。
+
+- [ ] **Step 5: 运行后端验证**
+
+Run: cd ai-apm-query-go && go test ./internal/api ./internal/graph ./internal/bootstrap
+
+Expected: PASS。
+
+- [ ] **Step 6: 提交**
+
+~~~bash
+git add ai-apm-query-go/internal/api/resource_catalog.go ai-apm-query-go/internal/api/resource_catalog_test.go ai-apm-query-go/internal/api/auth_internal_route_test.go ai-apm-query-go/internal/bootstrap/http.go
+git commit -m "feat(query-api): expose cluster-scoped resource read models"
+~~~
+
+---
+
+### Task 3: 接入前端资源 API 与查询键
+
+**Files:**
+
+- Create: observability-frontend/src/api/resources.ts
+- Create: observability-frontend/src/api/resources.test.ts
+- Modify: observability-frontend/src/query/keys.ts
+- Modify: observability-frontend/src/query/keys.test.ts
+
+**Client contracts:**
+
+~~~ts
+export interface ResourceReadMeta {
+  generated_at: string
+  partial: boolean
+  stale: boolean
+  warning_codes: string[]
+}
+
+export interface ResourceCatalogItem extends PlatformResourceRef {
+  typeLabel: string
+  location: string
+  health: 'critical' | 'degraded' | 'risk' | 'healthy' | 'unknown'
+  source: string
+  lastSeenAt?: string
+}
+
+export function getResourceCatalog(params: ResourceCatalogParams, signal?: AbortSignal): Promise<ResourceCatalogResponse>
+export function getResourceSummary(signal?: AbortSignal): Promise<ResourceSummaryResponse>
+export function getResourceDetail(uid: string, signal?: AbortSignal): Promise<ResourceDetailResponse>
+~~~
+
+- [ ] **Step 1: 写 URL、解码和错误语义测试**
+
+覆盖 q/domain/type/health/limit/cursor 编码、uid 双斜杠与中文编码、403/404/503 到 forbidden/notFound/unavailable 的稳定映射，以及 partial/stale/warning_codes 原样保留。
+
+- [ ] **Step 2: 运行测试并确认失败**
+
+Run: cd observability-frontend && npm run test:run -- src/api/resources.test.ts src/query/keys.test.ts
+
+Expected: FAIL。
+
+- [ ] **Step 3: 实现 API 与 query key**
+
+新增：
+
+~~~ts
+queryKeys.resourceCatalog(context, filters)
+queryKeys.resourceSummary(context)
+queryKeys.resourceDetail(context, entityUid)
+queryKeys.resourceGraph(context, entityUid, mode, depth, domains, relations)
+~~~
+
+所有 key 均通过现有 scope(context) 包含 tenantId、activeClusterId、entityUid、from、to；filters 使用排序后的稳定序列化结果。
+
+- [ ] **Step 4: 运行验证并提交**
+
+Run: cd observability-frontend && npm run test:run -- src/api/resources.test.ts src/query/keys.test.ts
+
+Expected: PASS。
+
+~~~bash
+git add observability-frontend/src/api/resources.ts observability-frontend/src/api/resources.test.ts observability-frontend/src/query/keys.ts observability-frontend/src/query/keys.test.ts
+git commit -m "feat(frontend): add resource catalog client"
+~~~
+
+---
+
+### Task 4: 简化 Scope 并建立兼容边界
+
+**Files:**
+
+- Modify: observability-frontend/src/features/scope/types.ts
+- Modify: observability-frontend/src/store/scopeStore.ts
+- Modify: observability-frontend/src/store/scopeStore.test.ts
+- Create: observability-frontend/src/features/scope/runScopeAdapter.ts
+- Create: observability-frontend/src/features/scope/runScopeAdapter.test.ts
+- Modify: observability-frontend/src/api/scopeRuntime.ts
+
+**Target state:**
+
+~~~ts
 export interface ActiveScope {
   tenantId: string
-  environment: 'prod' | 'staging' | 'test' | 'dev'
   clusterId: string
-  namespace: string
-  resource?: ResourceRef
+  resource?: PlatformResourceRef
   timeRange: TimeRange
 }
 
 export interface RunScopeSnapshot extends ActiveScope {
   mode: 'snapshot'
   runId: string
-  timeRange: { mode: 'absolute'; start: string; end: string }
+  timeRange: Extract<TimeRange, { mode: 'absolute' }>
 }
-```
+~~~
 
-- [ ] **Step 4: 实现唯一可写 Scope store**
+- [ ] **Step 1: 先把测试改成目标行为**
 
-```ts
-export const useScopeStore = create<ScopeState>()(persist((set, get) => ({
-  active: DEFAULT_SCOPE,
-  clusters: [],
-  loading: false,
-  reset: () => set({ active: DEFAULT_SCOPE, clusters: [], loading: false }),
-  setNamespace: (namespace) => set((state) => ({ active: { ...state.active, namespace, resource: undefined } })),
-  setResource: (resource) => set((state) => ({ active: { ...state.active, resource } })),
-  setTimeRange: (timeRange) => set((state) => ({ active: { ...state.active, timeRange } })),
-  applyClusterScope: async (clusterId) => {
-    const cluster = get().clusters.find((item) => item.cluster_id === clusterId)
-    if (!cluster?.tenant_id) return false
-    try {
-      await setActiveScope(cluster.tenant_id, clusterId)
-      set((state) => ({ active: { ...state.active, tenantId: cluster.tenant_id!, clusterId, namespace: '', resource: undefined } }))
-      setScopeCluster(clusterId)
-      return true
-    } catch { return false }
-  },
-  refreshClusters: async () => {
-    set({ loading: true })
-    try {
-      const response = await getMe()
-      const clusters = (response.data?.available_clusters ?? []).map((cluster, index) => ({
-        id: index, cluster_id: cluster.cluster_id || '', tenant_id: cluster.tenant_id,
-        name: cluster.name, status: cluster.status || 'unknown', node_count: 0,
-      }))
-      set((state) => ({
-        clusters,
-        loading: false,
-        active: clusters.some((cluster) => cluster.cluster_id === state.active.clusterId)
-          ? state.active
-          : { ...state.active, tenantId: '', clusterId: '', namespace: '', resource: undefined },
-      }))
-    } catch { set({ loading: false }) }
-  },
-}), { name: 'aiops-scope-v1', partialize: (state) => ({ active: state.active }) }))
-```
+覆盖：
 
-`refreshClusters` 的具体实现必须复用 `uiStore.ts` 当前 canonical UUID 清理规则：服务端返回列表中不存在的 `clusterId` 必须置空，不得把 numeric id 或 name 作为授权上下文。
+- Scope 类型和 store 不再暴露 setEnvironment/setNamespace。
+- initialize 只接受 /me.active_scope 和 /me.available_clusters。
+- switchCluster 在 POST /me/scope 与回读确认成功后才提交；成功清空 resource，失败恢复旧范围。
+- setResource 拒绝 resource.clusterId !== active cluster。
+- 持久化只保存 preferredClusterId，不保存授权 Scope 或资源。
+- resetScopeQueries 在切换前取消旧请求，回读成功后再发新范围查询。
 
-- [ ] **Step 5: 将旧 uiStore 缩减为纯 UI 状态**
+- [ ] **Step 2: 运行测试并确认旧实现失败**
 
-移除 `currentClusterId`、`clusters`、`clusterLoading`、`setCurrentCluster`、`setClusters`、`refreshClusters`；保留 `collapsed`、`aiDockOpen` 及其动作。所有调用点改用 `useScopeStore`。
+Run: cd observability-frontend && npm run test:run -- src/store/scopeStore.test.ts
 
-- [ ] **Step 6: 运行 Scope 与现有集群测试**
+Expected: FAIL，旧环境和 Namespace API 仍存在。
 
-Run: `cd observability-frontend && npm run test:run -- src/features/scope/scopeStore.test.ts src/api/client.test.ts src/App.test.tsx`
+- [ ] **Step 3: 实现新 Scope store**
 
-Expected: PASS，且没有页面直接解析 `aiops-ui-v3` 获取 cluster。
+保留 authScope 服务端事实与 context UI 状态也可以，但导出的 useActiveScope 必须只产生 tenantId、clusterId、resource、timeRange。删除 Environment、ScopeContext.namespace、DEFAULT_SCOPE_CONTEXT.environment。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 4: 实现 Run/Chat 兼容适配器**
 
-```bash
-git add observability-frontend/src/features/scope observability-frontend/src/store/uiStore.ts observability-frontend/src/api/scopeRuntime.ts observability-frontend/src/App.test.tsx
-git commit -m "feat(frontend): unify operational scope state"
-```
-
----
-
-### Task 2: 重构全局壳层、一级导航与兼容路由
-
-**Files:**
-
-- Create: `observability-frontend/src/layout/navConfig.ts`
-- Create: `observability-frontend/src/layout/navConfig.test.ts`
-- Create: `observability-frontend/src/layout/AppShell.tsx`
-- Create: `observability-frontend/src/layout/LegacyAppShell.tsx`
-- Create: `observability-frontend/src/features/scope/ScopeBar.tsx`
-- Create: `observability-frontend/src/features/scope/ScopeBar.test.tsx`
-- Modify: `observability-frontend/src/App.tsx`
-- Modify: `observability-frontend/src/index.css`
-
-**Interfaces:**
-
-- Consumes: `useScopeStore`、`useUIStore`、`useAuthStore`、现有通知接口。
-- Produces: `PRIMARY_NAV`、`LEGACY_REDIRECTS`、`AppShell`、`ScopeBar({ snapshot? })`。
-
-- [ ] **Step 1: 写导航权限与旧路由映射测试**
-
-```ts
-import { describe, expect, it } from 'vitest'
-import { legacyTarget, visiblePrimaryNav } from './navConfig'
-
-it('shows six workflow domains to operators', () => {
-  expect(visiblePrimaryNav('operator').map((item) => item.label)).toEqual(['工作台', '调查', '资源', '观测', '处置', '报告'])
-})
-
-it('shows system administration only to admins', () => {
-  expect(visiblePrimaryNav('admin').at(-1)?.label).toBe('系统管理')
-})
-
-it('keeps legacy deep links routable', () => {
-  expect(legacyTarget('/observability/trace')).toBe('/observe?view=traces')
-  expect(legacyTarget('/admin/approvals')).toBe('/actions')
-})
-```
-
-- [ ] **Step 2: 运行测试并确认失败**
-
-Run: `cd observability-frontend && npm run test:run -- src/layout/navConfig.test.ts`
-
-Expected: FAIL，提示 `navConfig` 不存在。
-
-- [ ] **Step 3: 实现声明式导航与重定向**
-
-```ts
-export const PRIMARY_NAV: NavItem[] = [
-  { path: '/overview', label: '工作台', icon: 'overview' },
-  { path: '/investigation', label: '调查', icon: 'chat' },
-  { path: '/resources', label: '资源', icon: 'topology' },
-  { path: '/observe', label: '观测', icon: 'traces' },
-  { path: '/actions', label: '处置', icon: 'approvals' },
-  { path: '/reports', label: '报告', icon: 'reports' },
-  { path: '/admin', label: '系统管理', icon: 'settings', adminOnly: true },
-]
-
-export const LEGACY_REDIRECTS = new Map([
-  ['/observability/service', '/resources?kind=service'],
-  ['/observability/relationships', '/resources?view=relationships'],
-  ['/observability/vms', '/resources?kind=vm'],
-  ['/infra/k8s', '/resources?kind=kubernetes'],
-  ['/hardware', '/resources?kind=hardware'],
-  ['/capacity', '/resources?view=capacity'],
-  ['/alerts/events', '/observe?view=alerts'],
-  ['/alerts/rules', '/observe?view=rules'],
-  ['/observability/trace', '/observe?view=traces'],
-  ['/observability/log', '/observe?view=telemetry'],
-  ['/changes', '/observe?view=changes'],
-  ['/observability/grafana', '/observe?view=grafana'],
-  ['/admin/approvals', '/actions'],
-  ['/report', '/reports'],
-])
-```
-
-测试遍历以上映射逐条断言，防止迁移遗漏。
-
-- [ ] **Step 4: 写 Scope Bar 活动态与快照态测试**
-
-```tsx
-it('renders a locked run snapshot without editable selects', () => {
-  render(<ScopeBar snapshot={RUN_SCOPE} />)
-  expect(screen.getByText('调查快照')).toBeInTheDocument()
-  expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
-  expect(screen.getByText('20:00–21:00')).toBeInTheDocument()
-})
-```
-
-- [ ] **Step 5: 实现 AppShell 和 ScopeBar**
-
-`AppShell` 只负责布局、导航、通知、用户菜单和 `<Outlet />`。`ScopeBar` 负责环境、cluster、namespace、resource、timeRange 控件；Run 快照通过 prop 呈现，不读取页面内部状态。
-
-```tsx
-export function ScopeBar({ snapshot }: { snapshot?: RunScopeSnapshot }) {
-  if (snapshot) return <RunScopeBar snapshot={snapshot} />
-  return <ActiveScopeBar scope={useScopeStore((s) => s.active)} />
-}
-```
-
-- [ ] **Step 6: 将 App.tsx 收敛为路由定义**
-
-`App.tsx` 保留 lazy imports、鉴权边界与路由。把当前壳层原样抽到 `LegacyAppShell.tsx`，新版放入 `AppShell.tsx`；使用构建变量选择，保证迁移期可回退。新页面使用 nested routes，旧路由通过 `<Navigate replace to={target} />` 保留。
-
-```tsx
-const Shell = import.meta.env.VITE_IA_V4 === 'false' ? LegacyAppShell : AppShell
-
-<Route path="*" element={<RequireAuth><Shell /></RequireAuth>}>
-  <Route path="overview" element={<Overview />} />
-  <Route path="investigation/*" element={<InvestigationRoutes />} />
-  <Route path="resources" element={<ResourceCenter />} />
-  <Route path="observe" element={<ObserveCenter />} />
-  <Route path="actions" element={<ActionCenter />} />
-  <Route path="reports" element={<Report />} />
-</Route>
-```
-
-- [ ] **Step 7: 验证壳层与深链**
-
-Run: `cd observability-frontend && npm run test:run -- src/layout/navConfig.test.ts src/features/scope/ScopeBar.test.tsx src/App.test.tsx`
-
-Expected: PASS；operator 看见 6 个业务域，admin 额外看见系统管理；旧 URL 跳转且 query 参数正确。
-
-- [ ] **Step 8: 提交**
-
-```bash
-git add observability-frontend/src/layout observability-frontend/src/features/scope/ScopeBar.tsx observability-frontend/src/features/scope/ScopeBar.test.tsx observability-frontend/src/App.tsx observability-frontend/src/index.css
-git commit -m "feat(frontend): add workflow-oriented app shell"
-```
-
----
-
-### Task 3: 将首页改为异常优先工作台
-
-**Files:**
-
-- Create: `observability-frontend/src/pages/Overview/priority.ts`
-- Create: `observability-frontend/src/pages/Overview/priority.test.ts`
-- Create: `observability-frontend/src/pages/Overview/IssueQueue.tsx`
-- Create: `observability-frontend/src/pages/Overview/WorkQueue.tsx`
-- Modify: `observability-frontend/src/pages/Overview/index.tsx`
-- Modify: `observability-frontend/src/pages/Overview/Overview.test.tsx`
-
-**Interfaces:**
-
-- Consumes: `getDashboardStats()`、`getDashboardResources()`、`getAlertEvents()`、`listRuns()`、`listActions()`。
-- Produces: `rankOperationalIssues(alerts, runs)`、`IssueQueue`、`WorkQueue`。
-
-- [ ] **Step 1: 写异常排序和 CTA 状态测试**
-
-```ts
-it('ranks critical, wider impact, and longer duration first', () => {
-  const ranked = rankOperationalIssues([
-    issue({ id: 'warning', severity: 'warning', affectedServices: 1, durationMinutes: 40 }),
-    issue({ id: 'critical', severity: 'critical', affectedServices: 3, durationMinutes: 20 }),
-  ], [])
-  expect(ranked.map((item) => item.id)).toEqual(['critical', 'warning'])
-})
-
-it('uses the run state to select the primary action', () => {
-  expect(issueAction(issue({ runId: undefined }))).toEqual({ label: '开始调查', href: '/investigation/new' })
-  expect(issueAction(issue({ runId: 'run-1' }))).toEqual({ label: '查看调查', href: '/investigation/run-1' })
-})
-```
-
-- [ ] **Step 2: 运行测试并确认失败**
-
-Run: `cd observability-frontend && npm run test:run -- src/pages/Overview/priority.test.ts`
-
-Expected: FAIL，提示排序函数不存在。
-
-- [ ] **Step 3: 实现纯函数排序与动作投影**
-
-```ts
-const SEVERITY_SCORE = { critical: 1_000_000, warning: 100_000, info: 10_000 }
-export function rankOperationalIssues(items: OperationalIssue[]): OperationalIssue[] {
-  return [...items].sort((a, b) =>
-    score(b) - score(a) || b.startedAt.localeCompare(a.startedAt))
-}
-function score(item: OperationalIssue): number {
-  return SEVERITY_SCORE[item.severity] + item.affectedServices * 1_000 + item.durationMinutes * 10 + (item.recentChange ? 500 : 0)
-}
-```
-
-- [ ] **Step 4: 并行加载首页真实数据并保留部分失败**
-
-使用 `Promise.allSettled`。告警失败时问题队列显示带重试按钮的来源错误；Run/Action 失败不清空其他已成功模块。禁止生成 fallback DEMO 行。
-
-- [ ] **Step 5: 实现首屏两列布局**
-
-左侧 `IssueQueue` 占约 68%，右侧 `WorkQueue` 占约 32%；普通 KPI、最近变更、服务风险和数据质量放在第二层。问题项主动作携带 `source=overview`、`resourceId`、`symptom`，只进入新建调查页，不直接创建 Run。
-
-- [ ] **Step 6: 运行首页测试**
-
-Run: `cd observability-frontend && npm run test:run -- src/pages/Overview/priority.test.ts src/pages/Overview/Overview.test.tsx`
-
-Expected: PASS；无告警时显示真实空态；接口部分失败时成功区域仍可用。
-
-- [ ] **Step 7: 提交**
-
-```bash
-git add observability-frontend/src/pages/Overview
-git commit -m "feat(frontend): prioritize active operational issues"
-```
-
----
-
-### Task 4: 统一 Investigation 草稿入口与调查队列
-
-**Files:**
-
-- Create: `observability-frontend/src/features/investigation/draft.ts`
-- Create: `observability-frontend/src/features/investigation/draft.test.ts`
-- Modify: `observability-frontend/src/pages/investigation/NewInvestigation.tsx`
-- Modify: `observability-frontend/src/pages/investigation/InvestigationCenter.tsx`
-- Modify: `observability-frontend/src/pages/investigation/InvestigationCenter.test.tsx`
-- Modify: `observability-frontend/src/pages/ai/AiChat.tsx`
-- Create: `observability-frontend/src/pages/ai/AiChat.test.tsx`
-
-**Interfaces:**
-
-- Consumes: `ActiveScope`、`createRun()`、`listRuns()`、Chat 返回的 `__investigation_required__`/结构化 CTA。
-- Produces: `InvestigationDraft`、`draftFromSearchParams()`、`draftToSearchParams()`。
-
-- [ ] **Step 1: 写来源预填和显式提交测试**
-
-```ts
-it('round-trips a chat draft without creating a run', () => {
-  const draft = { source: 'chat', clusterId: 'cluster-a', resourceId: 'payment-api', targetType: 'service', symptom: '分析错误率突增' } satisfies InvestigationDraft
-  expect(draftFromSearchParams(draftToSearchParams(draft))).toEqual(draft)
-})
-
-it('does not call createRun while the new investigation page mounts', () => {
-  render(<MemoryRouter initialEntries={['/investigation/new?source=chat&symptom=x']}><NewInvestigation /></MemoryRouter>)
-  expect(createRun).not.toHaveBeenCalled()
-})
-```
-
-- [ ] **Step 2: 运行测试并确认失败**
-
-Run: `cd observability-frontend && npm run test:run -- src/features/investigation/draft.test.ts src/pages/ai/AiChat.test.tsx`
-
-Expected: FAIL，提示草稿转换函数或 Chat CTA 不存在。
-
-- [ ] **Step 3: 实现可序列化草稿**
-
-```ts
-export interface InvestigationDraft {
-  source: 'overview' | 'alert' | 'resource' | 'chat'
-  clusterId: string
+~~~ts
+export function toLegacyRunScope(scope: ActiveScope): {
+  environment: 'prod'
+  cluster_id: string
   namespace?: string
-  resourceId: string
-  targetType: string
-  symptom: string
+  target_resource_id?: string
+  target_resource_type?: string
+  time_start: string
+  time_end: string
 }
-```
+~~~
 
-仅接受 allow-list 字段，忽略未知 query 参数；`symptom` 最大 2000 字符；`clusterId` 必须通过现有 canonical UUID 校验。
+相对时间以提交瞬间转换成绝对 UTC；namespace 只从 Kubernetes resource.namespace 投影。
 
-- [ ] **Step 4: 修改 Chat 复杂诊断 CTA**
+- [ ] **Step 5: 搜索并消除越界读取**
 
-当 Chat 分类结果需要 Investigation 时，渲染说明、冻结范围摘要、预期证据源和按钮：
+Run: rg -n 'setEnvironment|setNamespace|context\.environment|context\.namespace' observability-frontend/src
 
-```tsx
-<Button type="primary" onClick={() => navigate(`/investigation/new?${draftToSearchParams(draft)}`)}>
-  转为正式调查
-</Button>
-```
+Expected: 结果为 0。environment='prod' 只允许以 runScopeAdapter.ts 返回字段和 runScopeAdapter.test.ts 断言的形式存在，不再通过 context 读取。
 
-按钮只导航，不调用 `createRun`；Chat 现有只读工具审计路径不变。
+- [ ] **Step 6: 运行测试、构建并提交**
 
-- [ ] **Step 5: 改造 NewInvestigation**
+Run: cd observability-frontend && npm run test:run -- src/store/scopeStore.test.ts src/features/scope/runScopeAdapter.test.ts src/query/client.test.ts
 
-从活动 Scope 和 query 草稿预填表单。Cluster 默认值必须来自当前活动 Scope，而不是 `clusters[0]`。用户点击提交后才调用 `createRun`，并继续固定 `action_mode: 'read_only'`、`principal_type: 'user'`。
+Run: cd observability-frontend && npm run build
 
-- [ ] **Step 6: 将调查中心从宽表改为状态队列**
+Expected: PASS。
 
-状态视图为“需要我处理、正在调查、待验证、已结束”。每项首屏显示目标、症状、影响、持续时间、当前阶段和发起人；Run ID 使用辅助等宽文本。后端尚无 Owner/影响字段时显示“未分配/未知”，不得伪造。
-
-- [ ] **Step 7: 运行调查入口测试**
-
-Run: `cd observability-frontend && npm run test:run -- src/features/investigation/draft.test.ts src/pages/ai/AiChat.test.tsx src/pages/investigation/InvestigationCenter.test.tsx`
-
-Expected: PASS；Chat、首页和资源入口均只产生草稿，只有提交按钮创建 Run。
-
-- [ ] **Step 8: 提交**
-
-```bash
-git add observability-frontend/src/features/investigation/draft.ts observability-frontend/src/features/investigation/draft.test.ts observability-frontend/src/pages/ai/AiChat.tsx observability-frontend/src/pages/ai/AiChat.test.tsx observability-frontend/src/pages/investigation
-git commit -m "feat(frontend): converge investigation entry points"
-```
+~~~bash
+git add observability-frontend/src/features/scope observability-frontend/src/store/scopeStore.ts observability-frontend/src/store/scopeStore.test.ts observability-frontend/src/api/scopeRuntime.ts
+git commit -m "refactor(frontend): make cluster the sole scope root"
+~~~
 
 ---
 
-### Task 5: 实现三栏 Investigation 工作台
+### Task 5: 重做 Scope Bar 与统一资源选择器
 
 **Files:**
 
-- Create: `observability-frontend/src/features/investigation/model.ts`
-- Create: `observability-frontend/src/features/investigation/model.test.ts`
-- Create: `observability-frontend/src/features/investigation/components/ImpactPane.tsx`
-- Create: `observability-frontend/src/features/investigation/components/EvidenceTimeline.tsx`
-- Create: `observability-frontend/src/features/investigation/components/JudgementPane.tsx`
-- Create: `observability-frontend/src/features/investigation/components/InvestigationShell.tsx`
-- Modify: `observability-frontend/src/pages/investigation/IntelligentInvestigation.tsx`
-- Modify: `observability-frontend/src/pages/investigation/IntelligentInvestigation.test.tsx`
-- Modify: `observability-frontend/src/pages/investigation/EvidenceDetail.tsx`
+- Create: observability-frontend/src/features/scope/ResourcePicker.tsx
+- Create: observability-frontend/src/features/scope/ResourcePicker.test.tsx
+- Modify: observability-frontend/src/features/scope/ScopeBar.tsx
+- Modify: observability-frontend/src/features/scope/ScopeBar.test.tsx
+- Modify: observability-frontend/src/index.css
 
-**Interfaces:**
+**Component contract:**
 
-- Consumes: `getRun()`、`listRunEvidences()`、`listRunTools()`、`getRunGraphContext()`、`streamRunEvents()`。
-- Produces: `InvestigationViewModel`、`toInvestigationViewModel(snapshot)`、四个布局组件。
+~~~ts
+export interface ResourcePickerProps {
+  clusterId: string
+  value?: PlatformResourceRef
+  disabled?: boolean
+  onChange(resource?: PlatformResourceRef): void
+}
+~~~
 
-- [ ] **Step 1: 写证据卡、数据不足和冻结 Scope 的投影测试**
+- [ ] **Step 1: 写交互失败测试**
 
-```ts
-it('never promotes a root cause when evidence is insufficient', () => {
-  const vm = toInvestigationViewModel(runFixture({ root_cause: '', confidence: 0.3, evidence: [] }))
-  expect(vm.conclusion.state).toBe('insufficient_evidence')
-  expect(vm.conclusion.title).toBe('证据不足，尚不能确认根因')
-})
+覆盖：
 
-it('sorts evidence by observed time and preserves source metadata', () => {
-  const vm = toInvestigationViewModel(runFixture({ evidence: [evidence('20:29'), evidence('20:31')] }))
-  expect(vm.evidence.map((item) => item.observedAt)).toEqual(['20:31', '20:29'])
-  expect(vm.evidence[0]).toMatchObject({ source: 'metrics', reliability: 0.96 })
-})
-```
+- Scope Bar 只出现“集群”“资源”“时间范围”，不出现环境、全局 Namespace、“节点”泛称。
+- 单集群显示只读集群身份，多集群显示搜索下拉。
+- ResourcePicker 按五域分组，显示类型、名称、定位路径和健康文字。
+- 输入少于 2 字符不请求；250ms 防抖；“仅看异常”和最近访问可用。
+- 同名 physical_server/k8s_node/vm 能被明确区分。
+- 403 清空选中资源并显示 role=alert；切换集群期间选择器禁用。
+- URL resource 参数刷新恢复，非法或跨集群 UID 被移除而不是选第一条。
 
 - [ ] **Step 2: 运行测试并确认失败**
 
-Run: `cd observability-frontend && npm run test:run -- src/features/investigation/model.test.ts`
+Run: cd observability-frontend && npm run test:run -- src/features/scope/ScopeBar.test.tsx src/features/scope/ResourcePicker.test.tsx
 
-Expected: FAIL，提示视图模型不存在。
+Expected: FAIL。
 
-- [ ] **Step 3: 实现纯视图模型**
+- [ ] **Step 3: 实现控件与样式**
 
-视图模型只做稳定字段映射、排序、状态文案和缺失值处理，不推断不存在的 ToolRun、Evidence、Owner、影响对象或根因。
+使用 Ant Design Select/Popover/Segmented 现有组件；结果行最小高度 52px，名称一行、类型与路径一行、状态为带文字的 Tag。资源值使用 entity UID，不使用 name。
 
-```ts
-export interface EvidenceCardModel {
-  id: string
-  observedAt: string
-  type: string
-  source: string
-  fact: string
-  reliability: number | null
-  quality: 'complete' | 'partial' | 'failed' | 'unknown'
-  supports: string[]
-  contradicts: string[]
-}
-```
+- [ ] **Step 4: 补齐键盘和状态**
 
-- [ ] **Step 4: 拆分三栏组件**
+Tab 进入、方向键移动、Enter 选择、Escape 关闭；本任务先使用等高 Ant Design Skeleton、Empty 和 Alert 保证交互完整，Task 6 再统一替换为 DataState，并复跑本任务测试。
 
-`ImpactPane` 只接收 Scope、对象、影响链和变更；`EvidenceTimeline` 只接收证据与选中项；`JudgementPane` 只接收结论、假设、缺失证据和 Action。组件不得自行调用 API。
+- [ ] **Step 5: 运行测试、构建并提交**
 
-- [ ] **Step 5: 保留快照 + SSE 数据策略**
+Run: cd observability-frontend && npm run test:run -- src/features/scope/ScopeBar.test.tsx src/features/scope/ResourcePicker.test.tsx
 
-首次并行获取 Run、ToolRun、Evidence、Graph Context。SSE 只触发局部状态提示和按 sequence 的节流刷新；断线后现有 `streamRunEvents` 重连。详情 API 始终是权威快照，SSE payload 不直接覆盖完整 Run。
+Run: cd observability-frontend && npm run build
 
-- [ ] **Step 6: 加入响应式布局**
+Expected: PASS。
 
-```css
-.investigation-grid{display:grid;grid-template-columns:264px minmax(420px,1fr) 352px;gap:14px}
-@media(max-width:1439px){.investigation-grid{grid-template-columns:224px minmax(380px,1fr) 304px}.sidebar{width:64px}}
-@media(max-width:1279px){.investigation-grid{grid-template-columns:minmax(0,1fr) 304px}.investigation-impact{display:none}}
-```
-
-1024–1279px 用按钮打开 `ImpactPane` Drawer；关键对象信息在页头保留，不得只存在 Drawer 中。
-
-- [ ] **Step 7: 更新 Evidence 深链**
-
-从证据卡进入详情时携带 Run tenant/cluster state；深链直接打开时继续先 `getRun` 回填 Scope。403 显示“范围拒绝访问”，404 显示“证据不存在”，两者文案不混淆。
-
-- [ ] **Step 8: 运行 Investigation 测试**
-
-Run: `cd observability-frontend && npm run test:run -- src/features/investigation/model.test.ts src/pages/investigation/IntelligentInvestigation.test.tsx src/api/runEvents.test.ts`
-
-Expected: PASS；无证据时显示 insufficient evidence；SSE 重连不重复事件；Run Scope 为只读。
-
-- [ ] **Step 9: 提交**
-
-```bash
-git add observability-frontend/src/features/investigation observability-frontend/src/pages/investigation/IntelligentInvestigation.tsx observability-frontend/src/pages/investigation/IntelligentInvestigation.test.tsx observability-frontend/src/pages/investigation/EvidenceDetail.tsx observability-frontend/src/index.css
-git commit -m "feat(frontend): build three-pane investigation workspace"
-```
+~~~bash
+git add observability-frontend/src/features/scope observability-frontend/src/index.css
+git commit -m "feat(frontend): add cluster resource scope controls"
+~~~
 
 ---
 
-### Task 6: 建立资源中心与观测聚合入口
+### Task 6: 建立全站视觉基础与统一显示状态
 
 **Files:**
 
-- Create: `observability-frontend/src/pages/resources/ResourceCenter.tsx`
-- Create: `observability-frontend/src/pages/resources/ResourceCenter.test.tsx`
-- Create: `observability-frontend/src/pages/resources/ResourceIdentity.tsx`
-- Create: `observability-frontend/src/pages/resources/MainFailureChain.tsx`
-- Create: `observability-frontend/src/pages/observe/ObserveCenter.tsx`
-- Create: `observability-frontend/src/pages/observe/ObserveCenter.test.tsx`
-- Modify: `observability-frontend/src/pages/observability/ServiceObservability.tsx`
-- Modify: `observability-frontend/src/pages/observability/ResourceRelationships.tsx`
-- Modify: `observability-frontend/src/App.tsx`
+- Modify: observability-frontend/src/theme/tokens.ts
+- Modify: observability-frontend/src/theme/tokens.test.ts
+- Create: observability-frontend/src/components/display/DataState.tsx
+- Create: observability-frontend/src/components/display/DataState.test.tsx
+- Create: observability-frontend/src/components/display/RawDataPanel.tsx
+- Create: observability-frontend/src/components/display/RawDataPanel.test.tsx
+- Modify: observability-frontend/src/features/scope/ScopeBar.tsx
+- Modify: observability-frontend/src/features/scope/ResourcePicker.tsx
+- Modify: observability-frontend/src/index.css
 
-**Interfaces:**
+**Visual tokens:**
 
-- Consumes: `getServiceOverview()`、`getServiceMap()`、`getServiceDependencies()`、`searchGraphEntities()`、`getGraphNeighbors()`、现有观测页面。
-- Produces: `/resources`、`/observe`、`ResourceIdentity`、`MainFailureChain`。
+~~~ts
+export const operationsPalette = {
+  canvas: '#F5F7FA',
+  surface: '#FFFFFF',
+  surfaceSubtle: '#F8FAFC',
+  text: '#172033',
+  textSecondary: '#5B667A',
+  border: '#DDE3EA',
+  interaction: '#3157D5',
+  critical: '#C9362B',
+  degraded: '#C46816',
+  risk: '#A46F0A',
+  healthy: '#18864B',
+} as const
+~~~
 
-- [ ] **Step 1: 写资源身份优先和默认主链测试**
+- [ ] **Step 1: 写 Token 与状态组件失败测试**
 
-```tsx
-it('shows ownership and recent context before raw telemetry', async () => {
-  render(<ResourceCenter />)
-  expect(await screen.findByText('Owner')).toBeInTheDocument()
-  expect(screen.getByText('最近变更')).toBeInTheDocument()
-  expect(screen.getByRole('tab', { name: '关键指标' })).toBeInTheDocument()
-})
-
-it('renders one main dependency chain by default', () => {
-  render(<MainFailureChain center={center} upstream={[web]} downstream={[mysql]} />)
-  expect(screen.getAllByTestId('main-chain-node')).toHaveLength(3)
-  expect(screen.getByRole('button', { name: /展开上下游/ })).toBeInTheDocument()
-})
-```
+覆盖颜色值、圆角 8px、表格行高 44px、点击目标最小 36px；DataState 六种 kind 均有标题、说明和准确 ARIA；错误态可重试；RawDataPanel 默认折叠、格式化、复制、超过 200KB 截断并提示。
 
 - [ ] **Step 2: 运行测试并确认失败**
 
-Run: `cd observability-frontend && npm run test:run -- src/pages/resources/ResourceCenter.test.tsx`
+Run: cd observability-frontend && npm run test:run -- src/theme/tokens.test.ts src/components/display/DataState.test.tsx src/components/display/RawDataPanel.test.tsx
 
-Expected: FAIL，提示资源中心组件不存在。
+Expected: FAIL。
 
-- [ ] **Step 3: 实现资源目录和身份区**
+- [ ] **Step 3: 实现组件和 CSS primitives**
 
-`ResourceCenter` 从 query 参数读取 `kind`、`view` 与活动 Scope 资源。身份区字段按“类型、健康、Owner、应用、Namespace、工作负载/节点、最近变更、当前告警”固定排序。字段缺失显示“未知”，不隐藏标签。
+DataState 的 kind 固定为 loading | empty | error | partial | stale | forbidden。页面骨架使用 .page-grid、.page-header、.surface-card、.resource-layout、.context-panel；禁止页面继续新增散落的主色和阴影常量。
 
-- [ ] **Step 4: 实现主故障链选择**
+将 ScopeBar 和 ResourcePicker 的临时 Skeleton、Empty、Alert 替换为 DataState，并保持 Task 5 已通过的键盘与错误语义不变。
 
-优先使用后端 `ServiceDependenciesResponse` 的 center、upstream、downstream、middleware。默认只选一条与异常边权最高的上游 → center → 下游路径；若后端没有异常权重，则显示 center 和各一条直接邻居并标记“未排序”。完整 `GraphExplorer` 只在专家关系探索中加载。
+- [ ] **Step 4: 加入响应式与减少动态效果**
 
-- [ ] **Step 5: 将现有服务页作为资源中心子视图复用**
+- >=1440px：侧栏 216px，资源 264px / minmax(0,1fr) / 336px。
+- 1280–1439px：侧栏 64px，资源 224px / minmax(0,1fr) / 304px。
+- 1024–1279px：目录 Drawer、上下文 Tab、内容单列。
+- <1024px：显示只读提示并隐藏生产处置主按钮。
+- prefers-reduced-motion 下关闭非必要 transition 和图布局动画。
 
-把 `ServiceObservability` 的 Summary、Map、Dependency、Matrix、List、Explore 组件移入资源中心的 service 视图；删除页面级重复 Scope 控件，namespace 与 timeRange 改读全局 store。页面专属的 application、health、only abnormal 保持本地过滤。
+- [ ] **Step 5: 运行验证并提交**
 
-- [ ] **Step 6: 建立观测聚合入口**
+Run: cd observability-frontend && npm run test:run -- src/theme/tokens.test.ts src/components/display src/features/scope/ScopeBar.test.tsx src/features/scope/ResourcePicker.test.tsx
 
-`ObserveCenter` 使用 query `view=alerts|traces|telemetry|changes|grafana|rules` 选择现有页面。入口只做导航与共享 Scope，不复制各页面数据逻辑。未知 view 回退 alerts，并替换 URL。
+Run: cd observability-frontend && npm run build
 
-- [ ] **Step 7: 运行资源和观测测试**
+Expected: PASS。
 
-Run: `cd observability-frontend && npm run test:run -- src/pages/resources/ResourceCenter.test.tsx src/pages/observe/ObserveCenter.test.tsx src/pages/observability/ServiceObservability.test.tsx`
-
-Expected: PASS；默认不渲染完整图；旧页面能力仍可通过新聚合路由访问。
-
-- [ ] **Step 8: 提交**
-
-```bash
-git add observability-frontend/src/pages/resources observability-frontend/src/pages/observe observability-frontend/src/pages/observability/ServiceObservability.tsx observability-frontend/src/pages/observability/ResourceRelationships.tsx observability-frontend/src/App.tsx
-git commit -m "feat(frontend): add resource and observation centers"
-```
+~~~bash
+git add observability-frontend/src/theme observability-frontend/src/components/display observability-frontend/src/features/scope/ScopeBar.tsx observability-frontend/src/features/scope/ResourcePicker.tsx observability-frontend/src/index.css
+git commit -m "feat(frontend): unify visual tokens and data states"
+~~~
 
 ---
 
-### Task 7: 将审批中心升级为处置中心
+### Task 7: 重构资源中心为集群全景与类型化详情
 
 **Files:**
 
-- Create: `observability-frontend/src/pages/actions/ActionCenter.tsx`
-- Create: `observability-frontend/src/pages/actions/ActionCenter.test.tsx`
-- Create: `observability-frontend/src/pages/actions/actionModel.ts`
-- Create: `observability-frontend/src/pages/actions/actionModel.test.ts`
-- Modify: `observability-frontend/src/pages/admin/Approvals.tsx`
-- Modify: `observability-frontend/src/api/client.ts`
-- Modify: `observability-frontend/src/App.tsx`
+- Modify: observability-frontend/src/pages/Resources/index.tsx
+- Modify: observability-frontend/src/pages/Resources/index.test.tsx
+- Modify: observability-frontend/src/pages/Resources/ResourceCenter.tsx
+- Create: observability-frontend/src/pages/Resources/ClusterPanorama.tsx
+- Create: observability-frontend/src/pages/Resources/ClusterPanorama.test.tsx
+- Create: observability-frontend/src/pages/Resources/ResourceDirectory.tsx
+- Create: observability-frontend/src/pages/Resources/ResourceDirectory.test.tsx
+- Modify: observability-frontend/src/pages/Resources/ResourceIdentity.tsx
+- Create: observability-frontend/src/pages/Resources/resourceDetailModel.ts
+- Create: observability-frontend/src/pages/Resources/resourceDetailModel.test.ts
 
-**Interfaces:**
+- [ ] **Step 1: 写页面与投影失败测试**
 
-- Consumes: `listActions()`、`getAction()`、`decideAction()`、`useAuthStore()`。
-- Produces: `ActionViewModel`、`toActionViewModel()`、`ActionCenter`。
+覆盖：
 
-- [ ] **Step 1: 写风险、来源 Run 和权限投影测试**
-
-```ts
-it('keeps missing risk explicit instead of inventing a score', () => {
-  expect(toActionViewModel(action({ risk_score: undefined })).risk).toEqual({ level: 'unknown', label: '未评估' })
-})
-
-it('shows decisions only to approvers and admins', () => {
-  expect(canDecideAction('operator')).toBe(false)
-  expect(canDecideAction('approver')).toBe(true)
-  expect(canDecideAction('admin')).toBe(true)
-})
-
-it('links every action to its source run', () => {
-  expect(toActionViewModel(action({ run_id: 'run-1' })).runHref).toBe('/investigation/run-1')
-})
-```
+- 无资源选择时默认展示集群身份、采集完整度、五域健康、异常队列、容量风险、近期变更，不渲染完整图谱。
+- 二级导航固定为集群全景、计算、网络、存储、Kubernetes、应用服务、容量、关系探索。
+- 选中资源时显示目录/详情/上下文三栏，并按视口切换 Drawer/Tab。
+- physical_server 显示厂商/型号/序列号/BMC/组件健康；k8s_node 显示角色/版本/Ready/污点/容量/宿主；vm 显示 Namespace/节点/CPU/内存/磁盘/网络/迁移。
+- 没有字段显示“未提供”和来源，不显示“未知 Namespace/Node”。
+- 后端 capability 决定“进入处置”是否出现。
 
 - [ ] **Step 2: 运行测试并确认失败**
 
-Run: `cd observability-frontend && npm run test:run -- src/pages/actions/actionModel.test.ts`
+Run: cd observability-frontend && npm run test:run -- src/pages/Resources
 
-Expected: FAIL，提示 Action 视图模型不存在。
+Expected: FAIL。
 
-- [ ] **Step 3: 扩展 ActionProjection 的可选展示字段**
+- [ ] **Step 3: 实现集群全景**
 
-只把服务端已经返回的 `risk_score`、`risk_level`、`impact_summary`、`verification_status`、`rollback_summary` 加为可选字段。若 API 尚未返回，UI 显示“未评估/未提供”，实施者不得从 hash、preflight 或 operation 字符串推算风险。
+ClusterPanorama 使用 getResourceSummary，并将五域卡控制在同一高度。异常队列排序固定为 severity、impactCount、duration、recentChange；集群级问题使用“集群范围”标签。
 
-- [ ] **Step 4: 实现处置队列**
+- [ ] **Step 4: 实现目录和深链**
 
-顶部状态为待审批、待执行、执行中、待验证、已结束。列表项首屏显示操作、目标、来源 Run、风险、影响、审批、执行和验证；普通用户可查看，只有 approver/admin 渲染决策按钮。
+ResourceDirectory 使用 catalog 游标分页；domain/type/health/q 写入 URL。resource 使用 encodeURIComponent(entity UID)；后退/前进必须恢复选择与滚动位置。
 
-- [ ] **Step 5: 实现详情 Drawer 和安全决策**
+- [ ] **Step 5: 实现类型化详情**
 
-Drawer 展示规范化参数、target UID、ResourceVersion、Action hash/schema/version、Policy version、Preflight、审批意见、回滚策略和验证条件。批准/驳回继续传 `action_version` 与稳定 idempotency key；409/412 显示“动作版本已变化，请刷新后重新评估”，不得自动重试决策。
+resourceDetailModel.ts 导出：
 
-- [ ] **Step 6: 保留旧组件兼容**
+~~~ts
+export interface DetailSection { key: string; title: string; fields: DetailField[] }
+export function projectResourceDetail(detail: ResourceDetailResponse): DetailSection[]
+~~~
 
-`pages/admin/Approvals.tsx` 临时 re-export `ActionCenter`，旧测试和深链在两版本迁移期内继续工作：
+仅展示对应类型白名单字段；身份、健康、关键指标、事件、变更、依赖、调查、动作和数据质量使用统一 Section。
 
-```ts
-export { default } from '../actions/ActionCenter'
-```
+- [ ] **Step 6: 运行测试、构建并提交**
 
-- [ ] **Step 7: 运行处置测试**
+Run: cd observability-frontend && npm run test:run -- src/pages/Resources src/api/resources.test.ts
 
-Run: `cd observability-frontend && npm run test:run -- src/pages/actions/actionModel.test.ts src/pages/actions/ActionCenter.test.tsx src/pages/admin/Approvals.test.tsx`
+Run: cd observability-frontend && npm run build
 
-Expected: PASS；无风险数据时明确显示未评估；operator 看不到审批按钮；409/412 不会自动重复 POST。
+Expected: PASS。
 
-- [ ] **Step 8: 提交**
-
-```bash
-git add observability-frontend/src/pages/actions observability-frontend/src/pages/admin/Approvals.tsx observability-frontend/src/api/client.ts observability-frontend/src/App.tsx
-git commit -m "feat(frontend): promote approvals into action center"
-```
+~~~bash
+git add observability-frontend/src/pages/Resources
+git commit -m "feat(frontend): build cluster resource operations center"
+~~~
 
 ---
 
-### Task 8: 收敛视觉 Token、响应式与可访问性
+### Task 8: 重构知识图谱视觉、布局与降级体验
 
 **Files:**
 
-- Modify: `observability-frontend/src/theme/tokens.ts`
-- Modify: `observability-frontend/src/index.css`
-- Modify: `observability-frontend/src/components/ui/PageKit.tsx`
-- Create: `observability-frontend/src/theme/tokens.test.ts`
-- Create: `tests/manual-e2e/ia-workbench.js`
-- Create: `tests/manual-e2e/ia-investigation.js`
-- Create: `tests/manual-e2e/ia-actions.js`
-- Modify: `tests/manual-e2e/lib/harness.js`
+- Create: observability-frontend/src/components/graph/graphPresentation.ts
+- Create: observability-frontend/src/components/graph/graphPresentation.test.ts
+- Modify: observability-frontend/src/components/graph/GraphMap.tsx
+- Modify: observability-frontend/src/components/graph/GraphMap.test.tsx
+- Modify: observability-frontend/src/components/graph/GraphExplorer.tsx
+- Modify: observability-frontend/src/components/graph/GraphContextPanel.tsx
+- Modify: observability-frontend/src/components/graph/GraphContextPanel.test.tsx
+- Create: observability-frontend/src/components/graph/GraphToolbar.tsx
+- Create: observability-frontend/src/components/graph/GraphLegend.tsx
+- Create: observability-frontend/src/components/graph/GraphRelationList.tsx
+- Create: observability-frontend/src/components/graph/GraphRelationList.test.tsx
+- Modify: observability-frontend/src/pages/Resources/MainFailureChain.tsx
+- Modify: observability-frontend/src/pages/Resources/MainFailureChain.test.tsx
 
-**Interfaces:**
+**Presentation contract:**
 
-- Consumes: Tasks 2–7 的页面与 `data-testid`。
-- Produces: 统一语义 Token、三档响应式规则、主流程 E2E 与视觉基线。
+~~~ts
+export type GraphViewMode = 'resource-relations' | 'failure-chain' | 'expert'
+export type GraphLayoutMode = 'radial' | 'hierarchy-tb' | 'dag-lr'
 
-- [ ] **Step 1: 写 Token 语义测试**
-
-```ts
-it('keeps action blue distinct from severity colors', () => {
-  expect(token.colorPrimary).toBe('#3157d5')
-  expect(token.colorError).toBe('#c9362b')
-  expect(token.colorWarning).toBe('#c46816')
-  expect(token.colorSuccess).toBe('#18864b')
-  expect(new Set([token.colorPrimary, token.colorError, token.colorWarning, token.colorSuccess]).size).toBe(4)
-})
-```
-
-- [ ] **Step 2: 运行测试并确认旧 Token 不匹配**
-
-Run: `cd observability-frontend && npm run test:run -- src/theme/tokens.test.ts`
-
-Expected: FAIL，旧主色和语义色与设计规范不同。
-
-- [ ] **Step 3: 更新 Token 和全局密度**
-
-将设计规范第 8 节的色值同时写入 Ant Design token 与 CSS variables。卡片圆角统一 8px，默认页面间距 20px，1280px 紧凑态 16px。删除大面积蓝色 nav hero 和非必要阴影；主按钮、链接和当前导航保留蓝色。
-
-- [ ] **Step 4: 补充响应式和可访问性**
-
-1280px 及以下自动折叠侧栏；1024–1279px 按设计把 Investigation 左栏转 Drawer、首页纵向堆叠、资源上下文转 Tab。所有状态 badge 有文字；动态 Run 状态容器加 `aria-live="polite"`；失败提示加 `role="alert"`；主要点击目标最小 36×36px。
-
-- [ ] **Step 5: 写三条 E2E 主链**
-
-```js
-const { runLaneA } = require('./lib/laneA')
-
-runLaneA({
-  id: 'IA-WORKBENCH-001',
-  route: '/overview',
-  viewports: [{ width: 1440, height: 900 }, { width: 1280, height: 720 }, { width: 1024, height: 768 }],
-  actions: async (page, check) => {
-    await page.getByRole('button', { name: '开始调查' }).first().click()
-    check('navigates_to_draft', /\/investigation\/new/.test(page.url()))
-    check('symptom_prefilled', Boolean(await page.getByLabel('症状 / 调查目标').inputValue()))
-  },
-})
-```
-
-另外两条脚本覆盖 Chat → 正式调查和 Run Action → 审批 → 验证。它们沿用 `tests/manual-e2e/lib/harness.js` 的认证、网络记录和证据输出，断言新建页加载时没有隐式 `POST /ai/runs`。
-
-```js
-await runPageTest({ id: 'IA-INVESTIGATION-001', route: '/ai/chat', actions: async (page, check) => {
-  let createRunCalls = 0
-  page.on('request', (request) => {
-    if (request.method() === 'POST' && /\/api\/v1\/ai\/runs$/.test(request.url())) createRunCalls += 1
-  })
-  await page.getByPlaceholder(/描述问题/).fill('分析 payment-api 的跨服务根因')
-  await page.getByRole('button', { name: '发送' }).click()
-  await page.getByRole('button', { name: '转为正式调查' }).click()
-  check('no_implicit_run', createRunCalls === 0)
-  await page.getByRole('button', { name: '发起调查' }).click()
-  check('one_explicit_run', createRunCalls === 1)
-} })
-
-await runPageTest({ id: 'IA-ACTIONS-001', route: '/actions', actions: async (page, check) => {
-  await page.getByRole('button', { name: '审批' }).first().click()
-  check('resource_version_visible', await page.getByText(/ResourceVersion/).isVisible())
-  await page.getByRole('button', { name: '批准' }).click()
-  check('verification_state_visible', await page.getByText('待验证').isVisible())
-  await page.getByRole('link', { name: 'RUN-8F2A' }).click()
-  check('returns_to_run', /\/investigation\//.test(page.url()))
-} })
-```
-
-- [ ] **Step 6: 让现有 harness 接受用例级视口，并添加三档断言**
-
-把 `runPageTest` 参数解构中的 `uiCluster = true` 替换为 `uiCluster = true, viewports = ENV.viewports`，把循环源从 `ENV.viewports` 替换为 `viewports`。同时把持久化 Scope 初始化从旧 `aiops-ui-v3` 更新为 Task 1 定义的 `aiops-scope-v1`：
-
-```js
-for (const vp of viewports) {
-  const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height }, storageState: state })
-  if (uiCluster) {
-    await context.addInitScript((clusterId) => {
-      localStorage.setItem('aiops-scope-v1', JSON.stringify({
-        state: { active: { tenantId: '', environment: 'prod', clusterId, namespace: '', timeRange: { mode: 'relative', minutes: 60 } } },
-        version: 0,
-      }))
-    }, ENV.clusterId)
-  }
+export interface GraphDisplayModel {
+  nodes: GraphDisplayNode[]
+  edges: GraphDisplayEdge[]
+  omittedByType: Record<string, number>
+  relationRows: GraphRelationRow[]
+  meta: GraphMeta
 }
-```
 
-在 `ia-investigation.js` 的 `actions` 中加入：
+export function buildGraphDisplayModel(
+  graph: GraphSubgraph,
+  options: { mode: GraphViewMode; centerUid: string; maxNodes: 80; maxEdges: 200 }
+): GraphDisplayModel
+~~~
 
-```js
-check('no_x_overflow', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth))
-check('judgement_visible', await page.getByText('AI 判断与下一步').isVisible())
-```
+- [ ] **Step 1: 写纯模型失败测试**
 
-- [ ] **Step 7: 运行全部前端验证**
+覆盖：
 
-Run: `cd observability-frontend && npm run test:run`
+- resource-relations 使用 radial；包含/宿主/绑定关系使用 hierarchy-tb；failure-chain 使用 dag-lr。
+- 节点按资源域分组，中心节点保留，超过 80/200 后生成“还有 N 个”聚合节点并计入 omittedByType。
+- critical/degraded/risk/healthy/unknown 使用独立边框和文字，不改变资源域类型色。
+- CONTAINS/HOSTS/RUNS_ON/USES_VOLUME/ATTACHED_TO/DEPENDS_ON 映射稳定中文标签。
+- 只有 propagates_failure=true 的故障链边使用红/橙；结构边中性实线、推测边虚线。
+- physical_server、k8s_node、vm 的 iconKey 和 typeLabel 不同。
+- relationRows 与当前可见节点/边等价。
 
-Expected: 所有 Vitest 测试 PASS。
+- [ ] **Step 2: 运行模型测试并确认失败**
 
-Run: `cd observability-frontend && npm run build`
+Run: cd observability-frontend && npm run test:run -- src/components/graph/graphPresentation.test.ts
 
-Expected: TypeScript 和 Vite 构建成功，无类型错误。
+Expected: FAIL。
 
-Run: `node tests/manual-e2e/ia-workbench.js && node tests/manual-e2e/ia-investigation.js && node tests/manual-e2e/ia-actions.js`
+- [ ] **Step 3: 实现 GraphMap 生命周期与节点视觉**
 
-Expected: 三条主链和三档视口断言 PASS，输出首页、调查、资源、处置的视觉快照。
+节点改为中性卡片形态：类型图标、最多两行名称、中文类型、健康角标；选中态使用蓝色外环。缩放低于 0.65 隐藏边标签，选中或放大时恢复。节点超过 50 或 prefers-reduced-motion 时关闭动画。effect cleanup 必须 destroy G6 实例并解绑 ResizeObserver。
 
-- [ ] **Step 8: 检查实现没有越过安全边界**
+- [ ] **Step 4: 实现工具栏、图例和过滤**
 
-Run: `rg -n "localStorage.*cluster|createRun\(" observability-frontend/src`
+GraphToolbar 固定提供适应画布、放大、缩小、回到中心、全屏、深度 1–3、资源域、关系过滤。所有 icon button 有中文 aria-label 和 tooltip；过滤不能改变原始 Graph DTO。
 
-Expected: cluster 只在 Scope store 的 persist 初始化中出现；`createRun(` 只在新建调查显式提交路径与测试中出现。
+- [ ] **Step 5: 实现等价关系列表和上下文面板**
 
-Run: `rg -n "DEMO|mock root cause|fallback evidence" observability-frontend/src/pages observability-frontend/src/features`
+GraphRelationList 支持键盘、排序和定位节点。GraphContextPanel 显示身份、健康、邻居、影响、证据、数据质量、capability；GraphMap 失败时关系列表和资源详情仍可用。
 
-Expected: 生产页面无演示 Run、伪造根因或 fallback Evidence。
+- [ ] **Step 6: 实现六类图谱状态**
 
-- [ ] **Step 9: 提交**
+loading 使用与画布等高骨架；empty 提供刷新同步；error 展示来源、request ID 和重试；partial 展示已加载数量与 warning code；stale 展示快照时间；forbidden 不泄露隐藏节点数量。
 
-```bash
-git add observability-frontend/src/theme observability-frontend/src/index.css observability-frontend/src/components/ui/PageKit.tsx tests/manual-e2e/ia-workbench.js tests/manual-e2e/ia-investigation.js tests/manual-e2e/ia-actions.js tests/manual-e2e/lib/harness.js
-git commit -m "test(frontend): verify redesigned operations workflow"
-```
+- [ ] **Step 7: 运行图谱测试、构建并提交**
+
+Run: cd observability-frontend && npm run test:run -- src/components/graph src/pages/Resources/MainFailureChain.test.tsx
+
+Run: cd observability-frontend && npm run build
+
+Expected: PASS。
+
+~~~bash
+git add observability-frontend/src/components/graph observability-frontend/src/pages/Resources/MainFailureChain.tsx observability-frontend/src/pages/Resources/MainFailureChain.test.tsx
+git commit -m "feat(frontend): redesign resource knowledge graph"
+~~~
 
 ---
 
-## Release Checkpoints
+### Task 9: 将工作台与观测中心改为资源优先
 
-### Checkpoint A: 壳层与 Scope
+**Files:**
 
-完成 Tasks 1–2 后可以独立发布。使用 feature flag `VITE_IA_V4` 在新旧壳层间切换；不改变任何业务 API。
+- Modify: observability-frontend/src/pages/Overview/index.tsx
+- Modify: observability-frontend/src/pages/Overview/Overview.test.tsx
+- Modify: observability-frontend/src/pages/Overview/IssueQueue.tsx
+- Modify: observability-frontend/src/pages/Overview/priority.ts
+- Modify: observability-frontend/src/pages/Overview/priority.test.ts
+- Modify: observability-frontend/src/pages/Observe/index.tsx
+- Modify: observability-frontend/src/pages/Observe/index.test.tsx
 
-### Checkpoint B: 首页与调查主链
+- [ ] **Step 1: 写工作台失败测试**
 
-完成 Tasks 3–5 后发布。验收首页异常 → 新建调查 → 三栏工作台，确认 Run 仍由显式用户操作创建。
+覆盖全部五域问题不会因 service 为空被丢弃；问题项显示 typed resource、集群、影响、持续时间、数据质量、变更、调查/处置状态；主动作严格由状态机映射。首屏 8/4 网格，普通资源 KPI 在第二层。
 
-### Checkpoint C: 资源与观测
+- [ ] **Step 2: 写观测中心失败测试**
 
-完成 Task 6 后发布。保留全部旧深链，监控新聚合入口的 404、空数据和图谱超时率。
+覆盖默认“问题”视图；告警、指标、日志、Trace、事件、变更继承当前 cluster/resource/timeRange；选中资源显示明确 filter chip；空、来源错误、部分、陈旧不被映射为健康；Grafana 仅为专家入口。
 
-### Checkpoint D: 处置与视觉收尾
+- [ ] **Step 3: 运行测试并确认失败**
 
-完成 Tasks 7–8 后发布。重点观察 Action 409/412、审批幂等、1280×720 溢出和 Investigation SSE 重连。
+Run: cd observability-frontend && npm run test:run -- src/pages/Overview src/pages/Observe
 
-## Rollback
+Expected: FAIL。
 
-回滚只切换 `VITE_IA_V4=false` 并恢复旧路由壳层；不回滚 Run、Evidence、Action 数据。旧深链在整个迁移期持续有效。若新页面单点异常，可让对应新路由临时重定向到旧页面，不影响其他已迁移业务域。
+- [ ] **Step 4: 实现资源问题投影与页面**
+
+priority.ts 的排序输入使用 severity、impactCount、durationMs、hasRecentChange；缺少 resource 时显式生成 cluster-scope view model，不伪造 service。
+
+- [ ] **Step 5: 统一观测查询范围与显示状态**
+
+每个 Tab 使用 queryKeys 中相同 ActiveScope；切换 Tab 保留 URL，但不保留上个资源的数据。所有图表补标题、单位、时间范围、来源、最后更新时间，并区分零值和无数据。
+
+- [ ] **Step 6: 运行测试、构建并提交**
+
+Run: cd observability-frontend && npm run test:run -- src/pages/Overview src/pages/Observe
+
+Run: cd observability-frontend && npm run build
+
+Expected: PASS。
+
+~~~bash
+git add observability-frontend/src/pages/Overview observability-frontend/src/pages/Observe
+git commit -m "feat(frontend): make overview and observe resource-first"
+~~~
+
+---
+
+### Task 10: 将调查与 Chat 接入 typed resource 和冻结快照
+
+**Files:**
+
+- Modify: observability-frontend/src/features/investigation/draft.ts
+- Modify: observability-frontend/src/features/investigation/draft.test.ts
+- Modify: observability-frontend/src/pages/investigation/NewInvestigation.tsx
+- Create: observability-frontend/src/pages/investigation/NewInvestigation.test.tsx
+- Modify: observability-frontend/src/pages/investigation/InvestigationCenter.tsx
+- Modify: observability-frontend/src/pages/investigation/InvestigationCenter.test.tsx
+- Modify: observability-frontend/src/pages/investigation/InvestigationShell.tsx
+- Modify: observability-frontend/src/pages/investigation/IntelligentInvestigation.tsx
+- Modify: observability-frontend/src/pages/investigation/IntelligentInvestigation.test.tsx
+- Modify: observability-frontend/src/pages/ai/AiChat.tsx
+
+- [ ] **Step 1: 写草稿与创建行为失败测试**
+
+覆盖问题、资源、Chat 三个来源都能生成 PlatformResourceRef；页面加载不创建 Run；用户提交时 toLegacyRunScope 固定 prod、Kubernetes 才投影 namespace、相对时间冻结为绝对 UTC。
+
+- [ ] **Step 2: 写 Run 只读快照失败测试**
+
+打开 Run 只显示 cluster/resource type/name/absolute window；不得调用 setResource、switchCluster 或 setTimeRange。主故障链只使用持久化 graph-context；insufficient_evidence 时不显示确定性根因措辞。
+
+- [ ] **Step 3: 运行测试并确认失败**
+
+Run: cd observability-frontend && npm run test:run -- src/features/investigation src/pages/investigation
+
+Expected: FAIL。
+
+- [ ] **Step 4: 实现新建调查与队列**
+
+表单资源字段使用 ResourcePicker，不再使用自由文本 resourceId；targetType 由资源决定且只读。集群级调查通过单独“集群范围”选项创建，不伪造 k8s_cluster 为普通资源。
+
+- [ ] **Step 5: 实现三栏调查工作台**
+
+左栏资源身份/影响链/冻结 Scope/变更；中栏 Evidence 时间线与 RawDataPanel；右栏结论/候选假设/反证/缺失证据/建议动作。1024–1279px 将左右栏收为 Tabs。
+
+- [ ] **Step 6: 收敛 Chat**
+
+Chat 顶部展示活动资源标签；只读查询携带 typed UID。转调查只生成 draft URL，不能直接创建 Action 或 Run；切换集群后清除旧 Chat 资源引用。
+
+- [ ] **Step 7: 运行测试、构建并提交**
+
+Run: cd observability-frontend && npm run test:run -- src/features/investigation src/pages/investigation src/pages/ai
+
+Run: cd observability-frontend && npm run build
+
+Expected: PASS。
+
+~~~bash
+git add observability-frontend/src/features/investigation observability-frontend/src/pages/investigation observability-frontend/src/pages/ai/AiChat.tsx
+git commit -m "feat(frontend): bind investigations to typed resources"
+~~~
+
+---
+
+### Task 11: 将处置与报告改为资源事件主线
+
+**Files:**
+
+- Modify: observability-frontend/src/pages/Actions/actionModel.ts
+- Modify: observability-frontend/src/pages/Actions/actionModel.test.ts
+- Modify: observability-frontend/src/pages/Actions/ActionCenter.tsx
+- Create: observability-frontend/src/pages/Actions/ActionCenter.test.tsx
+- Modify: observability-frontend/src/pages/Reports/index.tsx
+- Create: observability-frontend/src/pages/Reports/index.test.tsx
+
+- [ ] **Step 1: 写 capability 和动作审计失败测试**
+
+覆盖：
+
+- physical_server、k8s_node、workload 的动作仅在响应 capability 存在时出现。
+- VM、网络、存储没有 capability 时只读。
+- 审批按钮只对 approver/admin 可见；服务端拒绝仍映射为 forbidden。
+- 决策携带 action_version 和 idempotency key；资源版本变化显示“需要重新预检”。
+- 列表与详情展示 typed target、来源 Run、风险、预检、审批、执行、验证、回滚。
+
+- [ ] **Step 2: 写报告失败测试**
+
+报告标题和摘要以资源事件为主语，包含资源身份、集群、影响链、证据、根因、动作、恢复验证、容量趋势；只有 type=service 时才使用“服务”称谓。
+
+- [ ] **Step 3: 运行测试并确认失败**
+
+Run: cd observability-frontend && npm run test:run -- src/pages/Actions src/pages/Reports
+
+Expected: FAIL。
+
+- [ ] **Step 4: 实现动作与报告页面**
+
+资源详情只链接 /actions?resource=<uid>；审批和执行表单全部留在 ActionCenter。报告中的图表使用统一单位和状态；缺失证据展示 partial，不生成前端推断文本。
+
+- [ ] **Step 5: 运行测试、构建并提交**
+
+Run: cd observability-frontend && npm run test:run -- src/pages/Actions src/pages/Reports
+
+Run: cd observability-frontend && npm run build
+
+Expected: PASS。
+
+~~~bash
+git add observability-frontend/src/pages/Actions observability-frontend/src/pages/Reports
+git commit -m "feat(frontend): align actions and reports to resources"
+~~~
+
+---
+
+### Task 12: 统一壳层、兼容路由与全链路视觉验收
+
+**Files:**
+
+- Modify: observability-frontend/src/App.tsx
+- Modify: observability-frontend/src/layout/navConfig.ts
+- Modify: observability-frontend/src/layout/navConfig.test.ts
+- Modify: observability-frontend/src/index.css
+- Create: tests/manual-e2e/ia-resources.js
+- Create: tests/manual-e2e/ia-graph.js
+- Modify: tests/manual-e2e/ia-workbench.js
+- Modify: tests/manual-e2e/ia-investigation.js
+- Modify: tests/manual-e2e/ia-actions.js
+- Modify: tests/manual-e2e/lib/harness.js
+- Create: docs/superpowers/verification/2026-09-09-aiops-resource-operations.md
+
+- [ ] **Step 1: 写导航和旧深链测试**
+
+一级导航固定为工作台、调查、资源、观测、处置、报告；管理员追加系统管理。验证：
+
+~~~text
+/observability/service        -> /resources?domain=application
+/observability/relationships  -> /resources?view=graph
+/observability/vms            -> /resources?domain=compute&type=vm
+/infra/k8s                    -> /resources?domain=kubernetes
+/hardware                     -> /resources?domain=compute&type=physical_server
+/capacity                     -> /resources?view=capacity
+~~~
+
+- [ ] **Step 2: 运行单元测试并确认路由差异**
+
+Run: cd observability-frontend && npm run test:run -- src/layout/navConfig.test.ts src/App.test.tsx
+
+Expected: 在实现前至少一个新目标失败。
+
+- [ ] **Step 3: 更新壳层与路由**
+
+顶部第一行仅放全局搜索、通知、用户；第二行固定 Scope Bar。页面标题区最多两个主动作。旧路由使用 Navigate replace，保留查询参数中与新模型兼容的 resource/timeRange。
+
+- [ ] **Step 4: 编写五条 Playwright 主链**
+
+ia-resources.js：
+
+1. 切换集群 → 集群全景 → 物理服务器 → 硬件/关系/观测。
+2. Kubernetes Workload → Namespace 局部筛选 → 调查草稿 → 显式创建 Run。
+3. 虚拟机 → 网络与存储关系 → 正式调查。
+
+ia-graph.js：
+
+4. 资源搜索 → 一跳关系 → 域过滤 → 关系列表 → 全屏/回中心。
+
+ia-actions.js：
+
+5. Run 主故障链 → Action Proposal → 审批 → 执行/验证回显。
+
+每条链在 harness 中采集 1440×900、1280×720、1024×768；截图名称固定为 route--viewport--state.png。
+
+- [ ] **Step 5: 执行自动验证**
+
+Run: cd observability-frontend && npm run test:run
+
+Run: cd observability-frontend && npm run build
+
+Run: cd ai-apm-query-go && go test ./internal/api ./internal/graph ./internal/bootstrap
+
+Run: node tests/manual-e2e/ia-workbench.js
+
+Run: node tests/manual-e2e/ia-resources.js
+
+Run: node tests/manual-e2e/ia-graph.js
+
+Run: node tests/manual-e2e/ia-investigation.js
+
+Run: node tests/manual-e2e/ia-actions.js
+
+Expected: 全部 PASS。
+
+- [ ] **Step 6: 逐页人工视觉验收**
+
+在 verification 文档记录每个视口的：
+
+- 对齐、留白、字体层级、卡片高度、表格密度。
+- 横向溢出、标签遮挡、关键语义截断、Drawer/Tab 降级。
+- 状态色文字、图标、键盘焦点、ARIA、对比度。
+- 图表标题、单位、时间范围、来源、零值/无数据差异。
+- loading/empty/error/partial/stale/forbidden 六态。
+- 图谱节点重叠、两行标签、边标签缩放、聚合数量、图例、关系列表一致性。
+
+任何一项失败都回到对应任务修复并重跑该页面截图，不以“功能可用”替代视觉通过。
+
+- [ ] **Step 7: 检查旧概念与原始显示**
+
+Run: rg -n "prod.*staging|staging.*test|setEnvironment|全局命名空间|context\.namespace|JSON\.stringify\(" observability-frontend/src
+
+Expected: environment 选项、全局 Namespace 和主界面 JSON.stringify 为 0；RawDataPanel 内受控格式化可作为唯一例外并由测试覆盖。
+
+- [ ] **Step 8: 完成验证记录并提交**
+
+verification 文档写入测试命令、退出码、截图目录、已知非阻塞限制和回滚点。最终检查：
+
+Run: git diff --check
+
+Run: git status --short
+
+Expected: diff check 无输出，status 只包含本任务预期文件。
+
+~~~bash
+git add observability-frontend/src/App.tsx observability-frontend/src/layout observability-frontend/src/index.css tests/manual-e2e docs/superpowers/verification/2026-09-09-aiops-resource-operations.md
+git commit -m "feat(frontend): complete cloud resource operations redesign"
+~~~
+
+---
+
+## Release Gate
+
+实施全部完成后才允许构建镜像并同步环境。发布前必须同时满足：
+
+1. main 工作树干净，全部 12 个任务提交存在且按顺序可追溯。
+2. 前端全量 Vitest、TypeScript/Vite build、Query API 相关 Go tests 全部通过。
+3. 五条 Playwright 主链和三档视口截图全部通过。
+4. 浏览器中不存在环境选择器、全局 Namespace 或无类型“节点”选择器。
+5. 资源中心默认是集群全景，五个资源域均有真实状态或明确空/缺失说明。
+6. 知识图谱三种模式、聚合上限、工具栏、图例、等价关系列表和六类状态均可验证。
+7. 镜像 tag 或 digest 与 main HEAD 一致，部署清单引用该新 digest，rollout 完成后再做运行态冒烟。
+8. 回滚点为发布前 deployment revision 与前一镜像 digest，不通过验收时回滚，不在生产页面临时修补。
