@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Input, Switch, Tag } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { getResourceCatalog, getResourceDetail, toResourceApiError, type ResourceCatalogItem } from '../../api/resources'
+import DataState from '../../components/display/DataState'
 import type { PlatformResourceRef, ResourceDomain, ResourceHealth } from '../resources/types'
 import { isSelectableResourceType, resourceDomainOf, resourceLocation, resourceTypeLabel } from '../resources/resourceDomain'
 
@@ -211,9 +212,9 @@ export function ResourcePicker({ clusterId, value, disabled = false, onChange }:
             />
             <label className="resource-picker__abnormal"><Switch size="small" checked={onlyAbnormal} onChange={setOnlyAbnormal} /> 仅异常资源</label>
           </div>
-          {loading && <div className="resource-picker__state">正在检索资源…</div>}
-          {!loading && debouncedQuery.length < 2 && recentItems.length === 0 && <div className="resource-picker__state">输入至少 2 个字符开始检索，或从最近访问中选择</div>}
-          {!loading && debouncedQuery.length >= 2 && visibleItems.length === 0 && <div className="resource-picker__state">未找到匹配资源</div>}
+          {loading && <DataState kind="loading" compact title="正在检索资源" description="正在读取当前集群的资源目录" />}
+          {!loading && debouncedQuery.length < 2 && recentItems.length === 0 && <DataState kind="empty" compact title="开始检索资源" description="输入至少 2 个字符，或从最近访问中选择" />}
+          {!loading && debouncedQuery.length >= 2 && visibleItems.length === 0 && <DataState kind="empty" compact title="未找到匹配资源" />}
           {!loading && visibleItems.length > 0 && (
             <div id="resource-picker-options" role="listbox" aria-label="资源候选项" className="resource-picker__options">
               {groupedItems.map(([domain, domainItems]) => (
