@@ -63,26 +63,28 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
   }))
   const rootCause = String(snapshot.root_cause ?? '')
   const insufficient = !rootCause || confidence < 0.8 || evidence.length === 0
+  const resourceType = snapshot.target_resource_type || ''
+  const resourceDomain = resourceDomainOf(resourceType)
   return {
     runId: snapshot.run_id,
     scope: {
       tenantId: snapshot.tenant_id ?? '',
       clusterId: snapshot.primary_cluster_id ?? '',
       resourceId: snapshot.target_resource_id ?? 'investigation',
-      ...(snapshot.target_resource_id && snapshot.primary_cluster_id ? {
+      ...(snapshot.target_resource_id && snapshot.primary_cluster_id && resourceDomain ? {
         resource: {
           clusterId: snapshot.primary_cluster_id,
           uid: snapshot.target_resource_id,
-          type: snapshot.target_resource_type || 'service',
-          domain: resourceDomainOf(snapshot.target_resource_type || 'service') || 'application',
+          type: resourceType,
+          domain: resourceDomain,
           name: snapshot.target_resource_id,
-          ...(snapshot.namespace && resourceDomainOf(snapshot.target_resource_type || 'service') === 'kubernetes' ? { namespace: snapshot.namespace } : {}),
+          ...(snapshot.namespace && resourceDomain === 'kubernetes' ? { namespace: snapshot.namespace } : {}),
         },
       } : {}),
       timeRange: snapshot.query_window_start && snapshot.query_window_end ? { mode: 'absolute', start: snapshot.query_window_start, end: snapshot.query_window_end } : undefined,
     },
     intent: snapshot.intent ?? '—', status: snapshot.status ?? 'created', evidence, hypotheses,
-    conclusion: { state: insufficient ? 'insufficient_evidence' : 'confirmed', title: insufficient ? '证据不足，尚不能确认根因' : rootCause, confidence, rootCause },
+    conclusion: { state: insufficient ? 'insufficient_evidence' : 'confirmed', title: insufficient ? '证据不足，尚不能确认根因' : rootCause, confidence, rootCause: insufficient ? '' : rootCause },
     ...(snapshot.action ? { action: { status: snapshot.action.status ?? 'unknown', risk: snapshot.action.risk ?? 'unknown', execution: snapshot.action.execution, verification: snapshot.action.verification } } : {}),
   }
 }

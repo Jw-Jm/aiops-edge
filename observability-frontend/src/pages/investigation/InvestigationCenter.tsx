@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Badge, Button, Card, Table, Tabs, Typography } from 'antd'
+import { Badge, Button, Card, Space, Table, Tabs, Tag, Typography } from 'antd'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { listRuns } from '../../api/client'
 import { PageHeader } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
 import { useScopeStore } from '../../store/scopeStore'
+import { resourceDomainOf, resourceLocation, resourceTypeLabel } from '../../features/resources/resourceDomain'
 
 const { Text } = Typography
 
@@ -13,6 +14,8 @@ interface InvestigationRun {
   tenantId: string
   clusterId: string
   resourceId: string
+  resourceType: string
+  resourceName: string
   symptom: string
   status: 'created' | 'planning' | 'investigating' | 'awaiting_confirmation' | 'awaiting_approval' | 'executing' | 'verifying' | 'success' | 'partial' | 'failed' | 'regressed' | 'cancelled'
   rootCause: string | null
@@ -53,6 +56,8 @@ const InvestigationCenter: React.FC = () => {
         tenantId: r.tenant_id ?? '',
         clusterId: r.primary_cluster_id ?? '',
         resourceId: r.target_resource_id ?? 'investigation',
+        resourceType: r.target_type ?? '',
+        resourceName: r.target_resource_id ?? '',
         symptom: r.intent ?? '—',
         status: (r.status ?? 'created') as InvestigationRun['status'],
         rootCause: r.root_cause ?? null,
@@ -72,7 +77,13 @@ const InvestigationCenter: React.FC = () => {
   useEffect(() => { void load() }, [load])
 
   const columns = useMemo(() => [
-    { title: '资源', dataIndex: 'resourceId', key: 'resourceId' },
+    { title: '资源', key: 'resource', render: (_: unknown, run: InvestigationRun) => {
+      const domain = resourceDomainOf(run.resourceType as never)
+      return !run.resourceId || run.resourceType === 'cluster' || run.resourceType === 'k8s_cluster' || !domain
+        ? <Text type="secondary">集群范围</Text>
+        : <Space size={4}><Tag color="blue">{resourceTypeLabel(run.resourceType)}</Tag><span>{resourceLocation({ clusterId: run.clusterId, uid: run.resourceId, type: run.resourceType, domain, name: run.resourceName || run.resourceId })}</span></Space>
+    } },
+    { title: '集群', dataIndex: 'clusterId', key: 'clusterId' },
     { title: '症状', dataIndex: 'symptom', key: 'symptom', ellipsis: true },
     { title: '影响', key: 'impact', render: () => <Text type="secondary">未提供</Text> },
     { title: '持续时间', key: 'duration', render: () => <Text type="secondary">未提供</Text> },

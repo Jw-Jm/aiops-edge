@@ -26,4 +26,30 @@ describe('investigation view model', () => {
     expect(vm.evidence.map((item) => item.id)).toEqual(['e2', 'e1'])
     expect(vm.evidence[0]).toMatchObject({ source: 'prometheus', reliability: 0.96, quality: 'complete', supports: ['h1'] })
   })
+
+  it('projects a selectable typed resource and freezes the absolute window', () => {
+    const model = toInvestigationViewModel({
+      run_id: 'run-2', tenant_id: 'tenant-a', primary_cluster_id: 'cluster-a',
+      target_resource_id: 'deployment/payment', target_resource_type: 'deployment', namespace: 'payment',
+      query_window_start: '2026-09-09T00:00:00.000Z', query_window_end: '2026-09-09T01:00:00.000Z',
+      confidence: 0.92, root_cause: '数据库连接池耗尽', evidence: [{ evidence_id: 'e-1', fact: 'pool saturated' }],
+    })
+    expect(model.scope.resource).toMatchObject({
+      clusterId: 'cluster-a', uid: 'deployment/payment', type: 'deployment', domain: 'kubernetes', namespace: 'payment',
+    })
+    expect(model.scope.timeRange).toEqual({ mode: 'absolute', start: '2026-09-09T00:00:00.000Z', end: '2026-09-09T01:00:00.000Z' })
+    expect(model.conclusion).toMatchObject({ state: 'confirmed', title: '数据库连接池耗尽' })
+  })
+
+  it('does not fabricate k8s_cluster as a platform resource and never states a root cause with insufficient evidence', () => {
+    const model = toInvestigationViewModel({
+      run_id: 'run-3', tenant_id: 'tenant-a', primary_cluster_id: 'cluster-a',
+      target_resource_id: 'cluster-a', target_resource_type: 'k8s_cluster',
+      confidence: 0.98, root_cause: '可能是节点抖动', evidence: [],
+    })
+    expect(model.scope.resource).toBeUndefined()
+    expect(model.conclusion.state).toBe('insufficient_evidence')
+    expect(model.conclusion.title).not.toContain('可能是节点抖动')
+    expect(model.conclusion.rootCause).toBe('')
+  })
 })

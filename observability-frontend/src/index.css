@@ -272,6 +272,7 @@ body {
 .scope-bar--snapshot { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); color: var(--text-secondary); }
 .scope-bar--snapshot > span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .scope-bar--snapshot a { margin-left: auto; flex: 0 0 auto; color: var(--primary); font-size: 12px; }
+.scope-chip { max-width: min(48vw, 420px); overflow: hidden; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-secondary); background: var(--surface-2); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .page-grid { display: grid; gap: 16px; }
 .surface-card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-sm); }
 .resource-layout { display: grid; grid-template-columns: 264px minmax(0, 1fr) 336px; gap: 16px; align-items: start; }

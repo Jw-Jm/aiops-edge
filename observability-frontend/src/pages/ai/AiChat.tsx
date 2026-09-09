@@ -7,6 +7,7 @@ import api, { getSession, finalReport, addKnowledgeCase } from '../../api/client
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import AppIcon from '../../components/AppIcons'
 import { useScopeStore } from '../../store/scopeStore'
+import { resourceLocation, resourceTypeLabel } from '../../features/resources/resourceDomain'
 
 // canonical UUID 校验（与 Query API AuthMiddleware canonicalUUID 一致），用于判断
 // 是否已选择 concrete cluster（F-07 / A0-04：拒绝把 'all' 当可发送的 cluster）。
@@ -398,7 +399,14 @@ const AiChat: React.FC = () => {
 
       {/* 主聊天区 */}
       <div className="card" style={{ flex: 1, marginBottom: 0, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <div className="card__head"><span className="card__title">AI 运维助手</span></div>
+        <div className="card__head">
+          <span className="card__title">AI 运维助手</span>
+          <span className="scope-chip" aria-label="Chat 活动资源">
+            {activeScope.resource
+              ? `${resourceTypeLabel(activeScope.resource.type)} · ${resourceLocation(activeScope.resource)}`
+              : '集群范围'}
+          </span>
+        </div>
         <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
           {messages.length === 0 && (
             <div style={{ textAlign: 'center', padding: '40px 20px' }}>
@@ -483,9 +491,13 @@ const AiChat: React.FC = () => {
                       <Button type="primary" size="small"
                         icon={<ExperimentOutlined />}
                         onClick={() => {
-                          const query = new URLSearchParams({ source: 'chat', clusterId: activeClusterId, targetType: activeScope.resource?.type || 'service', symptom: symptomMsg?.content || '' })
+                          const query = new URLSearchParams({ source: 'chat', clusterId: activeClusterId, targetType: activeScope.resource?.type || 'cluster', symptom: symptomMsg?.content || '' })
                           if (activeScope.resource?.domain === 'kubernetes' && activeScope.resource.namespace) query.set('namespace', activeScope.resource.namespace)
-                          if (activeScope.resource?.uid) query.set('resourceId', activeScope.resource.uid)
+                          if (activeScope.resource?.uid) {
+                            query.set('resource', activeScope.resource.uid)
+                            query.set('resourceType', activeScope.resource.type)
+                            query.set('resourceName', activeScope.resource.name)
+                          }
                           navigate(`/investigation/new?${query.toString()}`)
                         }}>
                         转为正式调查

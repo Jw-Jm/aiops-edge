@@ -33,5 +33,11 @@ export function rankOperationalIssues(items: OperationalIssue[]): OperationalIss
 export function issueAction(issue: OperationalIssue): { label: string; href: string } {
   if (issue.lifecycle === 'awaiting_approval') return { label: '查看处置', href: '/actions' }
   if (issue.lifecycle === 'recovered') return { label: '查看验证', href: issue.runId ? `/investigation/${issue.runId}` : '/investigation' }
-  return issue.runId ? { label: '查看调查', href: `/investigation/${issue.runId}` } : { label: '开始调查', href: `/investigation/new?source=overview${issue.resourceId ? `&resource=${encodeURIComponent(issue.resourceId)}` : ''}&symptom=${encodeURIComponent(issue.symptom)}` }
+  if (issue.runId) return { label: '查看调查', href: `/investigation/${issue.runId}` }
+  if (issue.resource) {
+    const query = new URLSearchParams({ source: 'overview', clusterId: issue.resource.clusterId, resource: issue.resource.uid, resourceType: issue.resource.type, resourceName: issue.resource.name, symptom: issue.symptom })
+    if (issue.resource.namespace) query.set('namespace', issue.resource.namespace)
+    return { label: '开始调查', href: `/investigation/new?${query.toString()}` }
+  }
+  return { label: '开始调查', href: `/investigation/new?source=overview${issue.resourceId ? `&resource=${encodeURIComponent(issue.resourceId)}` : ''}&symptom=${encodeURIComponent(issue.symptom)}` }
 }

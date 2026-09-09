@@ -14,6 +14,7 @@ describe('InvestigationCenter identity projection', () => {
     vi.mocked(listRuns).mockResolvedValue({ data: { runs: [{
       run_id: 'run-1', request_id: 'request-1', tenant_id: 'tenant-1',
       primary_cluster_id: 'cluster-1', target_resource_id: 'checkout', intent: 'investigate',
+      target_type: 'service',
       status: 'created', principal_id: 'user-123', created_by: 'user-123', created_at: '2026-08-26T00:00:00Z',
     }] } } as never)
   })
@@ -21,6 +22,7 @@ describe('InvestigationCenter identity projection', () => {
   it('renders the persisted run principal instead of a fixed system identity', async () => {
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><InvestigationCenter /></MemoryRouter>)
     expect(await screen.findByText('user-123')).toBeInTheDocument()
+    expect(screen.getByText('应用服务')).toBeInTheDocument()
     expect(screen.queryByText('system')).not.toBeInTheDocument()
   })
 

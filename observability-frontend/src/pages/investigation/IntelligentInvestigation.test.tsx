@@ -6,4 +6,12 @@ describe('historical investigation Graph Context', () => {
     expect(source).toContain('getRunGraphContext(runId)')
     expect(source).toContain('GraphContextPanel context={graphContext}')
   })
+
+  it('keeps the Run view read-only and renders the persisted frozen snapshot', () => {
+    expect(source).toContain('ScopeBar snapshot=')
+    expect(source).toContain('viewModel.scope.timeRange')
+    expect(source).not.toContain('setResource(')
+    expect(source).not.toContain('switchCluster(')
+    expect(source).not.toContain('setTimeRange(')
+  })
 })
