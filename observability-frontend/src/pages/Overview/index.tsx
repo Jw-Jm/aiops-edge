@@ -13,6 +13,8 @@ import { useScopeStore } from '../../store/scopeStore'
 import IssueQueue from './IssueQueue'
 import WorkQueue from './WorkQueue'
 import { rankOperationalIssues, type OperationalIssue } from './priority'
+import { resourceDomainOf } from '../../features/resources/resourceDomain'
+import type { PlatformResourceRef } from '../../features/resources/types'
 
 const severityRank: Record<string, number> = { critical: 3, 严重: 3, warning: 2, 警告: 2, info: 1, 信息: 1 }
 const severityLabel = (value?: string) => {
@@ -21,6 +23,15 @@ const severityLabel = (value?: string) => {
 }
 const severityTone = (value?: string): 'crit' | 'warn' | 'info' => severityRank[String(value || 'warning').toLowerCase()] === 3 ? 'crit' : severityRank[String(value || 'warning').toLowerCase()] === 1 ? 'info' : 'warn'
 const isActive = (status?: string) => ['firing', 'acknowledged', ''].includes(String(status || '').toLowerCase())
+
+function alertResource(item: DashboardAlertEvent, clusterId: string): PlatformResourceRef | undefined {
+  const raw = item as DashboardAlertEvent
+  const uid = raw.resource_uid || raw.service
+  if (!uid) return undefined
+  const type = raw.resource_type || 'service'
+  const domain = resourceDomainOf(type as never) || 'application'
+  return { clusterId: raw.cluster_id || clusterId, uid, type: type as never, domain, name: raw.resource_name || raw.service || uid }
+}
 
 function sparkPts(arr: number[], w = 120, h = 40): string {
   if (!arr || arr.length < 2) return ''
@@ -96,12 +107,14 @@ const Overview: React.FC = () => {
   const activeAlerts = useMemo(() => alerts.filter((a) => isActive(a.status)).sort((a, b) => (severityRank[String(b.severity || 'warning').toLowerCase()] || 2) - (severityRank[String(a.severity || 'warning').toLowerCase()] || 2)), [alerts])
   const operationalIssues = useMemo<OperationalIssue[]>(() => rankOperationalIssues(activeAlerts.map((item, index) => {
     const severity = severityRank[String(item.severity || 'warning').toLowerCase()] === 3 ? 'critical' : severityRank[String(item.severity || 'warning').toLowerCase()] === 1 ? 'info' : 'warning'
-    const matchingRun = runs.find((run) => run.target_resource_id && run.target_resource_id === item.service)
+    const resource = alertResource(item, activeClusterId)
+    const matchingRun = runs.find((run) => run.target_resource_id && run.target_resource_id === resource?.uid)
     const start = item.first_timestamp ? Date.parse(item.first_timestamp) : NaN
     const end = item.last_timestamp ? Date.parse(item.last_timestamp) : NaN
     const lifecycle = matchingRun?.status === 'awaiting_approval' ? 'awaiting_approval' : matchingRun && ['success', 'partial'].includes(matchingRun.status) ? 'recovered' : matchingRun ? 'investigating' : 'uninvestigated'
-    return { id: String(item.id || `${item.rule_name || 'alert'}-${index}`), title: item.rule_name || `${item.service || '资源'} 告警`, severity, affectedServices: 1, durationMinutes: Number.isFinite(start) && Number.isFinite(end) && end >= start ? Math.round((end - start) / 60000) : 0, recentChange: false, lifecycle, runId: matchingRun?.run_id, resourceId: item.service || 'unknown', symptom: item.message || `${item.service || '资源'} 出现${severity === 'critical' ? '严重' : '异常'}告警`, startedAt: item.first_timestamp || item.last_timestamp }
-  })), [activeAlerts, runs])
+    const durationMinutes = Number.isFinite(start) && Number.isFinite(end) && end >= start ? Math.round((end - start) / 60000) : 0
+    return { id: String(item.id || `${item.rule_name || 'alert'}-${index}`), title: item.rule_name || `${resource?.name || '集群'} 告警`, severity, affectedServices: Number(item.impact_count ?? item.count ?? 1), impactCount: Number(item.impact_count ?? item.count ?? 1), durationMinutes, durationMs: durationMinutes * 60_000, recentChange: item.recent_change === true, lifecycle, runId: matchingRun?.run_id, resourceId: resource?.uid, resource, clusterId: resource?.clusterId || activeClusterId, dataStatus: item.data_status || 'available', sourceRefs: item.id ? [String(item.id)] : [], symptom: item.message || `${resource?.name || '集群范围'} 出现${severity === 'critical' ? '严重' : '异常'}告警`, startedAt: item.first_timestamp || item.last_timestamp }
+  })), [activeAlerts, activeClusterId, runs])
   const trend = stats?.trend || []
   // A6: 服务数口径与拓扑视图一致（后端 /dashboard/stats 同时返回 services 与 topology_services，
   // 前者仅 trace 服务、后者含拓扑目录，总览卡片用 topology_services 才能与拓扑视图对得上）

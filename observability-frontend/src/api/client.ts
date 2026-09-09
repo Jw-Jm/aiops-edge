@@ -372,6 +372,8 @@ export interface DashboardAlertEvent {
   id: string | number
   rule_name?: string; service?: string; severity?: string; message?: string
   status?: string; count?: number; first_timestamp?: string; last_timestamp?: string
+  resource_uid?: string; resource_type?: string; resource_domain?: string; resource_name?: string; cluster_id?: string
+  impact_count?: number; recent_change?: boolean; data_status?: 'available' | 'partial' | 'unavailable' | 'stale'
 }
 export interface DashboardAlertResponse { data?: DashboardAlertEvent[]; events?: DashboardAlertEvent[]; total?: number }
 export const getAlertEvents = (params?: Record<string, unknown>) => api.get<DashboardAlertResponse | DashboardAlertEvent[]>('/alerts/events', { params })
@@ -382,6 +384,8 @@ export interface AlertAggregationItem {
   latest_rule: string
   latest_time: string
   events: DashboardAlertEvent[]
+  resource_uid?: string; resource_type?: string; resource_domain?: string; resource_name?: string; cluster_id?: string
+  impact_count?: number; recent_change?: boolean; data_status?: 'available' | 'partial' | 'unavailable' | 'stale'
 }
 export const getAlertAggregation = (params?: Record<string, unknown>) =>
   api.get<{ data: AlertAggregationItem[] }>('/alerts/aggregation', { params })

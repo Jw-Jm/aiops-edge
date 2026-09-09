@@ -10,6 +10,8 @@ export type ActionPhase =
   | 'failed'
   | 'regressed'
 
+import type { PlatformResourceRef } from '../features/resources/types'
+
 export interface ProblemSummary {
   problem_id: string
   severity: string
@@ -17,6 +19,8 @@ export interface ProblemSummary {
   title: string
   source_refs: string[]
   primary_resource?: string | null
+  resource?: PlatformResourceRef | null
+  cluster_id?: string | null
   affected_resources: string[]
   started_at?: string | null
   duration_seconds?: number | null

@@ -1,3 +1,5 @@
+import type { PlatformResourceRef } from '../../features/resources/types'
+
 export interface OperationalIssue {
   id: string
   title: string
@@ -7,15 +9,21 @@ export interface OperationalIssue {
   recentChange: boolean
   lifecycle?: 'uninvestigated' | 'investigating' | 'awaiting_approval' | 'recovered'
   runId?: string
-  resourceId: string
+  resourceId?: string
+  resource?: PlatformResourceRef
+  clusterId?: string
   symptom: string
   startedAt?: string
+  impactCount?: number
+  durationMs?: number
+  dataStatus?: 'available' | 'partial' | 'unavailable' | 'stale'
+  sourceRefs?: string[]
 }
 
 const SEVERITY_SCORE: Record<OperationalIssue['severity'], number> = { critical: 1_000_000, warning: 100_000, info: 10_000 }
 
 function score(item: OperationalIssue): number {
-  return SEVERITY_SCORE[item.severity] + item.affectedServices * 1_000 + item.durationMinutes * 10 + (item.recentChange ? 500 : 0)
+  return SEVERITY_SCORE[item.severity] + (item.impactCount ?? item.affectedServices) * 1_000 + (item.durationMs ?? item.durationMinutes * 60_000) / 100 + (item.recentChange ? 500 : 0)
 }
 
 export function rankOperationalIssues(items: OperationalIssue[]): OperationalIssue[] {
@@ -25,5 +33,5 @@ export function rankOperationalIssues(items: OperationalIssue[]): OperationalIss
 export function issueAction(issue: OperationalIssue): { label: string; href: string } {
   if (issue.lifecycle === 'awaiting_approval') return { label: '查看处置', href: '/actions' }
   if (issue.lifecycle === 'recovered') return { label: '查看验证', href: issue.runId ? `/investigation/${issue.runId}` : '/investigation' }
-  return issue.runId ? { label: '查看调查', href: `/investigation/${issue.runId}` } : { label: '开始调查', href: `/investigation/new?source=overview&resource=${encodeURIComponent(issue.resourceId)}&symptom=${encodeURIComponent(issue.symptom)}` }
+  return issue.runId ? { label: '查看调查', href: `/investigation/${issue.runId}` } : { label: '开始调查', href: `/investigation/new?source=overview${issue.resourceId ? `&resource=${encodeURIComponent(issue.resourceId)}` : ''}&symptom=${encodeURIComponent(issue.symptom)}` }
 }

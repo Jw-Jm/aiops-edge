@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Observe from './index'
 import { getAlertAggregation } from '../../api/client'
+import { toProblem } from './index'
 
 vi.mock('../../api/client', () => ({ getAlertAggregation: vi.fn() }))
 vi.mock('../alerts/AlertEvents', () => ({ default: () => <div>原始告警</div> }))
@@ -26,9 +27,16 @@ describe('Observe unified entry', () => {
     expect(screen.getByText('暂无问题')).toBeInTheDocument()
   })
 
-  it('falls back unknown views to the raw alert queue', async () => {
+  it('projects a cluster-scoped problem without inventing a service resource', () => {
+    const problem = toProblem({ service: '', total: 2, by_severity: { critical: 1 }, latest_rule: 'cluster pressure', latest_time: '2026-09-09T01:00:00Z', events: [] }, 'cluster-1')
+    expect(problem.resource).toBeUndefined()
+    expect(problem.cluster_id).toBe('cluster-1')
+    expect(problem.affected_resources).toEqual([])
+  })
+
+  it('falls back unknown views to the resource-first problems queue', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe?view=not-a-view']}><Observe /></MemoryRouter></QueryClientProvider>)
-    expect(screen.getByRole('tab', { name: '原始告警' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: '问题' })).toHaveAttribute('aria-selected', 'true')
   })
 })
