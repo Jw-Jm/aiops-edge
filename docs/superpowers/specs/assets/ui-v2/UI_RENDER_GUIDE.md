@@ -1,10 +1,21 @@
 # AIOps UI V2 实际渲染与编码对照
 
-本目录是已确认产品架构的高保真视觉合同。所有 PNG 都由同一份可运行 HTML 在真实 Chromium 中渲染，不是手绘概念图。页面中的集群、资源、指标和风险均为**设计示例数据**，只用于表达信息结构和视觉状态，编码时必须替换为权威接口数据。
+> **暂停作为编码基线（2026-09-10）：** 用户已确认正式规格的 A 方案修订。本目录现有 14 张 PNG 和 HTML 原型仍包含已失效的“被纳管云平台综合状态”、Workload、Pod/Container、Service/Ingress、PVC 与虚拟机磁盘双口径、NAD 数量，以及缺失的运维知识页。正式规格书面审阅通过并生成 V3 渲染前，后续智能体不得依照这些画面编码或验收。
+
+本目录是 V2 历史视觉参考。所有 PNG 都由同一份可运行 HTML 在真实 Chromium 中渲染，不是手绘概念图；但它们不再构成产品语义与信息层级合同。没有被 A 方案改变的间距、字体、颜色、边界和响应式处理可以参考，任何冲突均以[正式设计方案](../../2026-09-08-aiops-information-architecture-design.md)为准。页面中的集群、资源、指标和风险均为**设计示例数据**，不得进入生产代码或接口失败回退。
 
 可运行原型：[aiops-ui-prototype.html](./aiops-ui-prototype.html)
 
-打开原型时使用 `?view=` 切换页面：`login`、`platform`、`cluster`、`resources`、`resource-detail`、`observe`、`investigation`、`actions`、`graph`、`reports`、`admin`。
+打开原型时可使用 `?view=` 切换历史页面：`login`、`platform`、`cluster`、`resources`、`resource-detail`、`observe`、`investigation`、`actions`、`graph`、`reports`、`admin`。当前没有 `knowledge` 页面，这本身属于 V2 缺口，不得解释为产品无需 RAG 知识入口。
+
+## A 方案替代合同（V3 重绘前）
+
+- 平台总览不显示综合状态大卡，主视觉改为当前活动严重问题、受影响集群、未知/陈旧集群、集群状态分布、采集覆盖、最新/最旧有效数据和最高优先级问题。
+- 集群与资源页直接显示 Deployment、StatefulSet、DaemonSet、Job、CronJob、Pod、Kubernetes Service、Ingress；Container、ReplicaSet、EndpointSlice 只作为详情和关系证据。
+- PVC 与 VM/VMI 磁盘必须通过同一存储依赖链表达；容器与 KubeVirt 卡片只显示受存储问题影响的 Pod/VM，不显示 PVC/磁盘裸数量。
+- NAD 全称为“Multus 辅助网络定义”，只在实际 `multus.networkName` 引用的详情和图谱中出现，不作为总览主指标。
+- 一级导航新增“运维知识”。必须补绘桌面与 1024px 响应式页面，覆盖故障案例、运维文档、内置 Playbook、人工新增、审核发布、范围、版本和索引降级。
+- 资源关系图谱必须按修正后的 KubeVirt 存储链与 `VMI → 虚拟网络接口 → NAD → Multus/CNI → 实际网络` 重绘；每条边直接写清关系，聚合边显示数量。
 
 ## 1. 页面渲染图
 
@@ -14,29 +25,29 @@
 
 编码要点：左侧只表达真实产品能力；右侧登录表单保持单任务；禁止虚构告警数量、客户数量或健康状态。
 
-### 生产云平台健康
+### 生产云平台健康（旧图：平台主视觉已失效）
 
 ![生产云平台健康](./01-platform-overview-1440.png)
 
-编码要点：被纳管云平台状态与依据是视觉主语，状态必须和原因一致；集群四态、覆盖率分子/分母、最新数据和最高优先级风险必须同屏可判断。本页不受活动集群影响。AIOps 自身状态只使用异常优先的“运维数据与能力”带概括，完整组件状态进入系统管理。
+替代要求：删除“被纳管云平台状态”主卡，按 A 方案替代合同重排问题态势。本页仍不受活动集群影响；AIOps 自身状态只使用异常优先的“运维数据与能力”带概括，完整组件状态进入系统管理。
 
 ### 集群详细总览
 
 ![集群详细总览](./02-cluster-overview-1440.png)
 
-编码要点：先显示集群状态依据和问题队列，再用同等视觉权重展示容器资源与 KubeVirt 虚拟机；集群基础能力作为依赖状态带呈现，显示控制面、节点/物理机、网络面、存储面和 KubeVirt 能力的状态与依据。不得用异构资源健康总数或网络/存储裸数量表达健康。
+替代要求：先显示集群状态依据和问题队列，再用同等视觉权重展示容器资源与 KubeVirt 虚拟机；容器资源必须按明确 Kind 分列，KubeVirt 不显示磁盘/NAD 裸数量。集群基础能力作为依赖状态带呈现，显示控制面、节点/物理机、网络面、存储面和 KubeVirt 能力的状态与依据。
 
 ### 资源目录
 
 ![资源目录](./03-resource-catalog-1440.png)
 
-编码要点：容器资源与 KubeVirt 虚拟机是两个主工作组；集群基础能力为辅助入口。搜索与 Namespace 仅为本页局部筛选；1440px 使用筛选 + 宽结果区，快速详情按需进入 Drawer，不长期占用结果宽度。
+替代要求：容器资源与 KubeVirt 虚拟机是两个主工作组；容器使用明确 Kind 筛选，不出现 Workload、Pod/Container 或 Service/Ingress 合并项。共享存储与实际引用的 NAD 只从辅助依赖或详情进入。搜索与 Namespace 仅为本页局部筛选。
 
 ### 资源详情
 
 ![资源详情](./04-resource-detail-1440.png)
 
-编码要点：身份和健康依据位于顶部；证据是主工作区；关系、影响和 capability 位于右侧；技术值必须可完整查看和复制。
+替代要求：身份和健康依据位于顶部；证据是主工作区；关系、影响和 capability 位于右侧。Pod 内展开 Container；VM/VMI 用“磁盘与卷”和“网络接口”呈现到 PVC 与 NAD 的真实引用链。技术值必须可完整查看和复制。
 
 ### 观测工作区
 
@@ -62,7 +73,11 @@
 
 编码要点：采用访问/流量、控制器、运行实例、集群基础能力的语义分层，容器与 KubeVirt 是平行主线。每条当前可见边必须可直接读出“源资源 ─中文关系→ 目标资源”，使用明确箭头、固定端口和不透明关系标签；聚合边写出数量。右侧检查器同时支持节点与边，选中边后显示来源、同步时间、事实/推断状态和证据。
 
-语义校正：本 PNG 只作为布局与视觉密度基线。实际实现中，Service 指向 Pod 聚合节点的标签必须直接包含数量，例如“选择 8 个”；NAD 的关系源必须是 VMI，即 `VMI ─连接到→ NAD`，不得因正交布线把 `virt-launcher Pod` 误作源。
+替代要求：本 PNG 也不再作为知识图谱编码基线。V3 必须显示 `Pod → PVC → PV → StorageClass → 后端` 与 `VM/VMI → 磁盘设备 → Volume → DataVolume/PVC → PV`；辅助网络显示 `VMI → 虚拟网络接口 → NAD → Multus/CNI → 实际网络`。Service 指向 Pod 聚合节点的标签直接包含数量，例如“选择 8 个”。
+
+### 运维知识（V2 缺失，V3 必须新增）
+
+必须新增桌面和 1024px 渲染：页头展示检索/索引可用性、已发布、待审核、最近索引和索引失败；内容提供页面内语义搜索、类型/范围/状态/资源 Kind/来源/标签筛选，以及故障案例、运维文档、内置 Playbook 三类列表。详情或 Drawer 显示全文、来源、适用范围、版本、审核与索引状态；新增表单支持保存草稿和提交审核。
 
 ### 报告
 
@@ -103,7 +118,7 @@
 - 导航轨：1440px 视口下 88px；1280px 及以下 72px。
 - 工作区顶栏：64px；只有真实集群选择、通知和用户入口。时间范围只进入确有时间上下文的页面内容区。
 - 页面内容：12 栏逻辑网格，外边距 28px；1280px 及以下收敛到 20px。
-- 页面级搜索不存在；资源搜索只能放在集群内资源目录。
+- 全局搜索不存在；局部搜索只允许放在集群内资源目录和运维知识页。
 - 页面标题区只保留范围说明、最后更新时间和最多两个主动作。
 
 ### 基础尺寸
@@ -117,14 +132,16 @@
 
 - `AppFrame`：导航轨、顶栏、响应式内容边界。
 - `ClusterNavigator`：选择真实集群、Scope 提交与回读、成功后导航。
-- `PlatformHealthBand`：平台状态依据、四态分布、覆盖率、最新数据。
-- `ClusterHealthMatrix`、`PriorityRiskQueue`、`OperationsTrustStrip`。
-- `ClusterOverviewHeader`、`CarrierPlanePanel`、`ClusterFoundationBand`。
+- `PlatformOperationsSummary`：严重问题、影响集群、未知/陈旧范围、四态分布、覆盖率与最新/最旧数据。
+- `ClusterHealthMatrix`、`PriorityIssueQueue`、`OperationsTrustStrip`。
+- `ClusterOverviewHeader`、`DirectResourceKindPanel`、`ClusterFoundationBand`。
 - `ResourceCatalogFilters`、`ResourceResultList`、`ResourceInspectorDrawer`。
 - `ResourceIdentityBand`、`EvidenceWorkspace`、`RelationContextPanel`。
+- `StorageDependencyPanel`、`VmDiskVolumeTable`、`MultusNetworkRelationPanel`。
 - `InvestigationScopeStrip`、`EvidenceTimeline`、`HypothesisPanel`。
 - `ActionPipeline`、`ActionQueue`、`ActionInspector`。
 - `KnowledgeGraphWorkspace`、`GraphToolbar`、`GraphInspector`、`EquivalentRelationList`。
+- `OperationsKnowledgeWorkspace`、`KnowledgeFilters`、`KnowledgeList`、`KnowledgeInspector`、`KnowledgeEditor`、`KnowledgeIndexStatus`。
 - `BoundedDataRegion`：统一 loading、empty、error、partial、stale、forbidden 状态及边界行为。
 
 ### 完整显示与不超限
@@ -149,8 +166,8 @@
 
 ## 4. 五秒判读验收
 
-任一关键页面必须让用户在 5 秒内判断：当前平台/集群是什么状态及原因、最优先的真实资源风险、下一步主动作、数据是否可信。图谱还必须让用户直接读出任一可见边的源资源、关系、目标资源、方向、事实/推断状态与来源；需要猜颜色、几何方向或依赖悬停即判定失败。
+任一关键页面必须让用户在 5 秒内判断：平台当前有什么必须处理、影响哪些集群与资源，或当前集群是什么状态及原因；还要能看出下一步主动作和数据是否可信。图谱必须让用户直接读出任一可见边的源资源、关系、目标资源、方向、事实/推断状态与来源；运维知识必须能看出适用范围、审核状态、版本和来源。需要猜颜色、几何方向或依赖悬停即判定失败。
 
 ## 5. 使用方式
 
-编码时先按本目录建立壳层和基础 Token，再逐页对照 PNG 完成组件结构。每页在 1440×900、1280×720、1024×768 下截图比较：检查结构层级、间距、换行、局部滚动、浮层边界、状态语义和内容完整入口。像素差异可以来自真实数据长度，但不得改变本文定义的信息优先级与组件边界。
+当前不得按本目录进入页面编码。正式规格书面审阅通过后，先更新 HTML 原型并重新生成 V3 PNG，再把本文件恢复为可执行视觉合同。V3 每页必须在 1440×900、1280×720、1024×768 下截图比较，检查结构层级、间距、换行、局部滚动、浮层边界、状态语义和内容完整入口。

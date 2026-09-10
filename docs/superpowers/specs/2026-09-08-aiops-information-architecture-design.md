@@ -1,30 +1,31 @@
 # AIOps 多集群云平台资源运维与全新 UI 设计方案
 
-**日期：** 2026-09-09
+**日期：** 2026-09-10
 
-**状态：** 已最终确认，作为实施与验收基线
+**状态：** A 方案修订稿，待书面审阅；审阅通过前不得进入编码
 
 **适用范围：** `observability-frontend`、`ai-apm-query-go` 及现有资源、图谱、调查、处置兼容接口
 
 **设计方式：** 依据本次确认的产品目标从零设计页面结构、组件编排和视觉语言，不沿用现有页面布局作为设计基线。
 
-**配套渲染：** [AIOps UI V2 实际渲染与编码对照](./assets/ui-v2/UI_RENDER_GUIDE.md)，包含可运行原型、11 张桌面页面图和 3 张响应式页面图。
+**配套渲染：** [AIOps UI V2 实际渲染与编码对照](./assets/ui-v2/UI_RENDER_GUIDE.md) 当前仅为历史视觉参考，其中平台总览、集群总览、资源目录、资源详情、图谱和缺失的运维知识页均待按本修订稿重绘；审阅通过前不得把现有 PNG/HTML 作为编码验收基线。
 
-**本次审核结论：** 产品方向保留，信息结构和视觉表达重构。平台首先呈现全部纳管 Kubernetes 集群构成的生产云平台健康；进入真实集群后，以容器资源与 KubeVirt 虚拟机为两个同级主平面，以集群基础能力为依赖底座。删除无意义的异构资源健康汇总、网络/存储裸数量、重复采集覆盖和无关系语义的图谱连线。
+**本次审核结论：** 采用 A 方案。平台总览不再用“被纳管云平台状态：严重/需立即处置”作为主视觉，而直接呈现当前活动严重问题、受影响集群、数据未知/陈旧范围、采集可信度和最高优先级问题。集群内以明确的 Kubernetes 资源种类和 KubeVirt VM/VMI 为运维主语；PVC 与虚拟机磁盘统一进入同一条存储依赖链，NAD 只在辅助网络关系中出现；新增有范围、审核、版本和索引治理的“运维知识”一级工作区。
 
 ## 1. 产品定义
 
-本产品是面向**单一生产环境、多个 Kubernetes 集群**的智能云平台运维平台。平台首先回答整个生产云平台是否健康、哪些实际集群需要关注；进入某个集群后，再围绕该集群中的资源载体完成观测、调查和受控处置。
+本产品是面向**单一生产环境、多个 Kubernetes 集群**的智能云平台运维平台。平台总览首先回答“现在有什么必须处理、影响哪些集群和资源、证据是否可信”；进入某个真实集群后，再围绕该集群中的资源载体完成观测、调查和受控处置。平台不制造一个覆盖异构资源的“总体健康结论”。
 
 平台直接运维的主语是：
 
-- Kubernetes 工作负载与运行时资源。
-- Kubernetes 流量入口和服务发现资源。
-- Kubernetes 持久化资源。
+- Kubernetes 控制器与运行资源：Deployment、StatefulSet、DaemonSet、Job、CronJob 和 Pod。
+- Kubernetes 流量入口和服务发现资源：Kubernetes Service 与 Ingress。
+- Kubernetes/KubeVirt 共享的持久化依赖：DataVolume、PVC、PV、StorageClass 与底层存储。
 - KubeVirt 虚拟机及其实例、迁移和依赖关系。
 - 支撑上述资源运行的 Kubernetes 节点、物理机、网络和存储。
+- 从故障案例、运维文档和内置 Playbook 形成的可审核运维知识。
 
-业务、应用、APM 服务和中间件不作为一级资源类别或一级导航。如果它们部署在容器或 KubeVirt 虚拟机上，平台仍通过 Deployment、Pod、Container、Kubernetes Service、VM/VMI 等真实载体进行运维；业务名称、应用名称、中间件类型只作为标签、元数据或局部筛选条件保留。
+业务、应用、APM 服务和中间件不作为一级资源类别或一级导航。如果它们部署在容器或 KubeVirt 虚拟机上，平台仍通过 Deployment、Pod、Kubernetes Service、VM/VMI 等真实载体进行运维；Container 只作为 Pod 内部组成出现在详情和证据中。业务名称、应用名称、中间件类型只作为标签、元数据或局部筛选条件保留。
 
 ## 2. 已确认的产品边界
 
@@ -37,8 +38,13 @@
 - 容器资源与 KubeVirt 虚拟机是同一级运维对象，不把 KubeVirt 虚拟机归入传统虚拟化产品线。
 - 物理机、虚拟机、网络和存储都严格归属于一个 Kubernetes 集群；它们不构成跨集群共享资源池。
 - Namespace 是 Kubernetes 内部组织和筛选维度，不是全局 Scope。
-- 不提供全局搜索。资源名称搜索只出现在当前集群的资源目录等局部页面。
+- 不提供全局搜索。资源名称搜索只出现在当前集群资源目录，运维知识语义搜索只出现在当前集群知识页。
 - 健康状态基于服务端事实和明确规则，不展示虚构的 0–100 综合分数。
+- 平台总览不展示独立的“云平台综合状态”大卡；服务端兼容状态只用于规则、自动化和旧接口，不成为新 UI 的平台级结论。
+- 容器资源直接按明确 Kind 展示，不提供泛化 `Workload` 数量，不合并 Pod/Container、Service/Ingress，也不把 ReplicaSet 或 EndpointSlice 提升为一级资源。
+- PVC 只保留一个 canonical 身份；虚拟机磁盘是设备视图，不与 PVC 形成重复资源计数。
+- NAD 是 Multus 辅助网络定义，只在被资源实际引用时进入详情与关系图，不作为 KubeVirt 或网络面的主指标。
+- 运维知识必须有租户与集群适用范围、审核发布、版本、来源、审计和索引状态，未发布内容不得参与检索增强。
 - 关键内容完整可读，同时任何视口、卡片、图表、表格和图谱不得越出设计边界。
 - 所有高风险动作继续经过能力校验、预检、审批、执行、验证和审计。
 
@@ -48,6 +54,7 @@
 - 多环境、多云账号、跨集群共享基础设施或跨集群批量变更。
 - 低于 1024px 的完整生产处置体验。
 - 重写现有数据库、Run/Evidence/Action 事实模型或扩大 AI 自动执行权限。
+- 通用文档管理、任意文件格式摄入、向量数据库运维控制台或面向终端用户的 Embedding 参数配置。
 
 ### 2.3 保留兼容但默认隐藏
 
@@ -60,11 +67,13 @@
 产品采用三层递进结构：
 
 ```text
-生产云平台健康（全部纳管集群）
+云平台运营态势（全部授权纳管集群）
         ↓ 选择一个实际集群
 集群详细总览（该集群的资源与风险）
         ↓ 选择一种资源或一个对象
 资源运维（观测 → 调查 → 处置 → 验证）
+
+运维知识（平台通用知识 + 当前集群知识）横向支撑调查、处置与报告
 ```
 
 ### 3.1 一级导航
@@ -73,10 +82,11 @@
 2. **集群运维** `/clusters/:clusterId`
 3. **调查** `/clusters/:clusterId/investigations`
 4. **处置** `/clusters/:clusterId/actions`
-5. **报告** `/clusters/:clusterId/reports`
-6. **系统管理** `/admin`，仅管理员可见
+5. **运维知识** `/clusters/:clusterId/knowledge`
+6. **报告** `/clusters/:clusterId/reports`
+7. **系统管理** `/admin`，仅管理员可见
 
-没有集群上下文时，点击“集群运维、调查、处置、报告”先要求选择真实集群，不渲染伪造的“全部集群”操作页。平台级问题可在平台总览查看，但创建 Run 或 Action 前必须落到一个明确集群。
+没有集群上下文时，点击“集群运维、调查、处置、运维知识、报告”先要求选择真实集群，不渲染伪造的“全部集群”操作页。平台级问题可在平台总览查看，但创建 Run、Action 或集群范围知识前必须落到一个明确集群。运维知识页同时读取当前租户的平台通用知识与当前集群知识，不允许跨租户或越权读取其他集群知识。
 
 ### 3.2 集群内工作区
 
@@ -84,8 +94,9 @@
 - 资源 `/clusters/:clusterId/resources`
 - 观测 `/clusters/:clusterId/observe`
 - 关系 `/clusters/:clusterId/graph`
+- 运维知识 `/clusters/:clusterId/knowledge`
 
-调查、处置和报告保留为一级闭环入口，同时始终显示当前集群。集群内导航不按 Grafana、VictoriaMetrics、VictoriaLogs、DeepFlow、HugeGraph 等采集或存储组件拆分。
+调查、处置、运维知识和报告保留为一级闭环入口，同时始终显示当前集群。集群内导航不按 Grafana、VictoriaMetrics、VictoriaLogs、DeepFlow、HugeGraph 等采集或存储组件拆分。
 
 ### 3.3 路由与上下文
 
@@ -101,28 +112,27 @@
 
 ### 4.1 统一状态
 
-全站只使用四个顶级健康状态：
+集群、资源和有权威健康事实的数据区域只使用四个顶级健康状态：
 
 - **健康**：权威来源确认正常且数据在有效时间内。
 - **降级**：仍可提供服务，但存在明确异常、能力下降或采集覆盖未达到服务端配置的要求。
 - **严重**：存在服务端确认的不可用、关键故障或最高等级风险。
 - **未知**：关键来源无数据、数据陈旧、权限不足或无法形成可信判断。
 
-前端不计算综合分数，也不根据资源数量、告警数量或单一利用率自行创造平台健康。聚合接口返回 `status`、`status_reasons`、`generated_at`、`source_statuses` 和规则版本，UI 展示状态依据；缺失证据必须表现为“未知”，不能默认为绿色。
+前端不计算综合分数，也不根据资源数量、告警数量或单一利用率自行创造健康。集群与资源聚合接口返回 `status`、`status_reasons`、`generated_at`、`source_statuses` 和规则版本，UI 展示状态依据；缺失证据必须表现为“未知”，不能默认为绿色。平台级兼容 `status` 可以继续由后端提供给旧接口和自动化规则，但新平台总览不把它渲染成独立综合状态。
 
-### 4.2 平台状态
+### 4.2 平台问题态势
 
-平台状态描述**被纳管生产云平台**的健康，不等同于 AIOps 软件自身是否正常。它由后端根据纳管集群状态、关键资源故障、采集覆盖和数据时效按已配置规则计算，并返回可解释原因。UI 只呈现，不在浏览器中重复实现规则。至少显示：
+平台总览不试图把不同 Kubernetes 集群、资源故障和数据缺口压缩为一个“健康/降级/严重”的平台状态。首屏直接显示能够改变用户下一步行动的事实：
 
-- 当前平台状态及一至三条主要依据。
-- 纳管集群总数，以及健康、降级、严重、未知集群数。
-- 采集覆盖率：已成功采集的预期目标数 / 纳管目标数，并显示分子、分母和统计时间。
-- 最新数据时间和数据时效标签。
-- 当前最高优先级风险及其所属集群、资源、持续时间和证据状态。
+- 当前活动严重问题数，并区分新增/待处置、处置中和待验证；已恢复问题不进入当前数。
+- 受影响集群数，以及集群健康/降级/严重/未知分布；分布是各集群事实的汇总，不推导平台综合状态。
+- 数据未知或陈旧的集群数，列出无法可信判断的范围。
+- 采集覆盖率：已成功采集的预期目标数 / 纳管目标数，并显示分子、分母、缺口和统计时间。
+- 最新数据时间，同时显示所有已读取来源中的最旧有效数据时间；单一“最新”不能掩盖陈旧来源。
+- 当前最高优先级问题：所属集群、真实资源、直接影响、严重度、持续时间、证据新鲜度和一个明确主动作。
 
 AIOps 软件自身的采集器、同步任务、调查 Worker、处置控制器等状态统一称为“运维数据与能力状态”，在平台总览只以异常优先的紧凑可信度带呈现，例如“6/7 正常，拓扑同步延迟”；完整组件清单、实例和日志进入系统管理。正常组件收敛汇总，只有异常、陈旧或缺失项展开，避免其与云平台健康争夺主视觉。
-
-平台状态必须与状态依据一致。若规则定义“存在严重集群即平台严重”，示例和实现都必须显示“严重”；若采用其他规则，接口必须返回可读的规则命中原因。禁止出现“已有严重集群，但平台标题仍显示降级”且无解释的矛盾。
 
 当部分集群不可读取时，总数、已读取数和未读取数必须分别展示；不得用已读取样本冒充全量。
 
@@ -145,28 +155,55 @@ AIOps 软件自身的采集器、同步任务、调查 Worker、处置控制器�
 
 ## 5. 资源载体模型
 
-### 5.1 一级展示分组
+### 5.1 一级展示分组与直接资源种类
 
 资源目录不再使用“计算、网络、存储、Kubernetes、应用服务”五域平铺。集群内以运行职责组织为两个同级主组和一个辅助基础能力入口：
 
 1. **容器资源**
-   - 工作负载：`deployment`、`statefulset`、`daemonset`、`replicaset`、`job`、`cronjob`
-   - 运行实例：`pod`、`container`
-   - 流量与发现：`k8s_service`、`endpoint_slice`、`ingress`
-   - 持久化：`pvc`，并关联 `pv`、`storage_class`
+   - 一级可见 Kind：`deployment`、`statefulset`、`daemonset`、`job`、`cronjob`、`pod`、`k8s_service`、`ingress`
+   - 不显示泛化 `Workload` 总数；每个 Kind 分别显示总数、异常数、未知/陈旧数和进入目录入口。
+   - `container` 只在 Pod 详情中显示状态、镜像、重启、资源请求/限制和日志入口。
+   - `replicaset` 只作为 Deployment 到 Pod 的控制关系与详情证据。
+   - `endpoint_slice` 只作为 Kubernetes Service 后端选择和就绪端点的事实证据。
 2. **KubeVirt 虚拟机**
    - 一级资源：`vm`、`vmi`
    - 生命周期证据：`migration`，不作为资源目录的一级对象
-   - 关联磁盘、网络、Pod、Kubernetes 节点和物理宿主
+   - 关联磁盘设备、卷、辅助网络、Pod、Kubernetes 节点和物理宿主
 3. **集群基础能力（辅助入口）**
-   - Kubernetes 节点、物理服务器、网络、NAD、网卡、交换机、磁盘、PV、StorageClass
+   - Kubernetes 节点、物理服务器、网络、网卡、交换机和共享存储依赖
    - 作为依赖诊断和关系上下文呈现，不与容器/KubeVirt 形成第三个等权主入口
 
-主资源入口只显示“容器资源”和“KubeVirt 虚拟机”。Service、Ingress、EndpointSlice、PVC 跟随容器资源；VM、VMI、DataVolume、虚拟机磁盘与 NAD 跟随 KubeVirt。Kubernetes 节点、物理服务器、CNI、CSI、交换机与存储池进入集群基础能力。PV、StorageClass 等可从 PVC、虚拟机磁盘或基础能力进入，但必须指向同一个 canonical UID，不能重复计数或复制身份。
+主资源入口只显示“容器资源”和“KubeVirt 虚拟机”。PVC 不归入容器资源主计数，虚拟机磁盘也不作为 KubeVirt 资源数；两者统一通过共享存储依赖入口和资源详情进入。NAD 不作为资源总览主计数，只有被 Pod/VMI 实际引用时才进入网络详情与关系图。Kubernetes 节点、物理服务器、CNI、CSI、交换机与存储池进入集群基础能力。任何入口看到的 PVC、PV、StorageClass 都必须指向同一个 canonical UID，不能重复计数或复制身份。
 
 `job`、`cronjob`、`ingress` 若现有 Graph DTO 尚未具备，需要扩展已知类型和只读资源目录；在数据源未接入前显示明确的“尚未采集”，不得模拟数量。
 
-### 5.2 稳定引用
+### 5.2 共享存储依赖模型
+
+PVC 与虚拟机磁盘不是同一资源：磁盘是呈现给虚拟机来宾系统的设备，PVC 是 Kubernetes 对持久卷的声明。UI 使用一条可追溯依赖链统一解释二者：
+
+```text
+VM/VMI ─使用→ 磁盘设备 ─引用→ Volume ─来源于→ DataVolume/PVC ─绑定到→ PV ─由→ StorageClass ─供给自→ 后端存储
+Pod ─挂载→ PVC ─绑定到→ PV ─由→ StorageClass ─供给自→ 后端存储
+```
+
+- 集群总览的容器资源和 KubeVirt 卡片只显示“受存储问题影响的 Pod/VM 数”和最高优先级存储问题，不显示 PVC/磁盘裸数量。
+- 共享存储依赖入口以 PVC 为 canonical 声明身份，可从 Pod、VM/VMI、PV、StorageClass 或存储后端反向查看影响。
+- VM/VMI 详情提供“磁盘与卷”表格，显示设备名、总线、Volume、DataVolume/PVC 来源、容量、I/O 和健康，但不得把同一 PVC 复制成虚拟机专属资源。
+- 只有已采集并可验证的 DataVolume CRD 才可显示；未接入时写“尚未采集”，不得根据 PVC 名称推测。
+
+### 5.3 KubeVirt 辅助网络语义
+
+NetworkAttachmentDefinition（NAD）是 Multus/CNI 的**辅助网络定义**，不是物理网络、网卡或虚拟机接口。关系必须来自 KubeVirt `spec.networks[].multus.networkName` 等权威字段，并表达为：
+
+```text
+VMI ─具有→ 虚拟接口 ─使用→ Multus 辅助网络定义（NAD） ─配置→ CNI/Bridge/SR-IOV ─接入→ 实际网络
+```
+
+- 默认资源总览不展示 NAD 数量；只有当前集群启用 Multus 且存在真实引用时，才在 VM/VMI/Pod 详情、网络依赖和图谱中展示。
+- 未启用 Multus 时显示“不适用”，不是“0 个且健康”；NAD 数据源不可用时显示“未知/尚未采集”。
+- VM 与 VMI 不得混用：运行期接口和 NAD 关系优先挂在 VMI；VM 通过“实例化”关系继承查看。
+
+### 5.4 稳定引用
 
 ```ts
 export type ResourceGroup = 'container' | 'kubevirt' | 'foundation'
@@ -195,7 +232,7 @@ export interface ClusterContext {
 - 资源目录、详情、图谱、观测查询键都包含 `tenantId + clusterId + entityUid + timeRange` 中适用的字段。
 - 集群切换时取消旧请求并清理旧资源缓存，避免跨集群残影。
 
-### 5.3 业务语义投影
+### 5.5 业务语义投影
 
 业务、应用、中间件和 APM 服务数据允许出现在资源详情的“业务标签”区域，例如：
 
@@ -253,6 +290,7 @@ export interface ClusterContext {
 │ 集群运维 │                                                                  │
 │ 调查     │                         内容画布                                 │
 │ 处置     │                                                                  │
+│ 知识     │                                                                  │
 │ 报告     │                                                                  │
 │ 管理     │                                                                  │
 └──────────┴──────────────────────────────────────────────────────────────────┘
@@ -277,7 +315,7 @@ export interface ClusterContext {
 
 ### 7.3 信息密度
 
-- 首屏先给结论、证据和行动入口，再给资源数量与趋势。
+- 首屏先给需要处理的问题、直接影响、证据可信度和行动入口，再给资源数量与趋势。
 - 同一行关键事实不超过 6 个；不同语义不强行做成等宽彩色 KPI 卡；一个页面只保留一个突出的结论和一个主动作。
 - 状态卡使用一致的标题和数值基线，允许内容区因完整文本自然增高。
 - 表格主列固定为类型、名称、定位路径和健康；UUID、来源和扩展字段进入详情。
@@ -289,36 +327,36 @@ export interface ClusterContext {
 
 ### 8.1 登录页
 
-- 左侧为产品定位与三项真实能力：多集群健康、资源载体观测、调查与受控处置。
+- 左侧为产品定位与三项真实能力：多集群问题态势、资源载体观测、调查与受控处置。
 - 右侧为紧凑登录卡，左右内容在主视区垂直居中，避免上密下空；不展示虚构实时告警、客户数量或健康数据。
 - 中文产品名为一级标题，英文副标题只作辅助说明，不与中文争夺层级。
 - 背景使用克制的资源关系线稿或网格，不使用与平台无关的城市、地球或云朵插画。
 - 登录失败在表单内就近提示，保留输入，支持键盘和密码可见性切换。
 
-### 8.2 平台总览：生产云平台健康
+### 8.2 平台总览：云平台运营态势
 
 路由 `/overview`，统计范围固定为全部有权纳管集群。
 
 ```text
-┌ 生产云平台健康 [严重] ─────────── 全部纳管集群 · 更新于 10:32 ┐
-│ 状态依据 │ 12 个集群：健康 8 / 降级 2 / 严重 1 / 未知 1       │
-│ 采集覆盖 118/120 · 98.3% │ 最新数据 14 秒前                  │
+┌ 云平台运营态势 ───────────────── 全部纳管集群 · 更新于 10:32 ┐
+│ 严重问题 3（新增 1 / 处置中 1 / 待验证 1）│ 受影响集群 2   │
+│ 未知/陈旧集群 1 │ 集群 12：健康 8 / 降级 2 / 严重 1 / 未知 1 │
+│ 采集覆盖 118/120 · 98.3% │ 最新 14 秒前 · 最旧 7 分钟前     │
 ├──────────────────────────────────────────────────────────────┤
-│ 集群健康列表与排序（7栏）          │ 最高优先级风险（5栏）      │
+│ 需要关注的集群（7栏）              │ 当前最高优先级问题（5栏）  │
 ├────────────────────────────────────┴─────────────────────────┤
 │ 运维数据与能力状态：6/7 正常 · 仅展开 1 个异常项              │
 ├──────────────────────────────────────────────────────────────┤
-│ 近期平台变化 / 需要关注的集群                                 │
+│ 近期变化 / 问题趋势 / 已进入处置流程                           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 首屏显示：
 
-- 平台状态、状态依据和规则版本入口。示例状态必须与示例依据一致。
-- 纳管集群数及健康/降级/严重/未知分布。
-- 采集覆盖率的分子、分母、缺口与更新时间。
-- 最新数据时间。
-- 最高优先级风险，显示所属集群、真实资源载体、严重度、持续时间和主动作。
+- 当前活动严重问题、受影响集群和未知/陈旧集群；数值必须可以下钻到实际对象，不能是无来源 KPI。
+- 纳管集群数及健康/降级/严重/未知分布，但不据此生成“整个平台严重”等重复结论。
+- 采集覆盖率的分子、分母、缺口、更新时间，以及所有已读取来源中的最旧有效数据时间。
+- 最高优先级问题，显示所属集群、真实资源载体、直接影响、严重度、持续时间、证据新鲜度和主动作。
 - 集群健康列表按严重、降级、未知、健康排序；列表行同时给出主要原因和最新数据时间，点击实际集群进入详细总览。
 
 采集覆盖只在主摘要中出现一次，不在页面下方重复制造第二份口径。“运维数据与能力状态”仅概括 AIOps 自身可信度，例如资源同步、指标、日志、Trace、拓扑和处置能力；健康项按 `正常数/总数` 收敛，异常项显示名称、影响范围、最近成功时间和管理入口。完整详情只在系统管理展示。
@@ -344,11 +382,11 @@ export interface ClusterContext {
 ```
 
 - “容器资源”和“KubeVirt 虚拟机”视觉权重、卡片尺寸和下钻能力相同。
-- 容器资源按工作负载、Pod/Container、Kubernetes Service/Ingress、PVC 展示健康分布和异常数。
-- KubeVirt 展示 VM、运行中 VMI、未就绪、迁移中/失败、磁盘和网络异常。
+- 容器资源直接按 Deployment、StatefulSet、DaemonSet、Job、CronJob、Pod、Kubernetes Service、Ingress 展示总数、异常数和未知/陈旧数；不得显示泛化 Workload，也不得合并 Pod/Container 或 Service/Ingress。
+- KubeVirt 展示 VM、VMI、未就绪 VM/VMI、迁移中和迁移失败；存储与网络只显示“受影响 VM 数”和最高优先级依赖问题，不显示磁盘或 NAD 裸数量。
 - 禁止把所有异构资源汇总成“2,397 个健康 / 99.1%”一类总体比例。大量 Pod 会稀释少量节点、虚拟机或控制面严重故障，不能形成可信结论。
 - “集群基础能力”使用紧凑状态带展示 Kubernetes 控制面、节点与物理宿主、网络面、存储面、KubeVirt 能力；每项显示状态、关键依据和受影响资源，不显示“网络 18 / 存储 112”等语义不明的裸数量。
-- 网络面依据至少来自 CNI、NAD、关键链路、丢包与错误；存储面依据至少来自 CSI、StorageClass、存储池、容量与 I/O。尚未采集的维度标记未知或部分，不假定健康。
+- 网络面依据至少来自 CNI、实际引用的 Multus/NAD、关键链路、丢包与错误；存储面依据至少来自 CSI、StorageClass、存储池、容量与 I/O。尚未采集的维度标记未知、部分或不适用，不假定健康。
 - 基础能力发生关键故障时提升到当前最重要问题队列，并关联受影响的 Pod、Kubernetes Service 或 VM，而不是永远藏在底部。
 - 不显示“应用服务健康”一级卡片；可在问题或资源行中显示只读业务标签。
 
@@ -357,6 +395,8 @@ export interface ClusterContext {
 路由 `/clusters/:clusterId/resources`。默认显示异常优先的资源载体目录。
 
 - 顶部使用两个等权主工作组切换：容器资源、KubeVirt 虚拟机。“集群基础能力”是右侧辅助入口或二级筛选，不作为第三个等权 Tab。
+- 容器工作组使用明确的 Kind 筛选：Deployment、StatefulSet、DaemonSet、Job、CronJob、Pod、Kubernetes Service、Ingress；不提供 Workload、Pod/Container、Service/Ingress 合并项。
+- 共享存储依赖从辅助入口或资源关系进入，以 PVC/PV/StorageClass 的 canonical 身份展示；NAD 只在辅助网络或资源详情中按真实引用展示。
 - 当前页面内提供资源名称搜索、资源类型、Namespace、健康、数据时效筛选。
 - Namespace 筛选只在适用的 Kubernetes/KubeVirt 类型中出现。
 - 1440px 桌面宽屏使用 240px 筛选栏 + 宽资源结果区；快速详情按需从右侧 Drawer 滑入，不长期占用约 310px 结果宽度，也不覆盖导航与关闭入口。
@@ -386,11 +426,12 @@ export interface ClusterContext {
 
 类型化字段：
 
-- Deployment/StatefulSet/DaemonSet：期望/就绪副本、镜像、Pod、Service、PVC、变更版本。
-- Pod/Container：Phase、Ready、重启、资源请求/限制、节点、镜像、日志/Trace 可用性。
-- Kubernetes Service/Ingress：类型、选择器、Endpoint、入口、目标工作负载和流量健康。
-- PVC：容量、访问模式、绑定 PV、StorageClass、挂载工作负载和容量风险。
-- VM/VMI：运行状态、CPU/内存、Namespace、所在节点、启动器 Pod、磁盘、网络、迁移状态。
+- Deployment/StatefulSet/DaemonSet：期望/就绪副本、镜像、管理的 Pod、关联 Kubernetes Service、挂载卷、变更版本；ReplicaSet 仅作为控制链证据。
+- Job/CronJob：完成/失败数、最近/下次运行、并发策略、生成的 Pod、持续时间和失败事件。
+- Pod：Phase、Ready、重启、资源请求/限制、节点、卷、日志/Trace 可用性；Container 在 Pod 内分项显示，不作为独立详情类型入口。
+- Kubernetes Service：类型、选择器、EndpointSlice/就绪端点、目标 Pod 和流量健康；Ingress 单独显示规则、入口、证书、后端 Service 和流量健康。
+- 共享存储依赖：PVC 容量、访问模式、绑定 PV、StorageClass、挂载 Pod/VM、后端状态和容量/I/O 风险。
+- VM/VMI：运行状态、CPU/内存、Namespace、所在节点、启动器 Pod、迁移状态；“磁盘与卷”显示设备到 DataVolume/PVC 的引用链，“网络接口”显示 VMI 到实际引用 NAD/CNI/实际网络的关系。
 - Kubernetes 节点：角色、版本、Ready、污点、容量、承载 Pod/VM、物理宿主。
 - 物理机/网络/存储：真实身份、所属集群、与 Kubernetes/KubeVirt 载体的依赖关系和已接入健康事实。
 
@@ -425,7 +466,7 @@ export interface ClusterContext {
 
 - 顶部按待预检、待审批、执行中、待验证、已完成/失败展示状态管线和准确计数。
 - 主区为动作队列；右侧详情面板完整显示目标资源、风险、命令摘要、审批、执行日志、验证和回滚条件。
-- Kubernetes 节点、Workload、Pod、KubeVirt VM、网络和存储只展示服务端已声明的动作。
+- Kubernetes 节点、明确资源 Kind、Pod、KubeVirt VM/VMI、网络和存储只展示服务端已声明的动作。
 - 资源页只提供“建议动作/进入处置”，预检、风险、审批、执行、验证和回滚审计统一在处置中心完成。
 - Action 携带资源 UID、资源版本、Run、集群、动作版本和幂等键；资源版本变化必须重新预检。
 - 不提供跨集群“一键执行”。
@@ -433,11 +474,44 @@ export interface ClusterContext {
 
 ### 8.9 报告工作区
 
-报告以集群内资源事件为主语，采用自然内容高度的报告正文 + 证据/动作摘要布局，包含真实载体身份、影响链、证据、根因、动作、恢复验证和容量趋势。禁止使用固定大高度卡片制造空白区域。历史业务/应用/中间件字段可作为兼容标签展示，但不得替代资源载体。
+报告以集群内资源事件为主语，采用自然内容高度的报告正文 + 证据/动作摘要布局，包含真实载体身份、影响链、证据、根因、动作、恢复验证和容量趋势。禁止使用固定大高度卡片制造空白区域。历史业务/应用/中间件字段可作为兼容标签展示，但不得替代资源载体。“加入运维知识”只创建来源可追溯的待审核故障案例，不得直接进入生产检索。
 
-### 8.10 系统管理
+### 8.10 运维知识工作区
 
-系统管理使用独立的设置导航，聚焦纳管集群、AIOps 自身健康、采集器、图谱同步、数据可信度、能力策略、用户和审计。集群接入状态、被纳管云平台健康与 AIOps 自身健康分开表达，避免“已纳管”等同于“健康”，也避免同步 Worker 异常被误认为 Kubernetes 集群故障。
+路由 `/clusters/:clusterId/knowledge`。页面同时展示当前租户的平台通用知识和当前集群知识，保持当前真实集群上下文；它是 RAG 知识的治理与人工维护入口，不是资源关系图谱。
+
+```text
+┌ 运维知识 · cluster-a ─────────────────────── 新增知识 ┐
+│ 检索/索引可用性 │ 已发布 │ 待审核 │ 最近索引 │ 索引失败 │
+├───────────────────────────────────────────────────────┤
+│ 语义搜索  [类型] [范围] [状态] [资源 Kind] [来源] [标签] │
+├───────────────────────────────────────────────────────┤
+│ 故障案例 │ 运维文档 │ 内置 Playbook                  │
+│ 知识列表（标题/范围/来源/版本/状态/更新时间） │ 详情抽屉 │
+└───────────────────────────────────────────────────────┘
+```
+
+知识类型：
+
+- **故障案例**：来自报告、调查结论或人工录入，包含症状、根因、处理步骤、验证、关联资源 Kind、来源 Run/报告和适用范围。
+- **运维文档**：人工录入的 Markdown SOP、检查表或操作说明，保留作者、来源、版本和变更记录。
+- **内置 Playbook**：以 Git 为权威来源的版本化内容；UI 默认只读，发布状态与代码版本可追溯。
+
+页面和流程要求：
+
+- 页头只显示可操作的治理事实：检索/索引是否可用、已发布数、待审核数、最近成功索引时间和索引失败数。
+- 页面内语义搜索和筛选支持类型、范围、生命周期状态、资源 Kind、来源与标签；结果必须显示命中范围、片段来源和当前版本。
+- 详情展示全文、适用范围、来源、关联调查/报告、版本历史、审核记录和向量索引状态；不向普通用户暴露原始向量或 Embedding 参数。
+- 人工新增至少包含类型、标题、正文或结构化故障字段、适用范围、资源 Kind、来源说明、版本和标签；可“保存草稿”或“提交审核”。
+- 生命周期固定为 `draft → pending_review → published → disabled`。只有 `published` 的当前版本进入生产 RAG；修改已发布知识必须产生新版本并重新审核，禁用不物理删除审计历史。
+- 报告/调查中的“加入运维知识”创建 `pending_review` 故障案例，并自动附带来源；绝不直接发布或立即影响 AI 回答。
+- 检索范围始终受服务端授权约束：`tenant_id` 必须匹配，且知识范围为 `platform_common` 或当前 `cluster_id`。不得依赖前端过滤防止跨租户、跨集群泄漏。
+- `knowledge.read` 只能读取已授权范围内的已发布知识；`knowledge.submit` 可创建草稿、查看自己的草稿/审核结果并提交审核，可授予操作员；查看全部待审核内容以及发布、禁用、版本治理和索引重试需要 `knowledge.write`，首版仅管理员拥有。
+- 索引不可用时仍可浏览 MySQL 中的权威正文和治理状态，但语义检索明确降级；不得以空结果伪装“没有知识”。
+
+### 8.11 系统管理
+
+系统管理使用独立的设置导航，聚焦纳管集群、AIOps 自身健康、采集器、图谱同步、知识索引任务、数据可信度、能力策略、用户和审计。集群接入状态、各集群资源健康与 AIOps 自身健康分开表达，避免“已纳管”等同于“健康”，也避免同步 Worker 异常被误认为 Kubernetes 集群故障。
 
 ## 9. 知识图谱全新设计
 
@@ -447,9 +521,9 @@ export interface ClusterContext {
 
 - 容器链：`Deployment/StatefulSet ─管理→ Pod ─包含→ Container`。
 - 流量链：`Ingress ─路由到→ Kubernetes Service ─选择→ Pod`；EndpointSlice 是 Service 选择结果的事实证据，不替代主关系名称。
-- 存储链：`Pod/VMI ─挂载→ PVC ─绑定到→ PV`，再关联 StorageClass 与底层存储池。
+- 存储链：`Pod ─挂载→ PVC ─绑定到→ PV`；KubeVirt 使用 `VM/VMI ─使用→ 磁盘设备 ─引用→ Volume ─来源于→ DataVolume/PVC ─绑定到→ PV`，两条路径再关联同一 StorageClass 与底层存储池。
 - KubeVirt 链：`VM ─实例化→ VMI ─通过启动器运行→ virt-launcher Pod`，`VMI ─调度到→ Kubernetes Node`。
-- 网络链：`VMI ─连接到→ NAD`，Pod/VMI 再关联接口、CNI 与物理网络。
+- 网络链：`VMI ─具有→ 虚拟网络接口 ─连接到→ NAD ─配置→ Multus/CNI 网络 ─落到→ 实际网络`。NAD 引用必须读取 `spec.networks[].multus.networkName`；默认 Pod 网络不伪造 NAD，未安装 Multus 时显示“不适用”。
 - 宿主链：`Kubernetes Node ─映射到→ Physical Server`。
 
 `business`、`application`、APM `service`、`middleware` 节点默认不渲染；兼容关系只在“显示业务标签”开关或历史 Run 中以弱化注释呈现。
@@ -496,30 +570,55 @@ export interface ClusterContext {
 
 图谱下方提供完全等价的关系/故障链列表，至少包含“源资源、关系、目标资源、事实状态、来源、同步时间”，支持键盘、屏幕阅读器、分页和导出当前筛选。图谱加载失败时资源详情与关系列表仍可使用。
 
-## 10. 只读接口与事实边界
+## 10. 接口、权限与事实边界
 
 ### 10.1 平台聚合
 
 新增或收敛以下只读投影：
 
-- `GET /api/v1/platform/health`：平台状态、状态依据、集群分布、覆盖率、最新数据、组件状态、最高优先级风险。
+- `GET /api/v1/platform/overview`：返回当前活动严重问题、受影响集群、未知/陈旧集群、集群状态分布、覆盖率、最新/最旧有效数据、异常优先的能力状态和最高优先级问题；这是新 UI 的 canonical 平台接口。
+- `GET /api/v1/platform/health`：仅保留服务端平台规则状态供旧接口与自动化兼容，新 UI 不调用也不渲染其中的综合 `status`。
 - `GET /api/v1/platform/clusters?status=&q=&limit=&cursor=`：当前用户有权查看的纳管集群健康列表。
 
-平台接口忽略活动 cluster，不接受客户端 tenant 扩权，不支持任何写操作。响应统一携带 `generated_at`、`partial`、`stale`、`warning_codes`、已读取/预期范围和规则版本。
+平台接口忽略活动 cluster，不接受客户端 tenant 扩权，不支持任何写操作。响应统一携带 `generated_at`、`partial`、`stale`、`warning_codes`、已读取/预期范围和规则版本。问题计数必须定义去重主键、生命周期和时间窗，能够下钻到同一批实际问题，禁止把告警事件条数冒充问题数。
 
 ### 10.2 集群与资源
 
 - `GET /api/v1/clusters/{clusterId}/overview`
-- `GET /api/v1/resources/catalog?group=&type=&namespace=&q=&health=&limit=&cursor=`
-- `GET /api/v1/resources/summary`
-- `GET /api/v1/resources/detail?uid=<encoded entity_uid>`
+- `GET /api/v1/clusters/{clusterId}/resources/catalog?group=&type=&namespace=&q=&health=&limit=&cursor=`
+- `GET /api/v1/clusters/{clusterId}/resources/summary`
+- `GET /api/v1/clusters/{clusterId}/resources/detail?uid=<encoded entity_uid>`
 
 资源接口继续受服务端确认的 tenant + cluster 约束。目录和详情复用图谱与资产事实，不在浏览器拼接多套数据并猜测资源身份。
 
-### 10.3 事实来源
+### 10.3 运维知识与 RAG
+
+浏览器只访问 Query API 的 canonical 知识接口，不再调用已废弃的 `/api/v1/ai/knowledge*` 兼容路由：
+
+- `GET /api/v1/clusters/{clusterId}/knowledge?type=&scope=&status=&resource_kind=&source=&tag=&limit=&cursor=`：分页列表与筛选。
+- `POST /api/v1/clusters/{clusterId}/knowledge/search`：在授权范围内进行语义检索，返回命中文档、版本、片段来源、分数解释字段和索引时间。
+- `GET /api/v1/clusters/{clusterId}/knowledge/{knowledgeId}`：读取正文、范围、来源、版本、审核和索引状态。
+- `POST /api/v1/clusters/{clusterId}/knowledge`、`PATCH /api/v1/clusters/{clusterId}/knowledge/{knowledgeId}`：创建或修改草稿；修改已发布项时创建新版本。
+- `POST /api/v1/clusters/{clusterId}/knowledge/{knowledgeId}/submit`：提交审核。
+- `POST /api/v1/clusters/{clusterId}/knowledge/{knowledgeId}/review`：管理员批准或驳回；批准后发布当前版本并触发索引，驳回必须填写原因并退回 `draft`。
+- `POST /api/v1/clusters/{clusterId}/knowledge/{knowledgeId}/disable`：禁用但保留审计与历史版本。
+- `GET /api/v1/clusters/{clusterId}/knowledge/index-status`、`POST /api/v1/clusters/{clusterId}/knowledge/{knowledgeId}/reindex`：读取索引状态与管理员重试。
+
+所有读写由服务端从登录态确定 `tenant_id`，校验路径 `clusterId`，再应用 `platform_common OR cluster_id = current_cluster` 规则。请求体不能指定其他租户；非管理员创建 `platform_common` 内容时必须被拒绝。列表、全文读取、语义检索、AI 工具检索和索引任务必须复用同一授权谓词。
+
+权威数据与投影边界：
+
+- MySQL 是人工知识、报告派生案例、版本、范围、审核、审计和索引任务状态的权威来源。
+- 仓库中的 Playbook 文件是内置 Playbook 的权威来源；发布流程把可检索版本及其 Git revision 登记到 MySQL，不允许在 UI 直接改写文件。
+- Chroma 仅是可重建的向量检索投影，不是正文或权限真相。每个向量必须携带 `tenant_id`、`scope_type`、`cluster_id`、`knowledge_id`、`version_id`、`type`、`status=published`、`source_revision` 和内容校验值。
+- 审核发布与索引通过持久化 outbox/任务状态衔接；索引失败不回滚已审核正文，但该版本标为“索引失败”且不得被语义检索返回，管理员可以重试。
+- AI 调查读取的本地 RAG 兼容逻辑只能用于明确的开发兼容模式；生产请求必须走上述服务端范围校验与 canonical 检索，不得使用无租户、无集群元数据的本地集合。
+
+### 10.4 事实来源
 
 - Query API、资源同步、Graph DTO 是资源身份和关系的权威来源。
 - Run、Evidence、Hypothesis、RCA、Action 和验证结果继续是调查处置事实。
+- MySQL 知识记录与 Git Playbook 是运维知识权威来源，Chroma 只提供可重建检索投影。
 - 前端不根据颜色、名称或几何位置推断健康、关系方向、可执行能力或业务映射。
 - 兼容接口仍需 `environment` 时，边界适配器固定发送 `prod`；该字段不进入 UI、URL Scope 或用户偏好。
 
@@ -530,7 +629,7 @@ export interface ClusterContext {
 - **≥1440px：** 导航轨 88px；12 栏内容网格；图谱检查器和详情侧区常驻。
 - **1280–1439px：** 导航轨 72px；辅助信息折叠为可展开区；右侧检查器缩至 288px。
 - **1024–1279px：** 导航只显示图标并提供可访问标签；筛选栏和检查器改为 Drawer；双栏内容按优先级重排为单栏。
-- **<1024px：** 允许查看平台与集群健康，生产处置显示不支持提示，不承诺完整编辑体验。
+- **<1024px：** 允许查看平台问题态势与集群健康，生产处置显示不支持提示，不承诺完整编辑体验。
 
 三档强制视觉验收视口为 1440×900、1280×720、1024×768。
 
@@ -549,6 +648,7 @@ export interface ClusterContext {
 - 局部资源搜索防抖 250ms，最少 2 个字符；筛选和分页由服务端执行。
 - 图谱按需加载邻居，销毁页面时释放 G6 实例与事件监听。
 - 大列表使用分页或虚拟滚动；大图使用聚合与渐进展开，不下载全量后再前端裁剪。
+- 知识列表与语义检索使用服务端分页和范围过滤；正文按需加载，索引状态独立缓存，发布或禁用后必须精确失效相关 Query。
 
 ## 12. 迁移与兼容
 
@@ -556,18 +656,20 @@ export interface ClusterContext {
 
 可独立发布阶段：
 
-1. 建立平台聚合与集群概览只读接口，保证 `/overview` 不受活动集群影响。
+1. 修正平台聚合与集群概览只读接口，保证 `/overview` 不受活动集群影响，并以可下钻问题事实替代平台综合状态主视觉。
 2. 建立全新壳层，移除全局搜索、环境/“生产平台”标签、全局 Namespace 和全局资源选择器。
 3. 新建集群详细总览和基于路由的集群上下文。
-4. 新建容器与 KubeVirt 两个主资源目录，以及集群基础能力辅助入口，并扩展 Job/CronJob/Ingress 类型。
-5. 按新布局重建资源详情、观测、调查、处置、报告和管理页。
-6. 重建知识图谱布局、聚合、渐进加载和等价关系列表。
-7. 统一全部数据状态，完成三档视口与内容完整性回归。
-8. 保留旧深链和历史数据兼容至少两个小版本，再移除废弃 UI 代码。
+4. 新建容器与 KubeVirt 两个主资源目录，按明确 Kind 展示，并建立共享存储和实际引用 NAD 的辅助依赖入口。
+5. 建立 MySQL 权威知识模型、Git Playbook 登记、审核/版本/outbox/索引状态和受范围约束的 Query API canonical 接口。
+6. 按新布局重建资源详情、观测、调查、处置、运维知识、报告和管理页。
+7. 重建知识图谱布局、聚合、渐进加载和等价关系列表，并修正 KubeVirt 存储链与 `multus.networkName` 关系。
+8. 迁移可证明来源和范围的历史 `ops_cases`/知识记录；范围未知的内容进入待审核隔离区且不参与检索。旧知识页和 `/api/v1/ai/knowledge*` 不恢复为生产浏览器接口。
+9. 统一全部数据状态，完成三档视口、内容完整性、知识权限与索引降级回归。
+10. 保留旧深链和历史 Run/Action 数据兼容至少两个小版本，再移除废弃 UI 代码。
 
 旧路由映射：
 
-- `/observability/service` → 当前集群容器资源页，并提示原业务/APM Service 视图已收敛为真实载体；存在可信映射时可直接筛选对应 Workload、Pod 或 Kubernetes Service，不把两类 `service` 自动等同。
+- `/observability/service` → 当前集群容器资源页，并提示原业务/APM Service 视图已收敛为真实载体；存在可信映射时可直接筛选对应明确控制器 Kind、Pod 或 Kubernetes Service，不把两类 `service` 自动等同。
 - `/observability/vms` → 当前集群 KubeVirt 资源页。
 - `/infra/k8s` → 当前集群容器资源页。
 - `/hardware` → 当前集群基础能力入口的物理服务器筛选。
@@ -581,14 +683,20 @@ export interface ClusterContext {
 - `/overview` 在切换或恢复任何活动集群后，仍显示全部授权纳管集群的相同聚合范围。
 - 顶栏无全局搜索、环境、生产平台、生产集群、Namespace、节点或全局资源选择器。
 - 选择真实集群后进入 `/clusters/:clusterId`，Scope 提交与回读失败不会串数据。
-- 平台首屏完整显示平台状态及依据、集群总数与四态分布、覆盖率分子/分母、最新数据、最高优先级风险和异常优先的运维数据与能力状态。
-- 平台健康与 AIOps 自身健康不得混为一个状态；示例、接口状态和原因之间不得互相矛盾。
+- 平台首屏不显示独立综合状态大卡，完整显示当前活动严重问题、受影响集群、未知/陈旧集群、集群总数与四态分布、覆盖率分子/分母、最新与最旧有效数据、最高优先级问题和异常优先的运维数据与能力状态。
+- 平台问题态势、各集群健康与 AIOps 自身健康不得混为一个状态；每个问题计数都能下钻到采用同一口径的实际问题。
 - 页面不出现 0–100 健康分数，不用前端推断冒充健康事实。
 - 容器资源与 KubeVirt 在集群总览中同级；业务、应用、中间件和 APM Service 无一级入口。
+- 容器资源直接显示 Deployment、StatefulSet、DaemonSet、Job、CronJob、Pod、Kubernetes Service、Ingress；不得出现泛化 Workload 或 Pod/Container、Service/Ingress 合并计数。
+- Container、ReplicaSet、EndpointSlice 只在相应资源详情和关系证据中出现，不作为一级资源。
+- PVC 与虚拟机磁盘不重复计数；任何入口均能回到同一 PVC canonical UID，并能读出 VM/VMI 磁盘设备到 PVC/PV/StorageClass/后端的依赖链。
+- NAD 只在实际 `multus.networkName` 引用的辅助网络详情和关系中出现；没有 Multus 时显示“不适用”，不得显示虚构的零值健康。
 - 集群总览不显示跨类型“健康资源总数/百分比”，不以“网络数量/存储数量”替代基础能力健康依据。
 - Kubernetes Service 正常保留，并与历史 APM `service` 类型清晰区分。
 - 物理机、虚拟机、网络和存储均带明确 `clusterId`，跨集群请求由服务端拒绝。
 - 所有资源详情、调查和动作都能回溯到 canonical resource UID 与集群。
+- 运维知识具有独立一级入口，列表、详情、人工新增、报告派生、审核发布、禁用、重建索引和版本历史均通过生产 canonical API 工作。
+- 只有当前租户下 `platform_common` 或当前集群范围且状态为 `published` 的当前版本能够被 RAG 返回；前端参数、直接 Chroma 查询和跨集群深链均不能绕过范围校验。
 
 ### 13.2 内容完整与 UI 边界
 
@@ -597,7 +705,8 @@ export interface ClusterContext {
 - 1440×900、1280×720、1024×768 无页面级横向溢出、按钮重叠、浮层出界或关闭入口不可见。
 - 正文不小于 14px，辅助文字不小于 12px；长名称可换行且有完整查看/复制路径。
 - 正常、加载、空、错误、部分、陈旧、无权限状态都经过视觉验收。
-- 登录、平台总览、集群总览、资源列表、资源详情、观测、调查、处置、报告、管理页按本文全新布局实现，不以现有页面布局通过验收。
+- 登录、平台总览、集群总览、资源列表、资源详情、观测、调查、处置、运维知识、报告、管理页按本文全新布局实现，不以现有页面布局通过验收。
+- 运维知识在正常、索引不可用、索引失败、空、部分、陈旧和无权限状态下布局稳定；索引故障不能阻断权威正文浏览，也不能伪装为零命中。
 
 ### 13.3 图谱
 
@@ -610,24 +719,27 @@ export interface ClusterContext {
 
 ### 13.4 关键端到端旅程
 
-1. 登录 → 查看全部纳管集群的平台健康 → 识别最高优先级风险 → 进入实际集群。
-2. 集群总览 → 查看容器异常 → 定位 Deployment/Pod/Container → 查看证据 → 创建调查。
-3. 集群总览 → 查看 KubeVirt 异常 → 定位 VM/VMI → 查看节点、网络、磁盘关系 → 创建调查。
+1. 登录 → 查看全部纳管集群的问题态势 → 识别最高优先级问题及影响 → 进入实际集群。
+2. 集群总览 → 查看明确 Kind 的容器异常 → 定位 Deployment 或 Pod → 在 Pod 内查看 Container 证据 → 创建调查。
+3. 集群总览 → 查看 KubeVirt 异常 → 定位 VM/VMI → 查看节点、NAD 辅助网络和磁盘到 PVC 的关系 → 创建调查。
 4. Kubernetes Service/Ingress → Endpoint/Pod 关系 → 指标/日志/Trace → 主故障链。
 5. Run 主故障链 → Action Proposal → 预检 → 审批 → 执行 → 验证回显。
 6. 大规模集群图谱 → 查看聚合计数 → 展开一页 → 搜索未渲染资源 → 切换等价关系列表。
 7. 切换集群失败或深链无权限 → 保留原上下文并给出明确错误，不泄漏其他集群资源。
-8. 长名称、长状态原因、大数值、宽关系和大量结果 → 内容可完整访问且页面不越界。
+8. 报告/调查 → 加入运维知识为待审核案例 → 管理员审核发布 → 当前集群语义检索命中并回溯来源。
+9. 平台通用知识与集群知识 → 当前集群可检索；另一个集群专属知识与另一租户知识 → 不可读取且不泄漏数量或标题。
+10. 长名称、长状态原因、大数值、宽关系和大量结果 → 内容可完整访问且页面不越界。
 
 ### 13.5 五秒可判读性
 
 在不打开第二个页面的前提下，目标用户应能在 5 秒内回答：
 
-1. 当前生产云平台或实际集群是什么状态，为什么。
-2. 现在最优先处理哪个集群、Pod、Kubernetes Service 或 KubeVirt VM。
+1. 当前有哪些必须处理的问题，影响哪些实际集群和资源，数据是否可信。
+2. 现在最优先处理哪个集群、Pod、Kubernetes Service 或 KubeVirt VM，以及直接影响是什么。
 3. 当前关系边从什么资源指向什么资源，表示什么关系。
 4. 当前关系是事实还是推断，来自何处，数据是否新鲜。
 5. 下一步主动作是什么，是否需要预检、审批或更多证据。
+6. 当前检索到的运维知识适用于平台通用还是本集群，是否已审核发布，来源是什么。
 
 任一可见关系若必须依赖猜测颜色、箭头几何、悬停或外部文档才能理解，即视为图谱验收失败。
 
@@ -639,3 +751,20 @@ export interface ClusterContext {
 - 不用页面饱满度为理由伪造 Owner、健康、关系、容量、风险或观测数据。
 - 不自动执行高风险动作，不用隐藏按钮代替服务端鉴权。
 - 不在本轮改变历史 Run/Action 数据的底层兼容语义。
+- 不恢复旧知识页面或把 Chroma 当作权威数据库，不提供原始向量、集合或 Embedding 参数运维 UI。
+- 不在首版支持任意 Office/PDF/网页抓取或批量文件导入；人工新增仅支持结构化故障案例与受控 Markdown 运维文档。
+
+## 15. 现有代码审核依据
+
+本次 A 方案不是只增加一个前端菜单；以下仓库事实说明必须同时修正产品入口和生产数据合同：
+
+- `ai-orchestrator/rag.py` 已有 `ops_cases`、`ops_playbooks` 和 BGE 嵌入器，证明 RAG/Playbook 是现有能力，不应从产品信息架构中消失。
+- `ai-orchestrator/main.py` 的 `list_knowledge` 对 `type=knowledge` 固定返回空列表，但 `add_knowledge` 仍通过 `KnowledgeStore.add` 写入知识类型，统计又把 `knowledge` 固定为 0；当前读、写、统计口径互相矛盾，不能直接恢复旧页面。
+- `observability-frontend/src/api/client.ts` 保留知识列表、新增、删除、案例新增、统计和重载调用，但 `observability-frontend/src/App.tsx` 没有知识路由；现状是残留客户端 API，不是完整产品能力。
+- `ai-apm-query-go/internal/api/settings.go` 的生产 `ProxyAI` 对非 Run 的旧浏览器路由返回 `LEGACY_ROUTE_RETIRED`；因此 `/api/v1/ai/knowledge*` 在生产默认环境不能作为新页面合同。
+- `ai-apm-query-go/internal/api/knowledge_backend.go` 要求 `CHROMA_URL`，默认 collection 为 `aiops-knowledge`，而 orchestrator 使用 `ops_cases`/`ops_playbooks`；Helm 当前没有为 Query API 建立与该合同一致的外部 Chroma 服务和环境变量，生产检索链不闭合。
+- `ai-orchestrator/tools.py` 已明确无租户/集群边界的本地 Chroma 只能作为开发兼容缝，带 Scope 的生产调查必须走 Query API；新知识页必须沿用同一 fail-closed 原则。
+- `ai-orchestrator/kg/builders/kubevirt.py` 当前把 VM 模板中的 `network.name` 当作 NAD 名称，并把关系直接挂在 VM；正确实现必须读取 `multus.networkName`，运行期优先挂在 VMI，并显式建模虚拟接口。
+- 同一 KubeVirt builder 当前只从 VM 到 PVC 建立 `USES_VOLUME`，没有 DataVolume、磁盘设备和 Volume 层；共享存储链必须在数据源真实接入后逐层补齐，不能仅改 UI 标签。
+
+这些差距必须进入下一版实施计划的测试和迁移任务；本规格审阅通过前不修改生产代码。

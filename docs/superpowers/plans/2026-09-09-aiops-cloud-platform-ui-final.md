@@ -1,8 +1,10 @@
-# AIOps 多集群云平台 UI 最终实施计划
+# AIOps 多集群云平台 UI 实施计划（旧版，已暂停）
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task, superpowers:test-driven-development for every production change, and superpowers:verification-before-completion before every commit. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **暂停执行（2026-09-10）：** 用户已选择正式规格的 A 方案修订，本计划基于旧的“平台综合状态、Workload/Pod-Container/PVC、磁盘/NAD 主统计、无运维知识页”合同，已不再有效。任何智能体不得继续执行本计划的任务或把现有 V2 PNG/HTML 当作验收基线。待修订规格完成书面审阅、V3 原型与渲染确认后，使用 `superpowers:writing-plans` 生成替代实施计划。
 
-**Goal:** 将现有上一版资源运维 UI 重建为已确认的单一生产环境、多 Kubernetes 集群云平台运维产品，并让平台健康、集群健康、容器、KubeVirt、观测、调查、处置、报告和知识图谱严格遵循正式规格与实际渲染基线。
+> **For agentic workers:** DO NOT EXECUTE THIS FILE. The instructions below are retained only as historical context and will be replaced after the A-scheme spec and V3 renders are approved.
+
+**历史 Goal（已失效）：** 将现有上一版资源运维 UI 重建为已确认的单一生产环境、多 Kubernetes 集群云平台运维产品，并让平台健康、集群健康、容器、KubeVirt、观测、调查、处置、报告和知识图谱严格遵循正式规格与实际渲染基线。
 
 **Architecture:** 服务端以当前用户获授权的真实 Kubernetes 集群为授权根，分别提供不受活动集群影响的平台聚合、明确集群下的健康/资源只读投影，以及可分页的图谱关系事实。前端以路径中的 `clusterId` 表达集群工作区，以 canonical resource UID 表达资源身份；平台级和集群级 query cache 完全隔离。页面共享一套有边界的数据区域、健康语义、视觉 Token 和响应式壳层，但不复用旧页面布局。
 
@@ -14,7 +16,7 @@
 
 **Architecture audit:** `/Users/mssc/.cursor/projects/empty-window/canvases/aiops-cloud-platform-architecture-audit-2026-09-09.canvas.tsx`
 
-## 设计终审结论
+## 设计终审结论（历史，已撤销）
 
 - 正式规格、UI 指南、14 张 Chromium 渲染图、可运行原型和架构审核 Canvas 的产品方向一致，可以进入编码。
 - 正式规格是语义与数据合同的最高优先级；PNG/HTML 是视觉层级和响应式基线，示例数据不得进入生产代码或接口失败回退。
