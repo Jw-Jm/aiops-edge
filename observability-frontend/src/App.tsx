@@ -14,6 +14,7 @@ import { LEGACY_REDIRECTS, clusterPath, visiblePrimaryNav } from './layout/navCo
 const Login = lazy(() => import('./pages/Login'))
 const ChangePassword = lazy(() => import('./pages/ChangePassword'))
 const Overview = lazy(() => import('./pages/Overview'))
+const ClusterOverview = lazy(() => import('./pages/Clusters/ClusterOverview'))
 const ServiceObservability = lazy(() => import('./pages/observability/ServiceObservability'))
 const Trace = lazy(() => import('./pages/observability/Trace'))
 const LogMetrics = lazy(() => import('./pages/observability/LogMetrics'))
@@ -318,7 +319,7 @@ function AppLayout() {
             <Routes>
               {Array.from(LEGACY_REDIRECTS.entries()).map(([from, to]) => <Route key={from} path={from} element={<LegacyRedirect target={to} />} />)}
               <Route path="/clusters" element={<ClusterEntry />} />
-              <Route path="/clusters/:clusterId" element={<ClusterRouteGate><ClusterOverviewPlaceholder /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId" element={<ClusterRouteGate><ClusterOverview /></ClusterRouteGate>} />
               <Route path="/clusters/:clusterId/resources" element={<ClusterRouteGate><Resources /></ClusterRouteGate>} />
               <Route path="/clusters/:clusterId/resources/:entityUid" element={<ClusterRouteGate><Resources /></ClusterRouteGate>} />
               <Route path="/clusters/:clusterId/observe" element={<ClusterRouteGate><Observe /></ClusterRouteGate>} />

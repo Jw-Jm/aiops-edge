@@ -255,7 +255,7 @@ git commit -m "feat(api): add platform operations overview"
 - Consumes: Task 3 `PlatformOverview` 与 Task 2 `BoundedDataRegion`。
 - Produces: `GET /api/v1/clusters/{clusterId}/overview`、`PlatformOperationsSummary`、`DirectResourceKindPanel`、`ClusterFoundationBand`。
 
-- [ ] **Step 1: 写失败测试覆盖首屏判读与明确 Kind**
+- [x] **Step 1: 写失败测试覆盖首屏判读与明确 Kind**
 
 ```tsx
 expect(await screen.findByText('当前活动严重问题')).toBeVisible()
@@ -268,13 +268,13 @@ for (const kind of ['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'CronJob', 
 expect(screen.queryByText('Workload')).not.toBeInTheDocument()
 ```
 
-- [ ] **Step 2: 运行定向测试确认旧总览失败**
+- [x] **Step 2: 运行定向测试确认旧总览失败**
 
 Run: `cd observability-frontend && npm test -- --run src/pages/Overview/Overview.test.tsx src/pages/Clusters/ClusterOverview.test.tsx`
 
 Expected: FAIL，旧总览依赖活动集群并展示服务/调用量等旧 KPI。
 
-- [ ] **Step 3: 实现平台与集群页面**
+- [x] **Step 3: 实现平台与集群页面**
 
 ```ts
 export interface ResourceKindSummary {
@@ -293,7 +293,7 @@ export interface FoundationFact {
 
 平台页按 V3 图 01 编排；集群页按图 02 编排。KubeVirt 只显示 VM、VMI、未就绪、迁移中/失败、受存储或网络问题影响的 VM 数，不显示磁盘/NAD 数。基础能力只显示状态、依据与影响。
 
-- [ ] **Step 4: 运行全部相关测试与构建**
+- [x] **Step 4: 运行全部相关测试与构建**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/bootstrap -run 'ClusterOverview' -count=1`
 
@@ -301,7 +301,7 @@ Run: `cd observability-frontend && npm test -- --run src/pages/Overview src/page
 
 Expected: PASS，平台页在没有活动集群时仍可读。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add ai-apm-query-go/internal/api/cluster_overview* ai-apm-query-go/internal/bootstrap/http.go observability-frontend/src/api/clusterOverview.ts observability-frontend/src/pages/Overview observability-frontend/src/pages/Clusters

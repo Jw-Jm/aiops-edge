@@ -57,6 +57,7 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	// MySQL admin role before the canonical registration boundary is reached.
 	mux.HandleFunc("/api/v1/clusters", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 	mux.HandleFunc("/api/v1/clusters/", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
+	mux.HandleFunc("/api/v1/clusters/{clusterId}/overview", handler.ClusterOverview)
 	mux.HandleFunc("/api/v1/platform/overview", handler.PlatformOverview)
 	mux.HandleFunc("/api/v1/platform/clusters", handler.PlatformClusters)
 
