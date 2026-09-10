@@ -37,7 +37,7 @@ const AiDock: React.FC = () => {
             <span className="dh-close" onClick={() => setOpen(false)}><AppIcon name="x" /></span>
           </div>
           <div className="ai-dock__prompts">
-            <span className="ai-pchip" onClick={() => ask('分析 prod 集群故障根因')}><AppIcon name="sparkles" />分析集群根因</span>
+            <span className="ai-pchip" onClick={() => ask('分析当前集群故障根因')}><AppIcon name="sparkles" />分析集群根因</span>
             <span className="ai-pchip" onClick={() => ask('巡检所有 K8s 集群')}><AppIcon name="sparkles" />集群巡检</span>
             <span className="ai-pchip" onClick={() => ask('为什么 order-svc 延迟升高')}>服务延迟排查</span>
           </div>

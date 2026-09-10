@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestWALAppendAckReplay(t *testing.T) {
 	dir := t.TempDir()
@@ -24,6 +27,27 @@ func TestWALAppendAckReplay(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Seq != s2 {
 		t.Fatalf("expected only unacked seq=%d on replay, got %v", s2, entries)
+	}
+}
+
+func TestWALReplaySupportsLargeRecord(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWAL(dir, "events.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	payload := bytes.Repeat([]byte("x"), 128*1024)
+	seq, err := w.Append("event", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := w.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Seq != seq {
+		t.Fatalf("expected large unacked seq=%d to replay, got %v", seq, entries)
 	}
 }
 

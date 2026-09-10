@@ -122,7 +122,7 @@ function ClusterOverviewPlaceholder() {
   return <section className="page-header"><div><h1 className="page-title">集群详细总览</h1><p className="page-desc">当前集群：{clusterId}</p></div></section>
 }
 
-function AppLayout() {
+export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const collapsed = useUIStore((s) => s.collapsed)
@@ -303,7 +303,7 @@ function AppLayout() {
 
         {/* 内容区 */}
         <main style={{ flex: 1, padding: '20px 24px', overflow: 'auto', minHeight: 0 }}>
-          {!activeClusterId && !scopeLoading ? (
+          {!activeClusterId && pathname !== '/overview' && !scopeLoading ? (
             <Alert
               showIcon
               type={scopeError ? 'error' : 'warning'}

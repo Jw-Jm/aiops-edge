@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS operations_knowledge (
   INDEX ix_operations_knowledge_scope (tenant_id, scope_type, cluster_id, status),
   INDEX ix_operations_knowledge_type (tenant_id, knowledge_type, status)
 );
+-- statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS operations_knowledge_versions (
   version_id CHAR(36) PRIMARY KEY,
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS operations_knowledge_versions (
   UNIQUE KEY uq_operations_knowledge_version (knowledge_id, version_no),
   CONSTRAINT fk_operations_knowledge_version FOREIGN KEY (knowledge_id) REFERENCES operations_knowledge(knowledge_id)
 );
+-- statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS operations_knowledge_reviews (
   review_id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -52,6 +54,7 @@ CREATE TABLE IF NOT EXISTS operations_knowledge_reviews (
   CONSTRAINT fk_operations_knowledge_review FOREIGN KEY (knowledge_id) REFERENCES operations_knowledge(knowledge_id),
   CONSTRAINT fk_operations_knowledge_review_version FOREIGN KEY (version_id) REFERENCES operations_knowledge_versions(version_id)
 );
+-- statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS operations_knowledge_index_outbox (
   outbox_id CHAR(36) PRIMARY KEY,
@@ -69,6 +72,7 @@ CREATE TABLE IF NOT EXISTS operations_knowledge_index_outbox (
   CONSTRAINT fk_operations_knowledge_index FOREIGN KEY (knowledge_id) REFERENCES operations_knowledge(knowledge_id),
   CONSTRAINT fk_operations_knowledge_index_version FOREIGN KEY (version_id) REFERENCES operations_knowledge_versions(version_id)
 );
+-- statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS operations_knowledge_index_state (
   knowledge_id CHAR(36) NOT NULL,

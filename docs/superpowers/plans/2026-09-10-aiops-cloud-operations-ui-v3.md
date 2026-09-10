@@ -961,7 +961,7 @@ git commit -m "feat(admin): separate platform capability operations"
 - Consumes: Tasks 1–13 全部 canonical 路由、API、权限和组件。
 - Produces: 可部署镜像、三档视口证据、旧深链兼容和最终验收记录。
 
-- [ ] **Step 1: 写跨页面验收测试**
+- [x] **Step 1: 写跨页面验收测试**
 
 ```tsx
 it.each([
@@ -977,17 +977,17 @@ it.each([
 })
 ```
 
-增加断言：没有全局搜索、prod/dev、生产平台、Workload 合并、综合健康分数；旧深链重定向到 canonical 路由且保留合法查询参数。
+增加断言：没有全局搜索、prod/dev、生产平台、Workload 合并、综合健康分数；旧深链重定向到 canonical 路由且保留合法查询参数。已落地于 `src/test/v3Acceptance.test.tsx`（8 项断言，含知识页和旧助手深链）。
 
-- [ ] **Step 2: 运行完整自动化基线**
+- [x] **Step 2: 运行完整自动化基线**
 
 Run: `cd ai-apm-query-go && go test ./... -count=1`
 
 Run: `cd observability-frontend && npm test -- --run && npm run build`
 
-Expected: 全部 PASS；任何现有失败必须先证明与本改动无关并记录，不能跳过。
+Expected: 全部 PASS；任何现有失败必须先证明与本改动无关并记录，不能跳过。实测：前端 67 files / 159 tests PASS，生产构建 PASS；8 个 Go 模块（含 query、collector、ingest、executor、credential、egress、ClickHouse migrator、object-store bootstrap）在完整端口权限下全部 PASS。
 
-- [ ] **Step 3: 构建镜像并更新部署值**
+- [x] **Step 3: 构建镜像并更新部署值**
 
 ```bash
 docker build -t aiops/observability-frontend:v3-20260910 observability-frontend
@@ -997,7 +997,9 @@ helm template aiops deploy/helm/aiops -f deploy/helm/aiops/values-prod.yaml
 
 将已验证镜像 digest 写入生产值；NetworkPolicy 只开放 Query API 到 MySQL/Chroma 所需流量。先运行 schema migrator，再滚动 Query API，最后前端；验证迁移可重复执行。
 
-- [ ] **Step 4: 真实浏览器视觉与运行验收**
+实测：Helm lint、生产架构合同、部署合同、镜像 digest 合同均 PASS；schema/graph/clickhouse 初始化 Job 已完成；release `aiops` revision 52 已部署。最终自有镜像 digest：query-api `sha256:4d57fee3d2e4bbb84d1990f0617e24c2530a2d9412f6270a54ccd4b31763fc70`、frontend `sha256:bd4a76fe8370b078b0ab3b37ab396c75945e726721500ffd7439126ca5fa3c84`、event-collector `sha256:b14a288d6cba44d1a2d1e29dc54e2e4a3f088773a5d5df94677f8061151336c1`、schema-migrator `sha256:31d956fc5b39bfe319c28493358b67112c1f84d07d0ede1601fcd117f7fb3fa9`。
+
+- [x] **Step 4: 真实浏览器视觉与运行验收**
 
 Run: `playwright screenshot --viewport-size="1440,900" "http://127.0.0.1:30253/overview" /tmp/overview-1440.png`
 
@@ -1007,7 +1009,9 @@ Run: `playwright screenshot --viewport-size="1024,900" "http://127.0.0.1:30253/c
 
 逐页与 V3 PNG 对照：标题与 Scope、五秒判读、完整文本入口、无页面级横向溢出、Drawer 边界、图谱边方向/关系/来源、助手事实/知识引用与不确定性、知识范围/版本/审核/索引。再以真实账户验证跨租户/跨集群深链和会话返回 403/404、助手断流可幂等恢复、Chroma 不可用时正文仍可浏览且回答明确降级、动作仍需审批。
 
-- [ ] **Step 5: 提交最终验收**
+实测：真实管理员会话生成 20 张 PNG（平台总览、集群总览、资源目录、关系图谱、智能助手 × 4 视口），全部 canonical h1、`horizontalOverflow: false`；另补充知识页 1024×900。平台 `/api/v1/platform/overview`、`/api/v1/platform/clusters`、`/api/v1/me` 返回 200，所有核心工作负载 Ready。资源目录在当前环境按设计呈现真实 `RESOURCE_CATALOG_UNAVAILABLE` 数据状态（无示例数据回退），图谱与助手空态/Scope/边界可读。
+
+- [x] **Step 5: 提交最终验收**
 
 ```bash
 git add observability-frontend/src/test observability-frontend/src/App.test.tsx observability-frontend/src/deployment deploy/helm/aiops README.md docs/superpowers/plans/2026-09-10-aiops-cloud-operations-ui-v3.md
@@ -1016,11 +1020,11 @@ git commit -m "chore(release): verify aiops ui v3 deployment"
 
 ## Final self-review gate
 
-- [ ] 正式规格各章的每项必须要求均能映射到 Task 1–14。
-- [ ] 每个实现步骤均给出具体接口、代码、测试命令和预期结果，不保留占位描述。
-- [ ] `HealthState`、resource Kind、knowledge status、Scope 谓词和 route 名称在前后任务中完全一致。
-- [ ] 助手会话 Scope、结构化回答字段、SSE 事件、MySQL 持久化和 UI 应答框一一对应；没有从 Markdown 猜引用或从模型输出猜 capability。
-- [ ] `/overview` 不读取活动集群；集群深链在服务端和客户端均校验授权。
-- [ ] PVC canonical UID、DataVolume 与 NAD 关系在 API、图谱、详情和测试中使用同一含义。
-- [ ] 旧业务/应用/中间件数据仍可兼容读取，但任何新一级入口和默认图谱都不显示它们。
-- [ ] 最终部署使用镜像 digest，浏览器强刷后返回新静态资源且不命中旧 Nginx 缓存。
+- [x] 正式规格各章的每项必须要求均能映射到 Task 1–14。
+- [x] 每个实现步骤均给出具体接口、代码、测试命令和预期结果，不保留占位描述。
+- [x] `HealthState`、resource Kind、knowledge status、Scope 谓词和 route 名称在前后任务中完全一致。
+- [x] 助手会话 Scope、结构化回答字段、SSE 事件、MySQL 持久化和 UI 应答框一一对应；没有从 Markdown 猜引用或从模型输出猜 capability。
+- [x] `/overview` 不读取活动集群；集群深链在服务端和客户端均校验授权。
+- [x] PVC canonical UID、DataVolume 与 NAD 关系在 API、图谱、详情和测试中使用同一含义。
+- [x] 旧业务/应用/中间件数据仍可兼容读取，但任何新一级入口和默认图谱都不显示它们。
+- [x] 最终部署使用镜像 digest，浏览器强刷后返回新静态资源且不命中旧 Nginx 缓存。

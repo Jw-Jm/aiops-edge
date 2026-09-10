@@ -39,10 +39,11 @@ function ClusterHeader({ data, onBack, onInvestigate }: { data: ClusterOverview;
     <>
       <Breadcrumb items={[{ t: '平台总览', href: '/overview' }, { t: data.name || data.clusterId }]} onClick={(href) => { if (href) onBack() }} />
       <PageHeader
-        title={data.name || data.clusterId}
-        desc={<span>真实 Kubernetes 集群 · {data.clusterId} · 版本 {data.version || '未知'} · 最近同步 {formatTime(data.lastSyncAt)}</span>}
+        title="集群详细总览"
+        desc={<span>当前集群：{data.name || data.clusterId} · {data.clusterId} · 版本 {data.version || '未知'} · 最近同步 {formatTime(data.lastSyncAt)}</span>}
         actions={<div className="page-actions"><Button onClick={onBack}>返回平台总览</Button><Button type="primary" onClick={onInvestigate}>进入调查</Button></div>}
       />
+      <h2 className="cluster-overview-cluster-name">{data.name || data.clusterId}</h2>
       <div className="cluster-overview-statusline">
         <StatusBadge text={STATUS_LABELS[data.status]} tone={STATUS_TONES[data.status]} />
         {data.statusReasons.map((reason) => <span key={reason} className="cluster-overview-statusline__reason">{reason}</span>)}

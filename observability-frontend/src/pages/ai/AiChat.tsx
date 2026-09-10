@@ -11,6 +11,7 @@ import { resourceLocation, resourceTypeLabel } from '../../features/resources/re
 import { createInvestigationDraft, parseAssistantAnswer, type AssistantAnswer, type AssistantConversationScope } from '../../api/assistant'
 import AssistantAnswerCard from '../Assistant/AssistantAnswerCard'
 import AssistantContextPanel from '../Assistant/AssistantContextPanel'
+import { PageHeader } from '../../components/ui/PageKit'
 
 // canonical UUID 校验（与 Query API AuthMiddleware canonicalUUID 一致），用于判断
 // 是否已选择 concrete cluster（F-07 / A0-04：拒绝把 'all' 当可发送的 cluster）。
@@ -349,7 +350,9 @@ const AiChat: React.FC = () => {
   }
 
   return (
-    <div className="assistant-workspace" style={{ height: 'calc(100vh - 116px)' }}>
+    <div>
+      <PageHeader title="智能运维助手" desc="基于当前集群 Scope、事实证据和已审核知识生成可追溯回答" />
+      <div className="assistant-workspace" style={{ height: 'calc(100vh - 176px)' }}>
       {/* 会话列表 */}
       <div className="card assistant-session-pane" style={{ width: 220, flexShrink: 0, marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
         <div className="card__head"><span className="card__title">会话</span>
@@ -394,7 +397,7 @@ const AiChat: React.FC = () => {
               <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>AI 运维助手</div>
               <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 20 }}>用自然语言描述问题，我会自动分析指标、日志、链路与告警。</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-                <Button onClick={() => handleSend('分析 prod 集群故障根因')}>分析集群根因</Button>
+                <Button onClick={() => handleSend('分析当前集群故障根因')}>分析集群根因</Button>
                 <Button onClick={() => handleSend('巡检所有 K8s 集群')}>集群巡检</Button>
                 <Button onClick={() => handleSend('为什么 order-svc 延迟升高')}>服务延迟排查</Button>
               </div>
@@ -536,6 +539,7 @@ const AiChat: React.FC = () => {
         <AssistantContextPanel scope={frozenScope || freezeAssistantScope(activeClusterId || activeScope.clusterId, activeScope)} />
       </Drawer>
 
+      </div>
     </div>
   )
 }

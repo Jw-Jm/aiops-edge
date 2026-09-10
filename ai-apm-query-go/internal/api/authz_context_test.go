@@ -33,6 +33,46 @@ func TestRequestAuthorizationContextRejectsTenantFallbackAndForgedClaims(t *test
 	}
 }
 
+func TestRequestAuthorizationContextAllowsPlatformOverviewWithoutActiveCluster(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := store.GetDB()
+	store.SetDB(db)
+	t.Cleanup(func() { store.SetDB(previous) })
+
+	expectActiveSessionScope(mock, "", "")
+	mock.ExpectQuery("SELECT DISTINCT t.id FROM tenants t JOIN user_tenants ut").
+		WithArgs(authzUserID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
+	mock.ExpectQuery("SELECT cluster_id, slug, name, lifecycle_status FROM clusters").
+		WithArgs(authzTenantID).
+		WillReturnRows(sqlmock.NewRows([]string{"cluster_id", "slug", "name", "lifecycle_status"}).
+			AddRow("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "shanghai", "上海集群", "ready"))
+	mock.ExpectQuery("SELECT u.user_uuid, u.status, u.must_change_password, s.status, s.expires_at, s.revoked_at, s.token_version FROM users u JOIN auth_sessions s").
+		WithArgs(authzUserID, authzSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "user_status", "must_change_password", "session_status", "expires_at", "revoked_at", "token_version"}).
+			AddRow(authzUserID, 1, 0, "active", time.Now().Add(time.Hour), nil, int64(0)))
+	mock.ExpectQuery("SELECT t.id FROM tenants t JOIN user_tenants ut").
+		WithArgs(authzUserID, authzTenantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(authzTenantID))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/platform/overview", nil)
+	req.Header.Set("Authorization", "Bearer "+generateJWTWithSession(authzUserID, authzSessionID, "admin", `{}`))
+	ctx, err := RequestAuthorizationContext(req)
+	if err != nil {
+		t.Fatalf("platform overview without active cluster must authorize sole tenant: %v", err)
+	}
+	if ctx.TenantID != authzTenantID || ctx.ActiveClusterID != "" {
+		t.Fatalf("platform context = %+v, want tenant=%s and no active cluster", ctx, authzTenantID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRequestAuthorizationContextDoesNotUseJWTClaimsAsAuthority(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

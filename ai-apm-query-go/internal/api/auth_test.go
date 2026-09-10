@@ -130,7 +130,12 @@ func TestRequireAnyRoleForWriteAcceptsApprover(t *testing.T) {
 // canonical-protected route（消除 legacy 端点一律 403 的 AUTH BLOCKER），写端点保持 fail-closed。
 func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 	allowed := []string{
+		"/api/v1/platform/overview",
+		"/api/v1/platform/clusters",
 		"/api/v1/resources/resolve",
+		"/api/v1/resources/catalog",
+		"/api/v1/resources/summary",
+		"/api/v1/resources/detail",
 		"/api/v1/services",
 		"/api/v1/clusters", // P19 前端集群选择器数据源（只读，JWT+canonical tenant）
 		"/api/v1/traces",

@@ -5,6 +5,7 @@ import type { GraphEntity, GraphHealth, GraphSubgraph } from '../../api/graphCon
 import GraphExplorer from '../../components/graph/GraphExplorer'
 import GraphSummary from '../../components/graph/GraphSummary'
 import DataState from '../../components/display/DataState'
+import { PageHeader } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
 import { isSelectableResourceType, resourceDomainOf, resourceTypeLabel } from '../../features/resources/resourceDomain'
 
@@ -45,6 +46,7 @@ export default function ResourceRelationships() {
 
   return (
     <section aria-label="资源关系探索" className="graph-explorer-page">
+      <PageHeader title="资源关系图谱" desc="在当前集群中查看资源之间的明确关系、方向和故障传播路径" />
       <div className="section-heading"><div><Typography.Title level={4} style={{ margin: 0 }}>关系探索</Typography.Title><Typography.Text type="secondary">在当前集群中选择任一平台资源，查看一跳关系与故障传播路径</Typography.Text></div><Tag>{activeClusterId || '未选择集群'}</Tag></div>
       <Card size="small">
         <Space wrap>

@@ -322,6 +322,7 @@ body {
 .platform-carrier-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .platform-carrier-list__hint { margin: 10px 0 0; color: var(--text-muted); font-size: 12px; }
 .cluster-overview-statusline { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: -8px 0 16px; }
+.cluster-overview-cluster-name { margin: -8px 0 12px; color: var(--text-secondary); font-size: 15px; font-weight: 600; }
 .cluster-overview-statusline__reason { color: var(--text-secondary); font-size: 13px; }
 .cluster-overview-statusline__meta { margin-left: auto; color: var(--text-muted); font-size: 12px; }
 .cluster-issue-list { display: flex; flex-direction: column; }

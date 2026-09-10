@@ -32,7 +32,9 @@
 #     victoria-metrics    抓取 ingest:8080、ai-orchestrator:8080、query-api:8080、DNS；
 #                         node-exporter:9100（若启用；其为 hostNetwork，目标为节点 IP，
 #                         podSelector 出站匹配可能不生效，必要时按节点网段追加 ipBlock）
-#     ai-orchestrator     query-api:8080、DNS。注意：外部 LLM API 出站默认【不放行】——
+#     ai-orchestrator     query-api:8080、DNS。其 RAG/Chroma 数据在该组件的受控 PVC 内，
+#                         当前生产 profile 不为 Query API 增加任意外部 Chroma 出站；查询未配置时 fail-closed。
+#                         外部 LLM API 出站默认【不放行】——
 #                         收紧 orchestrator 出站前必须显式放行其 LLM endpoint，否则调用被拒
 #     backup/init Jobs    mysql:3306（mysqldump）、clickhouse:9000（clickhouse-client 原生端口）、DNS
 #     mysql/clickhouse/victoria-logs：无额外出站需求（全局 deny 下由 allow-dns-egress 兜底 DNS）

@@ -290,14 +290,13 @@ function ClusterManager() {
 
       <Modal title="纳管集群" open={open} onOk={onSubmit} onCancel={() => setOpen(false)} okText="添加" width={620}>
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="集群名称" rules={[{ required: true, message: '请输入集群名称' }]}><Input placeholder="如 production-cluster" /></Form.Item>
+          <Form.Item name="name" label="集群名称" rules={[{ required: true, message: '请输入集群名称' }]}><Input placeholder="如 cloud-sh-01" /></Form.Item>
           <Form.Item name="slug" label="集群标识" rules={[{ required: true, message: '请输入集群标识' }]}><Input placeholder="如 kind-aiops-kind-02" /></Form.Item>
           <Form.Item name="type" label="类型" initialValue="kubernetes"><Select options={[{ value: 'kubernetes', label: 'Kubernetes' }, { value: 'openshift', label: 'OpenShift' }, { value: 'k3s', label: 'K3s' }]} /></Form.Item>
           <Form.Item name="credential_ref" label="凭据引用" rules={[{ required: true, message: '请输入凭据引用' }]}>
             <Input placeholder="k8s-secret://observability/aiops-managed-cluster-kubeconfig" />
           </Form.Item>
           <Alert type="info" showIcon message="浏览器不会接收或提交 kubeconfig；凭据必须预先存入管理集群 Secret，并以 credential_ref 引用。" style={{ marginBottom: 16 }} />
-          <Form.Item name="environment" label="环境"><Input placeholder="如 local / production" /></Form.Item>
           <Form.Item name="region" label="区域"><Input placeholder="可选：如 cn-south-1" /></Form.Item>
         </Form>
       </Modal>

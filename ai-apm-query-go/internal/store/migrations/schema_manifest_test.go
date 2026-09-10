@@ -111,6 +111,23 @@ func TestOperationsKnowledgeMigrationContainsGovernedSourceOfTruth(t *testing.T)
 	}
 }
 
+func TestOperationsKnowledgeMigrationSplitsIntoExecutableStatements(t *testing.T) {
+	ms, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, m := range ms {
+		if m.ID != "mysql/0019_operations_knowledge" {
+			continue
+		}
+		if got, want := len(m.Statements), 5; got != want {
+			t.Fatalf("0019 migration must split into %d executable DDL statements, got %d", want, got)
+		}
+		return
+	}
+	t.Fatal("0019 migration not found")
+}
+
 func TestAIChatScopeMigrationContainsFrozenAssistantFields(t *testing.T) {
 	data, err := versionsFS.ReadFile("versions/0020_ai_chat_scope_and_answers.sql")
 	if err != nil {

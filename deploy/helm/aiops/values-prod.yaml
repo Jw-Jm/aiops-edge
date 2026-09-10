@@ -16,6 +16,26 @@
 # 有状态中间件（mysql/clickhouse）固定用 statefulReplicaCount=1，不受此值影响。
 replicaCount: 1
 
+# Release identity.  The frontend, Query API, schema-migrator, and Event
+# Collector images built for this v3 acceptance are pinned to local OCI
+# manifest digests; the remaining enabled self-owned images retain the
+# already verified digests from the running release until their own source
+# changes are rebuilt.
+global:
+  imageTag: "v3-20260910"
+  imageDigests:
+    queryApi: "sha256:4d57fee3d2e4bbb84d1990f0617e24c2530a2d9412f6270a54ccd4b31763fc70"
+    ingest: "sha256:a5cfebe760a80212435ee0c7ee838f4bd9951d711393617b71ecd5828b1226b3"
+    eventCollector: "sha256:b14a288d6cba44d1a2d1e29dc54e2e4a3f088773a5d5df94677f8061151336c1"
+    aiOrchestrator: "sha256:e864af8ae0f0a2c94cca912746ad1b7775e0e0ad32cebce05d833e598d6b9aeb"
+    investigationWorker: "sha256:e864af8ae0f0a2c94cca912746ad1b7775e0e0ad32cebce05d833e598d6b9aeb"
+    frontend: "sha256:bd4a76fe8370b078b0ab3b37ab396c75945e726721500ffd7439126ca5fa3c84"
+    aiActionExecutor: "sha256:071e456f7ad95ab2f28a0d5e30b1fbfd16000834afee0cf4c3c5194739af6c51"
+    llmEgressProxy: "sha256:07840eff2f85c5eef0da7376575a2b6015e706a66b0a5d0edea1c0e62522065b"
+    clickhouseMigrator: "sha256:6a201403ed1a8cc86402cec5d47937bdf3f62daecc78d6f9190d89153f4e7949"
+    mysqlMigrator: "sha256:31d956fc5b39bfe319c28493358b67112c1f84d07d0ede1601fcd117f7fb3fa9"
+    graphSchemaMigrator: "sha256:3cbf2b0e3e286dc6ca8cbb19f0de5d1b6bdf414fef4cc40d97d086ad00232cce"
+
 internalTLS:
   enabled: true
   required: true

@@ -339,6 +339,19 @@ func RequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) 
 		return zero, authorizationFailure("cluster_unavailable")
 	}
 	if tenantID == "" {
+		// Platform aggregates are tenant-scoped, not cluster-scoped. When the
+		// user has exactly one active tenant, allow these read-only endpoints to
+		// resolve that tenant without inventing an active cluster. Cluster
+		// workspaces still require an explicit POST /me/scope selection.
+		if isPlatformAggregateRoute(r.URL.Path) {
+			if tenantIDs, _ := availableScopeOptions(userID); len(tenantIDs) == 1 {
+				ctx, err := resolveMySQLAuthorizationContext(userID, sessionID, tenantIDs[0], tokenVersion)
+				if err == nil {
+					ctx.ActiveClusterID = ""
+				}
+				return ctx, err
+			}
+		}
 		// Identity-only endpoints are needed to render the scope selector. They
 		// still validate user/session/token_version from MySQL, but do not
 		// authorize a tenant until POST /me/scope selects one explicitly.
@@ -358,6 +371,10 @@ func RequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) 
 		ctx.AuthorizationVersion = scopeVersion
 	}
 	return ctx, err
+}
+
+func isPlatformAggregateRoute(path string) bool {
+	return path == "/api/v1/platform/overview" || path == "/api/v1/platform/clusters"
 }
 
 func resolveMySQLAuthorizationIdentity(userID, sessionID string, tokenVersion int64) (AuthorizationContext, error) {
@@ -819,9 +836,13 @@ func isCanonicalProtectedRoute(path string) bool {
 	// 注意：仅只读 GET 查询端点；写端点（topology/alerts create、sync-catalog 等）不在此放行，
 	// 保持 fail-closed。
 	switch path {
-	case "/api/v1/resources/resolve":
-		return true
-	case "/api/v1/services",
+	case "/api/v1/resources/resolve",
+		"/api/v1/resources/catalog",
+		"/api/v1/resources/summary",
+		"/api/v1/resources/detail",
+		"/api/v1/platform/overview",
+		"/api/v1/platform/clusters",
+		"/api/v1/services",
 		"/api/v1/services/overview",
 		"/api/v1/services/map",
 		"/api/v1/services/dependency-matrix",

@@ -24,8 +24,8 @@ const Resources: React.FC = () => {
 
   return (
     <div>
-      <Breadcrumb items={[{ t: '集群资源' }, { t: '资源载体' }]} />
-      <PageHeader title="资源载体" desc="容器资源与 KubeVirt 虚拟机分层展示；磁盘和 NAD 仅在依赖关系中出现" />
+      <Breadcrumb items={[{ t: '集群资源' }, { t: '资源目录' }]} />
+      <PageHeader title="资源目录" desc="容器资源与 KubeVirt 虚拟机分层展示；磁盘和 NAD 仅在依赖关系中出现" />
       <ResourceCenter><Tabs activeKey={activeKey} items={views} onChange={(key) => setParams((current) => { current.delete('view'); if (key === 'relationships') current.set('view', 'graph'); else current.set('group', key); return current })} destroyOnHidden /></ResourceCenter>
     </div>
   )
