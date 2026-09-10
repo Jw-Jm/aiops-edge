@@ -19,7 +19,7 @@ const lifecycle = (action: ActionProjection) => [
   { label: '提出', value: action.status || '未提供' },
   { label: '预检', value: action.preflight_status || '未提供' },
   { label: '审批', value: action.status === 'approved' ? 'approved' : action.status === 'rejected' ? 'rejected' : 'pending' },
-  { label: '执行', value: action.execution_status || '未提供' },
+  { label: '执行', value: ['queued', 'running', 'executing'].includes(action.execution_status) ? '执行中' : action.execution_status || '未提供' },
   { label: '验证', value: action.verification_status || '未提供' },
   { label: '回滚', value: action.rollback_summary || '未提供' },
 ]
@@ -111,6 +111,7 @@ const ActionCenter: React.FC = () => {
           { key: 'rv', label: 'ResourceVersion', children: selected.resource_version || '未提供' },
           { key: 'preflight', label: '预检', children: selected.preflight_status || '未提供' },
           { key: 'hash', label: 'Action Hash / Schema', children: `${selected.action_hash || '未提供'} · ${selected.hash_schema_version || '未提供'}` },
+          { key: 'idempotency', label: '幂等键', children: selected.idempotency_key || '提交时生成' },
           { key: 'policy', label: 'Policy / 规范化参数', children: <Space direction="vertical" size={4}><span>{selected.policy_version || '未提供'}</span>{selected.params ? <RawDataPanel title="查看规范化参数" data={selected.params} /> : <span>未提供</span>}</Space> },
           { key: 'before', label: '执行前快照', children: formatDetail(snapshotFrom(selected, 'before_snapshot')) },
           { key: 'after', label: '执行后快照', children: formatDetail(snapshotFrom(selected, 'after_snapshot')) },
@@ -118,7 +119,7 @@ const ActionCenter: React.FC = () => {
           { key: 'rollback', label: '回滚策略', children: selected.rollback_summary || '未提供' },
           { key: 'verify', label: '验证条件', children: selected.verification_status || '未提供' },
         ]} />
-        <Timeline style={{ marginTop: 24 }} items={lifecycle(selected).map((step) => ({ children: <Space><Typography.Text strong>{step.label}</Typography.Text><Tag>{step.value}</Tag></Space> }))} />
+        <Timeline style={{ marginTop: 24 }} items={lifecycle(selected).map((step) => ({ children: <Space><Typography.Text strong>{step.label}</Typography.Text><Tag className={step.value === '执行中' ? 'flow' : undefined}>{step.value}</Tag></Space> }))} />
         {selected.status === 'proposed' && canDecideAction(role) && canControlResource(selected.target_resource_type, capabilities) && <Space><Button type="primary" loading={deciding} onClick={() => setPendingDecision('approved')}>批准执行</Button><Button danger loading={deciding} onClick={() => setPendingDecision('rejected')}>拒绝</Button></Space>}
         {selected.status === 'proposed' && !canControlResource(selected.target_resource_type, capabilities) && <Tag color="default">当前能力只读：等待服务端 capability 授权</Tag>}
         <div style={{ marginTop: 20, color: 'var(--text-secondary)', fontSize: 12 }}>没有服务端字段时显示“未提供”，不使用前端推断。</div>

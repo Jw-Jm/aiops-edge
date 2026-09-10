@@ -16,6 +16,7 @@ vi.mock('../../store/scopeStore', () => ({ useScopeStore: (selector: (state: typ
 const action = {
   action_id: 'action-1', run_id: 'run-1', cluster_id: 'cluster-a', action_type: 'restart_workload', action_hash: 'hash', hash_schema_version: 2, action_version: 1,
   preflight_status: 'passed', target_resource_type: 'deployment', status: 'proposed', dry_run: false, target_name: 'payment', target_uid: 'deployment/payment', resource_version: '7', namespace: 'payment', operation: '重启工作负载', execution_status: 'not_started',
+  idempotency_key: 'idem-1',
 }
 
 describe('ActionCenter capability gate', () => {
@@ -36,5 +37,16 @@ describe('ActionCenter capability gate', () => {
     render(<MemoryRouter><ActionCenter /></MemoryRouter>)
     fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '批准执行' })).toBeInTheDocument())
+  })
+
+  it('shows resource version and an explicit execution phase without green health semantics', async () => {
+    vi.mocked(listActions).mockResolvedValueOnce({ data: { actions: [{ ...action, status: 'approved', execution_status: 'running' }] } } as never)
+    render(<MemoryRouter><ActionCenter /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('tab', { name: /待执行/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))
+    expect(await screen.findByText('ResourceVersion')).toBeInTheDocument()
+    expect(screen.getByText('idem-1')).toBeInTheDocument()
+    expect(screen.getByText('执行中')).toHaveClass('flow')
+    expect(screen.getByText('执行中')).not.toHaveClass('status--ok')
   })
 })

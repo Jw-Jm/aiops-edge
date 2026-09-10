@@ -99,7 +99,7 @@ const Report: React.FC = () => {
     if (!taskId || caseLoading[taskId]) return
     if (caseAdded[taskId]) { message.info('该报告已加入知识库'); return }
     setCaseLoading((p) => ({ ...p, [taskId]: true }))
-    addKnowledgeCase({ report_id: taskId })
+    addKnowledgeCase({ report_id: taskId, status: 'pending_review', sourceRunId: r.source_run_id || taskId, source_run_id: r.source_run_id || taskId })
       .then((res: any) => {
         const d = res.data || {}
         if (d.inserted === false) {
@@ -133,7 +133,7 @@ const Report: React.FC = () => {
             <Button size="small" type="link" icon={<BookOutlined />}
               loading={!!caseLoading[taskId]}
               disabled={!!caseAdded[taskId]}
-              onClick={() => addToKnowledge(r)}>{caseAdded[taskId] ? '已加入' : '加入知识库'}</Button>
+              onClick={() => addToKnowledge(r)}>{caseAdded[taskId] ? '已进入审核队列' : '加入运维知识（待审核）'}</Button>
           </Space>
         )
       } },

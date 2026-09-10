@@ -31,4 +31,11 @@ describe('InvestigationCenter identity projection', () => {
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><InvestigationCenter /></MemoryRouter>)
     expect(await screen.findByText('run store unavailable')).toBeInTheDocument()
   })
+
+  it('keeps the run list resource-first and exposes frozen scope and evidence count', async () => {
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><InvestigationCenter /></MemoryRouter>)
+    await screen.findByText('user-123')
+    expect(await screen.findByText('冻结窗口')).toBeInTheDocument()
+    expect(screen.getByText('证据')).toBeInTheDocument()
+  })
 })

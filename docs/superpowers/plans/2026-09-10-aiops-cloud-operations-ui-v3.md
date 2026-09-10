@@ -841,7 +841,7 @@ git commit -m "feat(ai): add evidence-grounded cluster assistant"
 - Consumes: route cluster、可选 resource UID、绝对 time range、Run/Evidence/Action 事实和 knowledge submit。
 - Produces: 问题导向观测、冻结调查 Scope、连续动作管线、来源可追溯的待审核案例。
 
-- [ ] **Step 1: 写失败测试锁定闭环语义**
+- [x] **Step 1: 写失败测试锁定闭环语义**
 
 ```tsx
 expect(screen.getAllByText('cloud-sh-01').length).toBeGreaterThan(0)
@@ -855,13 +855,13 @@ await user.click(screen.getByRole('button', { name: '加入运维知识（待审
 expect(createKnowledge).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending_review', sourceRunId: 'run-1' }))
 ```
 
-- [ ] **Step 2: 运行四工作区测试并确认旧布局失败**
+- [x] **Step 2: 运行四工作区测试并确认旧布局失败**
 
 Run: `cd observability-frontend && npm test -- --run src/pages/Observe src/pages/investigation/IntelligentInvestigation.test.tsx src/pages/Actions src/pages/Reports`
 
 Expected: FAIL，旧页面存在非 canonical 路由、数据源产品导航或知识直发缺口。
 
-- [ ] **Step 3: 实现 V3 闭环布局**
+- [x] **Step 3: 实现 V3 闭环布局**
 
 ```ts
 export interface FrozenInvestigationScope {
@@ -875,13 +875,13 @@ export interface FrozenInvestigationScope {
 
 观测按问题、告警、指标、日志、Trace、事件、变更切换；调查边显示关系、证据数量和事实/推断；证据不足使用 `insufficient_evidence`。处置只渲染服务端 capability，显示资源版本与幂等键。报告正文自然高度，“加入运维知识”只创建 pending_review。
 
-- [ ] **Step 4: 运行页面测试和构建**
+- [x] **Step 4: 运行页面测试和构建**
 
 Run: `cd observability-frontend && npm test -- --run src/pages/Observe src/pages/investigation src/pages/Actions src/pages/Reports && npm run build`
 
 Expected: PASS；执行中不使用健康绿，所有工作区显示真实 cluster。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add observability-frontend/src/pages/Observe observability-frontend/src/pages/investigation observability-frontend/src/pages/Actions observability-frontend/src/pages/Reports

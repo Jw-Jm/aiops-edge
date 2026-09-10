@@ -29,6 +29,10 @@ export interface ProblemSummary {
   data_status: DataStatus
   active_run_id?: string | null
   action_phase?: ActionPhase | null
+  /** Server-projected resource health facts. Optional so older API rows remain explicit. */
+  failure_rate?: number | null
+  ready_replicas?: number | null
+  desired_replicas?: number | null
 }
 
 export interface FrozenRunContext {

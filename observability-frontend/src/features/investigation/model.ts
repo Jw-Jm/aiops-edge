@@ -90,3 +90,12 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
 }
 import { resourceDomainOf } from '../resources/resourceDomain'
 import type { PlatformResourceRef } from '../resources/types'
+
+/** Immutable investigation boundary carried from the persisted Run. */
+export interface FrozenInvestigationScope {
+  tenantId: string
+  clusterId: string
+  resourceUid?: string
+  from: string
+  to: string
+}

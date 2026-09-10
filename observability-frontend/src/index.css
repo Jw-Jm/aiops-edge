@@ -402,6 +402,11 @@ body {
 .evidence-timeline__item[role="button"] { cursor: pointer; }
 .evidence-timeline__item[role="button"]:hover { background: var(--surface-2); }
 .evidence-timeline__links { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.observe-fact-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0 0 12px; }
+.observe-fact-strip > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-1); }
+.observe-fact-strip span { color: var(--text-secondary); font-size: 12px; }
+.observe-fact-strip strong { color: var(--text); font-family: var(--font-mono); }
+.flow { color: var(--info, #1677ff) !important; border-color: color-mix(in srgb, var(--info, #1677ff) 35%, transparent) !important; background: color-mix(in srgb, var(--info, #1677ff) 10%, transparent) !important; }
 .insufficient-evidence { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--warning); border-radius: 6px; color: var(--warning); background: var(--warning-soft); }
 .link-button { margin-top: 8px; padding: 0; border: 0; color: var(--primary); background: transparent; cursor: pointer; }
 .report-template section { padding: 12px 0; border-bottom: 1px solid var(--border-soft); }

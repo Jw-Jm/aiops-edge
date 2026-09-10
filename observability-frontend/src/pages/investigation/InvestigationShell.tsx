@@ -13,7 +13,7 @@ function absoluteTime(value?: string): string {
 export const ImpactPane: React.FC<{ model: InvestigationViewModel; graphContext: Record<string, unknown> | null }> = ({ model, graphContext }) => {
   const resource = model.scope.resource
   return (
-    <Card title="资源身份与影响面" size="small">
+    <Card title="冻结调查 Scope · 资源身份与影响面" size="small">
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
         <Space wrap>
           <Tag color={resource ? 'blue' : 'default'}>{resource ? resourceTypeLabel(resource.type) : '集群范围'}</Tag>
@@ -36,7 +36,7 @@ export const EvidenceTimeline: React.FC<{ model: InvestigationViewModel; tools: 
     <div className="evidence-timeline">
       {model.evidence.length ? model.evidence.map((e) => (
         <div className="evidence-timeline__item" key={e.id} onClick={() => onEvidenceClick?.(e.id)} onKeyDown={(event) => { if (onEvidenceClick && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onEvidenceClick(e.id) } }} role={onEvidenceClick ? 'button' : undefined} tabIndex={onEvidenceClick ? 0 : undefined}>
-          <div><Tag>{e.source}</Tag><Tag color={e.reliability != null && e.reliability >= 0.8 ? 'green' : 'blue'}>{e.reliability == null ? '可靠性未提供' : `可靠性 ${e.reliability}`}</Tag><Tag>质量：{e.quality || '未提供'}</Tag></div>
+          <div><Tag color="blue">事实证据</Tag><Tag>{e.source}</Tag><Tag color={e.reliability != null && e.reliability >= 0.8 ? 'green' : 'blue'}>{e.reliability == null ? '可靠性未提供' : `可靠性 ${e.reliability}`}</Tag><Tag>质量：{e.quality || '未提供'}</Tag></div>
           <Typography.Text>{e.fact || '证据内容未提供'}</Typography.Text>
           {e.observedAt && <div><Typography.Text type="secondary">观察时间：{absoluteTime(e.observedAt)}</Typography.Text></div>}
           {(e.supports.length > 0 || e.contradicts.length > 0) && <div className="evidence-timeline__links">{e.supports.map((item) => <Tag color="green" key={`s-${item}`}>支持：{item}</Tag>)}{e.contradicts.map((item) => <Tag color="red" key={`c-${item}`}>反驳：{item}</Tag>)}</div>}
@@ -53,7 +53,7 @@ export const JudgementPane: React.FC<{ model: InvestigationViewModel; onOpenActi
     <Typography.Title level={5} style={{ marginTop: 0 }}>{model.conclusion.title || '根因未知'}</Typography.Title>
     <Typography.Text type="secondary">置信度：{model.conclusion.confidence == null ? '未提供' : `${Math.round(model.conclusion.confidence * 100)}%`}</Typography.Text>
     {model.conclusion.state === 'insufficient_evidence' && <div className="insufficient-evidence" role="alert">证据不足：当前仅展示候选假设、反证和缺失证据，不能作为确定性根因或执行依据。</div>}
-    <div style={{ marginTop: 16 }}>{model.hypotheses.length ? model.hypotheses.map((h) => <div key={h.id} style={{ marginBottom: 12 }}><Typography.Text strong>{h.claim}</Typography.Text><div><Tag color={h.confidence >= 0.8 ? 'green' : 'blue'}>{Math.round(h.confidence * 100)}%</Tag>{h.contradicts.map((item) => <Tag color="red" key={`c-${item}`}>矛盾：{item}</Tag>)}{h.missing.map((item) => <Tag color="orange" key={`m-${item}`}>缺失：{item}</Tag>)}</div></div>) : <Typography.Text type="secondary">暂无持久化假设</Typography.Text>}</div>
+    <div style={{ marginTop: 16 }}>{model.hypotheses.length ? model.hypotheses.map((h) => <div key={h.id} style={{ marginBottom: 12 }}><Typography.Text strong><Tag color="orange">推断</Tag>{h.claim}</Typography.Text><div><Tag color={h.confidence >= 0.8 ? 'green' : 'blue'}>{Math.round(h.confidence * 100)}%</Tag>{h.contradicts.map((item) => <Tag color="red" key={`c-${item}`}>矛盾：{item}</Tag>)}{h.missing.map((item) => <Tag color="orange" key={`m-${item}`}>缺失：{item}</Tag>)}</div></div>) : <Typography.Text type="secondary">暂无持久化假设</Typography.Text>}</div>
     {model.action && <div style={{ marginTop: 12, borderTop: '1px solid var(--border-soft)', paddingTop: 12 }}><Typography.Text strong>处置动作</Typography.Text><div><Tag>{model.action.status}</Tag><Tag color="gold">风险：{model.action.risk || '未提供'}</Tag></div>{onOpenAction && <button type="button" className="link-button" onClick={onOpenAction}>打开动作中心</button>}</div>}
   </Card>
 )

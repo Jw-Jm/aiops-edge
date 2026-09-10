@@ -22,6 +22,9 @@ interface InvestigationRun {
   confidence: number | null
   createdBy: string
   createdAt: string
+  timeStart: string
+  timeEnd: string
+  evidenceCount: number | null
 }
 
 // P12.2：调查中心以 Run 为主对象，展示用户人工发起的调查。
@@ -67,6 +70,9 @@ const InvestigationCenter: React.FC = () => {
         // as a synthetic system action.
         createdBy: r.created_by ?? r.principal_id ?? 'unknown',
         createdAt: r.created_at ?? '',
+        timeStart: r.query_window_start ?? '',
+        timeEnd: r.query_window_end ?? '',
+        evidenceCount: r.evidence_count ?? null,
       })))
     } catch (e: any) {
       setRuns([])
@@ -87,6 +93,8 @@ const InvestigationCenter: React.FC = () => {
     { title: '症状', dataIndex: 'symptom', key: 'symptom', ellipsis: true },
     { title: '影响', key: 'impact', render: () => <Text type="secondary">未提供</Text> },
     { title: '持续时间', key: 'duration', render: () => <Text type="secondary">未提供</Text> },
+    { title: '冻结窗口', key: 'frozenWindow', render: (_: unknown, run: InvestigationRun) => run.timeStart || run.timeEnd ? `${run.timeStart || '未提供'} – ${run.timeEnd || '未提供'}` : <Text type="secondary">未提供</Text> },
+    { title: '证据', dataIndex: 'evidenceCount', key: 'evidenceCount', render: (v: number | null) => v == null ? <Text type="secondary">未提供</Text> : `${v} 条` },
     {
       title: '状态', dataIndex: 'status', key: 'status',
       render: (v: InvestigationRun['status']) => (

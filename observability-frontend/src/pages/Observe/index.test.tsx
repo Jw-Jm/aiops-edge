@@ -39,4 +39,22 @@ describe('Observe unified entry', () => {
     render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe?view=not-a-view']}><Observe /></MemoryRouter></QueryClientProvider>)
     expect(screen.getByRole('tab', { name: '问题' })).toHaveAttribute('aria-selected', 'true')
   })
+
+  it('shows the real cluster and resource health facts before raw signals', async () => {
+    vi.mocked(getAlertAggregation).mockResolvedValueOnce({ data: { data: [{
+      service: 'order-api', total: 3, by_severity: { critical: 1 }, latest_rule: 'Pod 未就绪', latest_time: '2026-09-10T01:00:00Z',
+      cluster_id: 'cloud-sh-01', resource_uid: 'deployment/order-api', resource_type: 'deployment', resource_name: 'order-api',
+      failure_rate: 0.24, ready_replicas: 2, desired_replicas: 3, events: [],
+    }] } } as never)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe']}><Observe /></MemoryRouter></QueryClientProvider>)
+    expect(await screen.findByText('cloud-sh-01')).toBeVisible()
+    expect(screen.getByText('失败率')).toBeVisible()
+    expect(screen.getByText('就绪副本')).toBeVisible()
+    expect(screen.getByRole('tab', { name: '指标' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: '日志' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Trace' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: '事件' })).toBeVisible()
+    expect(screen.queryByText('全部环境')).not.toBeInTheDocument()
+  })
 })

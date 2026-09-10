@@ -9,8 +9,6 @@ import AlertEvents from '../alerts/AlertEvents'
 import Trace from '../observability/Trace'
 import LogMetrics from '../observability/LogMetrics'
 import Changes from '../infra/Changes'
-import Grafana from '../observability/Grafana'
-import AlertRules from '../alerts/AlertRules'
 import { useScopeStore } from '../../store/scopeStore'
 import { queryKeys } from '../../query/keys'
 import DataState from '../../components/display/DataState'
@@ -29,6 +27,11 @@ export function toProblem(item: AlertAggregationItem, clusterId: string): Proble
   const critical = Number(bySeverity.critical ?? bySeverity.严重 ?? 0)
   const warning = Number(bySeverity.warning ?? bySeverity.警告 ?? 0)
   const resource = aggregationResource(item, clusterId)
+  const raw = item as AlertAggregationItem & Record<string, unknown>
+  const numeric = (key: string): number | null => {
+    const value = raw[key]
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+  }
   return {
     problem_id: String(item.service || 'cluster') + ':' + (item.latest_rule || 'alert'),
     title: item.latest_rule || (resource?.name || '集群') + ' 告警聚合',
@@ -48,6 +51,9 @@ export function toProblem(item: AlertAggregationItem, clusterId: string): Proble
     evidence_summary: [(resource?.name || '集群范围') + ' 近期开启 ' + item.total + ' 次告警事件'],
     recent_change: item.recent_change ? '近期发生变更' : null,
     data_status: item.data_status || 'available',
+    failure_rate: numeric('failure_rate') ?? numeric('error_rate'),
+    ready_replicas: numeric('ready_replicas'),
+    desired_replicas: numeric('desired_replicas'),
   }
 }
 
@@ -78,10 +84,15 @@ const ProblemsView: React.FC = () => {
     { title: '数据状态', dataIndex: 'data_status', key: 'data_status', render: (value: string) => <Tag color={value === 'available' ? 'green' : 'orange'}>{value === 'available' ? '数据正常' : value}</Tag> },
   ], [navigate])
 
-  if (!activeClusterId) return <DataState kind="empty" title="请选择集群" description="选择生产集群后查看问题" />
+  if (!activeClusterId) return <DataState kind="empty" title="请选择集群" description="选择集群后查看问题" />
+  const leading = rows[0]
   return (
     <div>
       {scopeResource && <Tag color="blue" style={{ marginBottom: 12 }}>资源筛选：{resourceTypeLabel(scopeResource.type)} · {resourceLocation(scopeResource)}</Tag>}
+      <div className="observe-fact-strip" aria-label="问题事实摘要">
+        <div><span>失败率</span><strong>{leading?.failure_rate == null ? '未提供' : `${(leading.failure_rate * 100).toFixed(1)}%`}</strong></div>
+        <div><span>就绪副本</span><strong>{leading?.ready_replicas == null ? '未提供' : `${leading.ready_replicas}/${leading.desired_replicas ?? '—'}`}</strong></div>
+      </div>
       {error ? <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void problemsQuery.refetch()}>重试</Button>} style={{ marginBottom: 12 }} /> : null}
       <Table rowKey="problem_id" loading={loading} columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} locale={{ emptyText: <DataState kind="empty" compact title="暂无问题" /> }} />
     </div>
@@ -93,12 +104,12 @@ const Observe: React.FC = () => {
   const requested = params.get('view') || 'problems'
   const items = [
     { key: 'problems', label: '问题', children: <ProblemsView /> },
-    { key: 'alerts', label: '原始告警', children: <AlertEvents /> },
-    { key: 'rules', label: '告警规则', children: <AlertRules /> },
-    { key: 'traces', label: '调用链', children: <Trace /> },
-    { key: 'telemetry', label: '日志与指标', children: <LogMetrics /> },
+    { key: 'alerts', label: '告警', children: <AlertEvents /> },
+    { key: 'metrics', label: '指标', children: <LogMetrics /> },
+    { key: 'logs', label: '日志', children: <LogMetrics /> },
+    { key: 'traces', label: 'Trace', children: <Trace /> },
+    { key: 'events', label: '事件', children: <AlertEvents /> },
     { key: 'changes', label: '变更', children: <Changes /> },
-    { key: 'grafana', label: 'Grafana', children: <Grafana /> },
   ]
   const knownView = items.some((item) => item.key === requested)
   const activeKey = knownView ? requested : 'problems'
@@ -108,7 +119,7 @@ const Observe: React.FC = () => {
   return (
     <div>
       <Breadcrumb items={[{ t: '观测' }, { t: '问题与信号' }]} />
-      <PageHeader title="观测中心" desc="先看问题，再下钻原始告警、调用链、日志与变更证据" />
+      <PageHeader title="观测中心" desc="先看资源问题，再下钻告警、指标、日志、Trace、事件与变更证据" />
       <Tabs activeKey={activeKey} items={items} onChange={(key) => setParams({ view: key })} destroyOnHidden />
     </div>
   )

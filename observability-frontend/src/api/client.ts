@@ -113,6 +113,7 @@ export interface RunSummary {
   created_at?: string | null
   root_cause?: string | null
   confidence?: number | null
+  evidence_count?: number | null
   plan_steps?: { step_id: string; seq: number; step_type: string; status: string; description?: string }[]
   actions?: { action_id: string; action_type: string; status: string; authoritative_risk?: string; execution_status?: string; target_name?: string; target_uid?: string }[]
   approvals?: { approval_id: string; action_id: string; decision: string; approver?: string; reason?: string }[]
@@ -143,6 +144,7 @@ export interface ActionProjection {
   action_hash: string
   hash_schema_version: number
   action_version: number
+  idempotency_key?: string
   policy_version?: string
   preflight_status: string
   target_resource_type: string
