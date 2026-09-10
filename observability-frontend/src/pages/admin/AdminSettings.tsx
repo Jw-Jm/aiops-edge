@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Form, Input, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert } from 'antd'
+import { Form, Input, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert, Card, Typography } from 'antd'
 import { PageHeader, Breadcrumb, StatusBadge, Empty, type StatusTone } from '../../components/ui/PageKit'
 
 // 集群状态 → StatusBadge tone 映射
@@ -54,6 +54,9 @@ import api, {
 } from '../../api/client'
 import { fmtCpu } from '../../lib/format'
 import { clusterDetailError } from './clusterDetail'
+import KnowledgeIndexOperations from './KnowledgeIndexOperations'
+import { getKnowledgeIndexStatus } from '../../api/knowledge'
+import { useScopeStore } from '../../store/scopeStore'
 
 
 // ---- 预登记 LLM provider：浏览器只选择 provider_id，不接触 URL 或密钥 ----
@@ -61,6 +64,84 @@ const LLM_VENDORS: { key: string; name: string; default_model: string }[] = [
   { key: 'deepseek', name: 'DeepSeek', default_model: 'deepseek-chat' },
   { key: 'openai', name: 'OpenAI', default_model: 'gpt-4o-mini' },
 ]
+
+function clusterRows(data: unknown): any[] {
+  if (Array.isArray(data)) return data
+  if (data && typeof data === 'object') {
+    const value = data as Record<string, unknown>
+    return (value.clusters ?? value.data ?? []) as any[]
+  }
+  return []
+}
+
+function componentRows(data: unknown): SystemComponent[] {
+  if (Array.isArray(data)) return data as SystemComponent[]
+  if (data && typeof data === 'object') {
+    const value = data as Record<string, unknown>
+    return (value.components ?? value.items ?? value.data ?? []) as SystemComponent[]
+  }
+  return []
+}
+
+/**
+ * Three separate facts: cluster registration is not cluster health, and AIOps
+ * component/index failures must not be presented as Kubernetes failures.
+ */
+export function AdminCapabilityOverview() {
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  const [clusters, setClusters] = useState<any[]>([])
+  const [components, setComponents] = useState<SystemComponent[]>([])
+  const [indexFailed, setIndexFailed] = useState(0)
+  const [indexError, setIndexError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.allSettled([
+      Promise.resolve(listClusters()),
+      Promise.resolve(getSystemComponents()),
+      activeClusterId ? Promise.resolve(getKnowledgeIndexStatus(activeClusterId)) : Promise.resolve(null),
+    ]).then(([clusterResult, componentResult, indexResult]) => {
+      if (cancelled) return
+      if (clusterResult.status === 'fulfilled' && clusterResult.value) setClusters(clusterRows(clusterResult.value.data))
+      if (componentResult.status === 'fulfilled' && componentResult.value) setComponents(componentRows(componentResult.value.data))
+      if (indexResult.status === 'fulfilled' && indexResult.value) {
+        const rows = indexResult.value.items ?? []
+        setIndexFailed(rows.filter((row) => ['failed', 'error'].includes(String(row.status ?? ''))).length)
+        setIndexError('')
+      } else if (indexResult.status === 'rejected') {
+        setIndexError(indexResult.reason?.message || '知识索引状态读取失败')
+      }
+    })
+    return () => { cancelled = true }
+  }, [activeClusterId])
+
+  const readyClusters = clusters.filter((cluster) => ['ready', 'Ready', 'healthy', 'active'].includes(String(cluster.status))).length
+  const healthyComponents = components.filter((component) => ['ok', 'healthy', 'up', 'running'].includes(component.status)).length
+  const componentTotal = components.length
+
+  return (
+    <div className="admin-capability-overview" aria-label="AIOps 运维能力状态">
+      <div className="admin-capability-grid">
+        <Card size="small" title="集群接入状态">
+          <div className="admin-fact-value">{readyClusters}/{clusters.length || '—'}</div>
+          <Typography.Text type="secondary">已确认接入 / 纳管集群</Typography.Text>
+          <div style={{ marginTop: 8 }}><Tag color="blue">接入事实</Tag><Typography.Text type="secondary">不代表资源健康</Typography.Text></div>
+        </Card>
+        <Card size="small" title="AIOps 自身健康">
+          <div className="admin-fact-value">{componentTotal ? `${healthyComponents}/${componentTotal}` : '不可用'}</div>
+          <Typography.Text type="secondary">采集、同步、调查和处置能力</Typography.Text>
+          {components.filter((component) => !['ok', 'healthy', 'up', 'running'].includes(component.status)).slice(0, 2).map((component) => <div key={`${component.type}:${component.name}`} style={{ marginTop: 8 }}><Tag color="orange">需关注</Tag>{component.name}</div>)}
+        </Card>
+        <Card size="small" title="知识索引任务">
+          <div className="admin-fact-value">{indexError ? '不可用' : indexFailed ? `${indexFailed} 项失败` : '正常'}</div>
+          <Typography.Text type="secondary">版本索引与正文分离</Typography.Text>
+          {(indexFailed > 0 || indexError) && <div style={{ marginTop: 8 }}><Tag color="orange">正文仍可浏览</Tag></div>}
+        </Card>
+      </div>
+      <div className="admin-capability-note">异常项显示影响范围与最近成功时间；完整组件、图谱和索引任务进入下方管理页。</div>
+    </div>
+  )
+}
 
 // ---- 集群管理 ----
 function ClusterManager() {
@@ -568,16 +649,19 @@ function PlatformHealth() {
 // B7 修复：移除死代码（未使用的 form/loading/useEffect/llmTab），
 // AI 模型配置已由 LLMConfig 组件承载。
 const AdminSettings: React.FC = () => {
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
   return (
     <div>
       <Breadcrumb items={[{ t: '系统管理' }, { t: '系统设置' }]} />
-      <PageHeader title="系统设置" desc="AI 模型、纳管集群与平台基础配置" />
+      <PageHeader title="系统管理" desc="AIOps 自身健康、数据可信度与平台能力配置" />
+      <AdminCapabilityOverview />
       <Tabs
         items={[
           { key: 'llm', label: 'AI 模型配置', children: <LLMConfig /> },
           { key: 'clusters', label: '纳管集群', children: <ClusterManager /> },
+          { key: 'knowledge-index', label: '知识索引任务', children: <KnowledgeIndexOperations clusterId={activeClusterId} /> },
           { key: 'audit', label: '审计日志', children: <AuditLog /> },
-          { key: 'health', label: '平台健康', children: <PlatformHealth /> },
+          { key: 'health', label: 'AIOps 自身健康', children: <PlatformHealth /> },
         ]}
       />
     </div>

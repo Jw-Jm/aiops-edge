@@ -902,7 +902,7 @@ git commit -m "feat(ui): align observe investigate act report loop"
 - Consumes: 集群注册状态、采集/同步/调查/处置能力、Task 9 索引状态。
 - Produces: 纳管集群、AIOps 自身健康、采集器、图谱同步、知识索引、数据可信度、能力策略、用户和审计设置导航。
 
-- [ ] **Step 1: 写失败测试分离三类状态**
+- [x] **Step 1: 写失败测试分离三类状态**
 
 ```tsx
 expect(screen.getByText('集群接入状态')).toBeVisible()
@@ -912,13 +912,13 @@ expect(screen.queryByText('被纳管云平台健康')).not.toBeInTheDocument()
 expect(screen.getByText('正文仍可浏览')).toBeVisible()
 ```
 
-- [ ] **Step 2: 运行管理页测试确认知识索引入口缺失**
+- [x] **Step 2: 运行管理页测试确认知识索引入口缺失**
 
 Run: `cd observability-frontend && npm test -- --run src/pages/admin/AdminSettings.test.tsx src/pages/admin/KnowledgeIndexOperations.test.tsx`
 
 Expected: FAIL，旧管理页未分离集群健康与软件能力，且无索引任务。
 
-- [ ] **Step 3: 实现异常优先的管理页**
+- [x] **Step 3: 实现异常优先的管理页**
 
 ```ts
 export interface CapabilityStatus {
@@ -933,13 +933,13 @@ export interface CapabilityStatus {
 
 健康组件折叠为“正常数/总数”；异常项显示影响范围、最近成功与入口。知识索引列表显示 knowledge/version、状态、attempt、最近错误、next retry；仅管理员可重试。
 
-- [ ] **Step 4: 运行管理页测试和构建**
+- [x] **Step 4: 运行管理页测试和构建**
 
 Run: `cd observability-frontend && npm test -- --run src/pages/admin && npm run build`
 
 Expected: PASS；管理页不把同步异常解释为 Kubernetes 集群故障。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add observability-frontend/src/pages/admin

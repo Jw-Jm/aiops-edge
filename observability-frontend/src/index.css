@@ -313,6 +313,12 @@ body {
 .platform-capability { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .platform-capability strong { font-size: 30px; line-height: 1; }
 .platform-capability span { color: var(--text-muted); font-size: 12px; }
+.admin-capability-overview { margin: 0 0 16px; }
+.admin-capability-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.admin-capability-grid .ant-card { height: 100%; }
+.admin-fact-value { margin-bottom: 4px; font-size: 26px; line-height: 1.1; font-family: var(--font-mono); font-weight: 700; }
+.admin-capability-note { margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
+@media (max-width: 900px) { .admin-capability-grid { grid-template-columns: 1fr; } }
 .platform-carrier-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .platform-carrier-list__hint { margin: 10px 0 0; color: var(--text-muted); font-size: 12px; }
 .cluster-overview-statusline { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: -8px 0 16px; }
