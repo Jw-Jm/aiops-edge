@@ -29,4 +29,7 @@ export const queryKeys = {
   resourceGraph: (context: QueryContextKey, entityUid: string, mode: string, depth: number, domains: string[], relations: string[]) => [
     'resource-graph', entityUid, mode, depth, [...domains].sort().join(','), [...relations].sort().join(','), ...scope({ ...context, entityUid }),
   ] as const,
+  knowledgeList: (clusterId: string, filters: Record<string, unknown> = {}) => ['knowledge', clusterId, 'list', stableFilters(filters)] as const,
+  knowledgeDetail: (clusterId: string, knowledgeId: string) => ['knowledge', clusterId, 'detail', knowledgeId] as const,
+  knowledgeIndexStatus: (clusterId: string) => ['knowledge', clusterId, 'index-status'] as const,
 }

@@ -44,6 +44,7 @@ const Resources = lazy(() => import('./pages/Resources'))
 const Observe = lazy(() => import('./pages/Observe'))
 const Actions = lazy(() => import('./pages/Actions'))
 const Reports = lazy(() => import('./pages/Reports'))
+const Knowledge = lazy(() => import('./pages/Knowledge'))
 const Admin = lazy(() => import('./pages/admin/AdminHome'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 // Stable product route contract: platform overview is global; every other
@@ -327,7 +328,8 @@ function AppLayout() {
               <Route path="/clusters/:clusterId/assistant" element={<ClusterRouteGate><AiChat /></ClusterRouteGate>} />
               <Route path="/clusters/:clusterId/investigations" element={<ClusterRouteGate><InvestigationCenter /></ClusterRouteGate>} />
               <Route path="/clusters/:clusterId/actions" element={<ClusterRouteGate><Actions /></ClusterRouteGate>} />
-              <Route path="/clusters/:clusterId/knowledge" element={<ClusterRouteGate><ClusterOverviewPlaceholder /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/knowledge" element={<ClusterRouteGate><Knowledge /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/knowledge/new" element={<ClusterRouteGate><Knowledge /></ClusterRouteGate>} />
               <Route path="/clusters/:clusterId/reports" element={<ClusterRouteGate><Reports /></ClusterRouteGate>} />
               <Route path="/ai/chat" element={<LegacyAssistantRedirect />} />
               <Route path="/overview" element={<Overview />} />

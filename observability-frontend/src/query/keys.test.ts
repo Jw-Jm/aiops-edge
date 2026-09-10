@@ -15,4 +15,15 @@ describe('scope-isolated query keys', () => {
       'resource-graph', 'pod-1', 'failure-chain', 1, 'compute,kubernetes', 'DEPENDS_ON,HOSTS', 'tenant-a', 'cluster-a', '-', 'pod-1', '2026-09-09T01:00:00Z', '2026-09-09T02:00:00Z',
     ])
   })
+
+  it('keeps knowledge list, detail, and index status keys isolated by cluster', () => {
+    expect(queryKeys.knowledgeList('cluster-a', { status: 'published', knowledgeType: 'incident' })).toEqual([
+      'knowledge', 'cluster-a', 'list', '[["knowledgeType","incident"],["status","published"]]',
+    ])
+    expect(queryKeys.knowledgeDetail('cluster-a', 'k-1')).toEqual(['knowledge', 'cluster-a', 'detail', 'k-1'])
+    expect(queryKeys.knowledgeIndexStatus('cluster-a')).toEqual(['knowledge', 'cluster-a', 'index-status'])
+    expect(queryKeys.knowledgeList('cluster-b', { status: 'published', knowledgeType: 'incident' })).not.toEqual(
+      queryKeys.knowledgeList('cluster-a', { status: 'published', knowledgeType: 'incident' }),
+    )
+  })
 })

@@ -688,7 +688,7 @@ git commit -m "feat(knowledge): govern rag projection and search"
 - Consumes: Task 8/9 canonical knowledge API。
 - Produces: `/clusters/:clusterId/knowledge` 和 `/clusters/:clusterId/knowledge/new`；独立 list/detail/index query keys。
 
-- [ ] **Step 1: 写失败测试覆盖搜索、范围、治理和降级**
+- [x] **Step 1: 写失败测试覆盖搜索、范围、治理和降级**
 
 ```tsx
 expect(await screen.findByText('运维知识')).toBeVisible()
@@ -701,13 +701,13 @@ expect(createKnowledge).toHaveBeenCalledWith(expect.objectContaining({ clusterId
 expect(screen.getByText('语义检索暂不可用，正文仍可浏览')).toBeVisible()
 ```
 
-- [ ] **Step 2: 运行前端知识测试并确认页面不存在**
+- [x] **Step 2: 运行前端知识测试并确认页面不存在**
 
 Run: `cd observability-frontend && npm test -- --run src/api/knowledge.test.ts src/pages/Knowledge/Knowledge.test.tsx src/query/keys.test.ts`
 
 Expected: FAIL，模块与路由未定义。
 
-- [ ] **Step 3: 实现 V3 知识工作区**
+- [x] **Step 3: 实现 V3 知识工作区**
 
 ```ts
 export const knowledgeKeys = {
@@ -719,13 +719,13 @@ export const knowledgeKeys = {
 
 1440px 为筛选/列表/详情三栏；1024px 筛选和详情改 Drawer。保存草稿与提交审核分开；平台通用范围只对有 capability 的管理员可选；内置 Playbook 只读。索引错误不清空 MySQL 列表。
 
-- [ ] **Step 4: 运行知识测试、键盘测试和构建**
+- [x] **Step 4: 运行知识测试、键盘测试和构建**
 
 Run: `cd observability-frontend && npm test -- --run src/api/knowledge.test.ts src/pages/Knowledge src/query/keys.test.ts src/App.test.tsx && npm run build`
 
 Expected: PASS；1024px DOM 不出现页面级横向滚动源。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add observability-frontend/src/api/knowledge* observability-frontend/src/pages/Knowledge observability-frontend/src/query observability-frontend/src/App.tsx
