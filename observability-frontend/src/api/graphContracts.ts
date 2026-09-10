@@ -1,13 +1,13 @@
 export type GraphEntityType =
   | 'business' | 'application' | 'service' | 'middleware' | 'k8s_cluster' | 'namespace' | 'k8s_node'
-  | 'deployment' | 'replicaset' | 'statefulset' | 'daemonset' | 'pod' | 'container' | 'k8s_service'
+  | 'deployment' | 'replicaset' | 'statefulset' | 'daemonset' | 'job' | 'cronjob' | 'pod' | 'container' | 'k8s_service' | 'ingress'
   | 'endpoint_slice' | 'pvc' | 'pv' | 'storage_class' | 'nad' | 'network' | 'vm' | 'vmi' | 'migration'
   | 'physical_server' | 'cpu' | 'dimm' | 'nic' | 'disk' | 'mainboard' | 'bmc' | 'psu' | 'fan'
   | 'switch' | 'switch_port' | 'alert' | 'change' | 'case' | 'sel_event' | string
 
 export type GraphEntityTypeKnown =
   | 'business' | 'application' | 'service' | 'middleware' | 'k8s_cluster' | 'namespace' | 'k8s_node'
-  | 'deployment' | 'replicaset' | 'statefulset' | 'daemonset' | 'pod' | 'container' | 'k8s_service'
+  | 'deployment' | 'replicaset' | 'statefulset' | 'daemonset' | 'job' | 'cronjob' | 'pod' | 'container' | 'k8s_service' | 'ingress'
   | 'endpoint_slice' | 'pvc' | 'pv' | 'storage_class' | 'nad' | 'network' | 'vm' | 'vmi' | 'migration'
   | 'physical_server' | 'cpu' | 'dimm' | 'nic' | 'disk' | 'mainboard' | 'bmc' | 'psu' | 'fan'
   | 'switch' | 'switch_port' | 'alert' | 'change' | 'case' | 'sel_event'

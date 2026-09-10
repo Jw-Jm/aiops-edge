@@ -5,7 +5,7 @@ export const SELECTABLE_RESOURCE_TYPES = {
   compute: ['physical_server', 'k8s_node', 'vm', 'vmi'],
   network: ['switch', 'switch_port', 'nic', 'network', 'nad'],
   storage: ['disk', 'storage_class', 'pv', 'pvc'],
-  kubernetes: ['namespace', 'deployment', 'replicaset', 'statefulset', 'daemonset', 'pod', 'container', 'k8s_service', 'endpoint_slice'],
+  kubernetes: ['namespace', 'deployment', 'replicaset', 'statefulset', 'daemonset', 'job', 'cronjob', 'pod', 'container', 'k8s_service', 'ingress', 'endpoint_slice'],
   application: ['business', 'application', 'service', 'middleware'],
 } as const satisfies Record<ResourceDomain, readonly GraphEntityType[]>
 
@@ -28,9 +28,12 @@ const TYPE_LABELS: Record<string, string> = {
   replicaset: 'ReplicaSet',
   statefulset: 'StatefulSet',
   daemonset: 'DaemonSet',
+  job: 'Job',
+  cronjob: 'CronJob',
   pod: 'Pod',
   container: '容器',
   k8s_service: 'Kubernetes Service',
+  ingress: 'Ingress',
   endpoint_slice: 'EndpointSlice',
   business: '业务',
   application: '应用',

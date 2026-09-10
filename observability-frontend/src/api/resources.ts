@@ -10,6 +10,7 @@ export interface ResourceReadMeta {
 }
 
 export interface ResourceCatalogParams {
+  group?: 'containers' | 'kubevirt'
   domain?: ResourceDomain
   type?: GraphEntityType
   q?: string
@@ -36,6 +37,7 @@ interface ResourceCatalogWireItem {
 
 interface ResourceCatalogWireResponse {
   items: ResourceCatalogWireItem[]
+  total?: number
   next_cursor?: string
   meta: ResourceReadMeta
 }
@@ -53,6 +55,7 @@ export interface ResourceCatalogItem extends PlatformResourceRef {
 
 export interface ResourceCatalogResponse {
   items: ResourceCatalogItem[]
+  total: number
   nextCursor?: string
   meta: ResourceReadMetaView
 }
@@ -113,7 +116,7 @@ function mapItem(item: ResourceCatalogWireItem): ResourceCatalogItem {
 
 export async function getResourceCatalog(params: ResourceCatalogParams = {}, signal?: AbortSignal): Promise<ResourceCatalogResponse> {
   const response = await api.get<ResourceCatalogWireResponse>('/resources/catalog', { params, signal })
-  return { items: response.data.items.map(mapItem), nextCursor: response.data.next_cursor, meta: mapMeta(response.data.meta) }
+  return { items: response.data.items.map(mapItem), total: response.data.total ?? response.data.items.length, nextCursor: response.data.next_cursor, meta: mapMeta(response.data.meta) }
 }
 
 export async function getResourceSummary(signal?: AbortSignal): Promise<ResourceSummaryResponse> {

@@ -12,11 +12,12 @@ vi.mock('../../api/resources', async () => {
 afterEach(() => getResourceCatalog.mockReset())
 
 describe('ResourceDirectory', () => {
-  it('reads filters from URL, renders typed locations and selects by UID', async () => {
-    getResourceCatalog.mockResolvedValue({ items: [{ clusterId: 'cluster-a', uid: 'pod:payments/api-01', type: 'pod', domain: 'kubernetes', name: 'api-01', namespace: 'payments', location: 'payments / api-01', health: 'critical', source: 'graph' }], meta: { generatedAt: '', partial: false, stale: false, warningCodes: [] } })
+  it('reads group filters from URL, renders typed locations and selects by UID', async () => {
+    getResourceCatalog.mockResolvedValue({ items: [{ clusterId: 'cluster-a', uid: 'pod:payments/api-01', type: 'pod', domain: 'kubernetes', name: 'api-01', namespace: 'payments', location: 'payments / api-01', health: 'critical', source: 'graph' }], total: 1, meta: { generatedAt: '', partial: false, stale: false, warningCodes: [] } })
     const onSelect = vi.fn()
-    render(<MemoryRouter initialEntries={['/resources?domain=kubernetes&q=api']}><ResourceDirectory clusterId="cluster-a" onSelect={onSelect} /></MemoryRouter>)
-    await waitFor(() => expect(getResourceCatalog).toHaveBeenCalledWith(expect.objectContaining({ domain: 'kubernetes', q: 'api', limit: 50 }), expect.any(AbortSignal)))
+    render(<MemoryRouter initialEntries={['/clusters/cluster-a/resources?group=containers&q=api']}><ResourceDirectory clusterId="cluster-a" onSelect={onSelect} /></MemoryRouter>)
+    await waitFor(() => expect(getResourceCatalog).toHaveBeenCalledWith(expect.objectContaining({ group: 'containers', q: 'api', limit: 50 }), expect.any(AbortSignal)))
+    expect(screen.getByText('容器资源')).toBeVisible()
     const row = screen.getByRole('button', { name: /Pod payments \/ api-01/ })
     expect(row).toHaveTextContent('payments / api-01')
     fireEvent.click(row)

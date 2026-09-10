@@ -53,8 +53,13 @@ var resourceTypesByDomain = map[string]map[string]struct{}{
 	"compute":     {"physical_server": {}, "k8s_node": {}, "vm": {}, "vmi": {}},
 	"network":     {"switch": {}, "switch_port": {}, "nic": {}, "network": {}, "nad": {}},
 	"storage":     {"disk": {}, "storage_class": {}, "pv": {}, "pvc": {}},
-	"kubernetes":  {"namespace": {}, "deployment": {}, "replicaset": {}, "statefulset": {}, "daemonset": {}, "pod": {}, "container": {}, "k8s_service": {}, "endpoint_slice": {}},
+	"kubernetes":  {"namespace": {}, "deployment": {}, "replicaset": {}, "statefulset": {}, "daemonset": {}, "job": {}, "cronjob": {}, "pod": {}, "container": {}, "k8s_service": {}, "ingress": {}, "endpoint_slice": {}},
 	"application": {"business": {}, "application": {}, "service": {}, "middleware": {}},
+}
+
+var primaryTypesByGroup = map[string]map[string]struct{}{
+	"containers": {"deployment": {}, "statefulset": {}, "daemonset": {}, "job": {}, "cronjob": {}, "pod": {}, "k8s_service": {}, "ingress": {}},
+	"kubevirt":   {"vm": {}, "vmi": {}},
 }
 
 func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
@@ -68,11 +73,24 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
+	group := strings.TrimSpace(r.URL.Query().Get("group"))
 	typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
 	health := strings.TrimSpace(r.URL.Query().Get("health"))
 	if domain != "" {
 		if _, ok := resourceTypesByDomain[domain]; !ok {
 			respondResourceError(w, http.StatusBadRequest, "INVALID_RESOURCE_DOMAIN")
+			return
+		}
+	}
+	if group != "" {
+		if _, ok := primaryTypesByGroup[group]; !ok {
+			respondResourceError(w, http.StatusBadRequest, "INVALID_RESOURCE_GROUP")
+			return
+		}
+	}
+	if group != "" && typeFilter != "" {
+		if _, ok := primaryTypesByGroup[group][typeFilter]; !ok {
+			respondResourceError(w, http.StatusBadRequest, "INVALID_RESOURCE_TYPE")
 			return
 		}
 	}
@@ -105,7 +123,7 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]resourceCatalogItem, 0, len(entities))
 	for _, entity := range entities {
-		if !resourceEntityAllowed(entity, domain, typeFilter, health) || !afterResourceCursor(entity, cursor) {
+		if !resourceEntityAllowed(entity, domain, group, typeFilter, health) || !afterResourceCursor(entity, cursor) {
 			continue
 		}
 		items = append(items, projectResourceCatalogItem(entity))
@@ -121,6 +139,7 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		return items[i].UID < items[j].UID
 	})
 	partial := len(entities) == graphpkg.DefaultPublicMaxVertices
+	total := len(items)
 	if len(items) > limit {
 		items = items[:limit]
 	}
@@ -130,7 +149,7 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		nextCursor = encodeResourceCursor(resourceCursor{NameKey: last.NameKey, UID: last.EntityUID})
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"items": items, "next_cursor": nextCursor,
+		"items": items, "next_cursor": nextCursor, "total": total,
 		"meta": resourceReadMeta(partial, partialWarning(partial)),
 	})
 }
@@ -234,9 +253,14 @@ func resourceTypeAllowed(entityType, domain string) bool {
 	return resourceDomain(entityType) != ""
 }
 
-func resourceEntityAllowed(entity graphpkg.Entity, domain, typeFilter, health string) bool {
+func resourceEntityAllowed(entity graphpkg.Entity, domain, group, typeFilter, health string) bool {
 	if !resourceTypeAllowed(entity.EntityType, domain) {
 		return false
+	}
+	if group != "" {
+		if _, ok := primaryTypesByGroup[group][entity.EntityType]; !ok {
+			return false
+		}
 	}
 	if typeFilter != "" && entity.EntityType != typeFilter {
 		return false

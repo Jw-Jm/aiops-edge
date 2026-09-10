@@ -325,7 +325,7 @@ git commit -m "feat(ui): rebuild platform and cluster overviews"
 - Consumes: `group=containers|kubevirt`、`type`、`namespace`、`q`、`health`、cursor。
 - Produces: 路径型 `/clusters/:clusterId/resources` 目录与稳定 `ResourceCatalogItem.uid`。
 
-- [ ] **Step 1: 写失败测试锁定允许类型和分页**
+- [x] **Step 1: 写失败测试锁定允许类型和分页**
 
 ```go
 func TestResourceCatalogContainerGroupExposesOnlyPrimaryKinds(t *testing.T) {
@@ -343,7 +343,7 @@ expect(screen.queryByRole('tab', { name: '应用服务' })).not.toBeInTheDocumen
 expect(screen.queryByText('Pod/Container')).not.toBeInTheDocument()
 ```
 
-- [ ] **Step 2: 运行资源测试并确认失败**
+- [x] **Step 2: 运行资源测试并确认失败**
 
 Run: `cd ai-apm-query-go && go test ./internal/api -run 'ResourceCatalog|ResourceSummary' -count=1`
 
@@ -351,7 +351,7 @@ Run: `cd observability-frontend && npm test -- --run src/api/resources.test.ts s
 
 Expected: FAIL，旧 API 仍按 compute/network/storage/kubernetes/application 五域暴露。
 
-- [ ] **Step 3: 实现 group 投影与 V3 目录**
+- [x] **Step 3: 实现 group 投影与 V3 目录**
 
 ```go
 var primaryTypesByGroup = map[string]map[string]struct{}{
@@ -362,7 +362,7 @@ var primaryTypesByGroup = map[string]map[string]struct{}{
 
 兼容 domain 参数继续可读但不生成新 UI Tab；`application/business/service/middleware` 仅在显式兼容深链下返回。目录请求必须服务端分页，显示总匹配量和当前范围；筛选写入 URL；不存在/无权限不选中第一行。
 
-- [ ] **Step 4: 运行资源回归和构建**
+- [x] **Step 4: 运行资源回归和构建**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/graph -run 'ResourceCatalog|ResourceSummary|Scope' -count=1`
 
@@ -370,7 +370,7 @@ Run: `cd observability-frontend && npm test -- --run src/api/resources.test.ts s
 
 Expected: PASS；界面无 Workload、Pod/Container、Service/Ingress 合并入口。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add ai-apm-query-go/internal/api/resource_catalog* ai-apm-query-go/internal/bootstrap/http.go observability-frontend/src/api/resources* observability-frontend/src/pages/Resources

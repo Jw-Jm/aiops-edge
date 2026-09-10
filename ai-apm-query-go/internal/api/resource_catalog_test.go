@@ -64,6 +64,52 @@ func TestResourceCatalogFiltersByAuthorizedClusterAndDomain(t *testing.T) {
 	}
 }
 
+func TestResourceCatalogContainerGroupExposesOnlyPrimaryKinds(t *testing.T) {
+	repo := graphpkg.NewMemoryRepository()
+	entities := []graphpkg.Entity{
+		{EntityUID: "deployment:one", EntityType: "deployment", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one", Source: "k8s", Status: "active"},
+		{EntityUID: "statefulset:one", EntityType: "statefulset", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-statefulset", Source: "k8s", Status: "active"},
+		{EntityUID: "daemonset:one", EntityType: "daemonset", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-daemonset", Source: "k8s", Status: "active"},
+		{EntityUID: "job:one", EntityType: "job", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-job", Source: "k8s", Status: "active"},
+		{EntityUID: "cronjob:one", EntityType: "cronjob", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-cronjob", Source: "k8s", Status: "active"},
+		{EntityUID: "pod:one", EntityType: "pod", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-pod", Source: "k8s", Status: "active"},
+		{EntityUID: "service:one", EntityType: "k8s_service", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-service", Source: "k8s", Status: "active"},
+		{EntityUID: "ingress:one", EntityType: "ingress", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-ingress", Source: "k8s", Status: "active"},
+		{EntityUID: "container:one", EntityType: "container", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-container", Source: "k8s", Status: "active"},
+		{EntityUID: "replicaset:one", EntityType: "replicaset", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "one", NameKey: "one-replicaset", Source: "k8s", Status: "active"},
+	}
+	if _, err := repo.BatchMutate(context.Background(), graphpkg.MutationBatch{TenantID: "tenant-a", ClusterID: "cluster-a", Source: "test", Vertices: entities}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{graphRepo: repo}
+	rec := httptest.NewRecorder()
+	h.ResourceCatalog(rec, resourceRequest(http.MethodGet, "/api/v1/resources/catalog?group=containers&limit=20"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []struct {
+			Type string `json:"type"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, item := range body.Items {
+		seen[item.Type] = true
+	}
+	for _, expected := range []string{"deployment", "statefulset", "daemonset", "job", "cronjob", "pod", "k8s_service", "ingress"} {
+		if !seen[expected] {
+			t.Fatalf("missing primary kind %q in %#v", expected, seen)
+		}
+	}
+	if seen["container"] || seen["replicaset"] || body.Total != 8 {
+		t.Fatalf("group projection leaked aggregate kinds or total=%d: %#v", body.Total, seen)
+	}
+}
+
 func TestResourceCatalogExcludesEvidenceAndEvents(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resourceCatalogTestHandler(t).ResourceCatalog(rec, resourceRequest(http.MethodGet, "/api/v1/resources/catalog?limit=100"))
