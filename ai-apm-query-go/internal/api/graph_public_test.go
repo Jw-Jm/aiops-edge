@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -109,5 +111,37 @@ func TestGraphPublicErrorDoesNotExposeBackendDiagnostics(t *testing.T) {
 				t.Fatalf("generic graph error missing: %s", body)
 			}
 		})
+	}
+}
+
+func TestGraphPublicNeighborsReturnsBudgetMetadataAndCursor(t *testing.T) {
+	repo := graphpkg.NewMemoryRepository()
+	center := graphpkg.Entity{EntityUID: "service:v1:tenant-a:center", EntityType: "service", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "center", NameKey: "center", Source: "catalog", Status: "active"}
+	vertices := []graphpkg.Entity{center}
+	edges := make([]graphpkg.Edge, 0, 80)
+	for index := 0; index < 80; index++ {
+		vertex := graphpkg.Entity{EntityUID: "service:v1:tenant-a/node-" + strconv.Itoa(index), EntityType: "service", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "node-" + strconv.Itoa(index), NameKey: "node-" + strconv.Itoa(index), Source: "catalog", Status: "active"}
+		vertices = append(vertices, vertex)
+		edges = append(edges, graphpkg.Edge{EdgeUID: "edge:v1:" + strconv.Itoa(index), SourceUID: center.EntityUID, TargetUID: vertex.EntityUID, RelationType: "DEPENDS_ON", TenantID: "tenant-a", ClusterID: "cluster-a", Source: "catalog", Status: "active", AttrsVersion: 1})
+	}
+	repo.BatchMutate(context.Background(), graphpkg.MutationBatch{TenantID: "tenant-a", ClusterID: "cluster-a", Vertices: vertices, Edges: edges})
+	h := &Handler{graphRepo: repo}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/kg/entities/"+url.PathEscape(center.EntityUID)+"/neighbors?depth=1&max_vertices=80&max_edges=200", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user", TenantID: "tenant-a", SessionID: "session"})
+	req.Header.Set("X-Cluster-ID", "cluster-a")
+	rec := httptest.NewRecorder()
+	h.GraphPublicRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body graphpkg.Subgraph
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Vertices) > 80 || len(body.Edges) > 200 {
+		t.Fatalf("visible graph exceeds budget: vertices=%d edges=%d", len(body.Vertices), len(body.Edges))
+	}
+	if body.TotalNodes <= len(body.Vertices) || body.TotalEdges <= len(body.Edges) || body.NextCursor == "" || !body.Aggregated {
+		t.Fatalf("budget metadata=%+v", body)
 	}
 }

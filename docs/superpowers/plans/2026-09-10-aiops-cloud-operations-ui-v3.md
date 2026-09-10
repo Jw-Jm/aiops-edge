@@ -471,7 +471,7 @@ git commit -m "feat(kubevirt): model storage and multus dependencies"
 - Consumes: Task 6 typed edges。
 - Produces: `GraphPage { totalNodes, totalEdges, nodes, edges, nextCursor, aggregated }`，首屏最多 80/200，等价列表可遍历完整结果。
 
-- [ ] **Step 1: 写失败测试覆盖方向、关系、聚合和非静默截断**
+- [x] **Step 1: 写失败测试覆盖方向、关系、聚合和非静默截断**
 
 ```tsx
 expect(screen.getByText('选择 8 个')).toBeVisible()
@@ -488,7 +488,7 @@ require.Greater(t, response.TotalNodes, len(response.Nodes))
 require.NotEmpty(t, response.NextCursor)
 ```
 
-- [ ] **Step 2: 运行图谱测试并确认旧实现失败**
+- [x] **Step 2: 运行图谱测试并确认旧实现失败**
 
 Run: `cd ai-apm-query-go && go test ./internal/api -run 'Graph.*Budget|Graph.*Cursor|Graph.*Relation' -count=1`
 
@@ -496,7 +496,7 @@ Run: `cd observability-frontend && npm test -- --run src/components/graph src/pa
 
 Expected: FAIL，旧图缺少完整总量、关系证据或分页等价列表。
 
-- [ ] **Step 3: 实现语义分层和关系检查器**
+- [x] **Step 3: 实现语义分层和关系检查器**
 
 ```ts
 export interface GraphEdgeView {
@@ -514,7 +514,7 @@ export interface GraphEdgeView {
 
 容器与 KubeVirt 平行布局；边使用固定端口和正交路由，不穿节点。事实实线、推断虚线；边标签使用不透明底色并始终可读。选中边显示三元组、来源字段、同步时间和证据；1024px 检查器进入 Drawer。等价列表列出源、关系、目标、事实状态、来源和同步时间。
 
-- [ ] **Step 4: 运行图谱全套测试和构建**
+- [x] **Step 4: 运行图谱全套测试和构建**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/graph -run 'Graph|Topology' -count=1`
 
@@ -522,7 +522,7 @@ Run: `cd observability-frontend && npm test -- --run src/api/knowledgeGraph.test
 
 Expected: PASS，80/200 超限时仍可读取总量和后续关系。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add ai-apm-query-go/internal/api/graph_public* observability-frontend/src/api/graphContracts.ts observability-frontend/src/api/knowledgeGraph* observability-frontend/src/components/graph observability-frontend/src/pages/observability/ResourceRelationships*

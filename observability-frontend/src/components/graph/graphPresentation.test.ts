@@ -17,6 +17,8 @@ describe('graph presentation model', () => {
     expect(layoutForMode('expert')).toBe('dag-lr')
     expect(relationLabel('CONTAINS')).toBe('包含')
     expect(relationLabel('DEPENDS_ON')).toBe('依赖')
+    expect(relationLabel('SOURCED_FROM')).toBe('来源于')
+    expect(relationLabel('CONNECTS_TO_NAD')).toBe('连接到 NAD')
   })
 
   it('keeps the center, aggregates nodes beyond the visual budget and preserves typed icons', () => {

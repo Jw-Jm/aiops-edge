@@ -28,6 +28,10 @@ export interface GraphDisplayEdge {
   label: string
   style: 'failure' | 'structural' | 'inferred'
   propagatesFailure: boolean
+  factStatus: 'fact' | 'inferred'
+  sourceRef: string
+  syncedAt: string
+  aggregateCount?: number
 }
 
 export interface GraphRelationRow extends GraphDisplayEdge {
@@ -46,7 +50,7 @@ export interface GraphDisplayModel {
 }
 
 const RELATION_LABELS: Record<string, string> = {
-  CONTAINS: '包含', HOSTS: '宿主', RUNS_ON: '运行于', USES_VOLUME: '使用存储卷', ATTACHED_TO: '挂载于', DEPENDS_ON: '依赖',
+  CONTAINS: '包含', HOSTS: '宿主', RUNS_ON: '运行于', USES_VOLUME: '使用存储卷', USES_DISK: '使用磁盘设备', REFERENCES_VOLUME: '引用卷', SOURCED_FROM: '来源于', DECLARES: '声明 PVC', BOUND_TO: '绑定 PV', ATTACHED_TO: '挂载于', DEPENDS_ON: '依赖', CONNECTS_TO_NAD: '连接到 NAD', USES_CNI: '使用 CNI', CONNECTS_TO_NETWORK: '连接到网络',
 }
 const ICON_KEYS: Record<string, string> = { physical_server: 'physical-server', k8s_node: 'kubernetes-node', vm: 'virtual-machine' }
 
@@ -80,8 +84,12 @@ function nodeFromEntity(entity: GraphEntity): GraphDisplayNode {
 
 function edgeStyle(edge: GraphEdge): GraphDisplayEdge['style'] {
   if (edge.propagates_failure) return 'failure'
-  if (edge.candidate_direction === 'candidate' || edge.status === 'candidate' || edge.status === 'inferred') return 'inferred'
+  if (edge.attrs?.fact_status === 'inferred' || edge.candidate_direction === 'candidate' || edge.status === 'candidate' || edge.status === 'inferred') return 'inferred'
   return 'structural'
+}
+
+function factStatus(edge: GraphEdge): GraphDisplayEdge['factStatus'] {
+  return edge.attrs?.fact_status === 'inferred' || edge.status === 'candidate' || edge.status === 'inferred' ? 'inferred' : 'fact'
 }
 
 export function buildGraphDisplayModel(graph: GraphSubgraph, options: { mode: GraphViewMode; centerUid: string; maxNodes: number; maxEdges: number }): GraphDisplayModel {
@@ -112,7 +120,7 @@ export function buildGraphDisplayModel(graph: GraphSubgraph, options: { mode: Gr
     const source = visibleIds.has(edge.source_uid) ? edge.source_uid : aggregateIds.get(graph.vertices.find((vertex) => vertex.entity_uid === edge.source_uid)?.entity_type ?? '')
     const target = visibleIds.has(edge.target_uid) ? edge.target_uid : aggregateIds.get(graph.vertices.find((vertex) => vertex.entity_uid === edge.target_uid)?.entity_type ?? '')
     if (!source || !target || source === target || !nodeById.has(source) || !nodeById.has(target)) return
-    const display: GraphDisplayEdge = { id: `${edge.edge_uid}:${source}:${target}`, source, target, relationType: edge.relation_type, label: relationLabel(edge.relation_type), style: edgeStyle(edge), propagatesFailure: edge.propagates_failure }
+    const display: GraphDisplayEdge = { id: `${edge.edge_uid}:${source}:${target}`, source, target, relationType: edge.relation_type, label: relationLabel(edge.relation_type), style: edgeStyle(edge), propagatesFailure: edge.propagates_failure, factStatus: factStatus(edge), sourceRef: typeof edge.attrs?.source_field === 'string' ? edge.attrs.source_field : edge.source, syncedAt: typeof edge.attrs?.synced_at === 'string' ? edge.attrs.synced_at : '', ...(typeof edge.attrs?.aggregate_count === 'number' ? { aggregateCount: edge.attrs.aggregate_count } : {}) }
     edgeMap.set(`${source}|${target}|${edge.relation_type}`, display)
   })
   const edges = Array.from(edgeMap.values()).slice(0, maxEdges)

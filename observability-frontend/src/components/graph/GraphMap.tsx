@@ -15,10 +15,10 @@ export default function GraphMap({ subgraph, height = 420, mode = 'expert', layo
       animation: false,
       layout: layout === 'radial' ? { type: 'radial', unitRadius: 100 } : { type: 'dagre', rankdir: layout === 'hierarchy-tb' ? 'TB' : 'LR', nodesep: 36, ranksep: 90 },
       node: { type: 'rect', style: { size: [150, 52], radius: 8, fill: '#ffffff', stroke: '#dde3ea', lineWidth: (d: any) => d.data?.aggregate ? 1 : 2, labelText: (d: any) => d.data?.label || d.id, labelFill: '#172033', labelMaxLines: 2, labelWordWrap: true } },
-      edge: { style: { endArrow: true, stroke: (d: any) => d.data?.style === 'failure' ? '#c9362b' : d.data?.style === 'inferred' ? '#a46f0a' : '#9aa6b8', lineDash: (d: any) => d.data?.style === 'inferred' ? [5, 4] : undefined, labelText: (d: any) => d.data?.label || '' } },
+      edge: { type: 'polyline', style: { endArrow: true, stroke: (d: any) => d.data?.style === 'failure' ? '#c9362b' : d.data?.style === 'inferred' ? '#a46f0a' : '#6f7d91', lineWidth: 1.5, lineDash: (d: any) => d.data?.style === 'inferred' ? [5, 4] : undefined, labelText: (d: any) => d.data?.label || '', labelFill: '#172033', labelBackgroundFill: '#ffffff', labelBackgroundOpacity: 0.96, labelBackgroundRadius: 4, labelPadding: [2, 4] } },
       data: {
         nodes: display.nodes.map((node) => ({ id: node.id, data: { name: node.name, label: `${node.typeLabel} · ${node.label}`, entity_type: node.entityType, iconKey: node.iconKey, healthTone: node.healthTone, aggregate: node.aggregate } })),
-        edges: display.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, data: { relationType: edge.relationType, label: edge.label, style: edge.style } })),
+        edges: display.edges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, data: { relationType: edge.relationType, label: edge.label, style: edge.style, factStatus: edge.factStatus, sourceRef: edge.sourceRef, syncedAt: edge.syncedAt } })),
       },
     })
     void graph.render()

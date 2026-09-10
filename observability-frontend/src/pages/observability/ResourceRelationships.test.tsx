@@ -6,6 +6,8 @@ describe('resource relationship explorer', () => {
     expect(source).toContain('isSelectableResourceType')
     expect(source).toContain('resourceDomainOf')
     expect(source).toContain('item.cluster_id === activeClusterId')
+    expect(source).toContain('max_vertices: 80')
+    expect(source).toContain('max_edges: 200')
     expect(source).not.toContain("entity_type: 'service'")
   })
 })

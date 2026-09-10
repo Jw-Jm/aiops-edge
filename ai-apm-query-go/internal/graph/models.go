@@ -62,6 +62,10 @@ type Subgraph struct {
 	CenterEntityUID string    `json:"center_entity_uid"`
 	Vertices        []Entity  `json:"vertices"`
 	Edges           []Edge    `json:"edges"`
+	TotalNodes      int       `json:"total_nodes,omitempty"`
+	TotalEdges      int       `json:"total_edges,omitempty"`
+	NextCursor      string    `json:"next_cursor,omitempty"`
+	Aggregated      bool      `json:"aggregated,omitempty"`
 	Meta            GraphMeta `json:"meta"`
 }
 

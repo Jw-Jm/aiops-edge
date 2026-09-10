@@ -33,7 +33,7 @@ export default function ResourceRelationships() {
       setResults(items)
       const center = selected ?? items[0]
       if (!center) { setSubgraph(undefined); return }
-      setSubgraph((await getGraphNeighbors(center.entity_uid, { depth: 2, max_vertices: 300, max_edges: 800 })).data)
+      setSubgraph((await getGraphNeighbors(center.entity_uid, { depth: 2, max_vertices: 80, max_edges: 200 })).data)
     } catch (requestError: any) {
       setSubgraph(undefined); setError(requestError?.response?.data?.error || requestError?.message || '关系图读取失败')
     } finally { setLoading(false) }

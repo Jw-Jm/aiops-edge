@@ -670,11 +670,11 @@ func normalizedDirection(direction string) string {
 }
 
 func candidateRelationTypes() []string {
-	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "BOUND_TO", "ATTACHED_TO", "INSTANCE_OF"}
+	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "USES_DISK", "REFERENCES_VOLUME", "SOURCED_FROM", "DECLARES", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO_NAD", "USES_CNI", "CONNECTS_TO_NETWORK", "INSTANCE_OF"}
 }
 
 func impactRelationTypes() []string {
-	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO"}
+	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "USES_DISK", "REFERENCES_VOLUME", "SOURCED_FROM", "DECLARES", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO_NAD", "USES_CNI", "CONNECTS_TO_NETWORK", "CONNECTS_TO"}
 }
 
 var _ GraphRepository = (*HugeGraphRepository)(nil)
