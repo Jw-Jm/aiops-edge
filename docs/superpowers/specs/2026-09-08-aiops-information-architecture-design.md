@@ -2,15 +2,17 @@
 
 **日期：** 2026-09-10
 
-**状态：** A 方案修订稿，待书面审阅；审阅通过前不得进入编码
+**状态：** A 方案已确认；V3 原型、实际渲染与实施计划已审核落盘，作为后续实现和验收基线
 
 **适用范围：** `observability-frontend`、`ai-apm-query-go` 及现有资源、图谱、调查、处置兼容接口
 
 **设计方式：** 依据本次确认的产品目标从零设计页面结构、组件编排和视觉语言，不沿用现有页面布局作为设计基线。
 
-**配套渲染：** [AIOps UI V2 实际渲染与编码对照](./assets/ui-v2/UI_RENDER_GUIDE.md) 当前仅为历史视觉参考，其中平台总览、集群总览、资源目录、资源详情、图谱和缺失的运维知识页均待按本修订稿重绘；审阅通过前不得把现有 PNG/HTML 作为编码验收基线。
+**配套渲染：** [AIOps UI V3 实际渲染与编码对照](./assets/ui-v2/UI_RENDER_GUIDE.md) 与同目录[可运行原型](./assets/ui-v2/aiops-ui-prototype.html)已经按本方案重绘并完成实际浏览器审核；平台、集群、资源、VM 详情、图谱、智能助手、运维知识及响应式 PNG 均为编码视觉基线。
 
-**本次审核结论：** 采用 A 方案。平台总览不再用“被纳管云平台状态：严重/需立即处置”作为主视觉，而直接呈现当前活动严重问题、受影响集群、数据未知/陈旧范围、采集可信度和最高优先级问题。集群内以明确的 Kubernetes 资源种类和 KubeVirt VM/VMI 为运维主语；PVC 与虚拟机磁盘统一进入同一条存储依赖链，NAD 只在辅助网络关系中出现；新增有范围、审核、版本和索引治理的“运维知识”一级工作区。
+**实施计划：** [2026-09-10 AIOps 多集群云平台资源运维 UI V3 实施计划](../plans/2026-09-10-aiops-cloud-operations-ui-v3.md)。实施必须在 `main` 上按计划顺序推进，每批变更完成验证和提交后再移交下一智能体。
+
+**本次审核结论：** 采用 A 方案。平台总览不再用“被纳管云平台状态：严重/需立即处置”作为主视觉，而直接呈现当前活动严重问题、受影响集群、数据未知/陈旧范围、采集可信度和最高优先级问题。集群内以明确的 Kubernetes 资源种类和 KubeVirt VM/VMI 为运维主语；PVC 与虚拟机磁盘统一进入同一条存储依赖链，NAD 只在辅助网络关系中出现；新增有范围、审核、版本和索引治理的“运维知识”一级工作区，并把现有 AiChat 重建为冻结 Scope、引用事实与已发布知识、不能直接处置的智能运维助手。
 
 ## 1. 产品定义
 
@@ -24,6 +26,7 @@
 - KubeVirt 虚拟机及其实例、迁移和依赖关系。
 - 支撑上述资源运行的 Kubernetes 节点、物理机、网络和存储。
 - 从故障案例、运维文档和内置 Playbook 形成的可审核运维知识。
+- 在冻结的集群、可选资源和时间范围内，基于资源事实、观测证据与已发布知识进行可追溯问答的智能运维助手。
 
 业务、应用、APM 服务和中间件不作为一级资源类别或一级导航。如果它们部署在容器或 KubeVirt 虚拟机上，平台仍通过 Deployment、Pod、Kubernetes Service、VM/VMI 等真实载体进行运维；Container 只作为 Pod 内部组成出现在详情和证据中。业务名称、应用名称、中间件类型只作为标签、元数据或局部筛选条件保留。
 
@@ -45,6 +48,7 @@
 - PVC 只保留一个 canonical 身份；虚拟机磁盘是设备视图，不与 PVC 形成重复资源计数。
 - NAD 是 Multus 辅助网络定义，只在被资源实际引用时进入详情与关系图，不作为 KubeVirt 或网络面的主指标。
 - 运维知识必须有租户与集群适用范围、审核发布、版本、来源、审计和索引状态，未发布内容不得参与检索增强。
+- 智能运维助手必须显示事实引用、知识引用、不确定性和能力边界；它只能读取证据、创建调查草稿或提出动作建议，不能直接执行处置。
 - 关键内容完整可读，同时任何视口、卡片、图表、表格和图谱不得越出设计边界。
 - 所有高风险动作继续经过能力校验、预检、审批、执行、验证和审计。
 
@@ -73,20 +77,21 @@
         ↓ 选择一种资源或一个对象
 资源运维（观测 → 调查 → 处置 → 验证）
 
-运维知识（平台通用知识 + 当前集群知识）横向支撑调查、处置与报告
+运维知识（平台通用知识 + 当前集群知识）横向支撑助手、调查、处置与报告
 ```
 
 ### 3.1 一级导航
 
 1. **平台总览** `/overview`
 2. **集群运维** `/clusters/:clusterId`
-3. **调查** `/clusters/:clusterId/investigations`
-4. **处置** `/clusters/:clusterId/actions`
-5. **运维知识** `/clusters/:clusterId/knowledge`
-6. **报告** `/clusters/:clusterId/reports`
-7. **系统管理** `/admin`，仅管理员可见
+3. **智能助手** `/clusters/:clusterId/assistant`
+4. **调查** `/clusters/:clusterId/investigations`
+5. **处置** `/clusters/:clusterId/actions`
+6. **运维知识** `/clusters/:clusterId/knowledge`
+7. **报告** `/clusters/:clusterId/reports`
+8. **系统管理** `/admin`，仅管理员可见
 
-没有集群上下文时，点击“集群运维、调查、处置、运维知识、报告”先要求选择真实集群，不渲染伪造的“全部集群”操作页。平台级问题可在平台总览查看，但创建 Run、Action 或集群范围知识前必须落到一个明确集群。运维知识页同时读取当前租户的平台通用知识与当前集群知识，不允许跨租户或越权读取其他集群知识。
+没有集群上下文时，点击“集群运维、智能助手、调查、处置、运维知识、报告”先要求选择真实集群，不渲染伪造的“全部集群”操作页。平台级问题可在平台总览查看，但开始问答、创建 Run、Action 或集群范围知识前必须落到一个明确集群。运维知识页同时读取当前租户的平台通用知识与当前集群知识，不允许跨租户或越权读取其他集群知识。
 
 ### 3.2 集群内工作区
 
@@ -94,9 +99,10 @@
 - 资源 `/clusters/:clusterId/resources`
 - 观测 `/clusters/:clusterId/observe`
 - 关系 `/clusters/:clusterId/graph`
+- 智能助手 `/clusters/:clusterId/assistant`
 - 运维知识 `/clusters/:clusterId/knowledge`
 
-调查、处置、运维知识和报告保留为一级闭环入口，同时始终显示当前集群。集群内导航不按 Grafana、VictoriaMetrics、VictoriaLogs、DeepFlow、HugeGraph 等采集或存储组件拆分。
+智能助手、调查、处置、运维知识和报告保留为一级闭环入口，同时始终显示当前集群。集群内导航不按 Grafana、VictoriaMetrics、VictoriaLogs、DeepFlow、HugeGraph 等采集或存储组件拆分。
 
 ### 3.3 路由与上下文
 
@@ -107,6 +113,7 @@
 - 资源选择通过路径或查询参数表达，例如 `/clusters/:clusterId/resources/:entityUid`；资源不是顶栏全局 Scope。
 - 页面级时间范围提供最近 15 分钟、1 小时、6 小时、24 小时；创建 Run 时冻结为绝对起止时间。
 - Run 打开后使用只读快照，不因顶栏选择变化而被改写。
+- 智能助手的每个会话冻结 `clusterId + optional resourceUid + absolute timeRange + knowledgeScope`；顶栏切换集群不能静默改写当前会话。用户必须显式新建或切换到目标集群的会话。
 
 ## 4. 健康语义与数据真实性
 
@@ -182,13 +189,14 @@ AIOps 软件自身的采集器、同步任务、调查 Worker、处置控制器�
 PVC 与虚拟机磁盘不是同一资源：磁盘是呈现给虚拟机来宾系统的设备，PVC 是 Kubernetes 对持久卷的声明。UI 使用一条可追溯依赖链统一解释二者：
 
 ```text
-VM/VMI ─使用→ 磁盘设备 ─引用→ Volume ─来源于→ DataVolume/PVC ─绑定到→ PV ─由→ StorageClass ─供给自→ 后端存储
+VM/VMI ─使用→ 磁盘设备 ─引用→ Volume ─来源于→ DataVolume ─声明→ PVC ─绑定到→ PV ─由→ StorageClass ─供给自→ 后端存储
+                                      └────────直接引用 PVC（没有 DataVolume 时）────────┘
 Pod ─挂载→ PVC ─绑定到→ PV ─由→ StorageClass ─供给自→ 后端存储
 ```
 
 - 集群总览的容器资源和 KubeVirt 卡片只显示“受存储问题影响的 Pod/VM 数”和最高优先级存储问题，不显示 PVC/磁盘裸数量。
 - 共享存储依赖入口以 PVC 为 canonical 声明身份，可从 Pod、VM/VMI、PV、StorageClass 或存储后端反向查看影响。
-- VM/VMI 详情提供“磁盘与卷”表格，显示设备名、总线、Volume、DataVolume/PVC 来源、容量、I/O 和健康，但不得把同一 PVC 复制成虚拟机专属资源。
+- VM/VMI 详情提供“磁盘与卷”表格，显示设备名、总线、Volume、可选 DataVolume、canonical PVC 来源、容量、I/O 和健康；没有 DataVolume 时 Volume 可直接引用 PVC，但不得把同一 PVC 复制成虚拟机专属资源。
 - 只有已采集并可验证的 DataVolume CRD 才可显示；未接入时写“尚未采集”，不得根据 PVC 名称推测。
 
 ### 5.3 KubeVirt 辅助网络语义
@@ -431,7 +439,7 @@ export interface ClusterContext {
 - Pod：Phase、Ready、重启、资源请求/限制、节点、卷、日志/Trace 可用性；Container 在 Pod 内分项显示，不作为独立详情类型入口。
 - Kubernetes Service：类型、选择器、EndpointSlice/就绪端点、目标 Pod 和流量健康；Ingress 单独显示规则、入口、证书、后端 Service 和流量健康。
 - 共享存储依赖：PVC 容量、访问模式、绑定 PV、StorageClass、挂载 Pod/VM、后端状态和容量/I/O 风险。
-- VM/VMI：运行状态、CPU/内存、Namespace、所在节点、启动器 Pod、迁移状态；“磁盘与卷”显示设备到 DataVolume/PVC 的引用链，“网络接口”显示 VMI 到实际引用 NAD/CNI/实际网络的关系。
+- VM/VMI：运行状态、CPU/内存、Namespace、所在节点、启动器 Pod、迁移状态；“磁盘与卷”显示设备、Volume、可选 DataVolume、canonical PVC 的引用链，“网络接口”显示 VMI 到实际引用 NAD/CNI/实际网络的关系。
 - Kubernetes 节点：角色、版本、Ready、污点、容量、承载 Pod/VM、物理宿主。
 - 物理机/网络/存储：真实身份、所属集群、与 Kubernetes/KubeVirt 载体的依赖关系和已接入健康事实。
 
@@ -449,7 +457,31 @@ export interface ClusterContext {
 - Grafana 等外部工具保留为专家入口，不成为默认体验。
 - 标题同时包含失败率与副本就绪时，必须绘制两条明确区分的序列，分别标注单位、轴和图例；若只显示一条序列，标题不得声称还展示另一指标。
 
-### 8.7 调查工作区
+### 8.7 智能运维助手
+
+路由 `/clusters/:clusterId/assistant`。助手是集群范围的独立一级工作区，不是全局悬浮聊天框，也不只作为调查页附属功能。它可以绑定一个资源和一个时间范围；未绑定资源时只能回答当前集群范围的问题，不能跨集群检索或推断。
+
+1440px 页面采用 `220px 会话列表 + 弹性回答工作区 + 300px 上下文面板`：
+
+- 左侧列出当前集群的历史会话，显示标题、资源类型和更新时间；新建会话后立即冻结 Scope。
+- 中间固定显示会话标题与完成状态，回答区独立滚动，输入框固定在底部；长回答不撑破页面，任何内容都不能依赖被截断文本。
+- 右侧显示 cluster、canonical resource UID、绝对时间范围、数据时效、实际使用的数据源、缺口与能力边界。
+- 1024–1279px 收为单栏，左、右侧栏通过“会话”“上下文”按钮进入视口内 Drawer，回答和输入区保留完整宽度。
+
+每条 AI 应答必须按固定合同渲染，而不是只显示一段 Markdown：
+
+1. **结论**：使用与证据强度一致的措辞，禁止在证据不足时给出确定性根因。
+2. **关键事实证据**：逐条显示引用编号、事实摘要、来源类型、观测时间和可打开的原始证据链接。
+3. **运维知识引用**：显示知识/Playbook 标识、标题、适用范围、已发布版本和来源 revision；未发布知识不得出现在回答中。
+4. **不确定性与缺失证据**：明确写出数据部分、陈旧、冲突、无权限或尚未验证的假设；没有缺口时显示“未发现关键证据缺口”，不能省略本区。
+5. **建议下一步**：给出可验证的下一步及成功条件；与处置有关时只生成建议，不伪装成已执行结果。
+6. **受控动作**：可以打开证据、打开引用知识、创建调查草稿或进入处置建议；不得直接执行命令、绕过预检/审批或扩大到其他集群。
+
+流式回答按“正在收集事实 → 正在检索已发布知识 → 正在组织回答”显示稳定状态。断流后保留已经收到的内容并标记“回答不完整”，提供使用同一 `turn_id` 安全重试；错误、部分、陈旧和无权限必须就近显示。若没有可引用事实，不得输出带确定语气的结论，只能说明缺少什么以及如何补证。引用打开后必须回到与回答一致的 resource、time range、evidence ID 或 knowledge version。
+
+会话权限使用现有只读 `ai.chat` capability。AI 输出不是 Action 授权：创建调查仅产生草稿，动作只能进入既有的能力校验、预检、审批、执行、验证和审计流程。会话历史由 Query API/MySQL 按 user + tenant + cluster 管理；浏览器和 Orchestrator 都不能把本地历史当作权限或 Scope 真相。
+
+### 8.8 调查工作区
 
 调查列表和工作台始终在一个明确集群下。列表突出资源载体、症状、影响、阶段、负责人和证据状态，Run ID 为辅助字段。
 
@@ -462,7 +494,7 @@ export interface ClusterContext {
 
 主故障链不得使用无文字裸箭头。每条边必须标明“触发、导致、减少、影响”等关系、事实来源和证据数量；推断边显示“疑似导致”并使用虚线。
 
-### 8.8 处置工作区
+### 8.9 处置工作区
 
 - 顶部按待预检、待审批、执行中、待验证、已完成/失败展示状态管线和准确计数。
 - 主区为动作队列；右侧详情面板完整显示目标资源、风险、命令摘要、审批、执行日志、验证和回滚条件。
@@ -472,11 +504,11 @@ export interface ClusterContext {
 - 不提供跨集群“一键执行”。
 - “执行中”使用流程蓝而不是健康绿；绿色只表达执行成功或验证通过。
 
-### 8.9 报告工作区
+### 8.10 报告工作区
 
 报告以集群内资源事件为主语，采用自然内容高度的报告正文 + 证据/动作摘要布局，包含真实载体身份、影响链、证据、根因、动作、恢复验证和容量趋势。禁止使用固定大高度卡片制造空白区域。历史业务/应用/中间件字段可作为兼容标签展示，但不得替代资源载体。“加入运维知识”只创建来源可追溯的待审核故障案例，不得直接进入生产检索。
 
-### 8.10 运维知识工作区
+### 8.11 运维知识工作区
 
 路由 `/clusters/:clusterId/knowledge`。页面同时展示当前租户的平台通用知识和当前集群知识，保持当前真实集群上下文；它是 RAG 知识的治理与人工维护入口，不是资源关系图谱。
 
@@ -509,7 +541,7 @@ export interface ClusterContext {
 - `knowledge.read` 只能读取已授权范围内的已发布知识；`knowledge.submit` 可创建草稿、查看自己的草稿/审核结果并提交审核，可授予操作员；查看全部待审核内容以及发布、禁用、版本治理和索引重试需要 `knowledge.write`，首版仅管理员拥有。
 - 索引不可用时仍可浏览 MySQL 中的权威正文和治理状态，但语义检索明确降级；不得以空结果伪装“没有知识”。
 
-### 8.11 系统管理
+### 8.12 系统管理
 
 系统管理使用独立的设置导航，聚焦纳管集群、AIOps 自身健康、采集器、图谱同步、知识索引任务、数据可信度、能力策略、用户和审计。集群接入状态、各集群资源健康与 AIOps 自身健康分开表达，避免“已纳管”等同于“健康”，也避免同步 Worker 异常被误认为 Kubernetes 集群故障。
 
@@ -521,7 +553,7 @@ export interface ClusterContext {
 
 - 容器链：`Deployment/StatefulSet ─管理→ Pod ─包含→ Container`。
 - 流量链：`Ingress ─路由到→ Kubernetes Service ─选择→ Pod`；EndpointSlice 是 Service 选择结果的事实证据，不替代主关系名称。
-- 存储链：`Pod ─挂载→ PVC ─绑定到→ PV`；KubeVirt 使用 `VM/VMI ─使用→ 磁盘设备 ─引用→ Volume ─来源于→ DataVolume/PVC ─绑定到→ PV`，两条路径再关联同一 StorageClass 与底层存储池。
+- 存储链：`Pod ─挂载→ PVC ─绑定到→ PV`；KubeVirt 使用 `VM/VMI ─使用→ 磁盘设备 ─引用→ Volume ─来源于→ DataVolume ─声明→ PVC ─绑定到→ PV`，无 DataVolume 时 Volume 直接引用 PVC；两条路径再关联同一 StorageClass 与底层存储池。
 - KubeVirt 链：`VM ─实例化→ VMI ─通过启动器运行→ virt-launcher Pod`，`VMI ─调度到→ Kubernetes Node`。
 - 网络链：`VMI ─具有→ 虚拟网络接口 ─连接到→ NAD ─配置→ Multus/CNI 网络 ─落到→ 实际网络`。NAD 引用必须读取 `spec.networks[].multus.networkName`；默认 Pod 网络不伪造 NAD，未安装 Multus 时显示“不适用”。
 - 宿主链：`Kubernetes Node ─映射到→ Physical Server`。
@@ -591,7 +623,19 @@ export interface ClusterContext {
 
 资源接口继续受服务端确认的 tenant + cluster 约束。目录和详情复用图谱与资产事实，不在浏览器拼接多套数据并猜测资源身份。
 
-### 10.3 运维知识与 RAG
+### 10.3 智能运维助手
+
+保留现有 Query API/MySQL 对话所有权和 `ai.chat` capability，不恢复浏览器直连 Orchestrator 或本地 SQLite 会话：
+
+- `POST /api/v1/ai/chat`：canonical SSE 问答入口。请求继续携带 canonical `cluster_id`、`session_id`、幂等 `turn_id` 和用户问题，并新增冻结的可选 `resource_uid`、绝对 `time_range` 与知识范围；服务端重新解析并签名 Scope，不能信任客户端 tenant 或集群声明。
+- `GET /api/v1/ai/sessions`、`GET /api/v1/ai/session/{sessionId}`、`DELETE /api/v1/ai/session/{sessionId}`：继续作为按 user + tenant + active cluster 隔离的会话列表、详情和删除接口。清空会话与现有最终报告接口保持兼容。
+- 回答完成事件新增结构化 `answer`，至少包含 `conclusion`、`evidence_citations[]`、`knowledge_citations[]`、`limitations[]`、`recommended_next_steps[]`、`capabilities[]`、`generated_at` 和 `source_freshness`。过渡期可同时返回文本，但新 UI 不得从自由文本猜测引用、权限或动作状态。
+- 每个 evidence citation 必须可解析到当前 cluster/resource/time range 内的真实 Evidence；每个 knowledge citation 必须解析到当前租户允许的 `platform_common` 或当前集群范围的已发布版本。引用校验失败时服务端移除该引用并把回答标记为 partial，不能把模型生成的标识当作事实。
+- 会话 Scope 创建后不可更新；切换集群后旧会话不可继续发送。重试复用同一 `turn_id`，完成轮次从 MySQL 回放，避免重复调用模型或重复生成建议。
+
+助手使用只读检索工具。`capabilities[]` 只描述当前用户可进入的后续流程，不能让模型生成任意命令或改变服务器授权；“创建调查草稿”和“进入动作建议”分别调用既有 Run/Action canonical API 并再次做 Scope 与 capability 校验。
+
+### 10.4 运维知识与 RAG
 
 浏览器只访问 Query API 的 canonical 知识接口，不再调用已废弃的 `/api/v1/ai/knowledge*` 兼容路由：
 
@@ -614,7 +658,7 @@ export interface ClusterContext {
 - 审核发布与索引通过持久化 outbox/任务状态衔接；索引失败不回滚已审核正文，但该版本标为“索引失败”且不得被语义检索返回，管理员可以重试。
 - AI 调查读取的本地 RAG 兼容逻辑只能用于明确的开发兼容模式；生产请求必须走上述服务端范围校验与 canonical 检索，不得使用无租户、无集群元数据的本地集合。
 
-### 10.4 事实来源
+### 10.5 事实来源
 
 - Query API、资源同步、Graph DTO 是资源身份和关系的权威来源。
 - Run、Evidence、Hypothesis、RCA、Action 和验证结果继续是调查处置事实。
@@ -661,11 +705,11 @@ export interface ClusterContext {
 3. 新建集群详细总览和基于路由的集群上下文。
 4. 新建容器与 KubeVirt 两个主资源目录，按明确 Kind 展示，并建立共享存储和实际引用 NAD 的辅助依赖入口。
 5. 建立 MySQL 权威知识模型、Git Playbook 登记、审核/版本/outbox/索引状态和受范围约束的 Query API canonical 接口。
-6. 按新布局重建资源详情、观测、调查、处置、运维知识、报告和管理页。
+6. 按新布局重建资源详情、观测、智能助手、调查、处置、运维知识、报告和管理页；助手回答改为结构化、可引用、可说明不确定性的响应合同。
 7. 重建知识图谱布局、聚合、渐进加载和等价关系列表，并修正 KubeVirt 存储链与 `multus.networkName` 关系。
 8. 迁移可证明来源和范围的历史 `ops_cases`/知识记录；范围未知的内容进入待审核隔离区且不参与检索。旧知识页和 `/api/v1/ai/knowledge*` 不恢复为生产浏览器接口。
-9. 统一全部数据状态，完成三档视口、内容完整性、知识权限与索引降级回归。
-10. 保留旧深链和历史 Run/Action 数据兼容至少两个小版本，再移除废弃 UI 代码。
+9. 统一全部数据状态，完成三档视口、内容完整性、助手引用与断流、知识权限与索引降级回归。
+10. 保留旧深链、已有 AiChat 会话和历史 Run/Action 数据兼容至少两个小版本，再移除废弃 UI 代码。
 
 旧路由映射：
 
@@ -674,6 +718,7 @@ export interface ClusterContext {
 - `/infra/k8s` → 当前集群容器资源页。
 - `/hardware` → 当前集群基础能力入口的物理服务器筛选。
 - `/capacity` → 当前集群资源页的容量视图。
+- `/ai/chat` → 当前真实集群的 `/clusters/:clusterId/assistant`；没有已确认集群时先进入选择态，不自动使用伪默认集群。已有会话继续按其原 cluster 隔离读取。
 - 历史 application/business/middleware 深链进入兼容只读详情，并提供“查看实际载体”入口。
 
 ## 13. 验收标准
@@ -697,6 +742,10 @@ export interface ClusterContext {
 - 所有资源详情、调查和动作都能回溯到 canonical resource UID 与集群。
 - 运维知识具有独立一级入口，列表、详情、人工新增、报告派生、审核发布、禁用、重建索引和版本历史均通过生产 canonical API 工作。
 - 只有当前租户下 `platform_common` 或当前集群范围且状态为 `published` 的当前版本能够被 RAG 返回；前端参数、直接 Chroma 查询和跨集群深链均不能绕过范围校验。
+- 智能助手具有独立集群级入口；每个会话冻结集群、可选资源、绝对时间范围和知识范围，顶栏切换不能静默改写既有会话。
+- 每条完成回答均显式显示结论、事实引用、已发布知识引用、不确定性/证据缺口、下一步和受控动作；引用可打开并回到同一 Scope，不能出现无法解析的模型伪引用。
+- 助手断流保留部分内容并支持同一 turn 幂等重试；无证据、知识索引降级、数据陈旧和无权限都不能伪装为完整回答。
+- `ai.chat` 只允许问答；创建调查只产生草稿，任何处置仍须重新经过服务端能力、预检、审批、执行、验证和审计。
 
 ### 13.2 内容完整与 UI 边界
 
@@ -705,8 +754,9 @@ export interface ClusterContext {
 - 1440×900、1280×720、1024×768 无页面级横向溢出、按钮重叠、浮层出界或关闭入口不可见。
 - 正文不小于 14px，辅助文字不小于 12px；长名称可换行且有完整查看/复制路径。
 - 正常、加载、空、错误、部分、陈旧、无权限状态都经过视觉验收。
-- 登录、平台总览、集群总览、资源列表、资源详情、观测、调查、处置、运维知识、报告、管理页按本文全新布局实现，不以现有页面布局通过验收。
+- 登录、平台总览、集群总览、资源列表、资源详情、观测、智能助手、调查、处置、运维知识、报告、管理页按本文全新布局实现，不以现有页面布局通过验收。
 - 运维知识在正常、索引不可用、索引失败、空、部分、陈旧和无权限状态下布局稳定；索引故障不能阻断权威正文浏览，也不能伪装为零命中。
+- 助手的会话列表、回答、输入框和上下文在 1440px 完整分区；1024px 使用可关闭 Drawer，不发生页面级横向溢出。长回答允许工作区内滚动，回答区与输入区不能互相遮挡。
 
 ### 13.3 图谱
 
@@ -723,12 +773,13 @@ export interface ClusterContext {
 2. 集群总览 → 查看明确 Kind 的容器异常 → 定位 Deployment 或 Pod → 在 Pod 内查看 Container 证据 → 创建调查。
 3. 集群总览 → 查看 KubeVirt 异常 → 定位 VM/VMI → 查看节点、NAD 辅助网络和磁盘到 PVC 的关系 → 创建调查。
 4. Kubernetes Service/Ingress → Endpoint/Pod 关系 → 指标/日志/Trace → 主故障链。
-5. Run 主故障链 → Action Proposal → 预检 → 审批 → 执行 → 验证回显。
-6. 大规模集群图谱 → 查看聚合计数 → 展开一页 → 搜索未渲染资源 → 切换等价关系列表。
-7. 切换集群失败或深链无权限 → 保留原上下文并给出明确错误，不泄漏其他集群资源。
-8. 报告/调查 → 加入运维知识为待审核案例 → 管理员审核发布 → 当前集群语义检索命中并回溯来源。
-9. 平台通用知识与集群知识 → 当前集群可检索；另一个集群专属知识与另一租户知识 → 不可读取且不泄漏数量或标题。
-10. 长名称、长状态原因、大数值、宽关系和大量结果 → 内容可完整访问且页面不越界。
+5. 资源详情/观测 → 智能助手 → 冻结资源与时间 → 回答逐条引用事实和已发布知识 → 打开原证据 → 创建调查草稿。
+6. Run 主故障链 → Action Proposal → 预检 → 审批 → 执行 → 验证回显。
+7. 大规模集群图谱 → 查看聚合计数 → 展开一页 → 搜索未渲染资源 → 切换等价关系列表。
+8. 切换集群失败或深链无权限 → 保留原上下文并给出明确错误，不泄漏其他集群资源或对话。
+9. 报告/调查 → 加入运维知识为待审核案例 → 管理员审核发布 → 当前集群语义检索与助手回答命中并回溯来源。
+10. 平台通用知识与集群知识 → 当前集群可检索；另一个集群专属知识与另一租户知识 → 不可读取且不泄漏数量或标题。
+11. 长名称、长状态原因、长回答、大数值、宽关系和大量结果 → 内容可完整访问且页面不越界。
 
 ### 13.5 五秒可判读性
 
@@ -740,6 +791,7 @@ export interface ClusterContext {
 4. 当前关系是事实还是推断，来自何处，数据是否新鲜。
 5. 下一步主动作是什么，是否需要预检、审批或更多证据。
 6. 当前检索到的运维知识适用于平台通用还是本集群，是否已审核发布，来源是什么。
+7. 当前助手结论引用了哪些事实与知识，存在哪些不确定性，建议动作是否仍需调查、预检和审批。
 
 任一可见关系若必须依赖猜测颜色、箭头几何、悬停或外部文档才能理解，即视为图谱验收失败。
 
@@ -750,6 +802,7 @@ export interface ClusterContext {
 - 不把所有资源一次性塞入一张图、一张表或浏览器内存。
 - 不用页面饱满度为理由伪造 Owner、健康、关系、容量、风险或观测数据。
 - 不自动执行高风险动作，不用隐藏按钮代替服务端鉴权。
+- 不把智能助手变成无 Scope 的全局聊天、通用知识问答、任意命令执行器或审批绕过入口。
 - 不在本轮改变历史 Run/Action 数据的底层兼容语义。
 - 不恢复旧知识页面或把 Chroma 当作权威数据库，不提供原始向量、集合或 Embedding 参数运维 UI。
 - 不在首版支持任意 Office/PDF/网页抓取或批量文件导入；人工新增仅支持结构化故障案例与受控 Markdown 运维文档。
@@ -766,5 +819,7 @@ export interface ClusterContext {
 - `ai-orchestrator/tools.py` 已明确无租户/集群边界的本地 Chroma 只能作为开发兼容缝，带 Scope 的生产调查必须走 Query API；新知识页必须沿用同一 fail-closed 原则。
 - `ai-orchestrator/kg/builders/kubevirt.py` 当前把 VM 模板中的 `network.name` 当作 NAD 名称，并把关系直接挂在 VM；正确实现必须读取 `multus.networkName`，运行期优先挂在 VMI，并显式建模虚拟接口。
 - 同一 KubeVirt builder 当前只从 VM 到 PVC 建立 `USES_VOLUME`，没有 DataVolume、磁盘设备和 Volume 层；共享存储链必须在数据源真实接入后逐层补齐，不能仅改 UI 标签。
+- `observability-frontend/src/pages/ai/AiChat.tsx` 已有流式聊天、会话、建议和报告界面，但回答主体仍以自由文本和零散消息卡为主，缺少统一的事实引用、知识引用、不确定性与动作边界合同；它应演进为本规格的集群级助手页，而不是另建第二套聊天产品。
+- `ai-apm-query-go/internal/api/settings.go` 的 `ProxyChat` 已强制 `ai.chat`、canonical cluster、UUID session/turn 和 MySQL transcript，`internal/api/ai_chat_sessions.go` 已按 user + tenant + cluster 隔离会话；这些安全与持久化边界必须保留，在其上增加冻结资源/时间和结构化回答，不得退回浏览器或 Orchestrator 自主管理 Scope。
 
 这些差距必须进入下一版实施计划的测试和迁移任务；本规格审阅通过前不修改生产代码。
