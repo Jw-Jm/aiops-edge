@@ -28,7 +28,8 @@ export const setActiveScope = (tenantId: string, clusterId?: string) =>
 // 仅对集群级端点注入 cluster_id 作为【查询过滤参数】（非授权依据——服务端由
 // Query API 基于 HttpOnly session + active scope 强制注入/校验）。
 const GLOBAL_PATHS = [
-  '/clusters',
+	'/platform',
+	'/clusters',
   '/users',
   '/ops/audit-logs',
   '/ops/reports',

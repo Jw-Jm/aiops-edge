@@ -183,7 +183,7 @@ git commit -m "feat(ui): add bounded v3 data states"
 - Consumes: 当前登录态 tenant、全部授权集群、告警/Run/Action 生命周期、采集与同步时效。
 - Produces: `GET /api/v1/platform/overview` 与 `GET /api/v1/platform/clusters`；接口忽略活动 cluster。
 
-- [ ] **Step 1: 写失败测试锁定聚合口径与 Scope 隔离**
+- [x] **Step 1: 写失败测试锁定聚合口径与 Scope 隔离**
 
 ```go
 func TestPlatformOverviewIgnoresActiveClusterAndUsesAuthorizedSet(t *testing.T) {
@@ -198,13 +198,13 @@ func TestPlatformOverviewIgnoresActiveClusterAndUsesAuthorizedSet(t *testing.T) 
 
 同时覆盖问题去重键、严重问题生命周期、健康/降级/严重/未知分布、118/120 一类覆盖分子分母、最新/最旧时间、partial/stale、无权限集群排除。
 
-- [ ] **Step 2: 运行 Go 测试并确认路由不存在**
+- [x] **Step 2: 运行 Go 测试并确认路由不存在**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/bootstrap -run 'PlatformOverview|PlatformClusters' -count=1`
 
 Expected: FAIL，处理器或路由未定义。
 
-- [ ] **Step 3: 实现服务端 DTO 与前端映射**
+- [x] **Step 3: 实现服务端 DTO 与前端映射**
 
 ```go
 type platformOverviewResponse struct {
@@ -224,7 +224,7 @@ type platformOverviewResponse struct {
 
 `PlatformOverview` 从授权集合聚合，不调用 `currentScope(r)` 的 active cluster 过滤；问题按 `tenant + cluster + resource_uid + rule_id + active_lifecycle` 去重。前端 `getPlatformOverview(signal)` 只负责 wire-to-view 映射。
 
-- [ ] **Step 4: 运行后端和前端 API 测试**
+- [x] **Step 4: 运行后端和前端 API 测试**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/bootstrap -run 'PlatformOverview|PlatformClusters' -count=1`
 
@@ -232,7 +232,7 @@ Run: `cd observability-frontend && npm test -- --run src/api/platform.test.ts`
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add ai-apm-query-go/internal/api/platform_overview* ai-apm-query-go/internal/bootstrap/http.go ai-apm-query-go/internal/api/auth.go observability-frontend/src/api/platform*
