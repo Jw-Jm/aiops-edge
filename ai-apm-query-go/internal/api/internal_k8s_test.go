@@ -14,9 +14,10 @@ import (
 
 // k8sTestClient implements query.KubeClient for repository-level test.
 type k8sTestClient struct {
-	nodes       []string
-	pods        []query.KubePod
-	nodeDetails []map[string]interface{}
+	nodes        []string
+	pods         []query.KubePod
+	nodeDetails  []map[string]interface{}
+	graphObjects map[string]interface{}
 }
 
 func (c *k8sTestClient) ClusterID() string                { return "" }
@@ -27,6 +28,9 @@ func (c *k8sTestClient) ListNodeDetails() ([]map[string]interface{}, error) {
 func (c *k8sTestClient) ListPods(ns string) ([]query.KubePod, error) { return c.pods, nil }
 func (c *k8sTestClient) GetDeploymentIdentity(namespace, name string) (query.KubeObjectIdentity, error) {
 	return query.KubeObjectIdentity{UID: "uid-1", ResourceVersion: "42", Namespace: namespace, Name: name}, nil
+}
+func (c *k8sTestClient) ListGraphObjects() (map[string]interface{}, error) {
+	return c.graphObjects, nil
 }
 
 type k8sTestAccessor struct {

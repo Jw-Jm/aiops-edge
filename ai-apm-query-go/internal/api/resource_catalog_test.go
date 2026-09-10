@@ -8,7 +8,61 @@ import (
 	"testing"
 
 	graphpkg "github.com/observability-platform/ai-apm-query-go/internal/graph"
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 )
+
+type resourceFeatureUnavailableRepository struct{ *graphpkg.MemoryRepository }
+
+func (r resourceFeatureUnavailableRepository) SearchEntities(context.Context, graphpkg.GraphScope, graphpkg.EntitySearchQuery) ([]graphpkg.Entity, error) {
+	return nil, graphpkg.NewError(graphpkg.ErrGraphFeatureUnavailable, "HugeGraph entity search requires graph_entity_alias")
+}
+
+func TestResourceCatalogFallsBackToBoundedKubernetesSnapshotWhenGraphSearchIsUnavailable(t *testing.T) {
+	const clusterID = "11111111-1111-4111-8111-111111111111"
+	snapshot := map[string]interface{}{
+		"deployments": []map[string]interface{}{{
+			"metadata": map[string]interface{}{"uid": "uid-deploy", "name": "api", "namespace": "payments"},
+			"status":   map[string]interface{}{"availableReplicas": float64(1), "replicas": float64(1)},
+		}},
+		"pods": []map[string]interface{}{{
+			"metadata": map[string]interface{}{"uid": "uid-pod", "name": "api-1", "namespace": "payments"},
+			"status":   map[string]interface{}{"phase": "Running", "conditions": []interface{}{map[string]interface{}{"type": "Ready", "status": "True"}}},
+		}},
+	}
+	h := &Handler{
+		graphRepo: resourceFeatureUnavailableRepository{MemoryRepository: graphpkg.NewMemoryRepository()},
+		kubeRepo:  query.NewKubernetesRepository(&k8sTestAccessor{client: &k8sTestClient{graphObjects: snapshot}}),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources/catalog?group=containers&limit=20", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user", SessionID: "session", TenantID: "tenant-a", ActiveClusterID: clusterID})
+	rec := httptest.NewRecorder()
+	h.ResourceCatalog(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []struct {
+			UID       string `json:"uid"`
+			ClusterID string `json:"cluster_id"`
+			Type      string `json:"type"`
+			Health    string `json:"health"`
+		} `json:"items"`
+		Meta ResourceReadMeta `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 2 || body.Items[0].ClusterID != clusterID || body.Meta.Partial {
+		t.Fatalf("items=%+v meta=%+v", body.Items, body.Meta)
+	}
+	seen := map[string]string{}
+	for _, item := range body.Items {
+		seen[item.Type] = item.UID + ":" + item.Health
+	}
+	if seen["deployment"] == "" || seen["pod"] == "" {
+		t.Fatalf("fallback projection=%v", seen)
+	}
+}
 
 func resourceCatalogTestHandler(t *testing.T) *Handler {
 	t.Helper()
