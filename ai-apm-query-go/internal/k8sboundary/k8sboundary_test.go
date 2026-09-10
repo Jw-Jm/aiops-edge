@@ -92,6 +92,21 @@ func baseStore() *fakeClusterStore {
 	}}
 }
 
+func TestKubeGraphResourceSetIncludesKubeVirtDependencySources(t *testing.T) {
+	resources := kubeGraphResourceSet()
+	want := map[string]bool{"data_volumes": false, "nads": false, "pvcs": false, "pvs": false, "virtual_machine_instances": false}
+	for _, resource := range resources {
+		if _, ok := want[resource.field]; ok {
+			want[resource.field] = true
+		}
+	}
+	for field, found := range want {
+		if !found {
+			t.Fatalf("graph resource set missing %q", field)
+		}
+	}
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 // 1. UUID_A + Secret_A → identity A → GetClient PASS

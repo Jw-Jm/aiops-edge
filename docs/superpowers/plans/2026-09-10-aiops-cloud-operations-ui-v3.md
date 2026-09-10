@@ -395,7 +395,7 @@ git commit -m "feat(resources): expose canonical carrier kinds"
 - Consumes: KubeVirt VM/VMI spec、CDI DataVolume、PVC/PV、Pod/VMI network attachments。
 - Produces: `Vmi → disk_device → volume → data_volume → pvc → pv` 与 `Vmi → virtual_interface → nad → cni → network` typed edges。
 
-- [ ] **Step 1: 写失败测试证明身份不重复且默认网络无 NAD**
+- [x] **Step 1: 写失败测试证明身份不重复且默认网络无 NAD**
 
 ```go
 func TestKubeVirtDependencyProjection(t *testing.T) {
@@ -407,13 +407,13 @@ func TestKubeVirtDependencyProjection(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行图谱和边界测试确认缺少实体/关系**
+- [x] **Step 2: 运行图谱和边界测试确认缺少实体/关系**
 
 Run: `cd ai-apm-query-go && go test ./internal/graph ./internal/k8sboundary -run 'KubeVirtDependency|DataVolume|NAD' -count=1`
 
 Expected: FAIL，ontology 未完整声明 DataVolume、磁盘设备、Volume、虚拟接口关系。
 
-- [ ] **Step 3: 实现真实依赖投影和详情 DTO**
+- [x] **Step 3: 实现真实依赖投影和详情 DTO**
 
 ```ts
 export interface VmDiskDependency {
@@ -437,7 +437,7 @@ export interface VmNetworkDependency {
 
 关系边携带 `source_field`、`fact_status`、`synced_at`；PVC entity UID 始终来自同一 Kubernetes UID。详情按 V3 图 14 展示“磁盘与卷”和“网络接口”，NAD 旁明确写“Multus 辅助网络定义”。
 
-- [ ] **Step 4: 运行关系、资源详情和 schema 测试**
+- [x] **Step 4: 运行关系、资源详情和 schema 测试**
 
 Run: `cd ai-apm-query-go && go test ./internal/graph ./internal/k8sboundary ./internal/api -run 'KubeVirt|DataVolume|NAD|ResourceDetail' -count=1`
 
@@ -445,7 +445,7 @@ Run: `cd observability-frontend && npm test -- --run src/pages/Resources/resourc
 
 Expected: PASS；同一 PVC 不产生第二个“VM 磁盘资源”身份。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add ai-apm-query-go/internal/graph ai-apm-query-go/internal/k8sboundary observability-frontend/src/pages/Resources

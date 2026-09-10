@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { projectResourceDetail } from './resourceDetailModel'
+import { projectResourceDetail, projectVmDependencies } from './resourceDetailModel'
 import type { ResourceDetailResponse } from '../../api/resources'
 
 function detail(type: 'physical_server' | 'k8s_node' | 'vm'): ResourceDetailResponse {
@@ -27,5 +27,17 @@ describe('resource detail projection', () => {
     const projected = projectResourceDetail({ ...detail('vm'), data: { ...detail('vm').data, attributes: {} } })
     expect(projected.flatMap((section) => section.fields).find((field) => field.label === '迁移')?.value).toBe('未提供')
     expect(projected.flatMap((section) => section.fields).find((field) => field.key === 'source')?.value).toBe('inventory')
+  })
+
+  it('projects typed VM storage and network dependencies without duplicating PVC identity', () => {
+    const dependencies = projectVmDependencies({ vm_dependencies: {
+      disks: [{ device_name: 'rootdisk', bus: 'virtio', volume_name: 'rootdisk', pvc: { uid: 'pvc:1', name: 'pvc-root', namespace: 'prod' }, pv: { name: 'pv-root' } }],
+      networks: [{ interface_name: 'default', binding: 'bridge', default_pod_network: true }, { interface_name: 'net1', binding: 'sriov', default_pod_network: false, nad: { name: 'nad-sriov-prod', namespace: 'prod' } }],
+    } })
+    expect(dependencies?.disks[0].pvc?.name).toBe('pvc-root')
+    expect(dependencies?.disks[0].deviceName).toBe('rootdisk')
+    expect(dependencies?.networks[0].defaultPodNetwork).toBe(true)
+    expect(dependencies?.networks[0].nad).toBeUndefined()
+    expect(dependencies?.networks[1].nad?.name).toBe('nad-sriov-prod')
   })
 })

@@ -13,6 +13,37 @@ export interface DetailSection {
   fields: DetailField[]
 }
 
+export interface ResourceRef {
+  uid?: string
+  type?: string
+  name: string
+  namespace?: string
+}
+
+export interface VmDiskDependency {
+  deviceName: string
+  bus?: string
+  volumeName: string
+  dataVolume?: ResourceRef
+  pvc?: ResourceRef
+  pv?: ResourceRef
+  storageClass?: ResourceRef
+}
+
+export interface VmNetworkDependency {
+  interfaceName: string
+  binding: string
+  defaultPodNetwork: boolean
+  nad?: ResourceRef
+  cni?: ResourceRef
+  network?: ResourceRef
+}
+
+export interface VmDependencies {
+  disks: VmDiskDependency[]
+  networks: VmNetworkDependency[]
+}
+
 function display(value: unknown): string {
   if (value === undefined || value === null || value === '') return '未提供'
   if (typeof value === 'boolean') return value ? '是' : '否'
@@ -23,6 +54,41 @@ function display(value: unknown): string {
 
 function field(key: string, label: string, value: unknown): DetailField {
   return { key, label, value: display(value) }
+}
+
+function ref(value: unknown): ResourceRef | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const item = value as Record<string, unknown>
+  const name = typeof item.name === 'string' ? item.name : ''
+  return name ? { name, ...(typeof item.uid === 'string' ? { uid: item.uid } : {}), ...(typeof item.type === 'string' ? { type: item.type } : {}), ...(typeof item.namespace === 'string' ? { namespace: item.namespace } : {}) } : undefined
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+/** Converts the typed backend dependency DTO without inventing missing facts. */
+export function projectVmDependencies(attributes?: Record<string, unknown>): VmDependencies | undefined {
+  const raw = attributes?.vm_dependencies
+  if (!raw || typeof raw !== 'object') return undefined
+  const value = raw as Record<string, unknown>
+  const disks = Array.isArray(value.disks) ? value.disks.flatMap((item): VmDiskDependency[] => {
+    if (!item || typeof item !== 'object') return []
+    const disk = item as Record<string, unknown>
+    const deviceName = stringValue(disk.device_name ?? disk.deviceName)
+    const volumeName = stringValue(disk.volume_name ?? disk.volumeName)
+    if (!deviceName || !volumeName) return []
+    return [{ deviceName, volumeName, ...(stringValue(disk.bus) ? { bus: stringValue(disk.bus) } : {}), ...(ref(disk.data_volume ?? disk.dataVolume) ? { dataVolume: ref(disk.data_volume ?? disk.dataVolume) } : {}), ...(ref(disk.pvc) ? { pvc: ref(disk.pvc) } : {}), ...(ref(disk.pv) ? { pv: ref(disk.pv) } : {}), ...(ref(disk.storage_class ?? disk.storageClass) ? { storageClass: ref(disk.storage_class ?? disk.storageClass) } : {}) }]
+  }) : []
+  const networks = Array.isArray(value.networks) ? value.networks.flatMap((item): VmNetworkDependency[] => {
+    if (!item || typeof item !== 'object') return []
+    const network = item as Record<string, unknown>
+    const interfaceName = stringValue(network.interface_name ?? network.interfaceName)
+    if (!interfaceName) return []
+    const defaultPodNetwork = network.default_pod_network === true || network.defaultPodNetwork === true
+    return [{ interfaceName, binding: stringValue(network.binding) ?? 'unknown', defaultPodNetwork, ...(ref(network.nad) ? { nad: ref(network.nad) } : {}), ...(ref(network.cni) ? { cni: ref(network.cni) } : {}), ...(ref(network.network) ? { network: ref(network.network) } : {}) }]
+  }) : []
+  return disks.length || networks.length ? { disks, networks } : undefined
 }
 
 function typeFields(item: ResourceCatalogItem): DetailField[] {

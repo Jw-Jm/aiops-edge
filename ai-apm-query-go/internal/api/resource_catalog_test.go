@@ -193,6 +193,17 @@ func TestResourceDetailAllowListsOperationalAttributes(t *testing.T) {
 	}
 }
 
+func TestResourceDetailAllowsTypedKubeVirtDependencies(t *testing.T) {
+	dependencies := map[string]interface{}{"disks": []interface{}{map[string]interface{}{"device_name": "rootdisk", "volume_name": "rootdisk"}}}
+	attrs := resourceDetailAttributes(graphpkg.Entity{EntityType: "vmi", Attrs: map[string]interface{}{"vm_dependencies": dependencies, "raw_payload": "must-not-leak"}})
+	if _, ok := attrs["vm_dependencies"]; !ok {
+		t.Fatalf("typed dependencies missing from detail attributes: %+v", attrs)
+	}
+	if _, ok := attrs["raw_payload"]; ok {
+		t.Fatalf("raw payload leaked into detail attributes: %+v", attrs)
+	}
+}
+
 func TestResourceSummaryFailsClosedWhenGraphUnavailable(t *testing.T) {
 	rec := httptest.NewRecorder()
 	(&Handler{}).ResourceSummary(rec, resourceRequest(http.MethodGet, "/api/v1/resources/summary"))

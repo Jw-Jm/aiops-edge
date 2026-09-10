@@ -589,8 +589,31 @@ func parseKubeEvents(raw []byte) []map[string]interface{} {
 	return result
 }
 
+type graphResource struct {
+	field, name string
+	all         bool
+	optional    bool
+}
+
+func kubeGraphResourceSet() []graphResource {
+	return []graphResource{
+		{"namespaces", "namespaces", false, false}, {"nodes", "nodes", false, false},
+		{"deployments", "deployments", true, false}, {"replicasets", "replicasets", true, false},
+		{"statefulsets", "statefulsets", true, false}, {"daemonsets", "daemonsets", true, false},
+		{"jobs", "jobs", true, false}, {"cronjobs", "cronjobs", true, false},
+		{"pods", "pods", true, false}, {"services", "services", true, false}, {"ingresses", "ingresses", true, true},
+		{"endpoint_slices", "endpointslices", true, false}, {"pvcs", "persistentvolumeclaims", true, false},
+		{"pvs", "persistentvolumes", false, false}, {"storage_classes", "storageclasses", false, false},
+		{"nads", "network-attachment-definitions.k8s.cni.cncf.io", true, true},
+		{"data_volumes", "datavolumes.cdi.kubevirt.io", true, true},
+		{"virtual_machines", "virtualmachines.kubevirt.io", true, true},
+		{"virtual_machine_instances", "virtualmachineinstances.kubevirt.io", true, true},
+		{"migrations", "virtualmachineinstancemigrations.kubevirt.io", true, true},
+	}
+}
+
 // kubeGraphObjects reads only the canonical Kubernetes graph resource set.
-// Optional CRDs (NAD) are reported in errors/partial rather than converting a
+// Optional CRDs are reported in errors/partial rather than converting a
 // missing optional API into a fake empty authoritative snapshot.
 func kubeGraphObjects(kubeconfig, clusterID, identityUID string) (map[string]interface{}, error) {
 	result := map[string]interface{}{
@@ -599,23 +622,7 @@ func kubeGraphObjects(kubeconfig, clusterID, identityUID string) (map[string]int
 			"metadata": map[string]interface{}{"uid": identityUID, "name": clusterID},
 		},
 	}
-	type resource struct {
-		field, name string
-		all         bool
-		optional    bool
-	}
-	resources := []resource{
-		{"namespaces", "namespaces", false, false}, {"nodes", "nodes", false, false},
-		{"deployments", "deployments", true, false}, {"replicasets", "replicasets", true, false},
-		{"statefulsets", "statefulsets", true, false}, {"daemonsets", "daemonsets", true, false},
-		{"pods", "pods", true, false}, {"services", "services", true, false},
-		{"endpoint_slices", "endpointslices", true, false}, {"pvcs", "persistentvolumeclaims", true, false},
-		{"pvs", "persistentvolumes", false, false}, {"storage_classes", "storageclasses", false, false},
-		{"nads", "network-attachment-definitions.k8s.cni.cncf.io", true, true},
-		{"virtual_machines", "virtualmachines.kubevirt.io", true, true},
-		{"virtual_machine_instances", "virtualmachineinstances.kubevirt.io", true, true},
-		{"migrations", "virtualmachineinstancemigrations.kubevirt.io", true, true},
-	}
+	resources := kubeGraphResourceSet()
 	errs := []string{}
 	for _, item := range resources {
 		args := []string{"get", item.name, "-o", "json"}

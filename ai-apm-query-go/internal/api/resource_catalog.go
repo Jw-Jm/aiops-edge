@@ -296,7 +296,7 @@ func resourceDetailAttributes(entity graphpkg.Entity) map[string]interface{} {
 	case "k8s_node":
 		allowed = map[string]struct{}{"role": {}, "version": {}, "ready": {}, "taints": {}, "capacity": {}, "host": {}}
 	case "vm", "vmi":
-		allowed = map[string]struct{}{"namespace": {}, "node": {}, "cpu": {}, "memory": {}, "disk": {}, "network": {}, "migration": {}}
+		allowed = map[string]struct{}{"namespace": {}, "node": {}, "cpu": {}, "memory": {}, "disk": {}, "network": {}, "migration": {}, "vm_dependencies": {}}
 	default:
 		return nil
 	}
