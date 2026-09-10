@@ -8,4 +8,15 @@ describe('AI chat resource scope', () => {
     expect(source).toContain("navigate(`/investigation/new?")
     expect(source).not.toContain('createRun(')
   })
+
+  it('renders the evidence-grounded assistant workspace instead of an unscoped free-text reply', () => {
+    expect(source).toContain('<AssistantContextPanel')
+    expect(source).toContain('freezeAssistantScope')
+    expect(source).toContain('AssistantAnswerCard')
+    expect(source).toContain('AssistantContextPanel')
+    expect(source).toContain('收集事实')
+    expect(source).toContain('检索知识')
+    expect(source).toContain('组织回答')
+    expect(source).not.toContain('立即执行')
+  })
 })

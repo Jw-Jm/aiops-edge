@@ -32,4 +32,6 @@ export const queryKeys = {
   knowledgeList: (clusterId: string, filters: Record<string, unknown> = {}) => ['knowledge', clusterId, 'list', stableFilters(filters)] as const,
   knowledgeDetail: (clusterId: string, knowledgeId: string) => ['knowledge', clusterId, 'detail', knowledgeId] as const,
   knowledgeIndexStatus: (clusterId: string) => ['knowledge', clusterId, 'index-status'] as const,
+  assistantSession: (clusterId: string, sessionId: string) => ['assistant', clusterId, 'session', sessionId] as const,
+  assistantAnswer: (clusterId: string, sessionId: string, turnId: string) => ['assistant', clusterId, 'answer', sessionId, turnId] as const,
 }

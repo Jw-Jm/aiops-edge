@@ -776,7 +776,7 @@ export interface AssistantAnswer {
 }
 ```
 
-- [ ] **Step 1: 写失败测试锁定会话 Scope 与应答合同**
+- [x] **Step 1: 写失败测试锁定会话 Scope 与应答合同**
 
 ```tsx
 expect(screen.getByText('会话 Scope')).toBeVisible()
@@ -795,7 +795,7 @@ expect(createInvestigationDraft).toHaveBeenCalledWith(expect.objectContaining({
 
 Go 测试必须同时断言：恢复会话时 cluster/resource/absolute time 不可变；跨用户、租户或集群会话返回 403/404；同一 `turn_id` 重试不重复生成；未发布或越权知识引用被拒绝；`capabilities.execute_action` 永远为 false。
 
-- [ ] **Step 2: 运行前后端定向测试并确认旧自由文本 UI 失败**
+- [x] **Step 2: 运行前后端定向测试并确认旧自由文本 UI 失败**
 
 Run: `cd observability-frontend && npm test -- --run src/pages/ai/AiChat.test.tsx src/pages/Assistant src/api/assistant.test.ts src/App.test.tsx`
 
@@ -803,15 +803,15 @@ Run: `cd ai-apm-query-go && go test ./internal/api ./internal/store -run 'Chat|A
 
 Expected: FAIL，原因包含助手 canonical 路由未注册、会话没有冻结 resource/time、完成事件没有结构化引用，或旧页面仍只渲染自由文本。
 
-- [ ] **Step 3: 扩展 Query API 权威会话与回答协议**
+- [x] **Step 3: 扩展 Query API 权威会话与回答协议**
 
 迁移在现有 `ai_chat_sessions` 表增加 `resource_uid`、`time_from`、`time_to`、`knowledge_scope`，字段只能在创建时写入；不要修改已有 owner 约束。完成 SSE 事件持久化 `kind=answer` 的结构化 metadata；服务端逐个验证 evidence 与 knowledge citation 的 tenant、cluster、resource、time、published version 后再返回。保留旧 `assistant` 文本事件作为两个小版本的兼容降级，但新前端不得从自由文本解析引用或 capability。
 
-- [ ] **Step 4: 实现全新助手页面与应答框**
+- [x] **Step 4: 实现全新助手页面与应答框**
 
 沿用现有 `AiChat.tsx` 会话与 SSE 能力，拆出 `AssistantAnswerCard` 等组件；不要创建并存的第二套聊天状态。1440px 使用 `220px + 1fr + 300px`，1024px 会话与上下文进入 Drawer。回答区独立滚动、输入区固定；按结论、事实引用、知识引用、不确定性、下一步、受控动作顺序渲染。流式阶段固定为“收集事实/检索知识/组织回答”；断流保留部分回答并使用相同 `turn_id` 重试。引用点击必须带回原 Scope。
 
-- [ ] **Step 5: 验证权限、错误态、响应式与提交**
+- [x] **Step 5: 验证权限、错误态、响应式与提交**
 
 Run: `cd ai-apm-query-go && go test ./internal/api ./internal/store -run 'Chat|Assistant' -count=1`
 
