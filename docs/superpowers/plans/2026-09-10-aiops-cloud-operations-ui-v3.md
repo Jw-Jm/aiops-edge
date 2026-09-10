@@ -1,5 +1,7 @@
 # AIOps 多集群云平台资源运维 UI V3 Implementation Plan
 
+> **现场复核说明（2026-09-10）：** 本计划中的勾选项表示代码任务和原定验证已执行，不等于真实环境正式验收通过。后续运行阻断、健康事实一致性、图谱/长表/助手显示效果与发布门禁整改，统一以 [AIOps V3 实施后完善整改计划](2026-09-10-aiops-v3-post-implementation-remediation.md) 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将现有界面和 Query API 收敛为已确认的 A 方案：以全平台可处置问题态势为入口，在真实 Kubernetes 集群范围内运维容器、Kubernetes Service/Ingress 与 KubeVirt VM/VMI，提供可治理的 RAG 运维知识，并以可追溯智能助手连接事实、知识、调查与受控处置。
