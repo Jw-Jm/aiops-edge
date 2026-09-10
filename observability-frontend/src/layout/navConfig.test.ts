@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { LEGACY_REDIRECTS, PRIMARY_NAV, legacyTarget, visiblePrimaryNav } from './navConfig'
+import { LEGACY_REDIRECTS, PRIMARY_NAV, clusterPath, legacyTarget, visiblePrimaryNav } from './navConfig'
 
 describe('workflow navigation contract', () => {
-  it('keeps six workflow domains visible to operators', () => {
-    expect(visiblePrimaryNav('operator').map((item) => item.label)).toEqual(['工作台', '调查', '资源', '观测', '处置', '报告'])
+  it('keeps the v3 workflow domains visible to operators', () => {
+    expect(PRIMARY_NAV.map((item) => item.label)).toEqual(['平台', '集群', '助手', '调查', '处置', '知识', '报告', '系统管理'])
+    expect(visiblePrimaryNav('operator').map((item) => item.label)).toEqual(['平台', '集群', '助手', '调查', '处置', '知识', '报告'])
   })
 
   it('keeps system administration admin-only', () => {
@@ -21,5 +22,11 @@ describe('workflow navigation contract', () => {
     expect(legacyTarget('/observability/trace')).toBe('/observe?view=traces')
     expect(legacyTarget('/admin/approvals')).toBe('/actions')
     expect(legacyTarget('/unknown')).toBeNull()
+  })
+
+  it('builds canonical cluster paths without inventing a production platform scope', () => {
+    expect(clusterPath('cluster-1', 'overview')).toBe('/clusters/cluster-1')
+    expect(clusterPath('cluster/1', 'knowledge')).toBe('/clusters/cluster%2F1/knowledge')
+    expect(clusterPath('cluster-1', 'assistant')).toBe('/clusters/cluster-1/assistant')
   })
 })

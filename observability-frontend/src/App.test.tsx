@@ -10,10 +10,16 @@ describe('production shell', () => {
     expect(source).toContain('data-testid="notification-alert-item"')
   })
 
-  it('keeps the seven product entry points stable', () => {
-    for (const path of ['/overview', '/investigation', '/resources', '/observe', '/actions', '/reports', '/admin']) {
-      expect(source).toContain(`path: '${path}'`)
+  it('keeps the v3 product entry points stable', () => {
+    for (const path of ['/overview', '/clusters/:clusterId', '/clusters/:clusterId/assistant', '/clusters/:clusterId/investigations', '/clusters/:clusterId/actions', '/clusters/:clusterId/knowledge', '/clusters/:clusterId/reports', '/admin']) {
+      expect(source).toContain(path)
     }
+  })
+
+  it('does not expose global search or the fake production platform layer', () => {
+    expect(source).not.toContain('全局搜索')
+    expect(source).not.toContain('searchOpen')
+    expect(source).not.toContain('生产平台')
   })
 
   it('uses a query-preserving compatibility redirect for legacy routes', () => {

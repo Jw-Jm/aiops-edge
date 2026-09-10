@@ -25,7 +25,6 @@ export function ScopeBar({ snapshot }: ScopeBarProps) {
 
   if (snapshot) {
     const snapshotParts = [
-      '生产平台',
       scopeLabel(snapshot.clusterId, clusters),
       snapshot.resource ? `${resourceTypeLabel(snapshot.resource.type)} · ${resourceLocation(snapshot.resource)}` : '集群范围',
       formatTimeRange(snapshot.timeRange),
@@ -34,7 +33,7 @@ export function ScopeBar({ snapshot }: ScopeBarProps) {
       <div className="scope-bar scope-bar--snapshot" aria-label="调查快照">
         <Tag color="default">调查快照</Tag>
         <span>{snapshotParts.join(' / ')}</span>
-        {snapshot.resource && <Link to={`/resources?resource=${encodeURIComponent(snapshot.resource.uid)}`}>在当前全局范围查看资源</Link>}
+        {snapshot.resource && <Link to={`/clusters/${encodeURIComponent(snapshot.clusterId)}/resources?resource=${encodeURIComponent(snapshot.resource.uid)}`}>查看资源</Link>}
       </div>
     )
   }
@@ -43,8 +42,7 @@ export function ScopeBar({ snapshot }: ScopeBarProps) {
   const timeValue = active.timeRange.mode === 'relative' ? String(active.timeRange.minutes) : 'absolute'
   return (
     <div className="scope-bar" aria-label="活动作用域">
-      <Tag color="blue">生产平台</Tag>
-      <span className="scope-bar__slash">/</span>
+      <span className="scope-bar__label">集群</span>
       <Select aria-label="集群" size="small" placeholder="选择集群" value={activeClusterId || undefined}
         onChange={(value) => { void switchCluster(value) }} options={clusterOptions} />
       <span className="scope-bar__slash">/</span>

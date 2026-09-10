@@ -63,7 +63,7 @@
 - Consumes: `ScopeState.clusters`、`switchCluster(clusterId)` 与 `initialize()`；`switchCluster` 内部调用现有 `setActiveScope(tenantId, clusterId)` 后回读 `getMe()`。
 - Produces: `clusterPath(clusterId, workspace)`、无全局搜索的 `AppLayout`、提交并回读后才导航的 `ClusterNavigator`。
 
-- [ ] **Step 1: 写失败测试，锁定导航和集群切换合同**
+- [x] **Step 1: 写失败测试，锁定导航和集群切换合同**
 
 ```ts
 expect(PRIMARY_NAV.map((item) => item.label)).toEqual([
@@ -78,13 +78,13 @@ expect(setActiveScope).toHaveBeenCalledWith('tenant-a', 'cluster-2')
 expect(vi.mocked(getMe).mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(setActiveScope).mock.invocationCallOrder[0])
 ```
 
-- [ ] **Step 2: 运行定向测试并确认旧壳层失败**
+- [x] **Step 2: 运行定向测试并确认旧壳层失败**
 
 Run: `cd observability-frontend && npm test -- --run src/layout/navConfig.test.ts src/features/scope/ScopeBar.test.tsx src/store/scopeStore.test.ts src/App.test.tsx`
 
 Expected: FAIL，原因包含旧“工作台”导航、全局搜索仍存在，或切换后未回读 Scope。
 
-- [ ] **Step 3: 实现最小壳层与路由**
+- [x] **Step 3: 实现最小壳层与路由**
 
 ```ts
 export type ClusterWorkspace = 'overview' | 'resources' | 'observe' | 'graph' | 'assistant' | 'investigations' | 'actions' | 'knowledge' | 'reports'
@@ -96,13 +96,13 @@ export const clusterPath = (clusterId: string, workspace: ClusterWorkspace) =>
 
 在 `App.tsx` 删除 `searchOpen/searchQuery`、⌘K 监听、搜索按钮和搜索结果；注册规格中的 canonical 路由。旧 `/ai/chat` 在存在已确认活动集群时重定向到 `/clusters/:clusterId/assistant`，否则进入明确的集群选择态。深链渲染前调用 `ensureAuthorizedCluster(routeClusterId)`，失败保持旧 Scope 与原页面，成功后再导航。顶栏只显示真实集群选择、上下文说明、通知和用户。
 
-- [ ] **Step 4: 运行测试与构建**
+- [x] **Step 4: 运行测试与构建**
 
 Run: `cd observability-frontend && npm test -- --run src/layout/navConfig.test.ts src/features/scope/ScopeBar.test.tsx src/store/scopeStore.test.ts src/App.test.tsx && npm run build`
 
 Expected: PASS；壳层测试确认页面 DOM 不出现“全局搜索”“生产平台”，构建无错误。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add observability-frontend/src/App.tsx observability-frontend/src/layout observability-frontend/src/features/scope observability-frontend/src/store/scopeStore.ts observability-frontend/src/store/scopeStore.test.ts observability-frontend/src/index.css

@@ -16,8 +16,14 @@ describe('ScopeBar', () => {
   it('renders a locked run snapshot without editable controls', () => {
     render(<MemoryRouter><ScopeBar snapshot={snapshot} /></MemoryRouter>)
     expect(screen.getByText('调查快照')).toBeInTheDocument()
-    expect(screen.getByText(/生产平台.*cluster-a.*应用服务.*payment-api/)).toBeInTheDocument()
+    expect(screen.getByText(/cluster-a.*应用服务.*payment-api/)).toBeInTheDocument()
+    expect(screen.queryByText('生产平台')).not.toBeInTheDocument()
     expect(screen.getByText(/20:00.*21:00/)).toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+  })
+
+  it('does not render a fake production platform layer in the editable scope bar', () => {
+    render(<MemoryRouter><ScopeBar /></MemoryRouter>)
+    expect(screen.queryByText('生产平台')).not.toBeInTheDocument()
   })
 })

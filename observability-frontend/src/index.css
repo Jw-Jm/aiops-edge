@@ -139,6 +139,8 @@ body {
 .topbar--stacked { height: auto; min-height: 88px; flex-wrap: wrap; row-gap: 0; align-content: center; }
 .topbar__scope { order: 2; flex: 0 0 100%; min-width: 0; padding: 4px 0 6px; border-top: 1px solid var(--border-soft); }
 .topbar__scope .scope-bar { max-width: 100%; }
+.topbar:not(.topbar--stacked) { height: 64px; min-height: 64px; }
+.topbar:not(.topbar--stacked) .topbar__scope { order: 0; flex: 0 1 auto; padding: 0; border-top: 0; }
 .topbar__icon-btn { position: relative; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px;
   border-radius: 8px; color: var(--text-muted); cursor: pointer; transition: background var(--t-fast); }
 .topbar__icon-btn:hover { background: var(--surface-hover); color: var(--text); }
@@ -243,7 +245,8 @@ body {
 .card__body--flush { padding: 0; }
 
 /* IA primitives: scope, priority queue and responsive production guard. */
-.scope-bar { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.scope-bar { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.scope-bar__label { color: var(--text-secondary); font-size: 12px; font-weight: 600; }
 .scope-bar .ant-select { min-width: 92px; }
 .resource-picker { position: relative; min-width: 188px; max-width: 330px; }
 .resource-picker__control { display: flex; align-items: center; min-width: 0; }
@@ -323,6 +326,14 @@ body {
 .work-queue__item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 11px 4px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
 .work-queue__item:last-child { border-bottom: 0; }
 .production-width-gate { max-width: 680px; margin: 64px auto; padding: 20px 24px; border: 1px solid var(--warning); border-radius: 8px; color: var(--text); background: var(--warning-soft); text-align: center; }
+.scope-required { max-width: 720px; margin: 56px auto; padding: 28px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-1); box-shadow: var(--shadow-sm); }
+.scope-required h1 { margin: 0; font-size: 22px; }
+.scope-required p { margin: 8px 0 20px; color: var(--text-secondary); }
+.scope-required__list { display: grid; gap: 8px; }
+.scope-required__list button { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 52px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-1); color: var(--text); text-align: left; cursor: pointer; }
+.scope-required__list button:hover { border-color: var(--primary); background: var(--primary-soft); }
+.scope-required__list span { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+.route-loading { display: grid; place-items: center; min-height: 280px; }
 .evidence-timeline__item { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .evidence-timeline__item:last-child { border-bottom: 0; }
 .evidence-timeline__item[role="button"] { cursor: pointer; }

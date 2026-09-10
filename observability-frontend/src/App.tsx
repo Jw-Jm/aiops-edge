@@ -1,15 +1,14 @@
 import React, { useState, lazy, Suspense, useEffect } from 'react'
-import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from 'react-router-dom'
 import { Alert, Dropdown, Spin } from 'antd'
 import { useUIStore } from './store/uiStore'
 import { useScopeStore } from './store/scopeStore'
 import { useAuthStore } from './store/authStore'
-import AiDock from './components/AiDock'
 import AppIcon from './components/AppIcons'
 import RequireAuth from './components/RequireAuth'
 import { getAlertEvents } from './api/client'
 import ScopeBar from './features/scope/ScopeBar'
-import { LEGACY_REDIRECTS, PRIMARY_NAV, visiblePrimaryNav } from './layout/navConfig'
+import { LEGACY_REDIRECTS, clusterPath, visiblePrimaryNav } from './layout/navConfig'
 
 // ===== 懒加载页面（全新 IA）=====
 const Login = lazy(() => import('./pages/Login'))
@@ -46,7 +45,8 @@ const Actions = lazy(() => import('./pages/Actions'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Admin = lazy(() => import('./pages/admin/AdminHome'))
 const NotFound = lazy(() => import('./pages/NotFound'))
-// Stable product route contract: path: '/overview', path: '/investigation', path: '/resources', path: '/observe', path: '/actions', path: '/reports', path: '/admin'
+// Stable product route contract: platform overview is global; every other
+// primary workspace is rooted at a canonical cluster path.
 
 function LegacyRedirect({ target }: { target: string }) {
   const location = useLocation()
@@ -55,6 +55,69 @@ function LegacyRedirect({ target }: { target: string }) {
   new URLSearchParams(targetSearch).forEach((value, key) => merged.set(key, value))
   const query = merged.toString()
   return <Navigate replace to={`${pathname}${query ? `?${query}` : ''}`} />
+}
+
+function LegacyAssistantRedirect() {
+  const location = useLocation()
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  const target = activeClusterId ? clusterPath(activeClusterId, 'assistant') : '/clusters'
+  const query = location.search
+  return <Navigate replace to={`${target}${query}`} />
+}
+
+function ClusterEntry() {
+  const navigate = useNavigate()
+  const clusters = useScopeStore((state) => state.clusters)
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  const loading = useScopeStore((state) => state.loading)
+  if (activeClusterId) return <Navigate replace to={clusterPath(activeClusterId, 'overview')} />
+  return (
+    <section className="scope-required" aria-labelledby="cluster-selection-title">
+      <h1 id="cluster-selection-title">选择集群</h1>
+      <p>请选择一个已授权的 Kubernetes 集群进入详细总览。</p>
+      {loading ? <Spin /> : clusters.length === 0 ? <Alert type="warning" showIcon message="暂无可用集群" /> : (
+        <div className="scope-required__list">
+          {clusters.map((cluster) => (
+            <button key={cluster.cluster_id} type="button" onClick={() => navigate(`/clusters/${encodeURIComponent(cluster.cluster_id)}`)}>
+              <strong>{cluster.name}</strong><span>{cluster.cluster_id}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ClusterRouteGate({ children }: { children: React.ReactNode }) {
+  const { clusterId = '' } = useParams<{ clusterId: string }>()
+  const clusters = useScopeStore((state) => state.clusters)
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  const switching = useScopeStore((state) => state.switching)
+  const error = useScopeStore((state) => state.error)
+  const switchCluster = useScopeStore((state) => state.switchCluster)
+  const [invalid, setInvalid] = useState(false)
+
+  useEffect(() => {
+    const authorized = clusters.some((cluster) => cluster.cluster_id === clusterId)
+    if (!clusterId || (clusters.length > 0 && !authorized)) {
+      setInvalid(true)
+      return
+    }
+    setInvalid(false)
+    if (activeClusterId && activeClusterId !== clusterId && !switching) {
+      void switchCluster(clusterId).catch(() => undefined)
+    }
+  }, [activeClusterId, clusterId, clusters, switchCluster, switching])
+
+  if (invalid) return <Alert type="error" showIcon message="无权访问该集群" description="当前登录用户没有该 Kubernetes 集群的访问权限。" />
+  if (error && activeClusterId !== clusterId) return <Alert type="error" showIcon message="集群作用域切换失败" description={error} />
+  if (activeClusterId !== clusterId || switching) return <div className="route-loading"><Spin /></div>
+  return <>{children}</>
+}
+
+function ClusterOverviewPlaceholder() {
+  const { clusterId = '' } = useParams<{ clusterId: string }>()
+  return <section className="page-header"><div><h1 className="page-title">集群详细总览</h1><p className="page-desc">当前集群：{clusterId}</p></div></section>
 }
 
 function AppLayout() {
@@ -69,8 +132,6 @@ function AppLayout() {
   const logout = useAuthStore((s) => s.logout)
   const [compact, setCompact] = useState(false)
   const [narrow, setNarrow] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
   const [alertCount, setAlertCount] = useState<number | null>(null)
   // 修复 5.7：通知抽屉需要最近告警明细，与 alertCount 一并拉取
   const [recentAlerts, setRecentAlerts] = useState<any[]>([])
@@ -116,18 +177,6 @@ function AppLayout() {
     return () => window.removeEventListener('resize', updateViewport)
   }, [])
 
-  useEffect(() => {
-    const onShortcut = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault()
-        setSearchOpen(true)
-      }
-      if (event.key === 'Escape') setSearchOpen(false)
-    }
-    window.addEventListener('keydown', onShortcut)
-    return () => window.removeEventListener('keydown', onShortcut)
-  }, [])
-
   // 高亮当前路由
   const pathname = location.pathname
   const auth = useAuthStore()
@@ -135,18 +184,21 @@ function AppLayout() {
   // PF-LOGIC-013: 侧栏按 role 过滤后的导航组
   const visibleNav = visiblePrimaryNav(role)
   const isCollapsed = collapsed || compact
-  const selectedKey = visibleNav.find((it) => it.path === pathname)?.path
-    || visibleNav.find((it) => pathname.startsWith(it.path + '/'))?.path
-    || (pathname.startsWith('/observability/') || pathname.startsWith('/alerts/') || pathname.startsWith('/capacity') || pathname.startsWith('/infra/') || pathname.startsWith('/hardware') || pathname.startsWith('/changes') ? '/resources' : '/overview')
-  const searchItems = [
-    ...visibleNav.map((item) => ({ label: item.label, path: item.path, description: '工作流页面' })),
-    { label: 'AI 运维助手', path: '/ai/chat', description: '自然语言问答与调查草稿' },
-  ]
-  const matchingSearchItems = searchItems.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(searchQuery.trim().toLowerCase()))
-  const goToSearchItem = (path: string) => {
-    setSearchOpen(false)
-    setSearchQuery('')
-    navigate(path)
+  const selectedItem = visibleNav.find((item) => {
+    if (item.workspace) {
+      if (!pathname.startsWith('/clusters/')) return false
+      return item.workspace === 'overview'
+        ? /^\/clusters\/[^/]+\/?$/.test(pathname)
+        : pathname.includes(`/${item.workspace}`)
+    }
+    return pathname === item.path || pathname.startsWith(`${item.path}/`)
+  }) ?? visibleNav.find((item) => item.path === '/overview')
+  const navigateToItem = (item: (typeof visibleNav)[number]) => {
+    if (!item.workspace) {
+      navigate(item.path)
+      return
+    }
+    navigate(activeClusterId ? clusterPath(activeClusterId, item.workspace) : '/clusters')
   }
 
   const userLabel = auth.displayName || auth.username || '用户'
@@ -166,20 +218,11 @@ function AppLayout() {
           )}
         </div>
 
-        {!isCollapsed && (
-          <div style={{ padding: '6px 12px 2px' }}>
-            <div className="nav__hero" onClick={() => navigate('/ai/chat')}>
-              <span className="nh-ic"><AppIcon name="chat" /></span>
-              <span className="nh-txt"><span className="nh-title">AI 运维助手</span><span className="nh-sub">自然语言指挥</span></span>
-            </div>
-          </div>
-        )}
-
         <div className="sidebar__scroll">
           <nav className="nav">
             {visibleNav.map((it) => (
-              <div key={it.path} className={'nav__item' + (selectedKey === it.path ? ' is-active' : '')}
-                onClick={() => navigate(it.path)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); navigate(it.path) } }} role="button" tabIndex={0} title={isCollapsed ? it.label : undefined}>
+              <div key={`${it.path}:${it.workspace ?? ''}`} className={'nav__item' + (selectedItem === it ? ' is-active' : '')}
+                onClick={() => navigateToItem(it)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); navigateToItem(it) } }} role="button" tabIndex={0} title={isCollapsed ? it.label : undefined}>
                 <AppIcon name={it.icon} />
                 {!isCollapsed && <span>{it.label}</span>}
                 {!isCollapsed && it.badge && (
@@ -200,24 +243,7 @@ function AppLayout() {
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* 顶栏 */}
-        <header className="topbar topbar--stacked">
-          <div className="topbar__search-wrap">
-            <button type="button" className="topbar__search" aria-label="全局搜索" aria-expanded={searchOpen} onClick={() => setSearchOpen((open) => !open)}>
-              <AppIcon name="search" />
-              <span>全局搜索</span>
-              <kbd>⌘K</kbd>
-            </button>
-            {searchOpen && <div className="cmdk-popover" role="dialog" aria-label="全局搜索面板">
-              <input autoFocus className="cmdk-popover__input" aria-label="搜索页面" placeholder="搜索工作流页面" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => {
-                if (event.key === 'Enter' && matchingSearchItems[0]) goToSearchItem(matchingSearchItems[0].path)
-                if (event.key === 'Escape') setSearchOpen(false)
-              }} />
-              <div className="cmdk-popover__list" role="listbox" aria-label="搜索结果">
-                {matchingSearchItems.map((item) => <button type="button" role="option" key={item.path} className="cmdk-popover__item" onClick={() => goToSearchItem(item.path)}><AppIcon name="search" /><span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}
-                {matchingSearchItems.length === 0 && <div className="cmdk-popover__empty">没有匹配的页面</div>}
-              </div>
-            </div>}
-          </div>
+        <header className="topbar">
           <div className="topbar__scope"><ScopeBar /></div>
           <div className="topbar__spacer" />
           {/* 修复 5.7：通知按钮从"直接跳转告警页"改为下拉抽屉，展示最近告警，点击进入告警事件页 */}
@@ -291,6 +317,18 @@ function AppLayout() {
           ) : <Suspense fallback={<div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>}>
             <Routes>
               {Array.from(LEGACY_REDIRECTS.entries()).map(([from, to]) => <Route key={from} path={from} element={<LegacyRedirect target={to} />} />)}
+              <Route path="/clusters" element={<ClusterEntry />} />
+              <Route path="/clusters/:clusterId" element={<ClusterRouteGate><ClusterOverviewPlaceholder /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/resources" element={<ClusterRouteGate><Resources /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/resources/:entityUid" element={<ClusterRouteGate><Resources /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/observe" element={<ClusterRouteGate><Observe /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/graph" element={<ClusterRouteGate><ResourceRelationships /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/assistant" element={<ClusterRouteGate><AiChat /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/investigations" element={<ClusterRouteGate><InvestigationCenter /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/actions" element={<ClusterRouteGate><Actions /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/knowledge" element={<ClusterRouteGate><ClusterOverviewPlaceholder /></ClusterRouteGate>} />
+              <Route path="/clusters/:clusterId/reports" element={<ClusterRouteGate><Reports /></ClusterRouteGate>} />
+              <Route path="/ai/chat" element={<LegacyAssistantRedirect />} />
               <Route path="/overview" element={<Overview />} />
               <Route path="/resources" element={<Resources />} />
               <Route path="/observe" element={<Observe />} />
@@ -304,7 +342,6 @@ function AppLayout() {
               <Route path="/observability/vms" element={<VirtualMachines />} />
               <Route path="/alerts/events" element={<AlertEvents />} />
               <Route path="/alerts/rules" element={<AlertRules />} />
-              <Route path="/ai/chat" element={<AiChat />} />
               {/* P12：调查中心 / 智能调查 / 发起调查 */}
               <Route path="/investigation" element={<InvestigationCenter />} />
               <Route path="/investigation/new" element={<NewInvestigation />} />
@@ -328,7 +365,6 @@ function AppLayout() {
         </main>
       </div>
 
-      <AiDock />
     </div>
   )
 }
