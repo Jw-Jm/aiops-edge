@@ -100,6 +100,18 @@ type KnowledgeIndexState struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
+type KnowledgeIndexOutbox struct {
+	OutboxID    string     `json:"outbox_id"`
+	KnowledgeID string     `json:"knowledge_id"`
+	VersionID   string     `json:"version_id"`
+	EventKind   string     `json:"event_kind"`
+	Status      string     `json:"status"`
+	Attempt     int        `json:"attempt"`
+	LastError   string     `json:"last_error,omitempty"`
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	IndexedAt   *time.Time `json:"indexed_at,omitempty"`
+}
+
 type OperationsKnowledgeDAO struct{}
 
 func validateKnowledgeInput(scope KnowledgeScope, input KnowledgeInput) error {
@@ -390,6 +402,21 @@ func (d *OperationsKnowledgeDAO) GetVersion(ctx context.Context, scope Knowledge
 	return &version, nil
 }
 
+func (d *OperationsKnowledgeDAO) IsCurrentPublished(ctx context.Context, scope KnowledgeScope, knowledgeID, versionID string) (bool, error) {
+	db := GetDB()
+	if db == nil {
+		return false, ErrMySQLUnavailable
+	}
+	where, args := knowledgeScopeClause(scope)
+	args = append(args, knowledgeID, versionID)
+	var found int
+	err := db.QueryRowContext(ctx, `SELECT 1 FROM operations_knowledge WHERE `+where+` AND knowledge_id=? AND status='published' AND current_version_id=? LIMIT 1`, args...).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && found == 1, err
+}
+
 func (d *OperationsKnowledgeDAO) ListIndexStates(ctx context.Context, scope KnowledgeScope, limit int) ([]KnowledgeIndexState, error) {
 	db := GetDB()
 	if db == nil {
@@ -418,4 +445,106 @@ func (d *OperationsKnowledgeDAO) ListIndexStates(ctx context.Context, scope Know
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func (d *OperationsKnowledgeDAO) ScanIndexOutbox(ctx context.Context, limit int) ([]KnowledgeIndexOutbox, error) {
+	db := GetDB()
+	if db == nil {
+		return nil, ErrMySQLUnavailable
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := db.QueryContext(ctx, `SELECT outbox_id,knowledge_id,version_id,event_kind,status,attempt,last_error,next_retry_at,indexed_at FROM operations_knowledge_index_outbox WHERE status='pending' AND (next_retry_at IS NULL OR next_retry_at<=NOW(3)) ORDER BY created_at LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []KnowledgeIndexOutbox{}
+	for rows.Next() {
+		var item KnowledgeIndexOutbox
+		var nextRetry, indexed sql.NullTime
+		var lastError sql.NullString
+		if err := rows.Scan(&item.OutboxID, &item.KnowledgeID, &item.VersionID, &item.EventKind, &item.Status, &item.Attempt, &lastError, &nextRetry, &indexed); err != nil {
+			return nil, err
+		}
+		item.LastError = lastError.String
+		if nextRetry.Valid {
+			item.NextRetryAt = &nextRetry.Time
+		}
+		if indexed.Valid {
+			item.IndexedAt = &indexed.Time
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (d *OperationsKnowledgeDAO) EnqueuePublishedIndex(ctx context.Context, scope KnowledgeScope) (int, error) {
+	db := GetDB()
+	if db == nil {
+		return 0, ErrMySQLUnavailable
+	}
+	where, args := knowledgeScopeClause(scope)
+	rows, err := db.QueryContext(ctx, `SELECT knowledge_id,current_version_id FROM operations_knowledge WHERE `+where+` AND status='published' AND current_version_id IS NOT NULL`, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	type pair struct{ knowledgeID, versionID string }
+	pairs := []pair{}
+	for rows.Next() {
+		var item pair
+		if err := rows.Scan(&item.knowledgeID, &item.versionID); err != nil {
+			return 0, err
+		}
+		pairs = append(pairs, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, item := range pairs {
+		if _, err := db.ExecContext(ctx, `INSERT IGNORE INTO operations_knowledge_index_outbox (outbox_id,knowledge_id,version_id,event_kind,status) VALUES (?,?,?,'publish','pending')`, deterministicKnowledgeOutboxID(item.knowledgeID, item.versionID), item.knowledgeID, item.versionID); err != nil {
+			return 0, err
+		}
+	}
+	return len(pairs), nil
+}
+
+func (d *OperationsKnowledgeDAO) MarkIndexSucceeded(ctx context.Context, outboxID, knowledgeID, versionID string) error {
+	db := GetDB()
+	if db == nil {
+		return ErrMySQLUnavailable
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE operations_knowledge_index_outbox SET status='indexed',indexed_at=NOW(3),last_error=NULL WHERE outbox_id=? AND knowledge_id=? AND version_id=?`, outboxID, knowledgeID, versionID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO operations_knowledge_index_state (knowledge_id,version_id,status,attempt,last_error,indexed_at) VALUES (?,?, 'indexed',0,NULL,NOW(3)) ON DUPLICATE KEY UPDATE status='indexed',last_error=NULL,indexed_at=NOW(3),updated_at=NOW(3)`, knowledgeID, versionID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (d *OperationsKnowledgeDAO) MarkIndexFailed(ctx context.Context, outboxID, knowledgeID, versionID, sanitizedError string, retryAt time.Time) error {
+	db := GetDB()
+	if db == nil {
+		return ErrMySQLUnavailable
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE operations_knowledge_index_outbox SET status='pending',attempt=attempt+1,last_error=?,next_retry_at=? WHERE outbox_id=? AND knowledge_id=? AND version_id=?`, sanitizedError, retryAt, outboxID, knowledgeID, versionID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO operations_knowledge_index_state (knowledge_id,version_id,status,attempt,last_error) VALUES (?,?, 'failed',1,?) ON DUPLICATE KEY UPDATE status='failed',attempt=attempt+1,last_error=?,updated_at=NOW(3)`, knowledgeID, versionID, sanitizedError, sanitizedError); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

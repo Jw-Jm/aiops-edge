@@ -617,7 +617,7 @@ git commit -m "feat(knowledge): add governed source-of-truth model"
 - Consumes: Task 8 published version/outbox。
 - Produces: canonical `POST /api/v1/clusters/{clusterId}/knowledge/search`、索引状态和管理员 reindex；Chroma metadata 双重校验。
 
-- [ ] **Step 1: 写失败测试覆盖跨集群拒绝和索引降级**
+- [x] **Step 1: 写失败测试覆盖跨集群拒绝和索引降级**
 
 ```go
 func TestKnowledgeSearchDropsUnauthorizedAndNonCurrentHits(t *testing.T) {
@@ -632,13 +632,13 @@ func TestKnowledgeSearchDropsUnauthorizedAndNonCurrentHits(t *testing.T) {
 
 另测：Chroma down 时列表/正文仍 200，search 返回明确 503 和 retryable；索引失败状态可读；普通用户不能 reindex。
 
-- [ ] **Step 2: 运行知识检索测试并确认旧 metadata 不足**
+- [x] **Step 2: 运行知识检索测试并确认旧 metadata 不足**
 
 Run: `cd ai-apm-query-go && go test ./internal/query ./internal/api -run 'KnowledgeSearch|KnowledgeIndex|Chroma' -count=1`
 
 Expected: FAIL，旧模型只校验 tenant + cluster，缺少 platform_common、published、current version 与 source revision。
 
-- [ ] **Step 3: 实现投影 metadata 和幂等 worker**
+- [x] **Step 3: 实现投影 metadata 和幂等 worker**
 
 ```go
 type KnowledgeIndexMetadata struct {
@@ -657,13 +657,13 @@ type KnowledgeIndexMetadata struct {
 
 worker 用 outbox ID 幂等 upsert；成功更新 indexed_at，失败记录 sanitized error、attempt 和 next_retry_at。检索先由 Chroma where 收窄，再以 MySQL 当前 published version 与授权谓词复核。
 
-- [ ] **Step 4: 运行检索、worker 和竞态测试**
+- [x] **Step 4: 运行检索、worker 和竞态测试**
 
 Run: `cd ai-apm-query-go && go test -race ./internal/query ./internal/api -run 'Knowledge|Chroma' -count=1`
 
 Expected: PASS，无跨范围命中、旧版本命中或重复索引。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add ai-apm-query-go/internal/query/knowledge* ai-apm-query-go/internal/api/knowledge_backend* ai-apm-query-go/internal/api/knowledge_index_worker* ai-apm-query-go/internal/api/operations_knowledge.go

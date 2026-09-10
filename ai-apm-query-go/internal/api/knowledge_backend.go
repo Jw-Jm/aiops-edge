@@ -63,7 +63,9 @@ func (b chromaKnowledgeBackend) Search(ctx context.Context, scope query.Knowledg
 		"where": map[string]interface{}{
 			"$and": []map[string]interface{}{
 				{"tenant_id": scope.TenantID},
-				{"cluster_id": scope.ClusterID},
+				{"status": "published"},
+				{"is_current": true},
+				{"$or": []map[string]interface{}{{"scope_type": "platform_common"}, {"scope_type": "cluster", "cluster_id": scope.ClusterID}}},
 			},
 		},
 	}
@@ -115,7 +117,9 @@ func mapChromaHits(cr *chromaQueryResponse, scope query.KnowledgeScope) []query.
 		// Chroma metadata is untrusted response data.  Do not rely on the
 		// server-side where clause alone: older collections/proxies may ignore
 		// it, and a missing scope must never become a cross-tenant hit.
-		if metaString(meta, "tenant_id") != scope.TenantID || metaString(meta, "cluster_id") != scope.ClusterID {
+		scopeType := metaString(meta, "scope_type")
+		clusterAllowed := scopeType == "platform_common" || (scopeType == "cluster" && metaString(meta, "cluster_id") == scope.ClusterID)
+		if metaString(meta, "tenant_id") != scope.TenantID || !clusterAllowed || metaString(meta, "knowledge_id") == "" || metaString(meta, "version_id") == "" || metaString(meta, "status") != "published" || !metaBool(meta, "is_current") {
 			continue
 		}
 		similarity := 0.0
@@ -124,11 +128,20 @@ func mapChromaHits(cr *chromaQueryResponse, scope query.KnowledgeScope) []query.
 			similarity = 1.0 / (1.0 + distances[i])
 		}
 		out = append(out, query.KnowledgeHit{
-			DocumentID:    id,
-			Source:        metaString(meta, "source"),
-			Version:       metaString(meta, "version"),
-			Similarity:    similarity,
-			Applicability: metaString(meta, "applicability"),
+			DocumentID:     id,
+			KnowledgeID:    metaString(meta, "knowledge_id"),
+			VersionID:      metaString(meta, "version_id"),
+			TenantID:       metaString(meta, "tenant_id"),
+			ScopeType:      metaString(meta, "scope_type"),
+			ClusterID:      metaString(meta, "cluster_id"),
+			Source:         metaString(meta, "source"),
+			Version:        metaString(meta, "version"),
+			Status:         metaString(meta, "status"),
+			SourceRevision: metaString(meta, "source_revision"),
+			ContentSHA256:  metaString(meta, "content_checksum"),
+			IsCurrent:      metaBool(meta, "is_current"),
+			Similarity:     similarity,
+			Applicability:  metaString(meta, "applicability"),
 		})
 	}
 	return out
@@ -159,5 +172,21 @@ func metaString(meta map[string]interface{}, key string) string {
 		return strconv.FormatFloat(v, 'f', -1, 64)
 	default:
 		return ""
+	}
+}
+
+func metaBool(meta map[string]interface{}, key string) bool {
+	if meta == nil {
+		return false
+	}
+	switch value := meta[key].(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(value, "true")
+	case float64:
+		return value == 1
+	default:
+		return false
 	}
 }

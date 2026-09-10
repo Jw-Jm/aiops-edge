@@ -21,6 +21,10 @@ func TestKnowledgePathSeparatesCollectionActionsAndResourceActions(t *testing.T)
 	if !ok || cluster != "cluster-a" || id != "" || action != "index-status" {
 		t.Fatalf("index status path parsed as %q %q %q %v", cluster, id, action, ok)
 	}
+	cluster, id, action, ok = knowledgePath("/api/v1/clusters/cluster-a/knowledge/search")
+	if !ok || cluster != "cluster-a" || id != "" || action != "search" {
+		t.Fatalf("search path parsed as %q %q %q %v", cluster, id, action, ok)
+	}
 }
 
 func TestKnowledgeRouterFailsClosedOnCrossClusterScope(t *testing.T) {

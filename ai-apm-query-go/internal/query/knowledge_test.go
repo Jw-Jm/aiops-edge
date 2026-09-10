@@ -27,8 +27,8 @@ func (f *fakeKnowledgeBackend) Search(ctx context.Context, scope KnowledgeScope,
 
 func TestKnowledgeRepoSearch(t *testing.T) {
 	be := &fakeKnowledgeBackend{hits: []KnowledgeHit{
-		{DocumentID: "doc-1", Source: "runbook", Version: "v3", Similarity: 0.92, Applicability: "checkout"},
-		{DocumentID: "doc-2", Source: "sop", Version: "v1", Similarity: 0.81, Applicability: "checkout"},
+		{DocumentID: "doc-1", KnowledgeID: "k-1", VersionID: "v-3", TenantID: "t1", ScopeType: "cluster", ClusterID: "c1", Status: "published", IsCurrent: true, Source: "runbook", Version: "v3", Similarity: 0.92, Applicability: "checkout"},
+		{DocumentID: "doc-2", KnowledgeID: "k-2", VersionID: "v-1", TenantID: "t1", ScopeType: "platform_common", Status: "published", IsCurrent: true, Source: "sop", Version: "v1", Similarity: 0.81, Applicability: "checkout"},
 	}}
 	r := NewKnowledgeRepository(be)
 	hits, err := r.Search(context.Background(), KnowledgeScope{TenantID: "t1", ClusterID: "c1"}, "checkout pod crashloop", 5)
@@ -86,12 +86,43 @@ func TestKnowledgeRepoRequiresCompleteScope(t *testing.T) {
 }
 
 func TestKnowledgeRepoTrimsAndBoundsQuery(t *testing.T) {
-	be := &fakeKnowledgeBackend{hits: []KnowledgeHit{{DocumentID: "doc-1"}}}
+	be := &fakeKnowledgeBackend{hits: []KnowledgeHit{{DocumentID: "doc-1", KnowledgeID: "k-1", VersionID: "v-1", TenantID: "t1", ScopeType: "cluster", ClusterID: "c1", Status: "published", IsCurrent: true}}}
 	r := NewKnowledgeRepository(be)
 	if _, err := r.Search(context.Background(), KnowledgeScope{TenantID: "t1", ClusterID: "c1"}, "  x  ", 500); err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 	if be.gotQ != "x" {
 		t.Fatalf("query = %q", be.gotQ)
+	}
+}
+
+func TestKnowledgeRepoDropsForeignOldAndNonCurrentHits(t *testing.T) {
+	be := &fakeKnowledgeBackend{hits: []KnowledgeHit{
+		{DocumentID: "ok", KnowledgeID: "k-1", VersionID: "v-2", TenantID: "t1", ScopeType: "cluster", ClusterID: "c1", Status: "published", IsCurrent: true},
+		{DocumentID: "other-cluster", KnowledgeID: "k-2", VersionID: "v-2", TenantID: "t1", ScopeType: "cluster", ClusterID: "c2", Status: "published", IsCurrent: true},
+		{DocumentID: "old-version", KnowledgeID: "k-1", VersionID: "v-1", TenantID: "t1", ScopeType: "cluster", ClusterID: "c1", Status: "published", IsCurrent: false},
+	}}
+	hits, err := NewKnowledgeRepository(be).Search(context.Background(), KnowledgeScope{TenantID: "t1", ClusterID: "c1"}, "x", 5)
+	if err != nil || len(hits) != 1 || hits[0].DocumentID != "ok" {
+		t.Fatalf("filtered hits=%+v err=%v", hits, err)
+	}
+}
+
+type fakeKnowledgeAuthority struct {
+	current bool
+	err     error
+}
+
+func (f fakeKnowledgeAuthority) IsCurrentPublished(context.Context, KnowledgeScope, string, string) (bool, error) {
+	return f.current, f.err
+}
+
+func TestKnowledgeRepoRechecksMySQLCurrentVersion(t *testing.T) {
+	be := &fakeKnowledgeBackend{hits: []KnowledgeHit{{DocumentID: "old", KnowledgeID: "k-1", VersionID: "v-1", TenantID: "t1", ScopeType: "cluster", ClusterID: "c1", Status: "published", IsCurrent: true}}}
+	r := NewKnowledgeRepositoryWithAuthority(be, fakeKnowledgeAuthority{current: false})
+	_, err := r.Search(context.Background(), KnowledgeScope{TenantID: "t1", ClusterID: "c1"}, "x", 5)
+	var queryErr *QueryError
+	if !errors.As(err, &queryErr) || queryErr.Code != NoDataCode {
+		t.Fatalf("expected old current version to be dropped, err=%v", err)
 	}
 }

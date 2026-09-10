@@ -267,7 +267,7 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.changeRepo = query.NewChangeRepository(&h.repo)
 	// knowledge 后端（Chroma vector index + MinIO Knowledge Object）由 environment 注入；
 	// 未配置时 repository 返回 unavailable（fail-closed），绝不回退 ProxyAI。
-	h.knowledgeRepo = query.NewKnowledgeRepository(newKnowledgeBackendFromEnv())
+	h.knowledgeRepo = query.NewKnowledgeRepositoryWithAuthority(newKnowledgeBackendFromEnv(), mysqlKnowledgeAuthority{dao: &store.OperationsKnowledgeDAO{}})
 	h.graphRepo, h.graphInitErr = graphpkg.NewRepositoryFromEnv()
 	h.graphAliasDAO = &store.GraphEntityAliasDAO{}
 	h.runGraphDAO = &store.AIRunGraphContextDAO{}

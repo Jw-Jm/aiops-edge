@@ -14,11 +14,20 @@ type KnowledgeScope struct {
 // KnowledgeHit 一条知识检索命中（knowledge.search 事实来源）。
 // 保留 document_id/source/version/similarity/applicability（契约 42.6）。
 type KnowledgeHit struct {
-	DocumentID    string
-	Source        string // runbook / sop / incident / rca / architecture / product
-	Version       string
-	Similarity    float64 // 0-1
-	Applicability string  // 适用对象（服务/集群/资源）
+	DocumentID     string
+	KnowledgeID    string
+	VersionID      string
+	TenantID       string
+	ScopeType      string
+	ClusterID      string
+	Source         string // runbook / sop / incident / rca / architecture / product
+	Version        string
+	Status         string
+	SourceRevision string
+	ContentSHA256  string
+	IsCurrent      bool
+	Similarity     float64 // 0-1
+	Applicability  string  // 适用对象（服务/集群/资源）
 }
 
 // KnowledgeBackend 是知识检索后端（Chroma vector index + MinIO Knowledge Object）。
@@ -27,16 +36,25 @@ type KnowledgeBackend interface {
 	Search(ctx context.Context, scope KnowledgeScope, query string, topK int) ([]KnowledgeHit, error)
 }
 
+type KnowledgeAuthority interface {
+	IsCurrentPublished(ctx context.Context, scope KnowledgeScope, knowledgeID, versionID string) (bool, error)
+}
+
 // KnowledgeRepository 是 knowledge 资源域的 domain repository（V9.2 Phase 6 mandatory gap）。
 // 事实来源 = Chroma vector index + MinIO Knowledge Object；Knowledge empty = no_data。
 // 禁止 ProxyAI 成为知识检索 fallback。
 type KnowledgeRepository struct {
-	backend KnowledgeBackend
+	backend   KnowledgeBackend
+	authority KnowledgeAuthority
 }
 
 // NewKnowledgeRepository 构造 knowledge repository，注入检索 backend。
 func NewKnowledgeRepository(backend KnowledgeBackend) *KnowledgeRepository {
 	return &KnowledgeRepository{backend: backend}
+}
+
+func NewKnowledgeRepositoryWithAuthority(backend KnowledgeBackend, authority KnowledgeAuthority) *KnowledgeRepository {
+	return &KnowledgeRepository{backend: backend, authority: authority}
 }
 
 // Search 检索知识库，返回最相关的 topK 条。空结果语义 = no_data。
@@ -61,8 +79,24 @@ func (r *KnowledgeRepository) Search(ctx context.Context, scope KnowledgeScope, 
 	if err != nil {
 		return nil, Unavailable("knowledge: " + err.Error())
 	}
-	if len(hits) == 0 {
+	filtered := make([]KnowledgeHit, 0, len(hits))
+	for _, hit := range hits {
+		if hit.TenantID != scope.TenantID || hit.Status != "published" || !hit.IsCurrent || (hit.ScopeType != "platform_common" && !(hit.ScopeType == "cluster" && hit.ClusterID == scope.ClusterID)) {
+			continue
+		}
+		if r.authority != nil {
+			current, authorityErr := r.authority.IsCurrentPublished(ctx, scope, hit.KnowledgeID, hit.VersionID)
+			if authorityErr != nil {
+				return nil, Unavailable("knowledge authority: " + authorityErr.Error())
+			}
+			if !current {
+				continue
+			}
+		}
+		filtered = append(filtered, hit)
+	}
+	if len(filtered) == 0 {
 		return nil, NoData()
 	}
-	return hits, nil
+	return filtered, nil
 }

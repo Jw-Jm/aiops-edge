@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/observability-platform/ai-apm-query-go/internal/query"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
 
@@ -38,6 +39,9 @@ func knowledgePath(path string) (clusterID, knowledgeID, action string, ok bool)
 	}
 	if len(parts) == 6 && parts[5] == "index-status" {
 		return clusterID, "", "index-status", clusterID != ""
+	}
+	if len(parts) == 6 && (parts[5] == "search" || parts[5] == "reindex") {
+		return clusterID, "", parts[5], clusterID != ""
 	}
 	knowledgeID = parts[5]
 	if len(parts) > 6 {
@@ -85,6 +89,20 @@ func decodeKnowledgeReviewBody(r *http.Request, target *knowledgeReviewPayload) 
 	}
 	if len(body) > 1<<20 {
 		return errors.New("review payload too large")
+	}
+	return json.Unmarshal(body, target)
+}
+
+func decodeKnowledgeSearchBody(r *http.Request, target *struct {
+	Query string `json:"query"`
+	TopK  int    `json:"top_k"`
+}) error {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > 1<<20 {
+		return errors.New("search payload too large")
 	}
 	return json.Unmarshal(body, target)
 }
@@ -203,6 +221,36 @@ func (h *Handler) OperationsKnowledgeRouter(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"items": states})
+	case knowledgeID == "" && action == "search" && r.Method == http.MethodPost:
+		var payload struct {
+			Query string `json:"query"`
+			TopK  int    `json:"top_k"`
+		}
+		if err := decodeKnowledgeSearchBody(r, &payload); err != nil || strings.TrimSpace(payload.Query) == "" {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid search payload"})
+			return
+		}
+		if h.knowledgeRepo == nil {
+			respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "knowledge_search_unavailable", "retryable": true})
+			return
+		}
+		hits, searchErr := h.knowledgeRepo.Search(r.Context(), query.KnowledgeScope{TenantID: scope.TenantID, ClusterID: scope.ClusterID}, payload.Query, payload.TopK)
+		if searchErr != nil {
+			respondKnowledgeQueryError(w, searchErr)
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]interface{}{"items": hits, "meta": map[string]interface{}{"index_available": true}})
+	case knowledgeID == "" && action == "reindex" && r.Method == http.MethodPost:
+		if !hasKnowledgeCapability(r, KnowledgeWriteCapability) {
+			respondJSON(w, http.StatusForbidden, map[string]string{"error": KnowledgeWriteCapability + " required"})
+			return
+		}
+		count, reindexErr := dao.EnqueuePublishedIndex(r.Context(), scope)
+		if reindexErr != nil {
+			respondKnowledgeStoreError(w, reindexErr)
+			return
+		}
+		respondJSON(w, http.StatusAccepted, map[string]interface{}{"queued": count})
 	default:
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 	}
@@ -218,4 +266,13 @@ func respondKnowledgeStoreError(w http.ResponseWriter, err error) {
 		return
 	}
 	respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+}
+
+func respondKnowledgeQueryError(w http.ResponseWriter, err error) {
+	var queryErr *query.QueryError
+	if errors.As(err, &queryErr) {
+		respondJSON(w, queryErr.HTTPStatus(), map[string]interface{}{"error": string(queryErr.Code), "message": queryErr.Message, "retryable": queryErr.Retryable})
+		return
+	}
+	respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "knowledge_search_unavailable", "retryable": true})
 }
