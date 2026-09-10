@@ -16,7 +16,7 @@ vi.mock('../../store/scopeStore', () => ({
 
 describe('Reports resource event projection', () => {
   beforeEach(() => {
-  vi.mocked(listReports).mockResolvedValue({ data: { history: [{
+  vi.mocked(listReports).mockResolvedValue({ data: { reports: [{
       task_id: 'report-1', report_type: 'report', cluster_id: 'cluster-a',
       resource_uid: 'physical:edge-01', resource_type: 'physical_server', resource_name: 'edge-01',
       summary: '硬件温度异常', created_at: '2026-09-09T02:00:00Z',

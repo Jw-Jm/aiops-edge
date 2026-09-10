@@ -173,7 +173,7 @@ export interface ActionProjection {
   created_at?: string
   updated_at?: string
 }
-export const listActions = (params?: { status?: string; limit?: number; resource_uid?: string; resource_type?: string }) =>
+export const listActions = (params?: { status?: string; limit?: number; resource_uid?: string; resource_type?: string; cluster_id?: string }) =>
   api.get<{ actions: ActionProjection[]; count: number }>('/ai/actions', { params })
 export const getAction = (actionId: string) =>
   api.get<ActionProjection>(`/ai/actions/${encodeURIComponent(actionId)}`)
@@ -519,7 +519,7 @@ export const deleteUser = (id: number) => api.delete(`/users/${id}`)
 export const getMe = () => api.get<MeResponse>('/me')
 
 // ===== 报告中心 =====
-export const listReports = (params?: Record<string, unknown>) => api.get('/ops/reports/history', { params })
+export const listReports = (params?: Record<string, unknown>) => api.get('/ops/reports', { params })
 export const reportTrend = (params?: Record<string, unknown>) => api.get('/ops/reports/trend', { params })
 
 // ===== 服务目录 =====

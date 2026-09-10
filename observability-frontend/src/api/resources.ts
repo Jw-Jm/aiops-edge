@@ -13,6 +13,8 @@ export interface ResourceCatalogParams {
   group?: 'containers' | 'kubevirt'
   domain?: ResourceDomain
   type?: GraphEntityType
+  namespace?: string
+  freshness?: 'fresh' | 'stale' | 'unknown'
   q?: string
   health?: ResourceHealth
   limit?: number

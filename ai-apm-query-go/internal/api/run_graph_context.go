@@ -29,8 +29,7 @@ func (h *Handler) RunGraphContext(w http.ResponseWriter, r *http.Request) {
 		respondGraphError(w, "ENTITY_NOT_FOUND", "run not found")
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondGraphError(w, "GRAPH_SCOPE_DENIED", "run is outside tenant scope")
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	contextValue, err := h.runGraphDAO.GetLatest(runID, auth.TenantID)

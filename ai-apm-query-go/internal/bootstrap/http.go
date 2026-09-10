@@ -168,6 +168,8 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	// Final report is a Query/MySQL-owned transcript export.  It must not proxy
 	// the legacy orchestrator SQLite endpoint (retired in production).
 	mux.HandleFunc("/api/v1/ai/final_report", handler.GenerateChatReport)
+	mux.HandleFunc("/api/v1/ops/reports", handler.ReportsPublic)
+	mux.HandleFunc("/api/v1/ops/reports/", handler.ReportsPublicRouter)
 	mux.HandleFunc("/api/v1/ai/runs/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/events", handler.StreamRunEvents)
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/graph-context", handler.RunGraphContext)

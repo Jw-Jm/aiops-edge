@@ -1,7 +1,6 @@
 import React, { useState, lazy, Suspense, useEffect } from 'react'
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from 'react-router-dom'
 import { Alert, Dropdown, Spin } from 'antd'
-import { useUIStore } from './store/uiStore'
 import { useScopeStore } from './store/scopeStore'
 import { useAuthStore } from './store/authStore'
 import AppIcon from './components/AppIcons'
@@ -125,8 +124,6 @@ function ClusterOverviewPlaceholder() {
 export function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const collapsed = useUIStore((s) => s.collapsed)
-  const toggleCollapsed = useUIStore((s) => s.toggleCollapsed)
   const initializeScope = useScopeStore((s) => s.initialize)
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const scopeLoading = useScopeStore((s) => s.loading)
@@ -185,7 +182,12 @@ export function AppLayout() {
   const role = auth.role
   // PF-LOGIC-013: 侧栏按 role 过滤后的导航组
   const visibleNav = visiblePrimaryNav(role)
-  const isCollapsed = collapsed || compact
+  // The IA uses a navigation rail at every desktop breakpoint. Keep the rail
+  // narrow so the product surface, rather than a legacy expanded sidebar,
+  // owns the available width.
+  const navRailWidth = narrow ? 64 : compact ? 72 : 88
+  const isCollapsed = true
+  const narrowReadOnlyRoute = pathname === '/overview' || /^\/clusters\/[^/]+\/?$/.test(pathname)
   const selectedItem = visibleNav.find((item) => {
     if (item.workspace) {
       if (!pathname.startsWith('/clusters/')) return false
@@ -209,7 +211,7 @@ export function AppLayout() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
       {/* 侧栏 */}
-      <aside className="sidebar" style={{ width: isCollapsed ? 64 : 216, flexShrink: 0, transition: 'width .2s' }}>
+      <aside className="sidebar" style={{ width: navRailWidth, flexShrink: 0, transition: 'width .2s' }}>
         <div className="brand" style={{ padding: isCollapsed ? '16px 12px' : undefined, justifyContent: isCollapsed ? 'center' : undefined }}>
           <div className="brand__logo">观</div>
           {!isCollapsed && (
@@ -237,10 +239,6 @@ export function AppLayout() {
           </nav>
         </div>
 
-        <div className="nav__collapse-btn" onClick={toggleCollapsed}>
-          <AppIcon name="collapse" />
-          {!isCollapsed && <span style={{ flex: 1 }}>收起菜单</span>}
-        </div>
       </aside>
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
@@ -312,7 +310,7 @@ export function AppLayout() {
               style={{ marginBottom: 16 }}
             />
           ) : null}
-          {narrow ? (
+          {narrow && !narrowReadOnlyRoute ? (
             <div className="production-width-gate" role="alert" data-testid="production-width-gate">
               当前窗口宽度不足 1024px，生产操作仅在只读模式下可用。请将窗口扩大后继续。
             </div>

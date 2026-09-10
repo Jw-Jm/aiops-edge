@@ -53,7 +53,7 @@ const InvestigationCenter: React.FC = () => {
       // P12：接真实 Run 数据源 GET /api/v1/ai/runs；失败必须显式呈现，不伪造 DEMO 或健康空列表。
       if (!activeClusterId) { setRuns([]); return }
       const resp = await listRuns({ cluster_id: activeClusterId })
-      const list = resp.data?.runs ?? []
+      const list = (resp.data?.runs ?? []).filter((run) => !run.primary_cluster_id || run.primary_cluster_id === activeClusterId)
       setRuns(list.map((r) => ({
         runId: r.run_id,
         tenantId: r.tenant_id ?? '',

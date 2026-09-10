@@ -25,5 +25,7 @@ describe('ScopeBar', () => {
   it('does not render a fake production platform layer in the editable scope bar', () => {
     render(<MemoryRouter><ScopeBar /></MemoryRouter>)
     expect(screen.queryByText('生产平台')).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: '资源' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: '时间范围' })).not.toBeInTheDocument()
   })
 })

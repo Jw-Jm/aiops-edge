@@ -134,6 +134,48 @@ func TestListRunsPublicExposesPersistedPrincipalIdentity(t *testing.T) {
 	}
 }
 
+func TestListRunsPublicFiltersByRequestedCluster(t *testing.T) {
+	h, mock, cleanup := newTestRunsHandler()
+	defer cleanup()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,")).
+		WithArgs("7ed01afc-cc79-4ecd-8767-a2befa6168ad", "cluster-a").
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "request_id", "tenant_id", "principal",
+			"principal_type", "session_id", "scope_kind", "primary_cluster_id", "intent",
+			"action_mode", "target_type", "target_resource_id", "time_range_start",
+			"time_range_end", "status", "state_version", "parent_run_id", "created_at",
+			"updated_at", "finished_at", "last_event_sequence"}).
+			AddRow("run-a", "request-a", "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+				"user-123", "user", nil, "single_cluster", "cluster-a", "investigate",
+				"read_only", "pod", "pod-a", nil, nil, "created", 0, nil,
+				time.Now(), time.Now(), nil, 0))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/runs?cluster_id=cluster-a", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{
+		UserID: "user-123", SessionID: "session-1", TenantID: "7ed01afc-cc79-4ecd-8767-a2befa6168ad",
+		ActiveClusterID: "cluster-a",
+	})
+	w := httptest.NewRecorder()
+	h.ListRunsPublic(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"run-a"`) {
+		t.Fatalf("expected cluster-scoped run list, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunScopeDeniedRejectsForeignCluster(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/runs/run-a", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user-123", TenantID: "tenant-a", ActiveClusterID: "cluster-b"})
+	rec := httptest.NewRecorder()
+	if !runScopeDenied(rec, req, "tenant-a", "cluster-a") {
+		t.Fatal("foreign cluster run must be denied")
+	}
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "CONTEXT_SCOPE_MISMATCH") {
+		t.Fatalf("unexpected scope response: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateRunPublicRejectsTenantMismatch(t *testing.T) {
 	h, mock, cleanup := newTestRunsHandler()
 	defer cleanup()

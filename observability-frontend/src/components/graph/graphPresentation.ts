@@ -55,7 +55,7 @@ const RELATION_LABELS: Record<string, string> = {
 const ICON_KEYS: Record<string, string> = { physical_server: 'physical-server', k8s_node: 'kubernetes-node', vm: 'virtual-machine' }
 
 export function layoutForMode(mode: GraphViewMode): GraphLayoutMode {
-  if (mode === 'resource-relations') return 'radial'
+  if (mode === 'resource-relations') return 'dag-lr'
   if (mode === 'failure-chain') return 'hierarchy-tb'
   return 'dag-lr'
 }

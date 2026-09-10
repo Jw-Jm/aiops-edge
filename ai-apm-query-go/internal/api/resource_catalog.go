@@ -106,6 +106,8 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
 	group := strings.TrimSpace(r.URL.Query().Get("group"))
 	typeFilter := strings.TrimSpace(r.URL.Query().Get("type"))
+	namespace := strings.TrimSpace(r.URL.Query().Get("namespace"))
+	freshness := strings.TrimSpace(r.URL.Query().Get("freshness"))
 	health := strings.TrimSpace(r.URL.Query().Get("health"))
 	if domain != "" {
 		if _, ok := resourceTypesByDomain[domain]; !ok {
@@ -133,6 +135,10 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		respondResourceError(w, http.StatusBadRequest, "INVALID_RESOURCE_HEALTH")
 		return
 	}
+	if freshness != "" && !validResourceFreshness(freshness) {
+		respondResourceError(w, http.StatusBadRequest, "INVALID_RESOURCE_FRESHNESS")
+		return
+	}
 	limit, err := parseResourceLimit(r.URL.Query().Get("limit"))
 	if err != nil {
 		respondResourceError(w, http.StatusBadRequest, "INVALID_RESOURCE_LIMIT")
@@ -143,7 +149,7 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		respondResourceError(w, http.StatusBadRequest, "INVALID_RESOURCE_CURSOR")
 		return
 	}
-	lookup, err := h.resourceEntityLookup(r.Context(), scope, domain, group, typeFilter, strings.TrimSpace(r.URL.Query().Get("q")), health)
+	lookup, err := h.resourceEntityLookup(r.Context(), scope, domain, group, typeFilter, namespace, freshness, strings.TrimSpace(r.URL.Query().Get("q")), health)
 	if err != nil {
 		respondResourceGraphError(w, err)
 		return
@@ -151,7 +157,7 @@ func (h *Handler) ResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	entities := lookup.entities
 	items := make([]resourceCatalogItem, 0, len(entities))
 	for _, entity := range entities {
-		if !resourceEntityAllowed(entity, domain, group, typeFilter, health) || !afterResourceCursor(entity, cursor) {
+		if !resourceEntityAllowed(entity, domain, group, typeFilter, namespace, freshness, health) || !afterResourceCursor(entity, cursor) {
 			continue
 		}
 		items = append(items, projectResourceCatalogItem(entity))
@@ -188,7 +194,7 @@ func (h *Handler) ResourceSummary(w http.ResponseWriter, r *http.Request) {
 		respondAuthorizationError(w, err)
 		return
 	}
-	lookup, err := h.resourceEntityLookup(r.Context(), scope, "", "", "", "", "")
+	lookup, err := h.resourceEntityLookup(r.Context(), scope, "", "", "", "", "", "", "")
 	if err != nil {
 		respondResourceGraphError(w, err)
 		return
@@ -262,12 +268,18 @@ func (h *Handler) ResourceDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) resourceEntityLookup(ctx context.Context, scope graphpkg.GraphScope, domain, group, typeFilter, name, health string) (resourceEntityLookup, error) {
+func (h *Handler) resourceEntityLookup(ctx context.Context, scope graphpkg.GraphScope, domain, group, typeFilter, namespace, freshness, name, health string) (resourceEntityLookup, error) {
 	query := graphpkg.EntitySearchQuery{EntityType: typeFilter, Name: name, Limit: graphpkg.DefaultPublicMaxVertices}
 	if h.graphRepo != nil {
 		entities, err := h.graphRepo.SearchEntities(ctx, scope, query)
 		if err == nil {
-			return resourceEntityLookup{entities: entities, partial: len(entities) == graphpkg.DefaultPublicMaxVertices}, nil
+			filtered := make([]graphpkg.Entity, 0, len(entities))
+			for _, entity := range entities {
+				if resourceEntityAllowed(entity, domain, group, typeFilter, namespace, freshness, health) {
+					filtered = append(filtered, entity)
+				}
+			}
+			return resourceEntityLookup{entities: filtered, partial: len(entities) == graphpkg.DefaultPublicMaxVertices}, nil
 		}
 		if !resourceGraphFallbackEligible(err) || h.kubeRepo == nil {
 			return resourceEntityLookup{}, err
@@ -285,7 +297,7 @@ func (h *Handler) resourceEntityLookup(ctx context.Context, scope graphpkg.Graph
 		if needle != "" && !strings.Contains(strings.ToLower(entity.Name), needle) {
 			continue
 		}
-		if !resourceEntityAllowed(entity, domain, group, typeFilter, health) {
+		if !resourceEntityAllowed(entity, domain, group, typeFilter, namespace, freshness, health) {
 			continue
 		}
 		filtered = append(filtered, entity)
@@ -474,7 +486,7 @@ func resourceTypeAllowed(entityType, domain string) bool {
 	return resourceDomain(entityType) != ""
 }
 
-func resourceEntityAllowed(entity graphpkg.Entity, domain, group, typeFilter, health string) bool {
+func resourceEntityAllowed(entity graphpkg.Entity, domain, group, typeFilter, namespace, freshness, health string) bool {
 	if !resourceTypeAllowed(entity.EntityType, domain) {
 		return false
 	}
@@ -486,7 +498,36 @@ func resourceEntityAllowed(entity graphpkg.Entity, domain, group, typeFilter, he
 	if typeFilter != "" && entity.EntityType != typeFilter {
 		return false
 	}
+	if namespace != "" && entity.Namespace != namespace {
+		return false
+	}
+	if !resourceFreshnessAllowed(entity, freshness) {
+		return false
+	}
 	return health == "" || normalizeResourceHealth(entity.Health, entity.Status) == health
+}
+
+func validResourceFreshness(value string) bool {
+	return value == "fresh" || value == "stale" || value == "unknown"
+}
+
+func resourceFreshnessAllowed(entity graphpkg.Entity, freshness string) bool {
+	if freshness == "" {
+		return true
+	}
+	if entity.LastSeenMS <= 0 {
+		return freshness == "unknown"
+	}
+	// Resource rows use a deliberately explicit five-minute freshness window;
+	// callers can still see the exact observation timestamp in the projection.
+	isFresh := time.Since(time.UnixMilli(entity.LastSeenMS)) <= 5*time.Minute
+	if freshness == "fresh" {
+		return isFresh
+	}
+	if freshness == "stale" {
+		return !isFresh
+	}
+	return false
 }
 
 func projectResourceCatalogItem(entity graphpkg.Entity) resourceCatalogItem {

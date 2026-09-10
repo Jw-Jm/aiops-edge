@@ -16,12 +16,17 @@ describe('InvestigationCenter identity projection', () => {
       primary_cluster_id: 'cluster-1', target_resource_id: 'checkout', intent: 'investigate',
       target_type: 'service',
       status: 'created', principal_id: 'user-123', created_by: 'user-123', created_at: '2026-08-26T00:00:00Z',
+    }, {
+      run_id: 'run-other', request_id: 'request-other', tenant_id: 'tenant-1',
+      primary_cluster_id: 'cluster-2', target_resource_id: 'other', intent: 'other',
+      target_type: 'pod', status: 'created', principal_id: 'user-456', created_by: 'user-456', created_at: '2026-08-26T00:00:00Z',
     }] } } as never)
   })
 
   it('renders the persisted run principal instead of a fixed system identity', async () => {
     render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><InvestigationCenter /></MemoryRouter>)
     expect(await screen.findByText('user-123')).toBeInTheDocument()
+    expect(screen.queryByText('user-456')).not.toBeInTheDocument()
     expect(screen.getByText('应用服务')).toBeInTheDocument()
     expect(screen.queryByText('system')).not.toBeInTheDocument()
   })

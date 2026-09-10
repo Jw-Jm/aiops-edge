@@ -118,6 +118,27 @@ func TestResourceCatalogFiltersByAuthorizedClusterAndDomain(t *testing.T) {
 	}
 }
 
+func TestResourceCatalogFiltersByTypeNamespaceAndFreshness(t *testing.T) {
+	rec := httptest.NewRecorder()
+	resourceCatalogTestHandler(t).ResourceCatalog(rec, resourceRequest(http.MethodGet, "/api/v1/resources/catalog?group=containers&type=pod&namespace=payments&freshness=stale&limit=10"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []struct {
+			UID       string `json:"uid"`
+			Type      string `json:"type"`
+			Namespace string `json:"namespace"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 1 || body.Items[0].UID != "k8s:pod-01" || body.Items[0].Type != "pod" || body.Items[0].Namespace != "payments" {
+		t.Fatalf("items=%+v", body.Items)
+	}
+}
+
 func TestResourceCatalogContainerGroupExposesOnlyPrimaryKinds(t *testing.T) {
 	repo := graphpkg.NewMemoryRepository()
 	entities := []graphpkg.Entity{

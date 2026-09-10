@@ -58,9 +58,10 @@ const ActionCenter: React.FC = () => {
       return
     }
     setLoading(true); setError('')
-      listActions({ limit: 100, ...(resourceFilter ? { resource_uid: resourceFilter } : {}) }).then((response) => {
+      listActions({ limit: 100, cluster_id: activeClusterId, ...(resourceFilter ? { resource_uid: resourceFilter } : {}) }).then((response) => {
         const next = response.data?.actions ?? []
-        setActions(resourceFilter ? next.filter((action) => action.target_uid === resourceFilter) : next)
+        const scoped = next.filter((action) => !action.cluster_id || action.cluster_id === activeClusterId)
+        setActions(resourceFilter ? scoped.filter((action) => action.target_uid === resourceFilter) : scoped)
       })
       .catch((e) => setError(e?.response?.data?.error || e?.message || '动作加载失败'))
       .finally(() => setLoading(false))

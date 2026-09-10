@@ -8,6 +8,7 @@ import adminSource from '../pages/admin/AdminSettings.tsx?raw'
 import assistantSource from '../pages/ai/AiChat.tsx?raw'
 import resourcesSource from '../pages/Resources/index.tsx?raw'
 import aiDockSource from '../components/AiDock.tsx?raw'
+import resourceCenterSource from '../pages/Resources/ResourceCenter.tsx?raw'
 
 const scopeMock = vi.hoisted(() => {
   const state = {
@@ -82,10 +83,21 @@ describe('AIOps UI v3 cross-page acceptance', () => {
     expect(source).not.toContain('分析 prod 集群故障根因')
     expect(source).not.toContain('综合健康分数')
     expect(source).not.toContain('Workload 合并')
+    expect(appSource).toContain('navRailWidth')
+    expect(appSource).not.toContain('width: isCollapsed ? 64 : 216')
+    expect(resourceCenterSource).toContain('entityUid')
+    expect(resourceCenterSource).toContain('useNavigate')
+    expect(resourcesSource).toContain('resources/${encodeURIComponent')
   })
 
   it('redirects the legacy assistant deep link without dropping the query', async () => {
     render(<MemoryRouter initialEntries={['/ai/chat?resource=pod-1']}><><AppLayout /><LocationProbe /></></MemoryRouter>)
     await waitFor(() => expect(screen.getByTestId('location-probe')).toHaveTextContent('/clusters/cluster-a/assistant?resource=pod-1'))
+  })
+
+  it('keeps platform and cluster health readable below the full desktop width', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800, writable: true })
+    render(<MemoryRouter initialEntries={['/overview']}><AppLayout /></MemoryRouter>)
+    expect(await screen.findByRole('heading', { name: '云平台运营态势' })).toBeVisible()
   })
 })

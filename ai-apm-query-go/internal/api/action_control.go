@@ -78,6 +78,14 @@ func (h *Handler) listActionsPublic(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
+	clusterID := strings.TrimSpace(r.URL.Query().Get("cluster_id"))
+	if clusterID == "" {
+		clusterID = authCtx.ActiveClusterID
+	}
+	if authCtx.ActiveClusterID != "" && clusterID != "" && authCtx.ActiveClusterID != clusterID {
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "CONTEXT_SCOPE_MISMATCH"})
+		return
+	}
 	db := store.GetDB()
 	if db == nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "persistence_unavailable"})
@@ -89,6 +97,10 @@ func (h *Handler) listActionsPublic(w http.ResponseWriter, r *http.Request) {
 		execution_status, error_code, params_json, created_at, updated_at
 		FROM ai_actions WHERE tenant_id = ?`
 	args := []interface{}{authCtx.TenantID}
+	if clusterID != "" {
+		query += " AND cluster_id = ?"
+		args = append(args, clusterID)
+	}
 	if status != "" {
 		query += " AND status = ?"
 		args = append(args, status)
@@ -144,9 +156,7 @@ func (h *Handler) getActionPublic(w http.ResponseWriter, r *http.Request, action
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	// canonical 鉴权：校验请求 tenant 与 action tenant 一致。
-	if authCtx, ok := requestAuthorizationContext(r); ok && authCtx.TenantID != "" && authCtx.TenantID != action.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if actionScopeDenied(w, r, action.TenantID, action.ClusterID) {
 		return
 	}
 	projection := map[string]interface{}{
@@ -207,9 +217,7 @@ func (h *Handler) executeActionPublic(w http.ResponseWriter, r *http.Request, ac
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	// canonical 鉴权：tenant 一致。
-	if authCtx, ok := requestAuthorizationContext(r); ok && authCtx.TenantID != "" && authCtx.TenantID != action.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if actionScopeDenied(w, r, action.TenantID, action.ClusterID) {
 		return
 	}
 	// 前置条件：已 approved 审批记录。
@@ -248,4 +256,23 @@ func (h *Handler) executeActionPublic(w http.ResponseWriter, r *http.Request, ac
 		"action_id": actionID, "command_id": commandID, "status": "queued",
 		"message": "action is queued for the durable dispatcher",
 	})
+}
+
+// actionScopeDenied keeps detail and execution endpoints on the same active
+// cluster contract as the list read model. A tenant check alone would allow a
+// stale deep link or copied action id to cross the operator's current cluster.
+func actionScopeDenied(w http.ResponseWriter, r *http.Request, tenantID, clusterID string) bool {
+	authCtx, ok := requestAuthorizationContext(r)
+	if !ok {
+		return false
+	}
+	if authCtx.TenantID != "" && authCtx.TenantID != tenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+		return true
+	}
+	if authCtx.ActiveClusterID != "" && clusterID != "" && authCtx.ActiveClusterID != clusterID {
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "CONTEXT_SCOPE_MISMATCH"})
+		return true
+	}
+	return false
 }

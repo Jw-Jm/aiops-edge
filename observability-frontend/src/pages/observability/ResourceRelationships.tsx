@@ -11,6 +11,13 @@ import { isSelectableResourceType, resourceDomainOf, resourceTypeLabel } from '.
 
 const DOMAIN_OPTIONS = [{ value: '', label: '全部资源域' }, { value: 'compute', label: '计算' }, { value: 'network', label: '网络' }, { value: 'storage', label: '存储' }, { value: 'kubernetes', label: 'Kubernetes' }, { value: 'application', label: '应用服务' }]
 
+function graphRequestErrorMessage(requestError: any): string {
+  const error = requestError?.response?.data?.error
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object' && typeof error.message === 'string') return error.message
+  return requestError?.response?.data?.message || requestError?.message || '关系图读取失败'
+}
+
 export default function ResourceRelationships() {
   const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
   const [query, setQuery] = useState('')
@@ -34,9 +41,11 @@ export default function ResourceRelationships() {
       setResults(items)
       const center = selected ?? items[0]
       if (!center) { setSubgraph(undefined); return }
-      setSubgraph((await getGraphNeighbors(center.entity_uid, { depth: 2, max_vertices: 80, max_edges: 200 })).data)
+      // 80/200 is the canvas render budget. Fetch the server's bounded graph
+      // page so the equivalent relation list can report the real totals.
+      setSubgraph((await getGraphNeighbors(center.entity_uid, { depth: 2, max_vertices: 300, max_edges: 1000 })).data)
     } catch (requestError: any) {
-      setSubgraph(undefined); setError(requestError?.response?.data?.error || requestError?.message || '关系图读取失败')
+      setSubgraph(undefined); setError(graphRequestErrorMessage(requestError))
     } finally { setLoading(false) }
   }
 

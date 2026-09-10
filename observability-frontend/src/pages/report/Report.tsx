@@ -41,9 +41,8 @@ const Report: React.FC = () => {
     const load = () => {
       setError('')
       setLoading(true)
-      listReports({ limit: 100 }).then((r) => {
-        // /ops/reports/history 返回 { history: [{task_id, service_name, report_type, verdict, risk_score, summary, created_at}] }
-        const d = Array.isArray(r.data) ? r.data : r.data?.history || r.data?.reports || r.data?.data || []
+      listReports({ limit: 100, cluster_id: activeClusterId }).then((r) => {
+        const d = Array.isArray(r.data) ? r.data : r.data?.reports || []
         setData(d)
       }).catch((e: any) => {
         setData([])

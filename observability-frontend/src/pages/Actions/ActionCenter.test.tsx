@@ -25,6 +25,12 @@ describe('ActionCenter capability gate', () => {
     vi.mocked(listActions).mockResolvedValue({ data: { actions: [action], count: 1 } } as never)
   })
 
+  it('requests and displays only actions for the active cluster', async () => {
+    render(<MemoryRouter><ActionCenter /></MemoryRouter>)
+    await screen.findByText('重启工作负载')
+    expect(vi.mocked(listActions)).toHaveBeenCalledWith(expect.objectContaining({ cluster_id: 'cluster-a' }))
+  })
+
   it('keeps mutable actions read-only when the session capability is absent', async () => {
     render(<MemoryRouter><ActionCenter /></MemoryRouter>)
     fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))

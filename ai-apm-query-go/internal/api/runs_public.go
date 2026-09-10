@@ -260,7 +260,15 @@ func (h *Handler) ListRunsPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "persistence_unavailable"})
 		return
 	}
-	runs, err := h.runDAO.List(auth.TenantID)
+	clusterID := strings.TrimSpace(r.URL.Query().Get("cluster_id"))
+	if clusterID == "" {
+		clusterID = auth.ActiveClusterID
+	}
+	if auth.ActiveClusterID != "" && clusterID != "" && auth.ActiveClusterID != clusterID {
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "CONTEXT_SCOPE_MISMATCH"})
+		return
+	}
+	runs, err := h.runDAO.ListByCluster(auth.TenantID, clusterID)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_list_failed"})
 		return
@@ -308,8 +316,7 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	runView := airunToMap(run)
@@ -406,8 +413,7 @@ func (h *Handler) GetRunToolsPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	tools, err := h.toolDAO.ListByRun(runID)
@@ -449,8 +455,7 @@ func (h *Handler) GetRunEvidencesPublic(w http.ResponseWriter, r *http.Request) 
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	evs, err := h.evidenceDAO.ListByRun(runID, run.TenantID, run.PrimaryClusterID)
@@ -489,8 +494,7 @@ func (h *Handler) GetRunEvidencePublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	ev, err := h.evidenceDAO.GetByID(evidenceID, runID, run.TenantID, run.PrimaryClusterID)
@@ -511,6 +515,25 @@ func evidenceToMap(ev *store.Evidence) map[string]interface{} {
 		"provenance_fingerprint": ev.ProvenanceFingerprint,
 		"collected_at":           ev.CollectedAt.Format(time.RFC3339),
 	}
+}
+
+// runScopeDenied applies the same tenant + active-cluster boundary to every
+// browser Run deep link, including events and evidence. Lists are not enough:
+// a copied detail URL must not become a cross-cluster read or cancel handle.
+func runScopeDenied(w http.ResponseWriter, r *http.Request, tenantID, clusterID string) bool {
+	auth, ok := requestAuthorizationContext(r)
+	if !ok {
+		return false
+	}
+	if auth.TenantID != "" && auth.TenantID != tenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+		return true
+	}
+	if auth.ActiveClusterID != "" && clusterID != "" && auth.ActiveClusterID != clusterID {
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "CONTEXT_SCOPE_MISMATCH"})
+		return true
+	}
+	return false
 }
 
 func nullableStringValue(s string) interface{} {

@@ -12,7 +12,7 @@ function graph(vertexCount = 4): GraphSubgraph {
 
 describe('graph presentation model', () => {
   it('maps graph modes to deterministic layouts and relation labels', () => {
-    expect(layoutForMode('resource-relations')).toBe('radial')
+    expect(layoutForMode('resource-relations')).toBe('dag-lr')
     expect(layoutForMode('failure-chain')).toBe('hierarchy-tb')
     expect(layoutForMode('expert')).toBe('dag-lr')
     expect(relationLabel('CONTAINS')).toBe('包含')
