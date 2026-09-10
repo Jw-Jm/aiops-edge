@@ -545,7 +545,7 @@ git commit -m "feat(graph): render explicit scalable resource relations"
 - Consumes: 登录态 tenant、路径 cluster、`knowledge.read|knowledge.submit|knowledge.write` capability。
 - Produces: MySQL 中 knowledge、version、review、index_outbox、index_state 五类权威记录与 canonical CRUD/治理接口。
 
-- [ ] **Step 1: 写失败测试覆盖生命周期、范围和版本不可变**
+- [x] **Step 1: 写失败测试覆盖生命周期、范围和版本不可变**
 
 ```go
 func TestKnowledgeLifecycleAndScope(t *testing.T) {
@@ -564,13 +564,13 @@ func TestKnowledgeLifecycleAndScope(t *testing.T) {
 
 另测：非管理员不能创建 `platform_common`；驳回必须有原因并回到 draft；修改 published 创建 v2；disable 不删除历史；重放 review 不重复 outbox。
 
-- [ ] **Step 2: 运行迁移/store/API 测试确认失败**
+- [x] **Step 2: 运行迁移/store/API 测试确认失败**
 
 Run: `cd ai-apm-query-go && go test ./internal/store/migrations ./internal/store ./internal/api -run 'OperationsKnowledge|KnowledgeLifecycle|KnowledgeScope' -count=1`
 
 Expected: FAIL，表、DAO 和处理器未定义。
 
-- [ ] **Step 3: 实现状态机和统一授权谓词**
+- [x] **Step 3: 实现状态机和统一授权谓词**
 
 ```go
 type KnowledgeScopeType string
@@ -589,13 +589,13 @@ const (
 
 所有列表、详情、版本、审核和 outbox SQL 复用 `tenant_id = ? AND (scope_type='platform_common' OR cluster_id = ?)`；请求体不接受 tenant。正文与版本保存 MySQL，Git Playbook 保存 revision 记录且 UI 不可修改。审核发布与 outbox 在一个事务中提交。
 
-- [ ] **Step 4: 运行 store、API、auth 和迁移测试**
+- [x] **Step 4: 运行 store、API、auth 和迁移测试**
 
 Run: `cd ai-apm-query-go && go test ./internal/store/migrations ./internal/store ./internal/api -run 'Knowledge|Auth' -count=1`
 
 Expected: PASS；并发审核只产生一个 published version/outbox。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add ai-apm-query-go/internal/store/migrations ai-apm-query-go/internal/store/operations_knowledge* ai-apm-query-go/internal/api/operations_knowledge* ai-apm-query-go/internal/bootstrap/http.go ai-apm-query-go/internal/api/auth.go

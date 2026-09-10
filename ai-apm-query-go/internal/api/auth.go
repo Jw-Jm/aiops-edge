@@ -646,6 +646,31 @@ func hasRole(r *http.Request, role string) bool {
 	return ok && u.Role == role
 }
 
+const (
+	KnowledgeReadCapability   = "knowledge.read"
+	KnowledgeSubmitCapability = "knowledge.submit"
+	KnowledgeWriteCapability  = "knowledge.write"
+)
+
+// hasKnowledgeCapability maps the governed knowledge capabilities to the
+// authoritative user role. It keeps capability checks in one place while the
+// existing users schema remains role-based; browser headers and JWT role claims
+// never grant knowledge access.
+func hasKnowledgeCapability(r *http.Request, capability string) bool {
+	u, ok := authoritativeUser(r)
+	if !ok {
+		return false
+	}
+	switch capability {
+	case KnowledgeReadCapability, KnowledgeSubmitCapability:
+		return true
+	case KnowledgeWriteCapability:
+		return u.Role == "admin"
+	default:
+		return false
+	}
+}
+
 // RequireRole 返回按角色拦截的处理器包装（admin 仅限 admin 角色）。
 // 角色来自 MySQL 权威 SoT（hasRole），JWT role claim 永不作为权限来源。
 func (h *Handler) RequireRole(role string, next http.HandlerFunc) http.HandlerFunc {

@@ -94,6 +94,23 @@ func TestAIChatToolRunMigrationContainsDurableAuditSchema(t *testing.T) {
 	}
 }
 
+func TestOperationsKnowledgeMigrationContainsGovernedSourceOfTruth(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0019_operations_knowledge.sql")
+	if err != nil {
+		t.Fatalf("read 0019 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{
+		"operations_knowledge", "operations_knowledge_versions", "operations_knowledge_reviews",
+		"operations_knowledge_index_outbox", "operations_knowledge_index_state",
+		"current_version_id", "uq_operations_knowledge_index_event", "pending_review", "platform_common",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0019 migration missing %q", required)
+		}
+	}
+}
+
 // TestAIRuntimeSchemaManifest 在可用 MySQL 上跑 schema-migrator 后，逐表核对
 // V9.2 冻结 AI Runtime 表的列 / nullability / PK / unique（P1-1：字段来源
 // docs/AIOPS_DATA_MODEL_REDESIGN.md）。无 MySQL 时跳过。
