@@ -14,6 +14,13 @@ export const operationsPalette = {
   healthy: '#18864B',
 } as const
 
+export const HEALTH_LABELS = {
+  healthy: '健康',
+  degraded: '降级',
+  critical: '严重',
+  unknown: '未知',
+} as const
+
 export const token = {
   // Product design tokens (kept explicit so CSS and Ant components share one palette).
   colorBg: operationsPalette.canvas,
@@ -35,9 +42,9 @@ export const token = {
   colorRisk: operationsPalette.risk.toLowerCase(),
   colorSuccess: operationsPalette.healthy.toLowerCase(),
   colorLink: operationsPalette.interaction.toLowerCase(),
-  radiusCard: 8,
+  radiusCard: 10,
   borderRadius: 8,
-  borderRadiusLG: 8,
+  borderRadiusLG: 10,
   borderRadiusSM: 6,
   controlHeight: 36,
   minClickTarget: 36,

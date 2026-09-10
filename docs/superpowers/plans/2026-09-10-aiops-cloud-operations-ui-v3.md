@@ -124,7 +124,7 @@ git commit -m "feat(ui): establish cluster-scoped v3 shell"
 - Consumes: API `meta.generated_at/partial/stale/warning_codes`。
 - Produces: `HealthState = 'healthy' | 'degraded' | 'critical' | 'unknown'` 与 `<BoundedDataRegion state meta error onRetry>`。
 
-- [ ] **Step 1: 写失败测试覆盖七种数据态和无横向溢出类**
+- [x] **Step 1: 写失败测试覆盖七种数据态和无横向溢出类**
 
 ```tsx
 const states = ['loading', 'empty', 'error', 'partial', 'stale', 'forbidden'] as const
@@ -136,13 +136,13 @@ states.forEach((state) => {
 expect(HEALTH_LABELS).toEqual({ healthy: '健康', degraded: '降级', critical: '严重', unknown: '未知' })
 ```
 
-- [ ] **Step 2: 运行定向测试并确认组件不存在**
+- [x] **Step 2: 运行定向测试并确认组件不存在**
 
 Run: `cd observability-frontend && npm test -- --run src/theme/tokens.test.ts src/components/display/DataState.test.tsx src/components/display/BoundedDataRegion.test.tsx`
 
 Expected: FAIL with “Cannot find module BoundedDataRegion”。
 
-- [ ] **Step 3: 实现统一边界**
+- [x] **Step 3: 实现统一边界**
 
 ```ts
 export type DataRegionState = 'ready' | 'loading' | 'empty' | 'error' | 'partial' | 'stale' | 'forbidden'
@@ -156,13 +156,13 @@ export interface ReadMeta {
 
 组件必须保留与内容相近的最小高度；`partial/stale` 显示警示但仍渲染已有事实；`forbidden` 不重试；错误文案不声称“暂无数据”。CSS 定义 V3 导航、64px 顶栏、12 栏网格、10px 卡片圆角和容器内断词。
 
-- [ ] **Step 4: 运行测试和样式构建**
+- [x] **Step 4: 运行测试和样式构建**
 
 Run: `cd observability-frontend && npm test -- --run src/theme/tokens.test.ts src/components/display && npm run build`
 
 Expected: PASS，无 TypeScript 或 CSS 构建错误。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add observability-frontend/src/theme observability-frontend/src/components/display observability-frontend/src/index.css

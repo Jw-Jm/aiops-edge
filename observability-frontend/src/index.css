@@ -283,6 +283,11 @@ body {
 .data-state .ant-result-title { margin-bottom: 4px; font-size: 14px; }
 .data-state .ant-result-subtitle { font-size: 12px; }
 .data-state--loading .ant-skeleton { width: 100%; }
+.bounded-data-region { min-width: 0; overflow: hidden; }
+.bounded-data-region__banner { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
+.bounded-data-region__banner span { color: var(--text-secondary); }
+.bounded-data-region__banner--partial { border-color: var(--warning); background: var(--warning-soft); }
+.bounded-data-region__banner--stale { border-color: var(--border-strong); background: var(--surface-2); }
 .raw-data-panel { margin-top: 10px; border-top: 1px solid var(--border-soft); }
 .raw-data-panel__body { margin-top: 6px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--surface-2); overflow: hidden; }
 .raw-data-panel__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; color: var(--text-muted); font-size: 11px; }
