@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS ai_alert_investigation_policies (
   CONSTRAINT chk_alert_investigation_mode CHECK (mode IN ('manual','draft','auto_readonly'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS ai_alert_run_links (
   tenant_id CHAR(36) NOT NULL,
   cluster_id CHAR(36) NOT NULL,
