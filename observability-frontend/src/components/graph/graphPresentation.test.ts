@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraphDisplayModel, buildRelationChains, layoutForMode, relationLabel, resourceVisual, type GraphRelationRow } from './graphPresentation'
-import type { GraphSubgraph } from '../../api/graphContracts'
+import { buildGraphDisplayModel, buildRelationChains, focusGraph, isContextEntityType, layoutForMode, relationLabel, relationSemantic, resourceVisual, RELATION_SEMANTIC_LABELS, RELATION_SEMANTICS, type GraphRelationRow } from './graphPresentation'
+import type { GraphEdge, GraphSubgraph } from '../../api/graphContracts'
 
 function graph(vertexCount = 4): GraphSubgraph {
   const vertices = Array.from({ length: vertexCount }, (_, index) => ({
@@ -65,7 +65,95 @@ describe('graph presentation model', () => {
     expect(chains).toHaveLength(1)
     expect(chains[0].factStatus).toBe('inferred')
   })
+
+  it('uses red only for failure propagation mode', () => {
+    const input = graph()
+    input.edges[0].relation_type = 'CONTAINS'
+    input.edges[0].propagates_failure = true
+    const options = { centerUid: input.center_entity_uid, maxNodes: 80, maxEdges: 200 }
+    expect(buildGraphDisplayModel(input, { ...options, mode: 'resource-relations' }).edges[0].style).toBe('structural')
+    expect(buildGraphDisplayModel(input, { ...options, mode: 'failure-chain' }).edges[0].style).toBe('failure')
+    input.edges[0].status = 'inferred'
+    expect(buildGraphDisplayModel(input, { ...options, mode: 'failure-chain' }).edges[0].style).toBe('inferred')
+  })
+
+  it('maps every raw relation type to a stable semantic and never guesses by colour', () => {
+    expect(RELATION_SEMANTICS).toEqual(['structural', 'runtime', 'traffic', 'storage', 'network', 'failure-propagation', 'inferred'])
+    expect(Object.values(RELATION_SEMANTIC_LABELS)).toEqual(['结构', '运行', '流量', '存储', '网络', '故障传播', '推断'])
+    expect(relationSemantic(edgeOf('CONTAINS'), 'resource-relations')).toBe('structural')
+    expect(relationSemantic(edgeOf('OWNS'), 'resource-relations')).toBe('structural')
+    expect(relationSemantic(edgeOf('CONTROLS'), 'resource-relations')).toBe('runtime')
+    expect(relationSemantic(edgeOf('RUNS_ON'), 'resource-relations')).toBe('runtime')
+    expect(relationSemantic(edgeOf('ROUTES_TO'), 'resource-relations')).toBe('traffic')
+    expect(relationSemantic(edgeOf('SELECTS'), 'resource-relations')).toBe('traffic')
+    expect(relationSemantic(edgeOf('USES_VOLUME'), 'resource-relations')).toBe('storage')
+    expect(relationSemantic(edgeOf('BOUND_TO'), 'resource-relations')).toBe('storage')
+    expect(relationSemantic(edgeOf('CONNECTS_TO_NAD'), 'resource-relations')).toBe('network')
+    expect(relationSemantic(edgeOf('USES_CNI'), 'resource-relations')).toBe('network')
+    // 未知关系必须归入结构语义并保留原始名称，不得静默丢弃。
+    expect(relationSemantic(edgeOf('SOMETHING_NEW'), 'resource-relations')).toBe('structural')
+    expect(relationLabel('SOMETHING_NEW')).toBe('SOMETHING_NEW')
+    // 故障传播只在 failure-chain 且事实边成立；推断优先级最高。
+    expect(relationSemantic(edgeOf('CONTAINS', true), 'resource-relations')).toBe('structural')
+    expect(relationSemantic(edgeOf('CONTAINS', true), 'failure-chain')).toBe('failure-propagation')
+    expect(relationSemantic(edgeOf('CONTAINS', false, 'inferred'), 'failure-chain')).toBe('inferred')
+  })
+
+  it('focuses a selected node while keeping every relation reachable in the equivalent list', () => {
+    const model = buildGraphDisplayModel(graph(4), { mode: 'resource-relations', centerUid: 'service:center', maxNodes: 80, maxEdges: 200 })
+    const focused = focusGraph(model, { nodeId: 'service:center' })
+    const direct = focused.edges.filter((edge) => edge.source === 'service:center' || edge.target === 'service:center')
+    expect(direct.length).toBeGreaterThan(0)
+    expect(direct.every((edge) => edge.dimmed === false)).toBe(true)
+    // 等价关系列表不得因聚焦而丢失任何一条关系。
+    expect(focused.relationRows).toHaveLength(model.relationRows.length)
+    // 点击空白恢复全图。
+    const restored = focusGraph(model, {})
+    expect(restored.nodes.every((node) => !node.dimmed)).toBe(true)
+  })
+
+  it('focuses a selected edge together with both endpoints', () => {
+    const model = buildGraphDisplayModel(graph(4), { mode: 'resource-relations', centerUid: 'service:center', maxNodes: 80, maxEdges: 200 })
+    const targetEdge = model.edges[0]
+    const focused = focusGraph(model, { edgeId: targetEdge.id })
+    expect(focused.edges.find((edge) => edge.id === targetEdge.id)?.dimmed).toBe(false)
+    expect(focused.nodes.find((node) => node.id === targetEdge.source)?.dimmed).toBe(false)
+    expect(focused.nodes.find((node) => node.id === targetEdge.target)?.dimmed).toBe(false)
+    expect(focused.relationRows).toHaveLength(model.relationRows.length)
+  })
+
+  it('keeps namespace and node as collapsed context until they are required', () => {
+    expect(isContextEntityType('namespace')).toBe(true)
+    expect(isContextEntityType('k8s_node')).toBe(true)
+    expect(isContextEntityType('pod')).toBe(false)
+
+    const input: GraphSubgraph = {
+      center_entity_uid: 'pod:0',
+      vertices: [
+        { entity_uid: 'pod:0', entity_type: 'pod', tenant_id: 'tenant-a', cluster_id: 'cluster-a', name: 'api-0', name_key: 'api-0', source: 'test', status: 'active', confidence: 1, generation: 1, attrs_version: 1 },
+        { entity_uid: 'k8s_node:0', entity_type: 'k8s_node', tenant_id: 'tenant-a', cluster_id: 'cluster-a', name: 'node-0', name_key: 'node-0', source: 'test', status: 'active', confidence: 1, generation: 1, attrs_version: 1 },
+      ],
+      edges: [],
+      meta: { contract_version: 'graph-dto-v1', schema_version: 2, partial: false, stale: false, generated_at: '', warning_codes: [] },
+    }
+    const collapsed = buildGraphDisplayModel(input, { mode: 'resource-relations', centerUid: 'pod:0', maxNodes: 80, maxEdges: 200 })
+    expect(collapsed.nodes.some((node) => node.id === 'k8s_node:0')).toBe(false)
+    // 折叠的上下文节点进入聚合，而不是被静默丢弃。
+    expect(collapsed.omittedByType.k8s_node).toBe(1)
+
+    const expanded = buildGraphDisplayModel(input, { mode: 'resource-relations', centerUid: 'pod:0', maxNodes: 80, maxEdges: 200, expandedContextUids: new Set(['k8s_node:0']) })
+    expect(expanded.nodes.some((node) => node.id === 'k8s_node:0')).toBe(true)
+  })
 })
+
+function edgeOf(relationType: string, propagatesFailure = false, status = 'active'): GraphEdge {
+  return {
+    edge_uid: `edge:${relationType}`, source_uid: 'a', target_uid: 'b', relation_type: relationType,
+    tenant_id: 'tenant-a', cluster_id: 'cluster-a', status, source: 'test', confidence: 1,
+    generation: 1, propagates_failure: propagatesFailure, candidate_direction: 'forward',
+    impact_direction: 'downstream', attrs_version: 1,
+  }
+}
 
 function row(overrides: Partial<GraphRelationRow> & Pick<GraphRelationRow, 'id' | 'sourceUid' | 'targetUid' | 'sourceName' | 'targetName'>): GraphRelationRow {
   return {

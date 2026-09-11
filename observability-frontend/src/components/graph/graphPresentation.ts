@@ -18,6 +18,8 @@ export interface GraphDisplayNode {
   healthTone: GraphHealthTone
   aggregate?: boolean
   omittedCount?: number
+  /** 聚焦时无关节点降为弱化态，但不从数据中移除。 */
+  dimmed?: boolean
 }
 
 export interface GraphDisplayEdge {
@@ -32,6 +34,8 @@ export interface GraphDisplayEdge {
   sourceRef: string
   syncedAt: string
   aggregateCount?: number
+  semantic?: RelationSemantic
+  dimmed?: boolean
 }
 
 export interface GraphRelationRow extends GraphDisplayEdge {
@@ -60,6 +64,65 @@ export interface RelationChain {
 
 const RELATION_CHAIN_LIMIT = 6
 
+export interface GraphSelection {
+  nodeId?: string | null
+  edgeId?: string | null
+}
+
+/**
+ * 点击聚焦投影。
+ *
+ * - 选中节点：保留该节点、一跳直接关系和二跳上下游上下文，其余元素标记 dimmed。
+ * - 选中边：保留源、目标与该边。
+ * - 未选择：返回原模型（点击空白恢复全图）。
+ *
+ * dimmed 只影响视觉强调，不改变任何节点/边的数据，也不从等价关系列表消失。
+ */
+export function focusGraph(display: GraphDisplayModel, selection: GraphSelection): GraphDisplayModel {
+  const nodeId = selection.nodeId ?? null
+  const edgeId = selection.edgeId ?? null
+  if (!nodeId && !edgeId) return display
+
+  const keptNodeIds = new Set<string>()
+  const keptEdgeIds = new Set<string>()
+
+  if (edgeId) {
+    const edge = display.edges.find((candidate) => candidate.id === edgeId)
+    if (edge) {
+      keptEdgeIds.add(edge.id)
+      keptNodeIds.add(edge.source)
+      keptNodeIds.add(edge.target)
+    }
+  } else if (nodeId) {
+    keptNodeIds.add(nodeId)
+    const firstHop = new Set<string>()
+    display.edges.forEach((edge) => {
+      if (edge.source === nodeId) { firstHop.add(edge.target); keptNodeIds.add(edge.target) }
+      if (edge.target === nodeId) { firstHop.add(edge.source); keptNodeIds.add(edge.source) }
+    })
+    display.edges.forEach((edge) => {
+      if (firstHop.has(edge.source)) keptNodeIds.add(edge.target)
+      if (firstHop.has(edge.target)) keptNodeIds.add(edge.source)
+    })
+    display.edges.forEach((edge) => {
+      if (keptNodeIds.has(edge.source) && keptNodeIds.has(edge.target)) keptEdgeIds.add(edge.id)
+    })
+  }
+
+  return {
+    ...display,
+    nodes: display.nodes.map((node) => ({ ...node, dimmed: !keptNodeIds.has(node.id) })),
+    edges: display.edges.map((edge) => ({ ...edge, dimmed: !keptEdgeIds.has(edge.id) })),
+    relationRows: display.relationRows.map((row) => ({ ...row, dimmed: !keptEdgeIds.has(row.id) })),
+  }
+}
+
+/** 按语义筛选边：只改变显示，不改写原始数据。 */
+export function filterBySemantics(display: GraphDisplayModel, enabled: ReadonlySet<RelationSemantic>): GraphDisplayModel {
+  if (enabled.size === 0) return display
+  return { ...display, edges: display.edges.filter((edge) => enabled.has(edge.semantic ?? 'structural')) }
+}
+
 /**
  * 从真实关系行构建"关键关系链"。
  *
@@ -77,7 +140,50 @@ export function buildRelationChains(rows: GraphRelationRow[], centerUid: string,
 }
 
 const RELATION_LABELS: Record<string, string> = {
-  CONTAINS: '包含', HOSTS: '宿主', RUNS_ON: '运行于', USES_VOLUME: '使用存储卷', USES_DISK: '使用磁盘设备', REFERENCES_VOLUME: '引用卷', SOURCED_FROM: '来源于', DECLARES: '声明 PVC', BOUND_TO: '绑定 PV', ATTACHED_TO: '挂载于', DEPENDS_ON: '依赖', CONNECTS_TO_NAD: '连接到 NAD', USES_CNI: '使用 CNI', CONNECTS_TO_NETWORK: '连接到网络',
+  CONTAINS: '包含', OWNS: '拥有', HOSTS: '宿主', RUNS_ON: '运行于', CONTROLS: '控制', SCHEDULED_TO: '调度到', ROUTES_TO: '路由到', SELECTS: '选择', USES_VOLUME: '使用存储卷', USES_DISK: '使用磁盘设备', REFERENCES_VOLUME: '引用卷', SOURCED_FROM: '来源于', DECLARES: '声明 PVC', BOUND_TO: '绑定 PV', ATTACHED_TO: '挂载于', DEPENDS_ON: '依赖', CONNECTS_TO_NAD: '连接到 NAD', USES_CNI: '使用 CNI', CONNECTS_TO_NETWORK: '连接到网络',
+}
+
+/**
+ * 七类稳定关系语义。原始 relation_type 始终保留；语义只服务筛选与视觉，
+ * 不改写事实。未知类型归入 structural 并显示原始关系名。
+ */
+export type RelationSemantic = 'structural' | 'runtime' | 'traffic' | 'storage' | 'network' | 'failure-propagation' | 'inferred'
+
+export const RELATION_SEMANTIC_LABELS: Record<RelationSemantic, string> = {
+  structural: '结构',
+  runtime: '运行',
+  traffic: '流量',
+  storage: '存储',
+  network: '网络',
+  'failure-propagation': '故障传播',
+  inferred: '推断',
+}
+
+export const RELATION_SEMANTICS: readonly RelationSemantic[] = ['structural', 'runtime', 'traffic', 'storage', 'network', 'failure-propagation', 'inferred']
+
+const RELATION_SEMANTIC_REGISTRY: Record<string, RelationSemantic> = {
+  CONTAINS: 'structural', OWNS: 'structural', DECLARES: 'structural',
+  CONTROLS: 'runtime', RUNS_ON: 'runtime', HOSTS: 'runtime', SCHEDULED_TO: 'runtime', DEPENDS_ON: 'runtime',
+  ROUTES_TO: 'traffic', SELECTS: 'traffic',
+  USES_VOLUME: 'storage', USES_DISK: 'storage', SOURCED_FROM: 'storage', BOUND_TO: 'storage', ATTACHED_TO: 'storage',
+  CONNECTS_TO_NAD: 'network', USES_CNI: 'network', CONNECTS_TO_NETWORK: 'network',
+}
+
+/**
+ * 每条边必须映射到一个稳定语义：推断优先，其次故障传播（仅故障链视图），
+ * 最后查注册表；未知关系归入结构语义并保留原始名称。
+ */
+export function relationSemantic(edge: GraphEdge, mode: GraphViewMode): RelationSemantic {
+  if (edgeFactStatus(edge) === 'inferred') return 'inferred'
+  if (mode === 'failure-chain' && edge.propagates_failure) return 'failure-propagation'
+  return RELATION_SEMANTIC_REGISTRY[edge.relation_type] ?? 'structural'
+}
+
+/** Namespace 与 Kubernetes Node 默认作为折叠上下文，不作为普通节点铺满画布。 */
+const CONTEXT_ENTITY_TYPES = new Set(['namespace', 'k8s_node'])
+
+export function isContextEntityType(entityType: string): boolean {
+  return CONTEXT_ENTITY_TYPES.has(entityType)
 }
 const ICON_KEYS: Record<string, string> = { physical_server: 'physical-server', k8s_node: 'kubernetes-node', vm: 'virtual-machine' }
 
@@ -130,13 +236,31 @@ export function edgeStyle(edge: GraphEdge, mode: GraphViewMode): GraphDisplayEdg
   return 'structural'
 }
 
-export function buildGraphDisplayModel(graph: GraphSubgraph, options: { mode: GraphViewMode; centerUid: string; maxNodes: number; maxEdges: number }): GraphDisplayModel {
+export interface GraphDisplayOptions {
+  mode: GraphViewMode
+  centerUid: string
+  maxNodes: number
+  maxEdges: number
+  /** 用户显式展开的上下文节点（Namespace/Node）UID。 */
+  expandedContextUids?: ReadonlySet<string>
+  /** 是否折叠 Namespace/Node 上下文（默认折叠）。 */
+  collapseContextNodes?: boolean
+}
+
+export function buildGraphDisplayModel(graph: GraphSubgraph, options: GraphDisplayOptions): GraphDisplayModel {
   const maxNodes = Math.max(1, options.maxNodes)
   const maxEdges = Math.max(0, options.maxEdges)
   const center = graph.vertices.find((vertex) => vertex.entity_uid === options.centerUid) ?? graph.vertices.find((vertex) => vertex.entity_uid === graph.center_entity_uid)
-  const candidates = graph.vertices.filter((vertex) => vertex.entity_uid !== center?.entity_uid)
+  const collapseContext = options.collapseContextNodes !== false
+  const expanded = options.expandedContextUids ?? new Set<string>()
+  const all = graph.vertices.filter((vertex) => vertex.entity_uid !== center?.entity_uid)
+  // Namespace/Node 默认折叠为上下文：进入聚合节点，既不铺满画布也不消失。
+  const collapsed = collapseContext ? all.filter((vertex) => isContextEntityType(vertex.entity_type) && !expanded.has(vertex.entity_uid)) : []
+  const collapsedUids = new Set(collapsed.map((vertex) => vertex.entity_uid))
+  const candidates = all.filter((vertex) => !collapsedUids.has(vertex.entity_uid))
   const omittedTypes = new Map<string, number>()
-  const aggregateTypes = Array.from(new Set(candidates.map((vertex) => vertex.entity_type)))
+  collapsed.forEach((vertex) => omittedTypes.set(vertex.entity_type, (omittedTypes.get(vertex.entity_type) ?? 0) + 1))
+  const aggregateTypes = Array.from(new Set([...candidates.map((vertex) => vertex.entity_type), ...omittedTypes.keys()]))
   const centerSlots = center ? 1 : 0
   const aggregateSlots = Math.min(aggregateTypes.length, Math.max(0, maxNodes - centerSlots))
   const realSlots = Math.max(0, maxNodes - centerSlots - aggregateSlots)
@@ -158,7 +282,7 @@ export function buildGraphDisplayModel(graph: GraphSubgraph, options: { mode: Gr
     const source = visibleIds.has(edge.source_uid) ? edge.source_uid : aggregateIds.get(graph.vertices.find((vertex) => vertex.entity_uid === edge.source_uid)?.entity_type ?? '')
     const target = visibleIds.has(edge.target_uid) ? edge.target_uid : aggregateIds.get(graph.vertices.find((vertex) => vertex.entity_uid === edge.target_uid)?.entity_type ?? '')
     if (!source || !target || source === target || !nodeById.has(source) || !nodeById.has(target)) return
-    const display: GraphDisplayEdge = { id: `${edge.edge_uid}:${source}:${target}`, source, target, relationType: edge.relation_type, label: relationLabel(edge.relation_type), style: edgeStyle(edge, options.mode), propagatesFailure: edge.propagates_failure, factStatus: edgeFactStatus(edge), sourceRef: typeof edge.attrs?.source_field === 'string' ? edge.attrs.source_field : edge.source, syncedAt: typeof edge.attrs?.synced_at === 'string' ? edge.attrs.synced_at : '', ...(typeof edge.attrs?.aggregate_count === 'number' ? { aggregateCount: edge.attrs.aggregate_count } : {}) }
+    const display: GraphDisplayEdge = { id: `${edge.edge_uid}:${source}:${target}`, source, target, relationType: edge.relation_type, label: relationLabel(edge.relation_type), style: edgeStyle(edge, options.mode), semantic: relationSemantic(edge, options.mode), propagatesFailure: edge.propagates_failure, factStatus: edgeFactStatus(edge), sourceRef: typeof edge.attrs?.source_field === 'string' ? edge.attrs.source_field : edge.source, syncedAt: typeof edge.attrs?.synced_at === 'string' ? edge.attrs.synced_at : '', ...(typeof edge.attrs?.aggregate_count === 'number' ? { aggregateCount: edge.attrs.aggregate_count } : {}) }
     edgeMap.set(`${source}|${target}|${edge.relation_type}`, display)
   })
   const edges = Array.from(edgeMap.values()).slice(0, maxEdges)

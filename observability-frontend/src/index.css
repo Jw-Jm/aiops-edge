@@ -329,6 +329,14 @@ body {
 .cluster-overview-statusline__reason { color: var(--text-secondary); font-size: 13px; }
 .cluster-overview-statusline__registration { color: var(--text-muted); font-size: 12px; }
 
+/* 1024px：画布保留完整宽度，关系检查器进入 Drawer。 */
+.graph-inspector-trigger { display: none; margin-top: 8px; }
+.graph-semantic-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+@media (max-width: 1024px) {
+  .graph-inspector-trigger { display: inline-flex; }
+  .graph-inline-inspector { display: none; }
+}
+
 /* 关键关系链：逐行显示真实 edge，不做 vertices 顺序拼接。 */
 .relation-chain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .relation-chain-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface-2); font-size: 13px; }
