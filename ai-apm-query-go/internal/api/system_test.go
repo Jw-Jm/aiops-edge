@@ -16,10 +16,10 @@ func TestSystemComponentResultMarksOptionalComponentAsNotConfigured(t *testing.T
 		return false
 	})
 
-	if got, want := result["status"], "not_configured"; got != want {
+	if got, want := result.Status, "not_configured"; got != want {
 		t.Fatalf("status = %v, want %v", got, want)
 	}
-	if got, want := result["detail"], "optional component is not configured"; got != want {
+	if got, want := result.Detail, "optional component is not configured"; got != want {
 		t.Fatalf("detail = %v, want %v", got, want)
 	}
 }

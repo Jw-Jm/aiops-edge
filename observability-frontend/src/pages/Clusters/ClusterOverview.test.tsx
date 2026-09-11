@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import ClusterOverview from './ClusterOverview'
@@ -12,7 +12,10 @@ describe('cluster overview', () => {
       clusterId: 'cluster-a',
       name: '上海集群',
       status: 'degraded',
+      statusReason: '采集覆盖不足',
       statusReasons: ['采集覆盖不足'],
+      registrationStatus: 'ready',
+      stale: false,
       version: 'v1.31.0',
       lastSyncAt: '2026-09-10T10:32:00Z',
       coverage: { covered: 118, expected: 120, ratio: 118 / 120 },
@@ -50,5 +53,32 @@ describe('cluster overview', () => {
     expect(screen.getByText('暂无网络面证据')).toBeVisible()
     expect(screen.queryByText('Workload')).not.toBeInTheDocument()
     expect(screen.queryByText('磁盘')).not.toBeInTheDocument()
+  })
+
+  it('shows the same observed-health reason and registration status as the platform list', async () => {
+    vi.mocked(getClusterOverview).mockResolvedValue({
+      clusterId: 'stale-cluster',
+      name: 'kind-02',
+      status: 'unknown',
+      statusReason: '观测数据陈旧',
+      statusReasons: ['观测数据陈旧'],
+      registrationStatus: 'ready',
+      stale: true,
+      version: 'v1.31.0',
+      lastSyncAt: '2026-09-10T10:32:00Z',
+      coverage: { covered: 0, expected: 1, ratio: 0 },
+      issues: [],
+      resourceKinds: [],
+      kubevirt: { vm: 0, vmi: 0, notReady: 0, migrating: 0, failedMigration: 0, storageAffected: 0, networkAffected: 0 },
+      foundation: [],
+      meta: { generatedAt: '2026-09-10T10:32:00Z', partial: true, stale: true, warningCodes: ['CLUSTER_DATA_STALE'] },
+    })
+    render(<MemoryRouter initialEntries={['/clusters/stale-cluster']} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Routes><Route path="/clusters/:clusterId" element={<ClusterOverview />} /></Routes></MemoryRouter>)
+
+    expect(await screen.findByText('观测数据陈旧')).toBeVisible()
+    expect(screen.getByText(/接入：已就绪/)).toBeVisible()
+    const statusline = document.querySelector('.cluster-overview-statusline') as HTMLElement
+    expect(within(statusline).getByText('未知')).toBeVisible()
+    expect(within(statusline).queryByText('健康')).not.toBeInTheDocument()
   })
 })

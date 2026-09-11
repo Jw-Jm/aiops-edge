@@ -43,7 +43,14 @@ export interface PlatformOverview {
 export interface PlatformCluster {
   clusterId: string
   name: string
+  /** 观测健康：healthy | degraded | critical | unknown */
   status: PlatformClusterHealth
+  /** 接入/注册状态（active/ready/…）：只描述生命周期，不产生健康结论 */
+  registrationStatus: string
+  /** 状态原因，供用户下钻判断依据 */
+  statusReason: string
+  stale: boolean
+  covered: boolean
   updatedAt?: string
 }
 
@@ -79,8 +86,19 @@ interface PlatformOverviewWire {
   meta: ResourceReadMeta
 }
 
+interface PlatformClusterWire {
+  cluster_id: string
+  name: string
+  status: PlatformClusterHealth
+  registration_status?: string
+  status_reason?: string
+  stale?: boolean
+  covered?: boolean
+  updated_at?: string
+}
+
 interface PlatformClustersWire {
-  clusters: Array<{ cluster_id: string; name: string; status: PlatformClusterHealth; updated_at?: string }>
+  clusters: PlatformClusterWire[]
   count: number
   total: number
   meta: ResourceReadMeta
@@ -149,6 +167,10 @@ export async function getPlatformClusters(params: { status?: PlatformClusterHeal
       clusterId: item.cluster_id,
       name: item.name,
       status: item.status,
+      registrationStatus: item.registration_status ?? '',
+      statusReason: item.status_reason ?? '',
+      stale: item.stale === true,
+      covered: item.covered !== false,
       ...(item.updated_at ? { updatedAt: item.updated_at } : {}),
     })),
     count: response.data.count,

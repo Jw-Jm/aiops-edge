@@ -32,6 +32,28 @@ describe('platform API client', () => {
     expect(result).not.toHaveProperty('platformStatus')
   })
 
+  it('keeps observed health and registration status separate on cluster rows', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ data: {
+      clusters: [{
+        cluster_id: 'cluster-a', name: 'A', status: 'unknown', registration_status: 'ready',
+        status_reason: '观测数据陈旧', stale: true, covered: false, updated_at: '2026-09-10T10:32:00Z',
+      }],
+      count: 1, total: 1, meta: { generated_at: 'now', partial: true, stale: true, warning_codes: ['CLUSTER_DATA_STALE'] },
+    } } as never)
+
+    const result = await getPlatformClusters()
+    expect(result.clusters[0]).toMatchObject({
+      clusterId: 'cluster-a',
+      status: 'unknown',
+      registrationStatus: 'ready',
+      statusReason: '观测数据陈旧',
+      stale: true,
+      covered: false,
+    })
+    // 注册状态不能被当成健康结论。
+    expect(result.clusters[0].status).not.toBe('healthy')
+  })
+
   it('uses global platform endpoints without adding an active cluster filter', async () => {
     vi.spyOn(api, 'get')
       .mockResolvedValueOnce({ data: { active_critical_issues: 0, managed_clusters: 0, affected_clusters: 0, unknown_or_stale_clusters: 0, cluster_states: {}, coverage: { covered: 0, expected: 0 }, capability_summary: {}, meta: { generated_at: 'now', partial: false, stale: false, warning_codes: [] } } } as never)

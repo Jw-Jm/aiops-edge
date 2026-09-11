@@ -304,6 +304,9 @@ body {
 .platform-cluster-row:hover { background: var(--surface-2); }
 .platform-cluster-row__main { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .platform-cluster-row__main strong, .platform-cluster-row__main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 状态原因与接入状态：原因优先，接入状态是次级事实，不得替代健康结论。 */
+.platform-cluster-row__reason { color: var(--text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.platform-cluster-row__registration { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
 .platform-priority h3 { margin: 14px 0 6px; font-size: 16px; }
 .platform-priority p { margin: 0 0 6px; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
 .platform-priority small { color: var(--text-muted); }
@@ -324,6 +327,7 @@ body {
 .cluster-overview-statusline { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: -8px 0 16px; }
 .cluster-overview-cluster-name { margin: -8px 0 12px; color: var(--text-secondary); font-size: 15px; font-weight: 600; }
 .cluster-overview-statusline__reason { color: var(--text-secondary); font-size: 13px; }
+.cluster-overview-statusline__registration { color: var(--text-muted); font-size: 12px; }
 .cluster-overview-statusline__meta { margin-left: auto; color: var(--text-muted); font-size: 12px; }
 .cluster-issue-list { display: flex; flex-direction: column; }
 .cluster-issue-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border-soft); }

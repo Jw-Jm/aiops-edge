@@ -5,10 +5,11 @@ import { getPlatformClusters, getPlatformOverview, type PlatformCluster, type Pl
 import BoundedDataRegion from '../../components/display/BoundedDataRegion'
 import { Breadcrumb, Empty, PageHeader, PaneCard, StatusBadge } from '../../components/ui/PageKit'
 import type { PlatformClusterHealth } from '../../api/platform'
+import { CLUSTER_HEALTH_LABELS, CLUSTER_HEALTH_SORT_ORDER, CLUSTER_HEALTH_TONES, capabilitySummaryText, registrationLabel } from '../../features/platform/healthPresentation'
 
-const STATUS_LABELS: Record<PlatformClusterHealth, string> = { healthy: '健康', degraded: '降级', critical: '严重', unknown: '未知' }
-const STATUS_TONES: Record<PlatformClusterHealth, 'ok' | 'warn' | 'crit' | 'muted'> = { healthy: 'ok', degraded: 'warn', critical: 'crit', unknown: 'muted' }
-const SORT_ORDER: Record<PlatformClusterHealth, number> = { critical: 0, degraded: 1, unknown: 2, healthy: 3 }
+const STATUS_LABELS = CLUSTER_HEALTH_LABELS
+const STATUS_TONES = CLUSTER_HEALTH_TONES
+const SORT_ORDER = CLUSTER_HEALTH_SORT_ORDER
 const CARRIER_LABELS = ['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'CronJob', 'Pod', 'Kubernetes Service', 'Ingress']
 
 function formatTime(value?: string): string {
@@ -29,7 +30,7 @@ function ClusterStateLine({ overview }: { overview: PlatformOverview }) {
 function ClusterList({ clusters, onOpen }: { clusters: PlatformCluster[]; onOpen: (clusterId: string) => void }) {
   const sorted = [...clusters].sort((a, b) => SORT_ORDER[a.status] - SORT_ORDER[b.status] || a.name.localeCompare(b.name, 'zh-CN'))
   if (!sorted.length) return <Empty text="暂无授权集群" hint="平台总览只展示当前用户有权查看的实际 Kubernetes 集群" />
-  return <div className="platform-cluster-list">{sorted.map((cluster) => <button type="button" className="platform-cluster-row" key={cluster.clusterId} onClick={() => onOpen(cluster.clusterId)}><span className="platform-cluster-row__main"><StatusBadge text={STATUS_LABELS[cluster.status]} tone={STATUS_TONES[cluster.status]} /><strong>{cluster.name || cluster.clusterId}</strong><small>{cluster.clusterId}</small></span><span className="platform-cluster-row__time">最新 {formatTime(cluster.updatedAt)}</span><span aria-hidden>→</span></button>)}</div>
+  return <div className="platform-cluster-list">{sorted.map((cluster) => <button type="button" className="platform-cluster-row" key={cluster.clusterId} onClick={() => onOpen(cluster.clusterId)}><span className="platform-cluster-row__main"><StatusBadge text={STATUS_LABELS[cluster.status]} tone={STATUS_TONES[cluster.status]} /><strong>{cluster.name || cluster.clusterId}</strong><small>{cluster.clusterId}</small><span className="platform-cluster-row__reason">{cluster.statusReason || '缺少状态原因'}</span><span className="platform-cluster-row__registration">{registrationLabel(cluster.registrationStatus)}</span></span><span className="platform-cluster-row__time">最新 {formatTime(cluster.updatedAt)}</span><span aria-hidden>→</span></button>)}</div>
 }
 
 const Overview: React.FC = () => {
@@ -78,7 +79,7 @@ const Overview: React.FC = () => {
         <PaneCard title="平台关注的资源载体" style={{ marginTop: 16 }}><div className="platform-carrier-list">{CARRIER_LABELS.map((label) => <Tag key={label}>{label}</Tag>)}</div><p className="platform-carrier-list__hint">进入实际集群后查看各资源类型的数量、异常和数据质量。</p></PaneCard>
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           <Col xs={24} lg={15}><PaneCard title="集群健康状态依据"><div className="platform-timeline-facts"><FactStat label="最新数据" value={formatTime(overview.freshestAt)} /><FactStat label="最旧有效数据" value={formatTime(overview.oldestValidAt)} /><FactStat label="四态分布" value={<ClusterStateLine overview={overview} />} /></div></PaneCard></Col>
-          <Col xs={24} lg={9}><PaneCard title="运维数据与能力状态"><div className="platform-capability"><strong>{overview.capabilitySummary.total > 0 ? `${overview.capabilitySummary.healthy}/${overview.capabilitySummary.total}` : '不可用'}</strong><span>已读取的能力状态</span>{overview.capabilitySummary.issues.map((issue) => <Tag color="warning" key={issue}>{issue}</Tag>)}</div></PaneCard></Col>
+          <Col xs={24} lg={9}><PaneCard title="运维数据与能力状态"><div className="platform-capability"><strong>{capabilitySummaryText(overview.capabilitySummary.healthy, overview.capabilitySummary.total)}</strong><span>{overview.capabilitySummary.total > 0 ? '已读取的能力状态' : '组件探测结果尚不可用'}</span>{overview.capabilitySummary.issues.map((issue) => <Tag color="warning" key={issue}>{issue}</Tag>)}</div></PaneCard></Col>
         </Row>
       </>}
     </BoundedDataRegion>

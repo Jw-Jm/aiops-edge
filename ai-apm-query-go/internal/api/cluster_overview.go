@@ -33,18 +33,21 @@ type kubeVirtSummary struct {
 }
 
 type clusterOverviewResponse struct {
-	ClusterID     string                `json:"cluster_id"`
-	Name          string                `json:"name"`
-	Status        string                `json:"status"`
-	StatusReasons []string              `json:"status_reasons"`
-	Version       string                `json:"version,omitempty"`
-	LastSyncAt    time.Time             `json:"last_sync_at"`
-	Coverage      platformCoverage      `json:"coverage"`
-	Issues        []platformIssue       `json:"issues"`
-	ResourceKinds []resourceKindSummary `json:"resource_kinds"`
-	KubeVirt      kubeVirtSummary       `json:"kubevirt"`
-	Foundation    []foundationFact      `json:"foundation"`
-	Meta          ResourceReadMeta      `json:"meta"`
+	ClusterID          string                `json:"cluster_id"`
+	Name               string                `json:"name"`
+	Status             string                `json:"status"`
+	StatusReason       string                `json:"status_reason"`
+	StatusReasons      []string              `json:"status_reasons"`
+	RegistrationStatus string                `json:"registration_status"`
+	Stale              bool                  `json:"stale"`
+	Version            string                `json:"version,omitempty"`
+	LastSyncAt         time.Time             `json:"last_sync_at"`
+	Coverage           platformCoverage      `json:"coverage"`
+	Issues             []platformIssue       `json:"issues"`
+	ResourceKinds      []resourceKindSummary `json:"resource_kinds"`
+	KubeVirt           kubeVirtSummary       `json:"kubevirt"`
+	Foundation         []foundationFact      `json:"foundation"`
+	Meta               ResourceReadMeta      `json:"meta"`
 }
 
 var canonicalClusterResourceKinds = []string{
@@ -59,51 +62,37 @@ func defaultResourceKindSummaries() []resourceKindSummary {
 	return items
 }
 
-func foundationStatusReason(cluster store.Cluster, state string, now time.Time) (string, string, int) {
-	if state == "unknown" {
-		return "unknown", "集群状态证据缺失", 0
-	}
-	if cluster.UpdatedAt.IsZero() {
-		return "unknown", "暂无最新同步时间", 0
-	}
-	if now.Sub(cluster.UpdatedAt) > 5*time.Minute {
-		return "degraded", "集群数据陈旧", 1
-	}
-	if state == "critical" {
-		return "critical", "集群连接或控制面状态异常", 0
-	}
-	return "healthy", "API Server 与集群注册状态可读", 0
-}
-
 func aggregateClusterOverview(cluster store.Cluster, issues []platformIssueInput, now time.Time) clusterOverviewResponse {
-	state := healthStateForCluster(cluster)
+	// 与平台总览 / 平台集群列表共用同一健康投影，保证同一集群在任何入口
+	// 得到完全相同的 status 与 status_reason。
+	state := projectClusterOperationalState(cluster, now)
 	coverage := platformCoverage{Expected: 1}
-	if clusterCovered(cluster, now) {
+	if state.Covered {
 		coverage.Covered = 1
 		coverage.Ratio = 1
 	}
-	status, foundationReason, affected := foundationStatusReason(cluster, state, now)
-	if status != state && state != "unknown" {
-		state = status
-	}
 	result := clusterOverviewResponse{
-		ClusterID:     cluster.ClusterID,
-		Name:          cluster.Name,
-		Status:        state,
-		StatusReasons: []string{foundationReason},
-		Version:       cluster.Version,
-		LastSyncAt:    cluster.UpdatedAt,
-		Coverage:      coverage,
-		Issues:        make([]platformIssue, 0),
-		ResourceKinds: defaultResourceKindSummaries(),
+		ClusterID:          cluster.ClusterID,
+		Name:               cluster.Name,
+		Status:             state.Health,
+		StatusReason:       state.Reason,
+		StatusReasons:      []string{state.Reason},
+		RegistrationStatus: state.RegistrationStatus,
+		Stale:              state.Stale,
+		Version:            cluster.Version,
+		LastSyncAt:         cluster.UpdatedAt,
+		Coverage:           coverage,
+		Issues:             make([]platformIssue, 0),
+		ResourceKinds:      defaultResourceKindSummaries(),
 		Foundation: []foundationFact{
-			{Kind: "control_plane", Status: status, Reason: foundationReason, AffectedResourceCount: affected},
+			// 控制面事实与集群健康同源；未采集的维度保持 unknown，不假定健康。
+			{Kind: "control_plane", Status: state.Health, Reason: state.Reason, AffectedResourceCount: 0},
 			{Kind: "nodes_hosts", Status: "unknown", Reason: "暂无节点与物理机事实", AffectedResourceCount: 0},
 			{Kind: "network", Status: "unknown", Reason: "暂无网络面证据", AffectedResourceCount: 0},
 			{Kind: "storage", Status: "unknown", Reason: "暂无存储面证据", AffectedResourceCount: 0},
 			{Kind: "kubevirt", Status: "unknown", Reason: "暂无 KubeVirt 运行面证据", AffectedResourceCount: 0},
 		},
-		Meta: ResourceReadMeta{GeneratedAt: now, Partial: coverage.Covered < coverage.Expected, Stale: !clusterCovered(cluster, now)},
+		Meta: ResourceReadMeta{GeneratedAt: now, Partial: !state.Covered, Stale: state.Stale},
 	}
 	if result.Meta.Partial {
 		result.Meta.WarningCodes = append(result.Meta.WarningCodes, "CLUSTER_DATA_PARTIAL")

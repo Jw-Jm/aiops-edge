@@ -5,6 +5,7 @@ import { getClusterOverview, type ClusterOverview, type FoundationFact, type Res
 import BoundedDataRegion from '../../components/display/BoundedDataRegion'
 import { Breadcrumb, Empty, PageHeader, PaneCard, StatusBadge } from '../../components/ui/PageKit'
 import type { PlatformClusterHealth } from '../../api/platform'
+import { CLUSTER_HEALTH_LABELS, CLUSTER_HEALTH_TONES, registrationLabel } from '../../features/platform/healthPresentation'
 
 const KIND_LABELS: Record<ResourceKindSummary['kind'], string> = {
   deployment: 'Deployment',
@@ -25,8 +26,8 @@ const FOUNDATION_LABELS: Record<FoundationFact['kind'], string> = {
   kubevirt: 'KubeVirt',
 }
 
-const STATUS_LABELS: Record<PlatformClusterHealth, string> = { healthy: '健康', degraded: '降级', critical: '严重', unknown: '未知' }
-const STATUS_TONES: Record<PlatformClusterHealth, 'ok' | 'warn' | 'crit' | 'muted'> = { healthy: 'ok', degraded: 'warn', critical: 'crit', unknown: 'muted' }
+const STATUS_LABELS = CLUSTER_HEALTH_LABELS
+const STATUS_TONES = CLUSTER_HEALTH_TONES
 
 function formatTime(value?: string): string {
   if (!value) return '暂无'
@@ -46,7 +47,9 @@ function ClusterHeader({ data, onBack, onInvestigate }: { data: ClusterOverview;
       <h2 className="cluster-overview-cluster-name">{data.name || data.clusterId}</h2>
       <div className="cluster-overview-statusline">
         <StatusBadge text={STATUS_LABELS[data.status]} tone={STATUS_TONES[data.status]} />
+        {/* 与平台列表使用同一原因文本；注册状态单独呈现，不参与健康结论。 */}
         {data.statusReasons.map((reason) => <span key={reason} className="cluster-overview-statusline__reason">{reason}</span>)}
+        <span className="cluster-overview-statusline__registration">{registrationLabel(data.registrationStatus)}</span>
         <span className="cluster-overview-statusline__meta">采集覆盖 {data.coverage.covered}/{data.coverage.expected}</span>
       </div>
     </>

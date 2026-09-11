@@ -58,38 +58,6 @@ type platformOverviewResponse struct {
 	Meta                   ResourceReadMeta          `json:"meta"`
 }
 
-func healthStateForCluster(cluster store.Cluster) string {
-	status := strings.ToLower(strings.TrimSpace(cluster.Status))
-	if status == "active" || status == "ready" || status == "healthy" || status == "running" || status == "ok" {
-		return "healthy"
-	}
-	if status == "degraded" || status == "warning" {
-		return "degraded"
-	}
-	if status == "down" || status == "critical" || status == "error" || status == "offline" || status == "disconnected" {
-		return "critical"
-	}
-	return "unknown"
-}
-
-func clusterCovered(cluster store.Cluster, now time.Time) bool {
-	state := healthStateForCluster(cluster)
-	if state == "unknown" {
-		return false
-	}
-	if cluster.UpdatedAt.IsZero() {
-		return false
-	}
-	return now.Sub(cluster.UpdatedAt) <= 5*time.Minute
-}
-
-func clusterUnknownOrStale(cluster store.Cluster, now time.Time) bool {
-	if healthStateForCluster(cluster) == "unknown" || cluster.UpdatedAt.IsZero() {
-		return true
-	}
-	return now.Sub(cluster.UpdatedAt) > 5*time.Minute
-}
-
 func activePlatformIssue(input platformIssueInput) bool {
 	return strings.EqualFold(strings.TrimSpace(input.Severity), "critical") &&
 		!strings.EqualFold(strings.TrimSpace(input.Status), "resolved") &&
@@ -101,6 +69,13 @@ func issueKey(input platformIssueInput) string {
 }
 
 func aggregatePlatformOverview(clusters []store.Cluster, activeClusterID string, issues []platformIssueInput, now time.Time) platformOverviewResponse {
+	return aggregatePlatformOverviewWithCapabilities(clusters, activeClusterID, issues, nil, now)
+}
+
+// aggregatePlatformOverviewWithCapabilities 在纯聚合之上注入组件探测结果，
+// 使平台能力摘要与系统管理页同源；capabilityRows 为 nil 时返回 0/0，
+// 由前端显示“未获得组件状态”，而不是硬编码 1/1。
+func aggregatePlatformOverviewWithCapabilities(clusters []store.Cluster, activeClusterID string, issues []platformIssueInput, capabilityRows []systemComponentResultView, now time.Time) platformOverviewResponse {
 	result := platformOverviewResponse{
 		ActiveClusterID: activeClusterID,
 		ManagedClusters: len(clusters),
@@ -114,15 +89,15 @@ func aggregatePlatformOverview(clusters []store.Cluster, activeClusterID string,
 	authorizedTenants := make(map[string]string, len(clusters))
 	for _, cluster := range clusters {
 		authorizedTenants[cluster.ClusterID] = cluster.TenantID
-		state := healthStateForCluster(cluster)
-		result.ClusterStates[state]++
-		if clusterCovered(cluster, now) {
+		state := projectClusterOperationalState(cluster, now)
+		result.ClusterStates[state.Health]++
+		if state.Covered {
 			covered++
 		}
-		if clusterUnknownOrStale(cluster, now) {
+		if state.Health == "unknown" || state.Stale {
 			result.UnknownOrStaleClusters++
 		}
-		if cluster.UpdatedAt.IsZero() {
+		if cluster.UpdatedAt.IsZero() || state.Stale {
 			continue
 		}
 		if result.FreshestAt.IsZero() || cluster.UpdatedAt.After(result.FreshestAt) {
@@ -166,11 +141,7 @@ func aggregatePlatformOverview(clusters []store.Cluster, activeClusterID string,
 	if result.Meta.Stale {
 		result.Meta.WarningCodes = append(result.Meta.WarningCodes, "CLUSTER_DATA_STALE")
 	}
-	result.CapabilitySummary = platformCapabilitySummary{Healthy: 1, Total: 1}
-	if result.Meta.Partial {
-		result.CapabilitySummary.Healthy = 0
-		result.CapabilitySummary.Issues = []string{"资源同步覆盖不足或数据陈旧"}
-	}
+	result.CapabilitySummary = summarizePlatformCapabilities(capabilityRows)
 	return result
 }
 
@@ -225,7 +196,7 @@ func (h *Handler) PlatformOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		active = append(active, cluster)
 	}
-	respondJSON(w, http.StatusOK, aggregatePlatformOverview(active, auth.ActiveClusterID, h.platformIssueInputs(r, auth.TenantID, active), time.Now().UTC()))
+	respondJSON(w, http.StatusOK, aggregatePlatformOverviewWithCapabilities(active, auth.ActiveClusterID, h.platformIssueInputs(r, auth.TenantID, active), platformCapabilitySnapshot(), time.Now().UTC()))
 }
 
 func (h *Handler) PlatformClusters(w http.ResponseWriter, r *http.Request) {
@@ -253,10 +224,13 @@ func (h *Handler) PlatformClusters(w http.ResponseWriter, r *http.Request) {
 	}
 	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	now := time.Now().UTC()
+	states := make(map[string]clusterOperationalState, len(clusters))
 	items := make([]store.Cluster, 0, len(clusters))
 	for _, cluster := range clusters {
-		state := healthStateForCluster(cluster)
-		if statusFilter != "" && statusFilter != state {
+		state := projectClusterOperationalState(cluster, now)
+		states[cluster.ClusterID] = state
+		if statusFilter != "" && statusFilter != state.Health {
 			continue
 		}
 		if query != "" && !strings.Contains(strings.ToLower(cluster.Name), query) && !strings.Contains(strings.ToLower(cluster.ClusterID), query) {
@@ -277,7 +251,18 @@ func (h *Handler) PlatformClusters(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]map[string]interface{}, 0, len(items))
 	for _, cluster := range items {
-		result = append(result, map[string]interface{}{"cluster_id": cluster.ClusterID, "name": cluster.Name, "status": healthStateForCluster(cluster), "updated_at": cluster.UpdatedAt})
+		state := states[cluster.ClusterID]
+		result = append(result, map[string]interface{}{
+			"cluster_id": cluster.ClusterID,
+			"name":       cluster.Name,
+			// status 保持“观测健康”含义；注册状态单独输出，二者不得互相替代。
+			"status":              state.Health,
+			"registration_status": state.RegistrationStatus,
+			"status_reason":       state.Reason,
+			"stale":               state.Stale,
+			"covered":             state.Covered,
+			"updated_at":          cluster.UpdatedAt,
+		})
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"clusters": result, "count": len(result), "total": total, "meta": resourceReadMeta(false, nil)})
 }

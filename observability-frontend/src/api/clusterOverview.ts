@@ -32,8 +32,13 @@ export interface KubeVirtSummary {
 export interface ClusterOverview {
   clusterId: string
   name: string
+  /** 观测健康：healthy | degraded | critical | unknown */
   status: PlatformClusterHealth
+  statusReason: string
   statusReasons: string[]
+  /** 接入/注册状态：只描述生命周期，不产生健康结论 */
+  registrationStatus: string
+  stale: boolean
   version?: string
   lastSyncAt?: string
   coverage: PlatformCoverage
@@ -48,7 +53,10 @@ interface ClusterOverviewWire {
   cluster_id: string
   name: string
   status: PlatformClusterHealth
+  status_reason?: string
   status_reasons?: string[]
+  registration_status?: string
+  stale?: boolean
   version?: string
   last_sync_at?: string
   coverage: { covered: number; expected: number; ratio?: number }
@@ -71,11 +79,15 @@ function mapIssue(item: NonNullable<ClusterOverviewWire['issues']>[number]): Pla
 
 export function mapClusterOverview(wire: ClusterOverviewWire): ClusterOverview {
   const byKind = new Map((wire.resource_kinds ?? []).map((item) => [item.kind, item]))
+  const statusReason = wire.status_reason ?? (wire.status_reasons ?? [])[0] ?? ''
   return {
     clusterId: wire.cluster_id,
     name: wire.name,
     status: wire.status,
-    statusReasons: wire.status_reasons ?? [],
+    statusReason,
+    statusReasons: wire.status_reasons ?? (statusReason ? [statusReason] : []),
+    registrationStatus: wire.registration_status ?? '',
+    stale: wire.stale === true,
     ...(wire.version ? { version: wire.version } : {}),
     ...(wire.last_sync_at ? { lastSyncAt: wire.last_sync_at } : {}),
     coverage: { covered: wire.coverage.covered, expected: wire.coverage.expected, ratio: wire.coverage.ratio ?? null },
