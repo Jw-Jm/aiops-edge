@@ -35,6 +35,7 @@ describe('GraphMap', () => {
     // the production canvas must select a concrete, visible arrowhead shape.
     expect(options.edge.style.endArrowType).toBe('triangle')
     expect(options.edge.style.endArrowFill).toBe(options.edge.style.stroke)
+    expect(options.edge.style.endArrowOffset).toBeLessThan(0)
     expect(options.edge.style.labelBackgroundOpacity).toBe(1)
     // 层间距保证关系标签不重叠。
     expect(options.layout.ranksep).toBeGreaterThanOrEqual(120)

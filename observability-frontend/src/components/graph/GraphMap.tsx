@@ -78,7 +78,10 @@ export default function GraphMap({
         style: {
           endArrow: true,
           endArrowType: 'triangle',
-          endArrowSize: 10,
+          endArrowSize: 12,
+          // Keep the arrowhead just outside the target node so the node's
+          // fill cannot occlude it in the real canvas renderer.
+          endArrowOffset: -8,
           endArrowFill: edgeStroke,
           endArrowStroke: edgeStroke,
           stroke: edgeStroke,
