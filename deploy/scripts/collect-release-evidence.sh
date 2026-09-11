@@ -28,7 +28,7 @@ PY
 }
 
 run_check deployment_contract bash deploy/scripts/test-deployment-contracts.sh
-run_check production_architecture env AIOPS_CONTRACT_ALLOW_TEST_SECRETS=true bash deploy/scripts/test-production-architecture-contracts.sh
+run_check production_architecture bash deploy/scripts/test-production-architecture-contracts.sh
 run_check release_signature_contract bash deploy/scripts/test-release-evidence-contract.sh
 run_check helm_lint helm lint --strict deploy/helm/aiops
 run_check diff_check git diff --check
