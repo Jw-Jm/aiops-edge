@@ -1,6 +1,6 @@
 # AIOps 多集群云平台资源运维 UI V3 Implementation Plan
 
-> **现场复核说明（2026-09-10）：** 本计划中的勾选项表示代码任务和原定验证已执行，不等于真实环境正式验收通过。后续运行阻断、健康事实一致性、图谱/长表/助手显示效果与发布门禁整改，统一以 [AIOps V3 实施后完善整改计划](2026-09-10-aiops-v3-post-implementation-remediation.md) 为准。
+> **现场复核说明（更新于 2026-09-11）：** 本计划中的勾选项表示原始代码任务和原定验证已执行，不等于真实环境正式验收通过。原 10 项、60 步实施后整改、KubeVirt 多集群边界、图谱聚焦、告警调查、调查终止语义和发布门禁，统一以 [AIOps V3 实施后完善整改计划](2026-09-10-aiops-v3-post-implementation-remediation.md) 为执行依据，以[完整验收说明](../verification/2026-09-11-aiops-v3-complete-acceptance.md)为通过依据。任何旧勾选项不得覆盖新门禁的失败或 `BLOCKED_BY_ENV`。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -10,7 +10,7 @@
 
 **Tech Stack:** React 18、TypeScript 5.6、React Router 6、TanStack Query 5、Ant Design 5、ECharts 5、AntV G6 5、Vitest；Go、MySQL、HugeGraph、Chroma；Helm/Kubernetes。
 
-**Spec:** [正式设计方案](../specs/2026-09-08-aiops-information-architecture-design.md)；[V3 实际渲染与编码指南](../specs/assets/ui-v2/UI_RENDER_GUIDE.md)；[可运行 V3 原型](../specs/assets/ui-v2/aiops-ui-prototype.html)
+**Spec:** [正式设计方案](../specs/2026-09-08-aiops-information-architecture-design.md)；[V3 完整 UI 设计、实际渲染与编码指南](../specs/assets/ui-v2/UI_RENDER_GUIDE.md)；[完整验收说明](../verification/2026-09-11-aiops-v3-complete-acceptance.md)；[可运行 V3 原型](../specs/assets/ui-v2/aiops-ui-prototype.html)
 
 ## Global Constraints
 
@@ -1021,6 +1021,8 @@ git commit -m "chore(release): verify aiops ui v3 deployment"
 ```
 
 ## Final self-review gate
+
+> 本节只证明原始 V3 计划的自审已完成。正式版本还必须执行实施后整改计划 Task 0–11 和完整验收 G0–G11；库存投影 Task 12 形成独立 ADR，发布由整改计划 Task 13 完成。
 
 - [x] 正式规格各章的每项必须要求均能映射到 Task 1–14。
 - [x] 每个实现步骤均给出具体接口、代码、测试命令和预期结果，不保留占位描述。
