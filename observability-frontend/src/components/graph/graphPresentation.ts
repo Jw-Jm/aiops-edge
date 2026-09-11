@@ -49,6 +49,33 @@ export interface GraphDisplayModel {
   meta: GraphMeta
 }
 
+/** 可读关系链的一跳：必须由真实 edge 构成，不得按 vertices 顺序拼接。 */
+export interface RelationChain {
+  id: string
+  source: string
+  relation: string
+  target: string
+  factStatus: 'fact' | 'inferred'
+}
+
+const RELATION_CHAIN_LIMIT = 6
+
+/**
+ * 从真实关系行构建"关键关系链"。
+ *
+ * - resource-relations：只保留与中心节点直接相连的事实/推断关系。
+ * - failure-chain：保留传播故障的关系（已经是真实边，不做顺序拼接）。
+ *
+ * 每条链都对应一条真实 edge id，因此检查器和证据可回溯。
+ */
+export function buildRelationChains(rows: GraphRelationRow[], centerUid: string, mode: GraphViewMode): RelationChain[] {
+  return rows
+    .filter((row) => mode !== 'failure-chain' || row.propagatesFailure)
+    .filter((row) => mode === 'failure-chain' || !centerUid || row.sourceUid === centerUid || row.targetUid === centerUid)
+    .slice(0, RELATION_CHAIN_LIMIT)
+    .map((row) => ({ id: row.id, source: row.sourceName, relation: row.label, target: row.targetName, factStatus: row.factStatus }))
+}
+
 const RELATION_LABELS: Record<string, string> = {
   CONTAINS: '包含', HOSTS: '宿主', RUNS_ON: '运行于', USES_VOLUME: '使用存储卷', USES_DISK: '使用磁盘设备', REFERENCES_VOLUME: '引用卷', SOURCED_FROM: '来源于', DECLARES: '声明 PVC', BOUND_TO: '绑定 PV', ATTACHED_TO: '挂载于', DEPENDS_ON: '依赖', CONNECTS_TO_NAD: '连接到 NAD', USES_CNI: '使用 CNI', CONNECTS_TO_NETWORK: '连接到网络',
 }
@@ -82,14 +109,25 @@ function nodeFromEntity(entity: GraphEntity): GraphDisplayNode {
   return { id: entity.entity_uid, name: entity.name, label: entity.name, entityType: entity.entity_type, typeLabel: visual.typeLabel, domain: visual.domain, iconKey: visual.iconKey, health: entity.health || entity.status, healthTone: healthTone(entity.health || entity.status) }
 }
 
-function edgeStyle(edge: GraphEdge): GraphDisplayEdge['style'] {
-  if (edge.propagates_failure) return 'failure'
-  if (edge.attrs?.fact_status === 'inferred' || edge.candidate_direction === 'candidate' || edge.status === 'candidate' || edge.status === 'inferred') return 'inferred'
-  return 'structural'
+/**
+ * 事实/推断判定。推断优先级最高：推断边在任何视图都必须保持虚线并标注"推断"，
+ * 不得因为 propagates_failure 被渲染成确定故障。
+ */
+export function edgeFactStatus(edge: GraphEdge): GraphDisplayEdge['factStatus'] {
+  return edge.attrs?.fact_status === 'inferred' || edge.candidate_direction === 'candidate' || edge.status === 'candidate' || edge.status === 'inferred' ? 'inferred' : 'fact'
 }
 
-function factStatus(edge: GraphEdge): GraphDisplayEdge['factStatus'] {
-  return edge.attrs?.fact_status === 'inferred' || edge.status === 'candidate' || edge.status === 'inferred' ? 'inferred' : 'fact'
+/**
+ * 线型只由「推断 / 视图模式 / 故障传播」共同决定：
+ *   - 推断边 → inferred（无论哪个视图）
+ *   - 仅 failure-chain 且事实边 propagates_failure → failure
+ *   - 其他（含资源关系视图里的 CONTAINS/OWNS 等结构边）→ structural
+ * 结构边不得因为在 failure-chain 之外携带 propagates_failure 而变红。
+ */
+export function edgeStyle(edge: GraphEdge, mode: GraphViewMode): GraphDisplayEdge['style'] {
+  if (edgeFactStatus(edge) === 'inferred') return 'inferred'
+  if (mode === 'failure-chain' && edge.propagates_failure) return 'failure'
+  return 'structural'
 }
 
 export function buildGraphDisplayModel(graph: GraphSubgraph, options: { mode: GraphViewMode; centerUid: string; maxNodes: number; maxEdges: number }): GraphDisplayModel {
@@ -120,7 +158,7 @@ export function buildGraphDisplayModel(graph: GraphSubgraph, options: { mode: Gr
     const source = visibleIds.has(edge.source_uid) ? edge.source_uid : aggregateIds.get(graph.vertices.find((vertex) => vertex.entity_uid === edge.source_uid)?.entity_type ?? '')
     const target = visibleIds.has(edge.target_uid) ? edge.target_uid : aggregateIds.get(graph.vertices.find((vertex) => vertex.entity_uid === edge.target_uid)?.entity_type ?? '')
     if (!source || !target || source === target || !nodeById.has(source) || !nodeById.has(target)) return
-    const display: GraphDisplayEdge = { id: `${edge.edge_uid}:${source}:${target}`, source, target, relationType: edge.relation_type, label: relationLabel(edge.relation_type), style: edgeStyle(edge), propagatesFailure: edge.propagates_failure, factStatus: factStatus(edge), sourceRef: typeof edge.attrs?.source_field === 'string' ? edge.attrs.source_field : edge.source, syncedAt: typeof edge.attrs?.synced_at === 'string' ? edge.attrs.synced_at : '', ...(typeof edge.attrs?.aggregate_count === 'number' ? { aggregateCount: edge.attrs.aggregate_count } : {}) }
+    const display: GraphDisplayEdge = { id: `${edge.edge_uid}:${source}:${target}`, source, target, relationType: edge.relation_type, label: relationLabel(edge.relation_type), style: edgeStyle(edge, options.mode), propagatesFailure: edge.propagates_failure, factStatus: edgeFactStatus(edge), sourceRef: typeof edge.attrs?.source_field === 'string' ? edge.attrs.source_field : edge.source, syncedAt: typeof edge.attrs?.synced_at === 'string' ? edge.attrs.synced_at : '', ...(typeof edge.attrs?.aggregate_count === 'number' ? { aggregateCount: edge.attrs.aggregate_count } : {}) }
     edgeMap.set(`${source}|${target}|${edge.relation_type}`, display)
   })
   const edges = Array.from(edgeMap.values()).slice(0, maxEdges)

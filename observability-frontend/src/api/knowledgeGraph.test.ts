@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getGraphCandidate, getGraphNeighbors, getGraphPath } from './knowledgeGraph'
+import { getGraphCandidate, getGraphNeighbors, getGraphPath, searchGraphEntities } from './knowledgeGraph'
 import { api } from './client'
 import source from './client.ts?raw'
 
@@ -25,5 +25,12 @@ describe('knowledge graph API', () => {
 
   it('does not expose the retired aggregate graph route', () => {
     expect(source).not.toContain("'/ai/kg/graph'")
+  })
+
+  it('sends the operations search profile for the default resource view', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValue({ data: { items: [], count: 0 } } as any)
+    await searchGraphEntities({ q: 'aiops', limit: 40, profile: 'operations' })
+    expect(spy).toHaveBeenCalledWith('/ai/kg/entities/search', { params: { q: 'aiops', limit: 40, profile: 'operations' } })
+    spy.mockRestore()
   })
 })

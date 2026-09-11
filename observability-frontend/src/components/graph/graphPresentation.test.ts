@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildGraphDisplayModel, layoutForMode, relationLabel, resourceVisual } from './graphPresentation'
+import { buildGraphDisplayModel, buildRelationChains, layoutForMode, relationLabel, resourceVisual, type GraphRelationRow } from './graphPresentation'
 import type { GraphSubgraph } from '../../api/graphContracts'
 
 function graph(vertexCount = 4): GraphSubgraph {
@@ -39,4 +39,45 @@ describe('graph presentation model', () => {
     expect(model.relationRows).toHaveLength(model.edges.length)
     expect(model.relationRows[0]).toMatchObject({ label: '包含', sourceName: 'node-0' })
   })
+
+  it('builds relation chains only from real edges and never bridges disconnected components', () => {
+    const rows = [
+      row({ id: 'e1', sourceUid: 'a', targetUid: 'b', sourceName: 'orders', targetName: 'orders-pod', label: '包含', style: 'structural' }),
+      // 与 a 不相连的独立连通分量：不得被串进同一个链。
+      row({ id: 'e2', sourceUid: 'c', targetUid: 'd', sourceName: 'cache', targetName: 'cache-pod', label: '依赖', style: 'structural' }),
+      // 传播故障的边，仅在 failure-chain 模式保留。
+      row({ id: 'e3', sourceUid: 'b', targetUid: 'c', sourceName: 'orders-pod', targetName: 'cache', label: '依赖', style: 'failure', propagatesFailure: true }),
+    ]
+
+    const resourceChains = buildRelationChains(rows, 'a', 'resource-relations')
+    expect(resourceChains.map((chain) => chain.id)).toEqual(['e1'])
+    expect(resourceChains[0]).toMatchObject({ source: 'orders', relation: '包含', target: 'orders-pod', factStatus: 'fact' })
+
+    const failureChains = buildRelationChains(rows, 'a', 'failure-chain')
+    expect(failureChains.map((chain) => chain.id)).toEqual(['e3'])
+    // 不得把不相邻节点按 vertices 顺序串成虚构链。
+    expect(failureChains.every((chain) => rows.some((candidate) => candidate.id === chain.id))).toBe(true)
+  })
+
+  it('renders inferred relations as explicit inferred chains', () => {
+    const rows = [row({ id: 'e9', sourceUid: 'a', targetUid: 'b', sourceName: 'orders', targetName: 'orders-pod', label: '疑似依赖', style: 'inferred', factStatus: 'inferred' })]
+    const chains = buildRelationChains(rows, 'a', 'resource-relations')
+    expect(chains).toHaveLength(1)
+    expect(chains[0].factStatus).toBe('inferred')
+  })
 })
+
+function row(overrides: Partial<GraphRelationRow> & Pick<GraphRelationRow, 'id' | 'sourceUid' | 'targetUid' | 'sourceName' | 'targetName'>): GraphRelationRow {
+  return {
+    source: overrides.sourceUid,
+    target: overrides.targetUid,
+    relationType: 'CONTAINS',
+    label: '包含',
+    style: 'structural',
+    propagatesFailure: false,
+    factStatus: 'fact',
+    sourceRef: 'spec',
+    syncedAt: '2026-09-10T10:32:00Z',
+    ...overrides,
+  } as GraphRelationRow
+}

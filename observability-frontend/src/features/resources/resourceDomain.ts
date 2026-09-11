@@ -53,6 +53,30 @@ export function isSelectableResourceType(type: GraphEntityType): boolean {
   return resourceDomainOf(type) !== null
 }
 
+/**
+ * 默认运维图谱可搜索类型。
+ *
+ * 与 SELECTABLE_RESOURCE_TYPES 的区别：后者是"兼容类型全集"（详情、历史深链、
+ * 精确 API 仍可读取），前者是"默认图谱搜索主语"。Container、ReplicaSet、
+ * EndpointSlice 只作详情/证据；业务、应用、APM service、中间件只作兼容数据，
+ * 都不得出现在默认图谱搜索结果中。
+ *
+ * 必须与服务端 operationsGraphSearchTypes 保持一致。
+ */
+export const DEFAULT_GRAPH_SEARCH_TYPES: readonly GraphEntityType[] = [
+  'deployment', 'statefulset', 'daemonset', 'job', 'cronjob', 'pod', 'k8s_service', 'ingress',
+  'vm', 'vmi', 'k8s_node', 'physical_server',
+  'pvc', 'pv', 'storage_class', 'data_volume', 'volume', 'disk_device',
+  'nad', 'network', 'virtual_interface', 'cni', 'nic', 'switch', 'switch_port',
+]
+
+const DEFAULT_GRAPH_SEARCH_TYPE_SET = new Set<string>(DEFAULT_GRAPH_SEARCH_TYPES)
+
+/** 是否属于默认运维图谱搜索边界。 */
+export function isDefaultGraphSearchType(type: GraphEntityType): boolean {
+  return DEFAULT_GRAPH_SEARCH_TYPE_SET.has(type)
+}
+
 export function resourceTypeLabel(type: GraphEntityType): string {
   return TYPE_LABELS[type] ?? '未识别资源'
 }

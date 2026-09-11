@@ -7,9 +7,10 @@ import GraphSummary from '../../components/graph/GraphSummary'
 import DataState from '../../components/display/DataState'
 import { PageHeader } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
-import { isSelectableResourceType, resourceDomainOf, resourceTypeLabel } from '../../features/resources/resourceDomain'
+import { isDefaultGraphSearchType, resourceDomainOf, resourceTypeLabel } from '../../features/resources/resourceDomain'
 
-const DOMAIN_OPTIONS = [{ value: '', label: '全部资源域' }, { value: 'compute', label: '计算' }, { value: 'network', label: '网络' }, { value: 'storage', label: '存储' }, { value: 'kubernetes', label: 'Kubernetes' }, { value: 'application', label: '应用服务' }]
+// 域过滤只保留真实载体与依赖：业务/应用/APM 语义实体不是默认图谱主语。
+const DOMAIN_OPTIONS = [{ value: '', label: '全部资源域' }, { value: 'compute', label: '计算' }, { value: 'network', label: '网络' }, { value: 'storage', label: '存储' }, { value: 'kubernetes', label: 'Kubernetes' }]
 
 function graphRequestErrorMessage(requestError: any): string {
   const error = requestError?.response?.data?.error
@@ -34,10 +35,12 @@ export default function ResourceRelationships() {
     try {
       const [healthResponse, found] = await Promise.all([
         getGraphHealth(),
-        searchGraphEntities({ q: query.trim(), limit: 40 }),
+        // 服务端 operations profile 收窄默认图谱主语；先取候选再过滤，
+        // 避免前端过滤把合法结果提前截断。
+        searchGraphEntities({ q: query.trim(), limit: 40, profile: 'operations' }),
       ])
       setHealth(healthResponse.data)
-      const items = (found.data.items ?? []).filter((item) => item.cluster_id === activeClusterId && isSelectableResourceType(item.entity_type))
+      const items = (found.data.items ?? []).filter((item) => item.cluster_id === activeClusterId && isDefaultGraphSearchType(item.entity_type))
       setResults(items)
       const center = selected ?? items[0]
       if (!center) { setSubgraph(undefined); return }

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -89,6 +91,83 @@ func TestGraphPublicRejectsRawGraphLanguageAndTraversalAboveLimit(t *testing.T) 
 	h.GraphPublicRouter(deepRec, tooDeep)
 	if deepRec.Code != http.StatusBadRequest && deepRec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("too deep status=%d body=%s", deepRec.Code, deepRec.Body.String())
+	}
+}
+
+// TestGraphSearchOperationsProfileExcludesCompatibilityAndDetailOnlyTypes 锁定默认图谱
+// 搜索边界：operations profile 不得泄漏 ReplicaSet、业务 service、middleware 等
+// 兼容/仅详情类型，但必须保留 Pod/PVC/VMI 这类真实载体。
+func TestGraphSearchOperationsProfileExcludesCompatibilityAndDetailOnlyTypes(t *testing.T) {
+	repo := graphpkg.NewMemoryRepository()
+	types := []string{"pod", "vmi", "pvc", "replicaset", "service", "middleware"}
+	vertices := make([]graphpkg.Entity, 0, len(types))
+	for _, entityType := range types {
+		vertices = append(vertices, graphpkg.Entity{
+			EntityUID: "entity:" + entityType, EntityType: entityType,
+			TenantID: "tenant-a", ClusterID: "cluster-a",
+			Name: "item-" + entityType, NameKey: "item-" + entityType,
+			Source: "test", Status: "active",
+		})
+	}
+	if _, err := repo.BatchMutate(context.Background(), graphpkg.MutationBatch{TenantID: "tenant-a", ClusterID: "cluster-a", Vertices: vertices}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{graphRepo: repo}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/kg/entities/search?q=item&profile=operations&limit=20", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user", TenantID: "tenant-a", SessionID: "session", ActiveClusterID: "cluster-a"})
+	rec := httptest.NewRecorder()
+	h.GraphPublicRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []graphpkg.Entity `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(body.Items))
+	for _, item := range body.Items {
+		got = append(got, item.EntityType)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, []string{"pod", "pvc", "vmi"}) {
+		t.Fatalf("types=%v", got)
+	}
+}
+
+// TestGraphSearchRejectsUnknownProfile 验证未知 profile 直接拒绝，而不是退回全类型搜索。
+func TestGraphSearchRejectsUnknownProfile(t *testing.T) {
+	h := graphTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/kg/entities/search?q=checkout&profile=everything", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user", TenantID: "tenant-a", SessionID: "session", ActiveClusterID: "cluster-a"})
+	rec := httptest.NewRecorder()
+	h.GraphPublicRouter(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown profile must be rejected, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestGraphSearchWithoutProfileKeepsCompatibilityReads 验证不传 profile 时兼容类型
+// 仍可通过精确类型访问（详情/历史深链不受影响）。
+func TestGraphSearchWithoutProfileKeepsCompatibilityReads(t *testing.T) {
+	repo := graphpkg.NewMemoryRepository()
+	vertices := []graphpkg.Entity{
+		{EntityUID: "entity:replicaset", EntityType: "replicaset", TenantID: "tenant-a", ClusterID: "cluster-a", Name: "item-rs", NameKey: "item-rs", Source: "test", Status: "active"},
+	}
+	if _, err := repo.BatchMutate(context.Background(), graphpkg.MutationBatch{TenantID: "tenant-a", ClusterID: "cluster-a", Vertices: vertices}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{graphRepo: repo}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/kg/entities/search?q=item&entity_type=replicaset", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user", TenantID: "tenant-a", SessionID: "session", ActiveClusterID: "cluster-a"})
+	rec := httptest.NewRecorder()
+	h.GraphPublicRouter(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "replicaset") {
+		t.Fatalf("compatibility type must stay readable without a profile: %s", rec.Body.String())
 	}
 }
 

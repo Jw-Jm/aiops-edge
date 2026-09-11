@@ -80,6 +80,34 @@ func (h *Handler) graphEntity(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, entity)
 }
 
+// operationsGraphSearchTypes 是默认运维图谱可搜索类型：八类容器主资源、
+// KubeVirt VM/VMI、Kubernetes Node、物理机，以及真实的存储/网络依赖。
+// Container、ReplicaSet、EndpointSlice 只作为详情/证据，业务 service、
+// application、middleware 只作兼容数据，均不出现在默认搜索 profile。
+var operationsGraphSearchTypes = map[string]struct{}{
+	"deployment": {}, "statefulset": {}, "daemonset": {}, "job": {}, "cronjob": {}, "pod": {}, "k8s_service": {}, "ingress": {},
+	"vm": {}, "vmi": {}, "k8s_node": {}, "physical_server": {},
+	"pvc": {}, "pv": {}, "storage_class": {}, "data_volume": {}, "volume": {}, "disk_device": {},
+	"nad": {}, "network": {}, "virtual_interface": {}, "cni": {}, "nic": {}, "switch": {}, "switch_port": {},
+}
+
+// graphOperationsProfileCandidateLimit 是 operations profile 的 alias 候选上限：
+// 必须先取候选再按 profile 过滤，否则前端过滤会让合法结果被提前截断。
+const graphOperationsProfileCandidateLimit = 50
+
+// graphSearchProfileAllows 判断某实体类型是否属于指定搜索 profile。
+// 空 profile 表示兼容读取（不过滤）；未知 profile 在 handler 层直接拒绝。
+func graphSearchProfileAllows(profile, entityType string) bool {
+	if profile == "" {
+		return true
+	}
+	if profile != "operations" {
+		return false
+	}
+	_, ok := operationsGraphSearchTypes[entityType]
+	return ok
+}
+
 func (h *Handler) graphSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len([]rune(q)) < 2 || len([]rune(q)) > 128 {
@@ -91,13 +119,18 @@ func (h *Handler) graphSearch(w http.ResponseWriter, r *http.Request) {
 		respondGraphParamError(w, err)
 		return
 	}
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+	if profile != "" && profile != "operations" {
+		respondGraphError(w, "GRAPH_INVALID_ARGUMENT", "unknown graph search profile")
+		return
+	}
 	scope, err := h.graphScope(r)
 	if err != nil {
 		respondGraphAuthorizationError(w, err)
 		return
 	}
 	entityType := strings.TrimSpace(r.URL.Query().Get("entity_type"))
-	items, err := h.searchGraphAliases(r.Context(), scope, entityType, q, limit)
+	items, err := h.searchGraphAliases(r.Context(), scope, entityType, profile, q, limit)
 	if err != nil {
 		respondGraphErrorFromGo(w, err)
 		return
@@ -256,10 +289,16 @@ func (h *Handler) graphScope(r *http.Request) (graphpkg.GraphScope, error) {
 	return scope, nil
 }
 
-func (h *Handler) searchGraphAliases(ctx context.Context, scope graphpkg.GraphScope, entityType, query string, limit int) ([]graphpkg.Entity, error) {
+func (h *Handler) searchGraphAliases(ctx context.Context, scope graphpkg.GraphScope, entityType, profile, query string, limit int) ([]graphpkg.Entity, error) {
+	// profile 过滤必须发生在调用方 limit 截断之前，否则被 profile 排除的候选
+	// 会先占满 limit，使合法结果被静默丢弃。
+	candidateLimit := limit
+	if profile == "operations" && candidateLimit < graphOperationsProfileCandidateLimit {
+		candidateLimit = graphOperationsProfileCandidateLimit
+	}
 	if h.graphAliasDAO != nil {
-		if aliases, err := h.graphAliasDAO.Search(scope.TenantID, firstScopeClusterID(scope), graphpkg.NameKeyV1(query), limit); err == nil && len(aliases) > 0 {
-			items := make([]graphpkg.Entity, 0, len(aliases))
+		if aliases, err := h.graphAliasDAO.Search(scope.TenantID, firstScopeClusterID(scope), graphpkg.NameKeyV1(query), candidateLimit); err == nil && len(aliases) > 0 {
+			items := make([]graphpkg.Entity, 0, limit)
 			seen := map[string]struct{}{}
 			for _, alias := range aliases {
 				if _, ok := seen[alias.CanonicalEntityUID]; ok {
@@ -269,16 +308,37 @@ func (h *Handler) searchGraphAliases(ctx context.Context, scope graphpkg.GraphSc
 				if getErr != nil {
 					return nil, getErr
 				}
-				if entityType == "" || entity.EntityType == entityType {
-					items = append(items, entity)
-					seen[entity.EntityUID] = struct{}{}
+				seen[entity.EntityUID] = struct{}{}
+				if entityType != "" && entity.EntityType != entityType {
+					continue
+				}
+				if !graphSearchProfileAllows(profile, entity.EntityType) {
+					continue
+				}
+				items = append(items, entity)
+				if len(items) == limit {
+					break
 				}
 			}
 			return items, nil
 		}
 	}
 	if _, ok := h.graphRepo.(*graphpkg.MemoryRepository); ok {
-		return h.graphRepo.SearchEntities(ctx, scope, graphpkg.EntitySearchQuery{EntityType: entityType, Name: query, Limit: limit})
+		entities, err := h.graphRepo.SearchEntities(ctx, scope, graphpkg.EntitySearchQuery{EntityType: entityType, Name: query, Limit: candidateLimit})
+		if err != nil {
+			return nil, err
+		}
+		items := make([]graphpkg.Entity, 0, limit)
+		for _, entity := range entities {
+			if !graphSearchProfileAllows(profile, entity.EntityType) {
+				continue
+			}
+			items = append(items, entity)
+			if len(items) == limit {
+				break
+			}
+		}
+		return items, nil
 	}
 	return nil, graphpkgError(graphpkg.ErrGraphFeatureUnavailable, "graph_entity_alias is unavailable")
 }

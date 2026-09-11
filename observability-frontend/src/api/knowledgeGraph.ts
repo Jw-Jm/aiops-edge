@@ -111,7 +111,7 @@ export interface ServiceDependenciesResponse {
 }
 
 export const getGraphHealth = () => api.get<GraphHealth>('/ai/kg/health')
-export const searchGraphEntities = (params: { q: string; entity_type?: string; limit?: number }) =>
+export const searchGraphEntities = (params: { q: string; entity_type?: string; limit?: number; profile?: 'operations' }) =>
   api.get<{ items: GraphEntity[]; count: number }>('/ai/kg/entities/search', { params })
 export const getGraphEntity = (uid: string) =>
   api.get<GraphEntity>(`/ai/kg/entities/${encodeURIComponent(uid)}`)

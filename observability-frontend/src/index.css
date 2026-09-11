@@ -328,6 +328,12 @@ body {
 .cluster-overview-cluster-name { margin: -8px 0 12px; color: var(--text-secondary); font-size: 15px; font-weight: 600; }
 .cluster-overview-statusline__reason { color: var(--text-secondary); font-size: 13px; }
 .cluster-overview-statusline__registration { color: var(--text-muted); font-size: 12px; }
+
+/* 关键关系链：逐行显示真实 edge，不做 vertices 顺序拼接。 */
+.relation-chain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.relation-chain-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.relation-chain-row__source, .relation-chain-row__target { font-weight: 600; overflow-wrap: anywhere; }
+.relation-chain-row__relation { color: var(--text-secondary); }
 .cluster-overview-statusline__meta { margin-left: auto; color: var(--text-muted); font-size: 12px; }
 .cluster-issue-list { display: flex; flex-direction: column; }
 .cluster-issue-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
