@@ -90,7 +90,9 @@ async function collectPrimaryCellMetrics(page) {
 async function collectViewport(page, route, tag, failures, screenshots) {
   const target = route.path(ENV.clusterId)
   await spaNav(page, target)
-  await page.waitForTimeout(1200)
+  await page.waitForTimeout(300)
+  await waitForRouteSettled(page, target, failures)
+  if (route.key === 'graph') await verifyGraphSemantics(page, target, tag, failures, screenshots)
 
   const bodyText = await page.locator('body').innerText().catch(() => '')
   try {
@@ -128,20 +130,151 @@ async function fetchJson(page, apiPath) {
   }, apiPath)
 }
 
+// A screenshot is evidence only after the route has settled.  Skeletons and
+// spinners are not a valid substitute for a real empty/error/partial state.
+async function waitForRouteSettled(page, target, failures) {
+  const deadline = Date.now() + 15000
+  while (Date.now() < deadline) {
+    const loading = await page.locator('.ant-skeleton, .ant-spin-spinning').count().catch(() => 0)
+    const explicitState = await page.getByRole('status').filter({ hasText: /暂无|开始|不可用|失败|不完整|陈旧|部分/ }).count().catch(() => 0)
+    if (loading === 0 || explicitState > 0) return { loading, explicitState }
+    await page.waitForTimeout(250)
+  }
+  const remaining = await page.locator('.ant-skeleton, .ant-spin-spinning').count().catch(() => 0)
+  if (remaining > 0) failures.push({ route: target, check: 'loading_timeout', detail: `${remaining} loading placeholders remained after 15s` })
+  return { loading: remaining, explicitState: 0 }
+}
+
+async function verifyGraphSemantics(page, target, tag, failures, screenshots) {
+  const query = (process.env.AIOPS_E2E_GRAPH_QUERY || '').trim()
+  if (!query) {
+    failures.push({ route: target, check: 'graph_query_configured', detail: 'AIOPS_E2E_GRAPH_QUERY is required for a real graph query' })
+    return false
+  }
+  const input = page.getByLabel('资源关系搜索')
+  if (await input.count() !== 1) {
+    failures.push({ route: target, check: 'graph_search_input', detail: '资源关系搜索 is missing' })
+    return false
+  }
+  await input.fill(query)
+  await input.press('Enter')
+  const candidates = page.locator('section[aria-label="资源关系探索"] button').filter({ hasText: query })
+  try { await candidates.first().waitFor({ state: 'visible', timeoutMs: 12000 }) } catch {
+    failures.push({ route: target, check: 'graph_query_results', detail: `no candidate resource for query=${query}` })
+    return false
+  }
+  await candidates.first().click()
+  const graph = page.locator('[aria-label="资源关系图"]')
+  try { await graph.waitFor({ state: 'visible', timeoutMs: 15000 }) } catch {
+    failures.push({ route: target, check: 'graph_rendered_for_query', detail: `query=${query}` })
+    return false
+  }
+  const relationRegion = page.getByRole('region', { name: '关系明细' })
+  const relationButtons = relationRegion.getByRole('button').filter({ hasText: /→/ })
+  const relationCount = await relationButtons.count()
+  const graphCanvasCount = await graph.locator('canvas').count()
+  const legend = await page.getByText('箭头：源资源 → 目标资源', { exact: false }).count()
+  const directionRows = await relationButtons.allTextContents({ timeoutMs: 3000 }).catch(() => [])
+  const hasChineseRelation = directionRows.some((text) => /拥有|依赖|暴露|连接|挂载|运行于|传播/.test(text))
+  if (graphCanvasCount < 1 || relationCount < 1 || legend < 1 || !hasChineseRelation) {
+    failures.push({ route: target, check: 'graph_semantics', detail: JSON.stringify({ graphCanvasCount, relationCount, legend, directionRows: directionRows.slice(0, 3) }) })
+    return false
+  }
+  const screenshot = `v3-graph-real--${tag}.png`
+  await shot(page, `v3-graph-real--${tag}`)
+  const screenshotPath = path.join(ROOT, 'screenshots', screenshot)
+  if (fs.existsSync(screenshotPath) && fs.statSync(screenshotPath).size > 0) screenshots.push(`screenshots/${screenshot}`)
+  return true
+}
+
+async function verifyClusterIsolation(page, clustersPayload, failures) {
+  const rows = Array.isArray(clustersPayload?.clusters) ? clustersPayload.clusters : []
+  const clusterIds = rows.map((row) => row.cluster_id).filter(Boolean)
+  if (clusterIds.length < 2) {
+    failures.push({ check: 'cluster_isolation', detail: `requires two authorized Kubernetes clusters; found=${clusterIds.length}` })
+    return false
+  }
+  const snapshots = []
+  for (const clusterId of clusterIds.slice(0, 2)) {
+    const scope = await page.request.post(`${ENV.apiBase}/me/scope`, { data: { tenant_id: ENV.tenantId, cluster_id: clusterId } })
+    if (!scope.ok()) {
+      failures.push({ check: 'cluster_isolation', detail: `scope switch failed cluster=${clusterId} status=${scope.status()}` })
+      return false
+    }
+    const response = await page.request.get(`${ENV.apiBase}/resources/catalog?domain=kubernetes&type=k8s_service&q=kubernetes&limit=100`)
+    if (!response.ok()) {
+      failures.push({ check: 'cluster_isolation', detail: `catalog read failed cluster=${clusterId} status=${response.status()}` })
+      return false
+    }
+    const body = await response.json().catch(() => ({}))
+    const item = (body.items || []).find((candidate) => candidate.name === 'kubernetes' && candidate.namespace === 'default')
+    if (!item || item.cluster_id !== clusterId || !item.uid) {
+      failures.push({ check: 'cluster_isolation', detail: `same-name default/kubernetes Service missing or unscoped cluster=${clusterId}` })
+      return false
+    }
+    snapshots.push(item)
+  }
+  await page.request.post(`${ENV.apiBase}/me/scope`, { data: { tenant_id: ENV.tenantId, cluster_id: ENV.clusterId } })
+  const distinctUid = snapshots[0].uid !== snapshots[1].uid
+  const distinctCluster = snapshots[0].cluster_id !== snapshots[1].cluster_id
+  if (!distinctUid || !distinctCluster) {
+    failures.push({ check: 'cluster_isolation', detail: `same-name Service identity collision: ${JSON.stringify(snapshots)}` })
+    return false
+  }
+  const otherClusterId = clusterIds.find((clusterId) => clusterId !== ENV.clusterId)
+  const cross = otherClusterId
+    ? await page.request.get(`${ENV.apiBase}/resources/catalog?cluster_id=${encodeURIComponent(otherClusterId)}&domain=kubernetes&type=k8s_service&q=kubernetes&limit=100`)
+    : null
+  if (cross?.ok()) {
+    failures.push({ check: 'cluster_isolation', detail: `cross-scope catalog unexpectedly returned 2xx for cluster=${otherClusterId}` })
+    return false
+  }
+  return true
+}
+
+async function verifyInvestigationTruth(page, failures) {
+  const response = await page.request.get(`${ENV.apiBase}/ai/runs?cluster_id=${encodeURIComponent(ENV.clusterId)}&limit=100`)
+  if (!response.ok()) {
+    failures.push({ check: 'investigation_truth', detail: `runs list status=${response.status()}` })
+    return 'FAIL'
+  }
+  const body = await response.json().catch(() => ({}))
+  const runs = Array.isArray(body.runs) ? body.runs : []
+  const terminal = runs.find((run) => ['success', 'failed', 'cancelled', 'partial'].includes(run.status))
+  if (!terminal) return 'BLOCKED_BY_ENV'
+  const detailResponse = await page.request.get(`${ENV.apiBase}/ai/runs/${encodeURIComponent(terminal.run_id)}`)
+  if (!detailResponse.ok()) {
+    failures.push({ check: 'investigation_truth', detail: `terminal run detail status=${detailResponse.status()}` })
+    return 'FAIL'
+  }
+  const detail = await detailResponse.json().catch(() => ({}))
+  const run = detail.run || {}
+  const summary = run.investigation_summary
+  const hasSummary = summary && typeof summary === 'object' && typeof summary.termination_reason === 'string' && summary.termination_reason.length > 0
+  const hasFrozenWindow = typeof run.time_range_start === 'string' && typeof run.time_range_end === 'string'
+  if (!hasSummary || !hasFrozenWindow) {
+    failures.push({ check: 'investigation_truth', detail: `terminal run ${terminal.run_id} lacks persisted summary or frozen window` })
+    return 'BLOCKED_BY_ENV'
+  }
+  return 'PASS'
+}
+
 async function run() {
   const binding = resolveBinding()
   const failures = []
   const screenshots = []
   const visited = []
   const gates = {
-    cluster_isolation: 'PASS',
-    kubevirt_boundary: 'PASS',
-    health_truth: 'PASS',
-    graph_semantics: 'PASS',
-    alert_investigation: 'PASS',
-    investigation_truth: 'PASS',
-    action_safety: 'PASS',
-    responsive_ui: 'PASS',
+    // Every gate starts unverified.  A gate may become PASS only after the
+    // live assertion below succeeds; environment gaps are explicit blockers.
+    cluster_isolation: 'FAIL',
+    kubevirt_boundary: 'FAIL',
+    health_truth: 'FAIL',
+    graph_semantics: 'FAIL',
+    alert_investigation: 'FAIL',
+    investigation_truth: 'FAIL',
+    action_safety: 'FAIL',
+    responsive_ui: 'FAIL',
   }
 
   if (!binding.commit || binding.commit.length !== 40) {
@@ -171,52 +304,81 @@ async function run() {
         const overview = await fetchJson(page, '/api/v1/platform/overview')
         const clusters = await fetchJson(page, '/api/v1/platform/clusters')
         if (overview.__status !== 200 || clusters.__status !== 200) {
-          gates.health_truth = 'FAIL'
           failures.push({ check: 'platform_api', detail: `overview=${overview.__status} clusters=${clusters.__status}` })
         } else {
           try {
             assertNoSyntheticHealthScore(overview.body)
+            const clusterRows = clusters.body.clusters || []
+            const active = clusterRows.find((row) => row.cluster_id === ENV.clusterId)
+            const detail = await fetchJson(page, `/api/v1/clusters/${encodeURIComponent(ENV.clusterId)}/overview`)
+            if (!active || detail.__status !== 200) throw new Error(`active cluster detail unavailable status=${detail.__status}`)
+            assertHealthFacts(
+              { status: active.status, stale: active.stale, covered: active.covered },
+              { status: detail.body.status, stale: detail.body.stale, covered: detail.body.coverage?.covered === detail.body.coverage?.expected },
+            )
+            gates.health_truth = 'PASS'
           } catch (error) {
-            gates.health_truth = 'FAIL'
             failures.push({ check: 'synthetic_health_score', detail: error.message })
           }
-          const first = (clusters.body.clusters || [])[0]
-          if (first) {
-            try {
-              assertHealthFacts(
-                { status: first.status, stale: first.stale, covered: first.covered },
-                { status: first.status },
-              )
-            } catch (error) {
-              gates.health_truth = 'FAIL'
-              failures.push({ check: 'health_facts', detail: error.message })
-            }
-          }
+          if (await verifyClusterIsolation(page, clusters.body, failures)) gates.cluster_isolation = 'PASS'
         }
 
         const kubevirt = await fetchJson(page, '/api/v1/infrastructure/vms')
         if (kubevirt.__status !== 200) {
-          gates.kubevirt_boundary = 'FAIL'
           failures.push({ check: 'kubevirt_api', detail: `status=${kubevirt.__status}` })
         } else {
           try {
             assertKubeVirtCapability(kubevirt.body)
+            if (kubevirt.body.installed === false || kubevirt.body.kubevirt_not_installed === true) {
+              gates.kubevirt_boundary = 'BLOCKED_BY_ENV'
+              failures.push({ check: 'kubevirt_boundary', detail: 'no installed KubeVirt capability in the authorized cluster' })
+            } else {
+              gates.kubevirt_boundary = 'PASS'
+            }
           } catch (error) {
-            gates.kubevirt_boundary = 'FAIL'
             failures.push({ check: 'kubevirt_capability', detail: error.message })
           }
         }
 
-        // G8: any action row inside an auto investigation must be absent.
+        // G8: auto investigations must be real read-only system Runs.  Lack of
+        // a system sample is a blocker, never an implicit PASS.
         const investigation = await fetchJson(page, `/api/v1/ai/runs?cluster_id=${ENV.clusterId}`)
         if (investigation.__status === 200) {
           const runs = investigation.body.runs || []
           const readOnlyAuto = runs.filter((run) => run.principal_type === 'system')
-          if (readOnlyAuto.some((run) => (run.actions || []).length > 0)) {
-            gates.action_safety = 'FAIL'
+          if (readOnlyAuto.length === 0) {
+            gates.action_safety = 'BLOCKED_BY_ENV'
+            failures.push({ check: 'action_safety', detail: 'no real system auto_readonly Run sample is available' })
+          } else if (readOnlyAuto.some((run) => run.action_mode !== 'read_only' || (run.actions || []).length > 0)) {
             failures.push({ check: 'auto_investigation_actions', detail: 'system run carries actions' })
+          } else {
+            gates.action_safety = 'PASS'
+          }
+        } else {
+          failures.push({ check: 'action_safety', detail: `runs status=${investigation.__status}` })
+        }
+
+        const alerts = await fetchJson(page, `/api/v1/alerts/events?limit=200&cluster_id=${encodeURIComponent(ENV.clusterId)}`)
+        if (alerts.__status !== 200) {
+          failures.push({ check: 'alert_investigation', detail: `alerts status=${alerts.__status}` })
+        } else {
+          const events = Array.isArray(alerts.body?.events) ? alerts.body.events : (Array.isArray(alerts.body) ? alerts.body : [])
+          await spaNav(page, `/clusters/${ENV.clusterId}/observe`)
+          await waitForRouteSettled(page, `/clusters/${ENV.clusterId}/observe`, failures)
+          const observeText = await page.locator('body').innerText().catch(() => '')
+          const explicitEmpty = /暂无告警|暂无事件|没有告警/.test(observeText)
+          const alertRows = await page.locator('[data-testid="alert-row"], [data-testid="notification-alert-item"], .alert-row').count().catch(() => 0)
+          const investigationEntry = await page.getByText(/进入调查|发起调查|调查/).count().catch(() => 0)
+          if ((events.length === 0 && explicitEmpty) || (events.length > 0 && alertRows > 0 && investigationEntry > 0)) {
+            gates.alert_investigation = 'PASS'
+          } else {
+            failures.push({ check: 'alert_investigation', detail: `events=${events.length} alertRows=${alertRows} explicitEmpty=${explicitEmpty} investigationEntry=${investigationEntry}` })
           }
         }
+
+        const investigationTruth = await verifyInvestigationTruth(page, failures)
+        gates.investigation_truth = investigationTruth
+
       }
     })
   }
@@ -234,12 +396,17 @@ async function run() {
     failures.push({ check: 'pageerror', detail: JSON.stringify(col.pageErrors.slice(0, 3)) })
   }
   if (visited.length !== Object.values(VIEWPORT_ROUTES).flat().length) {
-    gates.responsive_ui = 'FAIL'
     failures.push({ check: 'route_coverage', detail: `${visited.length} visited` })
   }
 
+  const graphFailures = failures.filter((failure) => ['graph_query_configured', 'graph_search_input', 'graph_query_results', 'graph_rendered_for_query', 'graph_semantics'].includes(failure.check))
+  if (graphFailures.length === 0) gates.graph_semantics = 'PASS'
+
+  if (failures.filter((failure) => ['loading_timeout', 'horizontal_overflow', 'primary_cell_readable', 'forbidden_copy', 'pageerror', 'route_coverage'].includes(failure.check)).length === 0 && col.pageErrors.length === 0) {
+    gates.responsive_ui = 'PASS'
+  }
   for (const gate of Object.keys(gates)) {
-    if (failures.some((failure) => failure.check === gate)) gates[gate] = 'FAIL'
+    if (failures.some((failure) => failure.check === gate || failure.check.startsWith(`${gate}_`))) gates[gate] = gates[gate] === 'BLOCKED_BY_ENV' ? gates[gate] : 'FAIL'
   }
   const status = failures.length === 0 && Object.values(gates).every((value) => value === 'PASS') ? 'PASS' : 'FAIL'
 

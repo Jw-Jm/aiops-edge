@@ -141,7 +141,12 @@ const InvestigationDetailView: React.FC = () => {
           run_id: r.run_id, tenant_id: r.tenant_id ?? undefined, primary_cluster_id: r.primary_cluster_id ?? undefined,
           target_resource_id: r.target_resource_id, target_resource_type: r.target_type, intent: r.intent, status: r.status,
           root_cause: r.root_cause, confidence: r.confidence, created_at: r.created_at,
-          environment: r.environment, namespace: r.namespace, query_window_start: r.query_window_start, query_window_end: r.query_window_end,
+          environment: r.environment, namespace: r.namespace,
+          // The API names these fields time_range_*; map them into the frozen
+          // snapshot model without deriving a window from status or timestamps.
+          query_window_start: r.time_range_start, query_window_end: r.time_range_end,
+          investigation_summary: r.investigation_summary ?? null,
+          partial: r.partial === true, stale: r.stale === true,
           evidence: evidence.map((item) => ({ evidence_id: item.id, type: item.type, source: item.source, fact: item.fact, observed_at: item.observedAt, source_reliability: typeof item.reliability === 'number' ? item.reliability : null, quality: item.quality, supports: item.supports, contradicts: item.contradicts })),
           hypotheses: hypotheses.map((h: any) => ({ hypothesis_id: String(h.hypothesis_id ?? ''), content: String(h.content ?? ''), confidence: Number(h.confidence ?? 0), missing_evidence: h.missing_evidence ?? [], contradicting_evidence: h.contradicting_evidence ?? [] })),
           action: latestAction ? { status: String(latestAction.status ?? 'proposed'), risk: String(latestAction.authoritative_risk ?? 'unknown'), execution: latestAction.execution_status ?? null, verification: latestVerification?.status ?? null } : undefined,

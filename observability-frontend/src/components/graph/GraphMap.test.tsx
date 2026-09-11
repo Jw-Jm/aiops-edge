@@ -31,6 +31,10 @@ describe('GraphMap', () => {
     // 箭头不小于 10px；关系标签 12px 且使用不透明底色。
     expect(options.edge.style.labelFontSize).toBeGreaterThanOrEqual(12)
     expect(options.edge.style.endArrowSize).toBeGreaterThanOrEqual(10)
+    // G6's boolean endArrow default is visually inconsistent across renderers;
+    // the production canvas must select a concrete, visible arrowhead shape.
+    expect(options.edge.style.endArrowType).toBe('triangle')
+    expect(options.edge.style.endArrowFill).toBe(options.edge.style.stroke)
     expect(options.edge.style.labelBackgroundOpacity).toBe(1)
     // 层间距保证关系标签不重叠。
     expect(options.layout.ranksep).toBeGreaterThanOrEqual(120)

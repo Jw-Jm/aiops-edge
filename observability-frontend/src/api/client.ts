@@ -110,6 +110,11 @@ export interface RunSummary {
   namespace?: string | null
   query_window_start?: string | null
   query_window_end?: string | null
+  time_range_start?: string | null
+  time_range_end?: string | null
+  investigation_summary?: Record<string, unknown> | null
+  partial?: boolean
+  stale?: boolean
   created_at?: string | null
   root_cause?: string | null
   confidence?: number | null

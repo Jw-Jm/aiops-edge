@@ -14,4 +14,12 @@ describe('historical investigation Graph Context', () => {
     expect(source).not.toContain('switchCluster(')
     expect(source).not.toContain('setTimeRange(')
   })
+
+  it('passes the server summary and truth metadata into the investigation view model', () => {
+    expect(source).toContain('investigation_summary: r.investigation_summary')
+    expect(source).toContain('query_window_start: r.time_range_start')
+    expect(source).toContain('query_window_end: r.time_range_end')
+    expect(source).toContain('partial: r.partial')
+    expect(source).toContain('stale: r.stale')
+  })
 })

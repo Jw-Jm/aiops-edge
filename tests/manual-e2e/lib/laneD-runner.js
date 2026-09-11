@@ -30,6 +30,9 @@ const GLOBAL_PATHS = [
   '/ops/changes', '/node/health', '/ipmi', '/settings', '/auth', '/slo',
   '/ai/sessions', '/ai/session', '/ai/runs', '/ai/actions', '/ai/skills',
   '/ai/workflows', '/ai/flows', '/mcp', '/grafana', '/system',
+  // Graph public APIs use the server-side active scope when cluster_id is not
+  // present; the session scope is still audited by the isolation gate below.
+  '/ai/kg',
   // session/scope/bootstrap endpoints are not cluster-filtered either
   '/me', '/catalog', '/dashboard/panels', '/nodes/metrics', '/capacity/instances',
 ]

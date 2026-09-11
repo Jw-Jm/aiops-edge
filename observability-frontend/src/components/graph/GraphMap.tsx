@@ -50,6 +50,7 @@ export default function GraphMap({
   useEffect(() => {
     if (!container.current) return
     const layout = layoutOverride ?? layoutForMode(mode)
+    const edgeStroke = (d: any) => d.data?.style === 'failure' ? '#c83c35' : d.data?.style === 'inferred' ? '#a87708' : '#6f7d91'
     const graph = new Graph({
       container: container.current,
       autoFit: 'view',
@@ -76,8 +77,11 @@ export default function GraphMap({
         type: 'polyline',
         style: {
           endArrow: true,
+          endArrowType: 'triangle',
           endArrowSize: 10,
-          stroke: (d: any) => d.data?.style === 'failure' ? '#c83c35' : d.data?.style === 'inferred' ? '#a87708' : '#6f7d91',
+          endArrowFill: edgeStroke,
+          endArrowStroke: edgeStroke,
+          stroke: edgeStroke,
           lineWidth: (d: any) => d.data?.style === 'failure' ? 2.2 : 1.6,
           lineDash: (d: any) => d.data?.style === 'inferred' ? [5, 4] : undefined,
           opacity: (d: any) => d.data?.dimmed ? 0.2 : 1,
