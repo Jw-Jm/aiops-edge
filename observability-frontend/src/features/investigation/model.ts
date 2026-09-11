@@ -33,6 +33,7 @@ export interface InvestigationSnapshotInput {
   query_window_start?: string | null
   query_window_end?: string | null
   /** 服务端 investigation_summary（因果链/预算/终止原因）。 */
+  investigation_summary?: Record<string, unknown> | null
   summary_input?: InvestigationSummaryInput
   partial?: boolean
   stale?: boolean
@@ -75,6 +76,9 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
   const insufficient = !rootCause || confidence < 0.8 || evidence.length === 0
   const resourceType = snapshot.target_resource_type || ''
   const resourceDomain = resourceDomainOf(resourceType)
+  // Task 11：服务端持久化的 investigation_summary 是唯一可信来源；
+  // 前端不从英文内部状态猜终止原因。
+  const serverSummary = snapshot.investigation_summary ?? null
   const summary = buildInvestigationSummary({
     ...(snapshot.root_cause !== undefined ? { root_cause: snapshot.root_cause } : {}),
     confidence,
@@ -83,6 +87,12 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
     hypotheses: snapshot.hypotheses ?? [],
     partial: snapshot.partial === true,
     stale: snapshot.stale === true,
+    ...(serverSummary ? {
+      ...(serverSummary.termination_reason ? { termination_reason: String(serverSummary.termination_reason) } : {}),
+      ...(serverSummary.budget_summary ? { budget_summary: serverSummary.budget_summary as InvestigationSummaryInput['budget_summary'] } : {}),
+      ...(Array.isArray(serverSummary.causal_chain) ? { causal_chain: serverSummary.causal_chain as InvestigationSummaryInput['causal_chain'] } : {}),
+      ...(Array.isArray(serverSummary.next_verification) ? { next_verification: serverSummary.next_verification as string[] } : {}),
+    } : {}),
     ...(snapshot.summary_input ?? {}),
   })
   return {

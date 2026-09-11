@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { toInvestigationViewModel } from './model'
+import { terminationReasonLabel } from '../workflow/statusPresentation'
 
 describe('investigation view model', () => {
   it('does not promote an unconfirmed root cause when evidence is insufficient', () => {
@@ -51,5 +52,44 @@ describe('investigation view model', () => {
     expect(model.conclusion.state).toBe('insufficient_evidence')
     expect(model.conclusion.title).not.toContain('可能是节点抖动')
     expect(model.conclusion.rootCause).toBe('')
+  })
+})
+
+describe('investigation summary binding (Task 11)', () => {
+  it('prefers the server persisted summary over local guesses', () => {
+    const vm = toInvestigationViewModel({
+      run_id: 'run-9', tenant_id: 'tenant-a', primary_cluster_id: 'cluster-a',
+      target_resource_id: 'deployment/payment', target_resource_type: 'deployment',
+      status: 'partial', root_cause: '', confidence: 0.4,
+      evidence: [{ evidence_id: 'ev-1', fact: 'pool saturated' }],
+      investigation_summary: {
+        schema_version: 1,
+        termination_reason: 'budget_exhausted',
+        budget_summary: { max_steps: 10, max_tools: 16, consumed_steps: 10, consumed_tools: 16 },
+        causal_chain: [{ source_uid: 'u1', source_name: '配置变更', relation_label: '触发',
+          target_uid: 'u2', target_name: '连接池耗尽', fact_status: 'fact' }],
+        next_verification: ['复查连接池上限'],
+      },
+    })
+    expect(vm.summary.terminationReason).toBe('budget_exhausted')
+    expect(vm.summary.budget.consumedTools).toBe(16)
+    expect(vm.summary.causalChain).toHaveLength(1)
+    expect(vm.summary.causalChain[0]).toMatchObject({ source: '配置变更', relation: '触发', target: '连接池耗尽', factStatus: 'fact' })
+    expect(vm.summary.nextVerification).toEqual(['复查连接池上限'])
+  })
+
+  it('renders each termination reason with the contractual copy', () => {
+    for (const [reason, fragment] of [
+      ['root_confirmed', '确认根因'],
+      ['evidence_exhausted', '仍不足以确认'],
+      ['budget_exhausted', '预算'],
+      ['source_unavailable', '不可用'],
+      ['cancelled', '取消'],
+      ['runtime_failed', '运行失败'],
+    ] as const) {
+      expect(terminationReasonLabel(reason)).toContain(fragment)
+    }
+    // partial 不是终止原因。
+    expect(terminationReasonLabel('partial')).toBe('终止原因未提供')
   })
 })

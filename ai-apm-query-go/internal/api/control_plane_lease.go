@@ -302,7 +302,45 @@ func (h *Handler) applyRuntimeCommitTx(runID string, body controlPlaneBodyCommit
 		}
 		return err
 	}
+
+	// 6) Task 11：终态提交时把 investigation_summary 一次性写入 runtime_metadata_json。
+	//    该摘要由 orchestrator 生成并随 result 传入；这里只做持久化，不重新推导，
+	//    保证 Run 详情与 commit 响应中的摘要完全一致。
+	if runTerminal[body.Target] {
+		if summary := extractInvestigationSummary(body.Result); summary != nil {
+			if err := h.runDAO.SetRuntimeMetadataTx(tx, runID, summary); err != nil {
+				return err
+			}
+		}
+	}
 	return tx.Commit()
+}
+
+// extractInvestigationSummary extracts the orchestrator-authored summary object
+// from a terminal commit result. It returns nil when the result carries no
+// summary so a non-investigation run never gains a fabricated one.
+func extractInvestigationSummary(result json.RawMessage) []byte {
+	if len(result) == 0 {
+		return nil
+	}
+	var payload struct {
+		InvestigationSummary json.RawMessage `json:"investigation_summary"`
+		RuntimeMetadata      json.RawMessage `json:"runtime_metadata"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		return nil
+	}
+	if len(payload.RuntimeMetadata) > 0 {
+		return payload.RuntimeMetadata
+	}
+	if len(payload.InvestigationSummary) > 0 && string(payload.InvestigationSummary) != "null" {
+		merged, err := json.Marshal(map[string]json.RawMessage{"investigation_summary": payload.InvestigationSummary})
+		if err != nil {
+			return nil
+		}
+		return merged
+	}
+	return nil
 }
 
 // internalControlPlaneToolEvidenceConsume handles

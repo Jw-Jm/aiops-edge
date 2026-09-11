@@ -608,3 +608,14 @@ func nullableTime(t *time.Time) interface{} {
 	}
 	return *t
 }
+
+// SetRuntimeMetadataTx 在给定事务内合并写入 runtime_metadata_json。
+// Task 11：investigation_summary 随 terminal commit 一次性写入，不新增第二套状态列。
+// existingMetadata 为当前值（JSON 对象）；写入策略 = 浅合并，新键覆盖旧键。
+func (d *AIRunDAO) SetRuntimeMetadataTx(tx *sql.Tx, runID string, metadata []byte) error {
+	if len(metadata) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(`UPDATE ai_runs SET runtime_metadata_json = ? WHERE run_id = ?`, metadata, runID)
+	return err
+}

@@ -320,6 +320,17 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runView := airunToMap(run)
+	// Task 11：公共详情投影输出服务端持久化的 investigation_summary。
+	// 解析失败时返回 null + warning code，绝不 500，也绝不编造空成功摘要。
+	warnings := []string{}
+	if summary, ok := projectInvestigationSummary(run.RuntimeMetadata); ok {
+		runView["investigation_summary"] = summary
+	} else if len(run.RuntimeMetadata) > 0 {
+		runView["investigation_summary"] = nil
+		warnings = append(warnings, "INVESTIGATION_SUMMARY_INVALID")
+	} else {
+		runView["investigation_summary"] = nil
+	}
 	// The public detail view is an aggregate read model.  It keeps the UI from
 	// manufacturing empty plan/action state while each write domain remains
 	// owned by its DAO/control-plane endpoint.
@@ -367,6 +378,9 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 				runView["latest_attempt"] = actionAttemptsToMaps(attempts[len(attempts)-1:])[0]
 			}
 		}
+	}
+	if len(warnings) > 0 {
+		runView["warning_codes"] = warnings
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"run": runView})
 }
@@ -548,4 +562,27 @@ func nullableTimeValue(value *time.Time) interface{} {
 		return nil
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+// projectInvestigationSummary decodes the persisted runtime metadata and returns
+// the orchestrator-authored investigation summary. ok=false means the metadata
+// exists but is not a usable JSON object (the caller must surface a warning
+// rather than fabricate a summary).
+func projectInvestigationSummary(metadata []byte) (json.RawMessage, bool) {
+	if len(metadata) == 0 {
+		return nil, false
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &decoded); err != nil {
+		return nil, false
+	}
+	raw, ok := decoded["investigation_summary"]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var summary map[string]interface{}
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		return nil, false
+	}
+	return raw, true
 }
