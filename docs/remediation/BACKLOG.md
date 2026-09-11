@@ -63,3 +63,14 @@
 - 不要求服务级多副本 HA；
 - `publishable` / release signature 不作为生产部署强制前置；
 - release evidence 用于正式版本审计和供应链追踪。
+
+## E. 架构决策门
+
+### P2-A3 持久化集群库存投影（ADR-0002，暂缓）
+
+- 结论为"暂缓"：不创建库存表、collector、第二套资源 API 或 Helm 资源；
+- 重开条件：在隔离测试集群完成 1k / 10k / 100k 对象与 1 / 10 / 50 集群实测，
+  并满足 ADR-0002 §4 的全部阈值（新鲜度 p95 ≤ 120 秒、query-api 关键读 p95
+  劣化 ≤ 10%、断线/乱序/漏 chunk/跨集群身份不匹配全部 fail-closed）；
+- 数据合同见 `docs/contracts/kubernetes-inventory-projection.md`；
+- `k8sboundary` 仍是唯一 Kubernetes 凭据与身份边界，HugeGraph 仍是可重建投影。
