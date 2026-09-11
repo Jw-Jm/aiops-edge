@@ -11,6 +11,7 @@ export type ActionPhase =
   | 'regressed'
 
 import type { PlatformResourceRef } from '../features/resources/types'
+import type { AlertInvestigationLink } from '../api/client'
 
 export interface ProblemSummary {
   problem_id: string
@@ -33,6 +34,8 @@ export interface ProblemSummary {
   failure_rate?: number | null
   ready_replicas?: number | null
   desired_replicas?: number | null
+  /** Task 10：告警 → 调查的受控投影（来自服务端 investigation_link）。 */
+  investigation?: AlertInvestigationLink | null
 }
 
 export interface FrozenRunContext {

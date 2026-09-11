@@ -394,6 +394,20 @@ export const getAlertAggregation = (params?: Record<string, unknown>) =>
   api.get<{ data: AlertAggregationItem[] }>('/alerts/aggregation', { params })
 export const getAlertEventByID = (id: string) => api.get(`/alerts/events/${id}`)
 export const ackAlertEvent = (id: string) => api.post(`/alerts/events/${id}/ack`)
+
+// ===== Task 10: alert → investigation governed linking =====
+export interface AlertInvestigationLink {
+  mode: 'manual' | 'draft' | 'auto_readonly' | string
+  status: 'none' | 'draft' | 'run' | 'skipped' | string
+  reason_code?: string
+  run_id?: string
+}
+export const getAlertInvestigationPolicy = (clusterId: string) =>
+  api.get('/system/alert-investigation-policy', { params: { cluster_id: clusterId } })
+export const putAlertInvestigationPolicy = (clusterId: string, policy: Record<string, unknown>) =>
+  api.put('/system/alert-investigation-policy', policy, { params: { cluster_id: clusterId } })
+export const acceptAlertInvestigation = (eventId: string) =>
+  api.post<{ run_id?: string; status: string; reason_code?: string; mode: string }>(`/alerts/${encodeURIComponent(eventId)}/investigation`)
 export const resolveAlertEvent = (id: string) => api.post(`/alerts/events/${id}/resolve`)
 export const saveAlertInvestigation = (id: string, investigation: string) =>
   api.post(`/alerts/events/${id}/investigation`, { investigation })

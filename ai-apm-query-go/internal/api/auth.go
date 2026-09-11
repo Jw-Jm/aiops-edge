@@ -1004,6 +1004,10 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/grafana/search",
 		"/api/v1/system/status",
 		"/api/v1/system/components",
+		// Task 10：告警调查策略（GET 读配置；PUT 写由 RequireRole/hasRole(admin) 校验）
+		"/api/v1/system/alert-investigation-policy",
+		// Task 10：显式接受告警调查草稿 / 从告警发起调查（POST，服务端派生身份）
+		"/api/v1/alerts/investigation",
 		"/api/v1/system/cache",
 		"/api/v1/system/cache/invalidate",
 	} {

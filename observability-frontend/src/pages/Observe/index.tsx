@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo } from 'react'
-import { Button, Table, Tabs, Tag } from 'antd'
+import { Button, Space, Table, Tabs, Tag, Typography } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { getAlertAggregation, type AlertAggregationItem } from '../../api/client'
+import { acceptAlertInvestigation, getAlertAggregation, type AlertAggregationItem, type AlertInvestigationLink } from '../../api/client'
 import type { ProblemSummary } from '../../lib/readModels'
 import { Breadcrumb, PageHeader, StatusBadge } from '../../components/ui/PageKit'
 import AlertEvents from '../alerts/AlertEvents'
@@ -13,7 +13,13 @@ import { useScopeStore } from '../../store/scopeStore'
 import { queryKeys } from '../../query/keys'
 import DataState from '../../components/display/DataState'
 import { resourceLocation, resourceTypeLabel, resourceDomainOf } from '../../features/resources/resourceDomain'
+import { alertInvestigationView, ALERT_INVESTIGATION_READONLY_NOTICE } from '../../features/workflow/alertInvestigation'
 import type { PlatformResourceRef } from '../../features/resources/types'
+
+/** 聚合事件可能携带服务端注入的调查投影。 */
+interface AlertInvestigationLinkCarrier {
+  investigation_link?: AlertInvestigationLink
+}
 
 function aggregationResource(item: AlertAggregationItem, clusterId: string): PlatformResourceRef | undefined {
   const uid = item.resource_uid || item.service
@@ -28,6 +34,9 @@ export function toProblem(item: AlertAggregationItem, clusterId: string): Proble
   const warning = Number(bySeverity.warning ?? bySeverity.警告 ?? 0)
   const resource = aggregationResource(item, clusterId)
   const raw = item as AlertAggregationItem & Record<string, unknown>
+  // Task 10：取聚合事件里第一条携带的调查投影，供首屏显示受控调查状态。
+  const linkedEvent = (item.events ?? []).find((event) => (event as AlertInvestigationLinkCarrier).investigation_link)
+  const investigation = (linkedEvent as AlertInvestigationLinkCarrier | undefined)?.investigation_link ?? null
   const numeric = (key: string): number | null => {
     const value = raw[key]
     return typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -54,6 +63,7 @@ export function toProblem(item: AlertAggregationItem, clusterId: string): Proble
     failure_rate: numeric('failure_rate') ?? numeric('error_rate'),
     ready_replicas: numeric('ready_replicas'),
     desired_replicas: numeric('desired_replicas'),
+    investigation,
   }
 }
 
@@ -81,7 +91,29 @@ const ProblemsView: React.FC = () => {
     { title: '影响', key: 'count', render: (_: unknown, row: ProblemSummary) => row.affected_resources.length || '—' },
     { title: '最近发生', dataIndex: 'started_at', key: 'started_at' },
     { title: '数据状态', dataIndex: 'data_status', key: 'data_status', render: (value: string) => <Tag color={value === 'available' ? 'green' : 'orange'}>{value === 'available' ? '数据正常' : value}</Tag> },
-  ], [navigate])
+    // Task 10：告警调查状态与主动作必须一致；skipped 原因用中文说明且不隐藏。
+    { title: '调查', key: 'investigation', width: 200, render: (_: unknown, row: ProblemSummary) => {
+      const view = alertInvestigationView(row.investigation)
+      const eventId = row.source_refs?.[0]
+      const run = () => {
+        if (!eventId) return
+        void acceptAlertInvestigation(eventId).then(() => problemsQuery.refetch()).catch(() => undefined)
+      }
+      const action = view.action === 'create' || view.action === 'start'
+        ? <Button size="small" type="link" onClick={run}>{view.action === 'start' ? '开始调查' : '发起调查'}</Button>
+        : view.action === 'open'
+          ? <Button size="small" type="link" onClick={() => navigate(`/investigation/${row.investigation?.run_id ?? ''}`)}>打开调查</Button>
+          : view.action === 'view'
+            ? <Button size="small" type="link" onClick={() => navigate(`/investigation/${row.investigation?.run_id ?? ''}`)}>查看结论</Button>
+            : null
+      return (
+        <Space direction="vertical" size={0}>
+          <Space size={4}><Tag color={view.tone === 'processing' ? 'blue' : view.tone === 'success' ? 'green' : view.tone === 'warning' ? 'gold' : 'default'}>{view.label}</Tag>{action}</Space>
+          {view.reason && <Typography.Text type="secondary" style={{ fontSize: 11 }}>{view.reason}</Typography.Text>}
+        </Space>
+      )
+    } },
+  ], [navigate, problemsQuery])
 
   const scopeTag = scopeResource ? (
     <Tag color="blue" style={{ marginBottom: 12 }}>资源筛选：{resourceTypeLabel(scopeResource.type)} · {resourceLocation(scopeResource)}</Tag>
@@ -110,6 +142,7 @@ const ProblemsView: React.FC = () => {
         <div><span>就绪副本</span><strong>{leading?.ready_replicas == null ? '未提供' : `${leading.ready_replicas}/${leading.desired_replicas ?? '—'}`}</strong></div>
       </div>
       <Table rowKey="problem_id" columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} />
+      <Typography.Text type="secondary" style={{ display: "block", marginTop: 8, fontSize: 12 }}>{ALERT_INVESTIGATION_READONLY_NOTICE}</Typography.Text>
     </div>
   )
 }

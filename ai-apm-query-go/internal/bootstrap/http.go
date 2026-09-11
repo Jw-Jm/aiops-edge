@@ -236,6 +236,11 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	mux.HandleFunc("/api/v1/alerts/events", handler.AlertEvents)
 	mux.HandleFunc("/api/v1/alerts/events/", handler.AlertEventRouter)
 	mux.HandleFunc("/api/v1/alerts/aggregation", handler.AlertAggregation)
+	// Task 10：告警 → 调查的受控关联（策略读取/写入 + 显式接受草稿或发起调查）。
+	mux.HandleFunc("/api/v1/system/alert-investigation-policy", handler.AlertInvestigationPolicyRouter)
+	// /api/v1/alerts/ 兜底只承载 /alerts/{event_id}/investigation；更具体的
+	// rules/events/silences 子树仍由各自已注册的 handler 命中。
+	mux.HandleFunc("/api/v1/alerts/", handler.AlertInvestigationSubrouter)
 	mux.HandleFunc("/api/v1/alerts/silences", handler.AlertSilences)
 	mux.HandleFunc("/api/v1/alerts/silences/", handler.AlertSilenceByID)
 	mux.HandleFunc("/api/v1/slo", handler.SLORouter)

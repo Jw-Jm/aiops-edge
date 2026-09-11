@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react'
-import { Form, Input, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert, Card, Typography } from 'antd'
+import React, { useCallback, useEffect, useState } from 'react'
+import { Form, Input, InputNumber, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert, Card, Typography } from 'antd'
 import { PageHeader, Breadcrumb, StatusBadge, type StatusTone } from '../../components/ui/PageKit'
+import { getAlertInvestigationPolicy, putAlertInvestigationPolicy } from '../../api/client'
 
 // 集群状态 → StatusBadge tone 映射
 function clusterTone(s?: string): StatusTone {
@@ -651,6 +652,83 @@ function PlatformHealth() {
   )
 }
 
+
+// ── Task 10：告警调查策略（按实际集群配置，缺省人工发起）─────────────────
+const ALERT_INVESTIGATION_MODES = [
+  { value: 'manual', label: '人工发起' },
+  { value: 'draft', label: '自动创建调查草稿' },
+  { value: 'auto_readonly', label: '自动创建只读调查' },
+]
+const ALERT_INVESTIGATION_SEVERITIES = [
+  { value: 'critical', label: '严重' },
+  { value: 'warning', label: '警告' },
+  { value: 'info', label: '信息' },
+]
+
+export const AlertInvestigationPolicyForm: React.FC<{ clusterId: string }> = ({ clusterId }) => {
+  const [policy, setPolicy] = useState<{ mode: string; minimum_severity: string; max_concurrent: number; max_per_hour: number }>({
+    mode: 'manual', minimum_severity: 'critical', max_concurrent: 2, max_per_hour: 10,
+  })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = useCallback(() => {
+    if (!clusterId) { setLoading(false); return }
+    setLoading(true); setError('')
+    getAlertInvestigationPolicy(clusterId)
+      .then((res: any) => setPolicy({
+        mode: res.data?.mode ?? 'manual',
+        minimum_severity: res.data?.minimum_severity ?? 'critical',
+        max_concurrent: res.data?.max_concurrent ?? 2,
+        max_per_hour: res.data?.max_per_hour ?? 10,
+      }))
+      .catch((e: any) => setError(e?.response?.data?.error || e?.message || '策略读取失败'))
+      .finally(() => setLoading(false))
+  }, [clusterId])
+
+  useEffect(() => { load() }, [load])
+
+  const save = () => {
+    setSaving(true)
+    putAlertInvestigationPolicy(clusterId, policy)
+      .then((res: any) => {
+        // 保存后必须回读真实配置，不允许用本地乐观值冒充服务端状态。
+        message.success(res.data?.note || '已保存')
+        load()
+      })
+      .catch((e: any) => message.error(e?.response?.data?.error || '保存失败'))
+      .finally(() => setSaving(false))
+  }
+
+  if (!clusterId) return <Alert type="info" showIcon message="请先选择实际集群" />
+  return (
+    <div data-testid="alert-investigation-policy" style={{ maxWidth: 520 }}>
+      <Alert type="warning" showIcon message="自动调查仅只读，不会执行处置" style={{ marginBottom: 16 }} />
+      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={<Button size="small" onClick={load}>重试</Button>} />}
+      <Form layout="vertical" disabled={loading}>
+        <Form.Item label="调查模式">
+          <Select value={policy.mode} options={ALERT_INVESTIGATION_MODES}
+            onChange={(value) => setPolicy((p) => ({ ...p, mode: String(value) }))} />
+        </Form.Item>
+        <Form.Item label="最小严重度">
+          <Select value={policy.minimum_severity} options={ALERT_INVESTIGATION_SEVERITIES}
+            onChange={(value) => setPolicy((p) => ({ ...p, minimum_severity: String(value) }))} />
+        </Form.Item>
+        <Form.Item label="最大并发调查数（1–8）">
+          <InputNumber min={1} max={8} value={policy.max_concurrent}
+            onChange={(value) => setPolicy((p) => ({ ...p, max_concurrent: Number(value ?? 2) }))} />
+        </Form.Item>
+        <Form.Item label="每小时上限（1–100）">
+          <InputNumber min={1} max={100} value={policy.max_per_hour}
+            onChange={(value) => setPolicy((p) => ({ ...p, max_per_hour: Number(value ?? 10) }))} />
+        </Form.Item>
+        <Button type="primary" loading={saving} onClick={save}>保存并回读</Button>
+      </Form>
+    </div>
+  )
+}
+
 // B7 修复：移除死代码（未使用的 form/loading/useEffect/llmTab），
 // AI 模型配置已由 LLMConfig 组件承载。
 const AdminSettings: React.FC = () => {
@@ -667,6 +745,7 @@ const AdminSettings: React.FC = () => {
           { key: 'knowledge-index', label: '知识索引任务', children: <KnowledgeIndexOperations clusterId={activeClusterId} /> },
           { key: 'audit', label: '审计日志', children: <AuditLog /> },
           { key: 'health', label: 'AIOps 自身健康', children: <PlatformHealth /> },
+          { key: 'alert-investigation', label: '告警调查策略', children: <AlertInvestigationPolicyForm clusterId={activeClusterId} /> },
         ]}
       />
     </div>

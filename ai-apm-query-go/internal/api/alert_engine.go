@@ -68,6 +68,20 @@ func (h *Handler) StartAlertEvaluation() {
 		}
 	}()
 	log.Println("Alert evaluation loop started (every 60s, single-leader via MySQL lease)")
+
+	// Task 10 有界补偿扫描：启动后每 5 分钟对最近的 firing critical 告警
+	// 重放同一条幂等调查服务。扫描失败只记日志，绝不影响告警权威写入。
+	go func() {
+		time.Sleep(30 * time.Second)
+		service := NewAlertInvestigationService()
+		for {
+			applied := service.CompensationScan(100)
+			if applied > 0 {
+				log.Printf("alert-investigation compensation scan applied=%d", applied)
+			}
+			time.Sleep(5 * time.Minute)
+		}
+	}()
 }
 
 func randomSuffix() string {
@@ -403,6 +417,7 @@ func (h *Handler) evaluateAlerts() {
 			// 时间窗口聚合 + dedupe：窗口内已有同 (service, rule_id, signature) 事件则只更新计数/时间，不新增（降噪）
 			sig := eventSignature(rule.ID, rule.Service, rule.Metric)
 			var existing *AlertEvent
+			var newEvent *AlertEvent
 			for i := range alertEvents {
 				e := &alertEvents[i]
 				if e.RuleID == rule.ID && e.Service == rule.Service && e.Signature == sig {
@@ -466,12 +481,19 @@ func (h *Handler) evaluateAlerts() {
 				// Webhook 通知（仅新事件通知，聚合事件不重复通知）；优先规则级 webhook
 				ruleCopy := rule
 				appendTimeline(&event, "created", "system")
+				newEvent = &event
 				h.sendWebhook(event, &ruleCopy)
 				log.Printf("ALERT: %s | %s | %s | value=%.2f threshold=%.2f", rule.Severity, rule.Service, rule.Name, value, rule.Threshold)
 			}
 			alertEventsMu.Unlock()
 
 			saveAlertEvents()
+
+			// Task 10：告警 → 调查的受控关联。必须在释放 alertEventsMu 之后调用，
+			// 绝不能在告警锁内访问 MySQL 或 outbox；失败只记日志，不影响告警权威写入。
+			if newEvent != nil {
+				h.dispatchAlertInvestigation(*newEvent)
+			}
 		} else {
 			// 未 breach：重置连续计数（dampening）；C-03：同步重置到 MySQL。
 			ruleStateMu.Lock()

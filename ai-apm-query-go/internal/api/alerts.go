@@ -85,6 +85,10 @@ type AlertEvent struct {
 	Investigation  string  `json:"investigation,omitempty"` // 调查结果（RCA 分析 JSON）
 	Signature      string  `json:"signature,omitempty"`     // dedupe 指纹（rule+service+detail）
 	Cluster        string  `json:"cluster,omitempty"`       // A-6：事件所属集群（继承规则）
+	// InvestigationLink 是告警→调查的受控投影（mode/status/reason_code/run_id）。
+	// 权威记录在 MySQL ai_alert_run_links；此处仅供告警列表展示，skipped 原因不隐藏。
+	InvestigationLink *AlertInvestigationProjection `json:"investigation_link,omitempty"`
+
 }
 
 // eventSignature 生成事件指纹（rule+service+detail 维度），用于 dedupe。
@@ -824,6 +828,8 @@ func (h *Handler) AlertEventAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saveAlertEvents()
+	// Task 10：恢复只记录 source_resolved，不改写冻结窗口，也不取消已开始的调查。
+	h.markAlertSourceResolved(alertEvents[idx])
 	respondJSON(w, http.StatusOK, alertEvents[idx])
 }
 

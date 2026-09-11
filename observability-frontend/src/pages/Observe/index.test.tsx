@@ -78,3 +78,32 @@ describe('Observe unified entry', () => {
     expect(screen.queryByText('全部环境')).not.toBeInTheDocument()
   })
 })
+
+describe('alert investigation linking', () => {
+  const renderObserve = () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(<QueryClientProvider client={queryClient}><MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Observe /></MemoryRouter></QueryClientProvider>)
+  }
+
+  it('renders the governed investigation status and a read-only notice', async () => {
+    vi.mocked(getAlertAggregation).mockResolvedValue({ data: { data: [{
+      service: 'order-api', total: 1, by_severity: { critical: 1 }, latest_rule: 'Pod 未就绪',
+      latest_time: '2026-09-11T08:00:00Z', cluster_id: 'cluster-1', events: [{ id: 'event-1' }],
+    }] } } as never)
+    renderObserve()
+    expect(await screen.findByText('未创建调查')).toBeVisible()
+    expect(screen.getByRole('button', { name: '发起调查' })).toBeVisible()
+    expect(screen.getByText('自动调查仅只读，不会执行处置')).toBeVisible()
+  })
+
+  it('labels a skipped alert with a readable reason instead of hiding it', async () => {
+    vi.mocked(getAlertAggregation).mockResolvedValue({ data: { data: [{
+      service: 'order-api', total: 1, by_severity: { warning: 1 }, latest_rule: 'CPU 高',
+      latest_time: '2026-09-11T08:00:00Z', cluster_id: 'cluster-1',
+      events: [{ id: 'event-2', investigation_link: { mode: 'auto_readonly', status: 'skipped', reason_code: 'below_severity' } }],
+    }] } } as never)
+    renderObserve()
+    expect(await screen.findByText('已跳过')).toBeVisible()
+    expect(screen.getByText('严重度不足')).toBeVisible()
+  })
+})
