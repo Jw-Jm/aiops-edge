@@ -474,8 +474,9 @@ body {
 .assistant-workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr) 300px; gap: 16px; min-width: 0; }
 .assistant-mobile-actions { display: none; }
 .assistant-mobile-button { display: none; }
-.assistant-session-pane, .assistant-main-pane { min-width: 0; min-height: 0; }
-.assistant-main-pane { overflow: hidden; }
+/* 布局完全由 CSS 控制：JSX 不使用 inline display，否则会覆盖 1024px 的隐藏规则。 */
+.assistant-session-pane { width: 220px; display: flex; flex-direction: column; margin-bottom: 0; min-width: 0; min-height: 0; }
+.assistant-main-pane { display: flex; flex-direction: column; margin-bottom: 0; min-width: 0; min-height: 0; overflow: hidden; }
 .assistant-stage-bar { display: flex; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border-soft); color: var(--text-muted); font-size: 12px; }
 .assistant-stage-bar span { padding: 3px 8px; border-radius: 999px; background: var(--surface-2); }
 .assistant-stage-bar span.is-active { color: var(--primary); background: var(--primary-soft); font-weight: 600; }
@@ -502,6 +503,8 @@ body {
 .assistant-answer-card__citation small { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
 .assistant-answer-card__actions { display: grid; gap: 8px; }
 .assistant-answer-card__next-step { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border: 1px solid var(--border-soft); border-radius: 8px; font-size: 12px; }
+.assistant-answer-card__controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.assistant-answer-card__boundary { color: var(--text-muted) !important; font-size: 12px; }
 .assistant-answer-card__footer { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; color: var(--text-muted); font-size: 11px; }
 .knowledge-list__heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-weight: 600; }
 .knowledge-list__heading small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
@@ -528,8 +531,10 @@ body {
   .knowledge-workspace__columns { grid-template-columns: 1fr; }
   .knowledge-workspace__list-pane, .knowledge-workspace__inspector-pane { display: none; }
   .knowledge-mobile-button { display: inline-flex; }
-  .assistant-workspace { grid-template-columns: 1fr; }
+  .assistant-workspace { grid-template-columns: minmax(0, 1fr); }
   .assistant-workspace > .assistant-session-pane, .assistant-workspace > .assistant-context-panel { display: none; }
+  /* 主回答列占满工作区宽度（会话与 Scope 进入 Drawer）。 */
+  .assistant-main-pane { width: 100%; }
   .assistant-mobile-actions { display: inline-flex; gap: 6px; margin-left: auto; margin-right: 8px; }
   .assistant-mobile-button { display: inline-flex; }
 }

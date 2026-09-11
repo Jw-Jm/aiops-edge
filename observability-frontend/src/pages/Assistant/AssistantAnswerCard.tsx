@@ -57,11 +57,21 @@ export default function AssistantAnswerCard({ answer, scope, onCreateInvestigati
       {answer.recommendedNextSteps.length ? <div className="assistant-answer-card__actions">{answer.recommendedNextSteps.map((step) => <div key={step.id} className="assistant-answer-card__next-step">
         <span>{step.label}</span>
         {step.action === 'investigation_draft' && canDraft && <Button size="small" type="primary" onClick={() => onCreateInvestigationDraft?.({ ...scope, status: 'draft' })}>创建调查草稿</Button>}
-      </div>)}</div> : <p>暂无建议。</p>}
+      </div>)}</div> : <p>尚未提供建议</p>}
+    </section>
+    {/* 第六段固定为受控动作：只允许查看证据、打开知识与创建调查草稿，不能直接执行。 */}
+    <section>
+      <h3>受控动作</h3>
+      <div className="assistant-answer-card__controls">
+        <Tag>查看证据</Tag>
+        <Tag>打开已发布知识</Tag>
+        <Tag>创建调查草稿</Tag>
+        <Tag color="gold">仅可提出建议，需经过能力校验、预检与人工审批</Tag>
+      </div>
+      <p className="assistant-answer-card__boundary">仅可提出建议，不在对话中直接执行动作</p>
     </section>
     <footer className="assistant-answer-card__footer">
       {answer.sourceFreshness.map((source) => <span key={source.source}>{source.source}: {source.freshness === 'fresh' ? '新鲜' : source.freshness === 'stale' ? '陈旧' : '未知'}</span>)}
-      <span>仅可提出建议，不在对话中直接执行动作</span>
     </footer>
   </article>
 }

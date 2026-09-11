@@ -40,4 +40,22 @@ describe('AssistantAnswerCard', () => {
     await userEvent.click(screen.getAllByRole('button', { name: '回到此 Scope' })[0])
     expect(onCitationClick).toHaveBeenCalledWith(scope)
   })
+
+  it('always renders the six fixed sections in the contractual order', () => {
+    render(<AssistantAnswerCard answer={answer} scope={scope} />)
+    const headings = Array.from(document.querySelectorAll('.assistant-answer-card h2, .assistant-answer-card h3')).map((node) => node.textContent)
+    expect(headings).toEqual(['结论', '关键事实证据', '运维知识引用', '不确定性与缺失证据', '建议下一步', '受控动作'])
+    // 边界必须显式声明，且不存在直接执行入口。
+    expect(screen.getByText('仅可提出建议，不在对话中直接执行动作')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /立即执行|执行动作/ })).not.toBeInTheDocument()
+  })
+
+  it('shows explicit gaps instead of fabricating evidence or knowledge', () => {
+    render(<AssistantAnswerCard answer={{ ...answer, evidenceCitations: [], knowledgeCitations: [], limitations: [], recommendedNextSteps: [] }} scope={scope} />)
+    expect(screen.getByText('当前回答没有可回溯的事实证据')).toBeVisible()
+    expect(screen.getByText('当前回答没有引用已发布运维知识')).toBeVisible()
+    // 缺口不能伪装成"未发现关键证据缺口"。
+    expect(screen.getByText('未发现额外限制。')).toBeVisible()
+    expect(screen.getByText('尚未提供建议')).toBeVisible()
+  })
 })

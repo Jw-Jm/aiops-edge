@@ -354,7 +354,7 @@ const AiChat: React.FC = () => {
       <PageHeader title="智能运维助手" desc="基于当前集群 Scope、事实证据和已审核知识生成可追溯回答" />
       <div className="assistant-workspace" style={{ height: 'calc(100vh - 176px)' }}>
       {/* 会话列表 */}
-      <div className="card assistant-session-pane" style={{ width: 220, flexShrink: 0, marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
+      <div className="card assistant-session-pane">
         <div className="card__head"><span className="card__title">会话</span>
           <span>
             <Button size="small" type="primary" onClick={newSession}>新对话</Button>
@@ -378,7 +378,7 @@ const AiChat: React.FC = () => {
       </div>
 
       {/* 主聊天区 */}
-      <div className="card assistant-main-pane" style={{ flex: 1, marginBottom: 0, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <div className="card assistant-main-pane">
         <div className="card__head">
           <span className="card__title">AI 运维助手</span>
           <span className="assistant-mobile-actions"><Button size="small" className="assistant-mobile-button" onClick={() => setMobileSessionOpen(true)}>会话</Button><Button size="small" className="assistant-mobile-button" onClick={() => setMobileContextOpen(true)}>Scope</Button></span>
@@ -529,13 +529,13 @@ const AiChat: React.FC = () => {
 
       <AssistantContextPanel scope={frozenScope || freezeAssistantScope(activeClusterId || activeScope.clusterId, activeScope)} />
 
-      <Drawer title="会话" open={mobileSessionOpen} onClose={() => setMobileSessionOpen(false)}>
+      <Drawer rootClassName="assistant-conversation-drawer" title="会话" placement="left" width="min(360px, 100vw)" open={mobileSessionOpen} onClose={() => setMobileSessionOpen(false)}>
         <div style={{ display: 'grid', gap: 4 }}>
           <Button type="primary" onClick={() => { newSession(); setMobileSessionOpen(false) }}>新对话</Button>
           {sessions.map((s) => <Button key={s.session_id} type={activeSession === s.session_id ? 'primary' : 'text'} onClick={() => { void loadSession(s.session_id); setMobileSessionOpen(false) }}>{fmtTitle(s)}</Button>)}
         </div>
       </Drawer>
-      <Drawer title="会话 Scope" open={mobileContextOpen} onClose={() => setMobileContextOpen(false)}>
+      <Drawer rootClassName="assistant-context-drawer" title="会话 Scope" placement="right" width="min(420px, 100vw)" open={mobileContextOpen} onClose={() => setMobileContextOpen(false)}>
         <AssistantContextPanel scope={frozenScope || freezeAssistantScope(activeClusterId || activeScope.clusterId, activeScope)} />
       </Drawer>
 
