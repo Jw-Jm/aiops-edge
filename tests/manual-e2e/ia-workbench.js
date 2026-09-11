@@ -21,7 +21,8 @@ async function run() {
       const check = (name, pass, detail = '') => result.checks.push({ name: `${tag}_${name}`, pass: !!pass, detail })
       check('no_horizontal_overflow', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2))
       check('issue_queue_visible', await page.getByTestId('issue-queue').isVisible().catch(() => false))
-      check('production_scope_bar_visible', await page.locator('.scope-bar').getByText('生产平台', { exact: true }).count().then((count) => count > 0).catch(() => false))
+      // V3 removed the synthetic platform layer: "生产平台" must not exist anywhere.
+      check('no_fake_platform_layer', !(await page.locator('body').innerText()).includes('生产平台'))
       check('no_legacy_environment_selector', !(await page.locator('body').innerText()).match(/开发环境|测试环境|staging|dev/i))
       const startButton = page.getByRole('button', { name: '开始调查' }).first()
       if (await startButton.count()) {
