@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from 'react'
-import { Alert, Button, Table, Tabs, Tag } from 'antd'
+import { Button, Table, Tabs, Tag } from 'antd'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getAlertAggregation, type AlertAggregationItem } from '../../api/client'
@@ -71,7 +71,6 @@ const ProblemsView: React.FC = () => {
     enabled: Boolean(activeClusterId),
   })
   const rows = problemsQuery.data ?? []
-  const loading = problemsQuery.isLoading
   const error = problemsQuery.error instanceof Error ? problemsQuery.error.message : ''
   const columns = useMemo(() => [
     { title: '问题', dataIndex: 'title', key: 'title', render: (value: string, row: ProblemSummary) => <Button type="link" onClick={() => navigate('/investigation/new?source=alert&problem_id=' + encodeURIComponent(row.problem_id) + '&resource=' + encodeURIComponent(row.resource?.uid || '') + '&symptom=' + encodeURIComponent(value))}>{value}</Button> },
@@ -84,17 +83,33 @@ const ProblemsView: React.FC = () => {
     { title: '数据状态', dataIndex: 'data_status', key: 'data_status', render: (value: string) => <Tag color={value === 'available' ? 'green' : 'orange'}>{value === 'available' ? '数据正常' : value}</Tag> },
   ], [navigate])
 
-  if (!activeClusterId) return <DataState kind="empty" title="请选择集群" description="选择集群后查看问题" />
+  const scopeTag = scopeResource ? (
+    <Tag color="blue" style={{ marginBottom: 12 }}>资源筛选：{resourceTypeLabel(scopeResource.type)} · {resourceLocation(scopeResource)}</Tag>
+  ) : null
+
+  // loading / error / empty / ready 必须互斥：接口失败时不得同时显示健康空态或事实条。
+  if (!activeClusterId) {
+    return <DataState kind="empty" title="请选择集群" description="选择集群后查看问题" />
+  }
+  if (problemsQuery.isLoading) {
+    return <DataState kind="loading" title="正在读取问题" />
+  }
+  if (problemsQuery.isError) {
+    return <DataState kind="error" title="问题数据读取失败" description={error || '告警聚合暂不可用'} onRetry={() => void problemsQuery.refetch()} />
+  }
+  if (rows.length === 0) {
+    return <DataState kind="empty" title="暂无问题" description="当前集群没有可展示的活动问题" />
+  }
+
   const leading = rows[0]
   return (
     <div>
-      {scopeResource && <Tag color="blue" style={{ marginBottom: 12 }}>资源筛选：{resourceTypeLabel(scopeResource.type)} · {resourceLocation(scopeResource)}</Tag>}
+      {scopeTag}
       <div className="observe-fact-strip" aria-label="问题事实摘要">
         <div><span>失败率</span><strong>{leading?.failure_rate == null ? '未提供' : `${(leading.failure_rate * 100).toFixed(1)}%`}</strong></div>
         <div><span>就绪副本</span><strong>{leading?.ready_replicas == null ? '未提供' : `${leading.ready_replicas}/${leading.desired_replicas ?? '—'}`}</strong></div>
       </div>
-      {error ? <Alert type="error" showIcon message={error} action={<Button size="small" onClick={() => void problemsQuery.refetch()}>重试</Button>} style={{ marginBottom: 12 }} /> : null}
-      <Table rowKey="problem_id" loading={loading} columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} locale={{ emptyText: <DataState kind="empty" compact title="暂无问题" /> }} />
+      <Table rowKey="problem_id" columns={columns} dataSource={rows} pagination={{ pageSize: 20 }} />
     </div>
   )
 }

@@ -855,6 +855,7 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/topology/relation-types",
 		"/api/v1/alerts/rules",
 		"/api/v1/alerts/events",
+		"/api/v1/alerts/aggregation", // 观测中心问题聚合（只读；写端点 /alerts/aggregation/create 仍 fail-closed）
 		"/api/v1/logs/query",
 		"/api/v1/logs/aggregate",
 		"/api/v1/dashboard/stats",

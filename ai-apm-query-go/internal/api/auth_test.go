@@ -187,6 +187,7 @@ func TestIsCanonicalProtectedRouteQueryEndpoints(t *testing.T) {
 		"/api/v1/infrastructure/hpa",
 		"/api/v1/infrastructure/vms",
 		"/api/v1/infrastructure/vms/ns/name",
+		"/api/v1/alerts/aggregation",
 		"/api/v1/settings/k8s",
 		"/api/v1/deepflow/status",
 		"/api/v1/grafana/health",
@@ -355,5 +356,24 @@ func TestScopeParsing(t *testing.T) {
 	}
 	if !parseScope("").IsFull() {
 		t.Fatal("empty scope should be full")
+	}
+}
+
+// TestCanonicalProtectedRouteIncludesAlertAggregationRead 锁定现场 403：
+// GET /api/v1/alerts/aggregation 已注册但未列入 canonical-protected，
+// AuthMiddleware 一律 403 permission_denied，观测中心问题聚合不可用。
+func TestCanonicalProtectedRouteIncludesAlertAggregationRead(t *testing.T) {
+	if !isCanonicalProtectedRoute("/api/v1/alerts/aggregation") {
+		t.Fatal("alert aggregation must use canonical browser authorization")
+	}
+}
+
+// TestCanonicalProtectedRouteStillRejectsAlertWrites 验证放行只读聚合后
+// 写端点仍保持 fail-closed。
+func TestCanonicalProtectedRouteStillRejectsAlertWrites(t *testing.T) {
+	for _, path := range []string{"/api/v1/alerts/aggregation/create"} {
+		if isCanonicalProtectedRoute(path) {
+			t.Fatalf("%s must stay fail-closed", path)
+		}
 	}
 }

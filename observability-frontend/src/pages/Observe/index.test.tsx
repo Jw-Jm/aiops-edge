@@ -24,7 +24,8 @@ describe('Observe unified entry', () => {
     render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe']}><Observe /></MemoryRouter></QueryClientProvider>)
     expect(screen.getByRole('tab', { name: '问题' })).toBeInTheDocument()
     await waitFor(() => expect(getAlertAggregation).toHaveBeenCalled())
-    expect(screen.getByText('暂无问题')).toBeInTheDocument()
+    // 空态现在与 loading/error 互斥渲染，需等待查询完成后断言。
+    expect(await screen.findByText('暂无问题')).toBeInTheDocument()
   })
 
   it('projects a cluster-scoped problem without inventing a service resource', () => {
@@ -38,6 +39,25 @@ describe('Observe unified entry', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe?view=not-a-view']}><Observe /></MemoryRouter></QueryClientProvider>)
     expect(screen.getByRole('tab', { name: '问题' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('does not present a healthy empty state when aggregation fails', async () => {
+    vi.mocked(getAlertAggregation).mockRejectedValueOnce(new Error('permission_denied'))
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe']}><Observe /></MemoryRouter></QueryClientProvider>)
+    expect(await screen.findByText('问题数据读取失败')).toBeVisible()
+    expect(screen.queryByText('暂无问题')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('问题事实摘要')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试' })).toBeVisible()
+  })
+
+  it('keeps loading, empty and ready problem states mutually exclusive', async () => {
+    vi.mocked(getAlertAggregation).mockResolvedValue({ data: { data: [] } } as never)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe']}><Observe /></MemoryRouter></QueryClientProvider>)
+    expect(await screen.findByText('暂无问题')).toBeVisible()
+    expect(screen.queryByLabelText('问题事实摘要')).not.toBeInTheDocument()
+    expect(screen.queryByText('问题数据读取失败')).not.toBeInTheDocument()
   })
 
   it('shows the real cluster and resource health facts before raw signals', async () => {
