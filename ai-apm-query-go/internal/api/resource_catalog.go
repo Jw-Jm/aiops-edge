@@ -312,11 +312,18 @@ func (h *Handler) resourceEntityLookup(ctx context.Context, scope graphpkg.Graph
 		}
 		return filtered[i].EntityUID < filtered[j].EntityUID
 	})
-	partial := snapshotPartial || len(filtered) > graphpkg.DefaultPublicMaxVertices
-	if partial {
-		filtered = filtered[:graphpkg.DefaultPublicMaxVertices]
+	bounded, partial := boundFilteredResourceEntities(filtered, snapshotPartial)
+	return resourceEntityLookup{entities: bounded, partial: partial}, nil
+}
+
+// boundFilteredResourceEntities 是资源目录唯一的结果预算裁剪点。
+// 返回值永不越界（只有确实超过公开上限时才切片），并保留上游 partial 事实。
+func boundFilteredResourceEntities(items []graphpkg.Entity, upstreamPartial bool) ([]graphpkg.Entity, bool) {
+	overflow := len(items) > graphpkg.DefaultPublicMaxVertices
+	if overflow {
+		items = items[:graphpkg.DefaultPublicMaxVertices]
 	}
-	return resourceEntityLookup{entities: filtered, partial: partial}, nil
+	return items, upstreamPartial || overflow
 }
 
 func (h *Handler) kubernetesSnapshotEntities(ctx context.Context, scope graphpkg.GraphScope) ([]graphpkg.Entity, bool, error) {

@@ -290,6 +290,67 @@ func TestResourceSummaryFailsClosedWhenGraphUnavailable(t *testing.T) {
 	}
 }
 
+// TestBoundFilteredResourceEntitiesPreservesUpstreamPartialWithoutSlicingPastLength
+// 锁定现场 502 根因：上游 partial 为 true 且过滤结果不足公开上限时，
+// 旧实现仍执行 filtered[:DefaultPublicMaxVertices]，触发 slice bounds panic。
+func TestBoundFilteredResourceEntitiesPreservesUpstreamPartialWithoutSlicingPastLength(t *testing.T) {
+	cases := []struct {
+		name            string
+		count           int
+		upstreamPartial bool
+		wantCount       int
+		wantPartial     bool
+	}{
+		{name: "empty upstream partial", count: 0, upstreamPartial: true, wantCount: 0, wantPartial: true},
+		{name: "small upstream partial", count: 3, upstreamPartial: true, wantCount: 3, wantPartial: true},
+		{name: "exact public budget", count: graphpkg.DefaultPublicMaxVertices, wantCount: graphpkg.DefaultPublicMaxVertices},
+		{name: "over public budget", count: graphpkg.DefaultPublicMaxVertices + 1, wantCount: graphpkg.DefaultPublicMaxVertices, wantPartial: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items := make([]graphpkg.Entity, tc.count)
+			got, partial := boundFilteredResourceEntities(items, tc.upstreamPartial)
+			if len(got) != tc.wantCount || partial != tc.wantPartial {
+				t.Fatalf("len=%d partial=%v, want len=%d partial=%v", len(got), partial, tc.wantCount, tc.wantPartial)
+			}
+		})
+	}
+}
+
+// TestResourceCatalogFallbackKeepsPartialWhenGroupFilterIsEmpty 复现现场
+// GET /api/v1/resources/catalog?group=containers 返回 502 的场景：
+// 上游快照 partial=true，但内容会被 group 过滤器全部排除。
+func TestResourceCatalogFallbackKeepsPartialWhenGroupFilterIsEmpty(t *testing.T) {
+	const clusterID = "11111111-1111-4111-8111-111111111111"
+	snapshot := map[string]interface{}{
+		"partial": true,
+		"namespaces": []map[string]interface{}{{
+			"metadata": map[string]interface{}{"uid": "uid-namespace", "name": "payments"},
+		}},
+	}
+	h := &Handler{
+		graphRepo: resourceFeatureUnavailableRepository{MemoryRepository: graphpkg.NewMemoryRepository()},
+		kubeRepo:  query.NewKubernetesRepository(&k8sTestAccessor{client: &k8sTestClient{graphObjects: snapshot}}),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/resources/catalog?group=containers&limit=20", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user", SessionID: "session", TenantID: "tenant-a", ActiveClusterID: clusterID})
+	rec := httptest.NewRecorder()
+	h.ResourceCatalog(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []json.RawMessage `json:"items"`
+		Meta  ResourceReadMeta  `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 0 || !body.Meta.Partial {
+		t.Fatalf("items=%d meta=%+v", len(body.Items), body.Meta)
+	}
+}
+
 func containsResourceError(body, expected string) bool {
 	return len(body) >= len(expected) && stringContains(body, expected)
 }
