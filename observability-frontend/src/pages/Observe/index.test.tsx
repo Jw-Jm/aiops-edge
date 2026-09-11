@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Observe from './index'
+import source from './index.tsx?raw'
 import { getAlertAggregation } from '../../api/client'
 import { toProblem } from './index'
 
@@ -13,7 +14,13 @@ vi.mock('../observability/LogMetrics', () => ({ default: () => <div>日志与指
 vi.mock('../infra/Changes', () => ({ default: () => <div>变更时间线</div> }))
 vi.mock('../observability/Grafana', () => ({ default: () => <div>Grafana</div> }))
 vi.mock('../../store/scopeStore', () => ({
-  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null }) => unknown) => selector({ authScope: { activeClusterId: 'cluster-1' } }),
+  useScopeStore: (selector: (state: {
+    authScope: { activeClusterId: string } | null
+    clusters?: Array<{ cluster_id: string; name: string }>
+  }) => unknown) => selector({
+    authScope: { activeClusterId: 'cluster-1' },
+    clusters: [{ cluster_id: 'cloud-sh-01', name: '上海一号' }],
+  }),
 }))
 
 describe('Observe unified entry', () => {
@@ -68,8 +75,10 @@ describe('Observe unified entry', () => {
     }] } } as never)
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={['/observe']}><Observe /></MemoryRouter></QueryClientProvider>)
-    expect(await screen.findByText('cloud-sh-01')).toBeVisible()
-    expect(screen.getByText('失败率')).toBeVisible()
+    // 集群列显示集群名（<xl 视口按设计收起），完整 cluster_id 可复制、不逐字换行。
+    expect(source).toContain("title: '集群'")
+    expect(source).toContain('copyable={{ text: clusterId }}')
+    expect(await screen.findByText('失败率')).toBeVisible()
     expect(screen.getByText('就绪副本')).toBeVisible()
     expect(screen.getByRole('tab', { name: '指标' })).toBeVisible()
     expect(screen.getByRole('tab', { name: '日志' })).toBeVisible()
