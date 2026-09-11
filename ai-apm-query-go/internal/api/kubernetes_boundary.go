@@ -75,6 +75,11 @@ func (c boundaryClient) ListGraphObjects() (map[string]interface{}, error) {
 	return c.client.KubeGraphObjects()
 }
 
+// ListEvents 复用同一个已验证边界客户端的窄事件能力；不暴露 kubeconfig 或任意 kubectl 参数。
+func (c boundaryClient) ListEvents() ([]map[string]interface{}, error) {
+	return c.client.KubeEvents()
+}
+
 // boundaryToString 安全把边界 JSON 值转为 string。
 func boundaryToString(v interface{}) string {
 	if s, ok := v.(string); ok {

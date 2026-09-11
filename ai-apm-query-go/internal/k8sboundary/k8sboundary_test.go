@@ -2,6 +2,8 @@ package k8sboundary
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -258,5 +260,65 @@ func TestGetClientRejectsNonCanonicalClusterRef(t *testing.T) {
 		if !errors.Is(err, store.ErrInvalidClusterRef) {
 			t.Fatalf("GetClient(%q) error = %v, want ErrInvalidClusterRef", ref, err)
 		}
+	}
+}
+
+// fakeKubectl 在临时 PATH 中放置一个假 kubectl，记录调用参数与收到的 kubeconfig。
+// 它证明 KubeEvents 复用的是客户端已校验的 kubeconfig，而不是进程默认/current context。
+func fakeKubectl(t *testing.T, stdout string) (argsLog, kubeconfigSeen string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsLog = filepath.Join(dir, "args.log")
+	kubeconfigSeen = filepath.Join(dir, "kubeconfig.seen")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$KUBECTL_TEST_ARGS"
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--kubeconfig" ]; then cat "$a" > "$KUBECTL_TEST_KC"; fi
+  prev="$a"
+done
+printf '%s' "$KUBECTL_TEST_STDOUT"
+`
+	bin := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake kubectl: %v", err)
+	}
+	t.Setenv("KUBECTL_TEST_ARGS", argsLog)
+	t.Setenv("KUBECTL_TEST_KC", kubeconfigSeen)
+	t.Setenv("KUBECTL_TEST_STDOUT", stdout)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return argsLog, kubeconfigSeen
+}
+
+// 11. KubeEvents 只使用该客户端已校验的 kubeconfig，并返回解析后的 Warning 事件。
+func TestClientKubeEventsUsesBoundKubeconfig(t *testing.T) {
+	const eventsJSON = `{"items":[{"type":"Warning","reason":"FailedScheduling","message":"no nodes available","count":2,"involvedObject":{"kind":"VirtualMachineInstance","name":"shared-vm"}},{"type":"Normal","reason":"Started","message":"ok","count":1,"involvedObject":{"kind":"VirtualMachineInstance","name":"shared-vm"}}]}`
+	argsLog, kubeconfigSeen := fakeKubectl(t, eventsJSON)
+
+	mgr, _, _ := newBoundary(t, baseStore())
+	client, err := mgr.GetClient(uuidA)
+	if err != nil || client == nil {
+		t.Fatalf("GetClient(%s) = %v, %v", uuidA, client, err)
+	}
+	events, err := client.KubeEvents()
+	if err != nil {
+		t.Fatalf("KubeEvents: %v", err)
+	}
+	if len(events) != 1 || events[0]["reason"] != "FailedScheduling" {
+		t.Fatalf("events = %#v, want only the Warning event", events)
+	}
+	seen, err := os.ReadFile(kubeconfigSeen)
+	if err != nil {
+		t.Fatalf("fake kubectl did not receive a kubeconfig: %v", err)
+	}
+	if string(seen) != kcA {
+		t.Fatalf("KubeEvents used kubeconfig %q, want the client-bound %q", string(seen), kcA)
+	}
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("fake kubectl did not log args: %v", err)
+	}
+	if !strings.Contains(string(args), "get events -A -o json") {
+		t.Fatalf("unexpected kubectl args: %s", string(args))
 	}
 }
