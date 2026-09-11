@@ -81,8 +81,13 @@ forbidden() {
 required() { contains "$1" "$2" || fail "$3"; }
 
 external_secret_tmp="${tmp}.external-secret"
-helm template aiops "$chart" -f "$values" "${helm_secret_args[@]}" \
-  --set-string secrets.existingSecretName=aiops-secrets >"${external_secret_tmp}"
+if ((${#helm_secret_args[@]})); then
+  helm template aiops "$chart" -f "$values" "${helm_secret_args[@]}" \
+    --set-string secrets.existingSecretName=aiops-secrets >"${external_secret_tmp}"
+else
+  helm template aiops "$chart" -f "$values" \
+    --set-string secrets.existingSecretName=aiops-secrets >"${external_secret_tmp}"
+fi
 if rg -n '^kind: Secret$' "${external_secret_tmp}" >/dev/null; then
   fail 'ARCH-009 external Secret mode still renders plaintext Secret objects'
 fi

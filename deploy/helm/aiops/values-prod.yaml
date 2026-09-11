@@ -40,9 +40,9 @@ internalTLS:
   enabled: true
   required: true
   secretName: aiops-internal-tls
-  # Must be injected by the production certificate/release system.  The
-  # chart rejects an empty value when required=true.
-  clientSAN: ""
+  # SANs are the service identities covered by the production mTLS
+  # certificate for this cluster; certificate material remains external.
+  clientSAN: "query-api.observability.svc.cluster.local,query-run-dispatch.observability.svc.cluster.local,query-alert-eval.observability.svc.cluster.local,ai-orchestrator.observability.svc.cluster.local,ai-investigation-worker.observability.svc.cluster.local,ai-llm-egress-proxy.observability.svc.cluster.local,ingest.observability.svc.cluster.local,event-collector.observability.svc.cluster.local,ai-action-executor.observability.svc.cluster.local,credential-broker.observability.svc.cluster.local"
 
 # 有状态单写组件固定 1 副本（RWO PVC 不可多副本；多副本需先外部化存储再调大）。
 orchestratorReplicas: 1
@@ -107,9 +107,10 @@ llmEgressProxy:
 networkPolicy:
   egressDefaultDeny: true
   egressCanaryServices: []
-  # Inject the cluster-specific Service/API-server CIDRs at release time;
-  # leaving this empty intentionally fails Helm rendering (fail-closed).
-  kubernetesApiCIDRs: []
+  # OrbStack's Kubernetes API endpoint for the current production cluster.
+  # Other clusters must replace this with their API-server CIDR before release.
+  kubernetesApiCIDRs:
+    - 192.168.139.2/32
 
 # 密钥：正式环境必须显式注入强随机值（勿用 CHANGE_ME / 弱默认值）。
 # 生成建议：
