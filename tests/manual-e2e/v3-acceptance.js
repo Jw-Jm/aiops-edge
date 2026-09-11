@@ -105,7 +105,8 @@ async function collectViewport(page, route, tag, failures, screenshots) {
   try {
     assertReadablePrimaryCells(await collectPrimaryCellMetrics(page))
   } catch (error) {
-    failures.push({ viewport: tag, route: target, check: 'primary_cell_readable', detail: error.message })
+    const metrics = (error.metrics || []).map((m) => `${m.sample}…(w=${m.clientWidth},lines=${m.renderedLines})`)
+    failures.push({ viewport: tag, route: target, check: 'primary_cell_readable', detail: `${error.message}: ${metrics.join(' | ')}` })
   }
 
   const screenshot = `v3-${route.key}--${tag}.png`

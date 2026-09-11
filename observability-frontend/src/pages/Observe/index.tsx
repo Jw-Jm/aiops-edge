@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo } from 'react'
+import React, { useCallback, useEffect, useMemo } from 'react'
 import { Button, Space, Table, Tabs, Tag, Typography } from 'antd'
+const { Text: CellText } = Typography
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { acceptAlertInvestigation, getAlertAggregation, type AlertAggregationItem, type AlertInvestigationLink } from '../../api/client'
@@ -72,6 +73,8 @@ const ProblemsView: React.FC = () => {
   const tenantId = useScopeStore((state) => state.authScope?.tenantId ?? state.active?.tenantId ?? '')
   const activeScope = useScopeStore((state) => state.active)
   const activeClusterId = useScopeStore((state) => state.active?.clusterId ?? state.authScope?.activeClusterId ?? '')
+  const clusters = useScopeStore((state) => state.clusters) ?? []
+  const clusterName = useCallback((clusterId: string) => clusters.find((cluster) => cluster.cluster_id === clusterId)?.name ?? '', [clusters])
   const scopeResource = activeScope?.resource
   const from = activeScope?.timeRange.mode === 'absolute' ? activeScope.timeRange.start : undefined
   const to = activeScope?.timeRange.mode === 'absolute' ? activeScope.timeRange.end : undefined
@@ -85,7 +88,15 @@ const ProblemsView: React.FC = () => {
   const columns = useMemo(() => [
     { title: '问题', dataIndex: 'title', key: 'title', render: (value: string, row: ProblemSummary) => <Button type="link" onClick={() => navigate('/investigation/new?source=alert&problem_id=' + encodeURIComponent(row.problem_id) + '&resource=' + encodeURIComponent(row.resource?.uid || '') + '&symptom=' + encodeURIComponent(value))}>{value}</Button> },
     { title: '资源', key: 'resource', render: (_: unknown, row: ProblemSummary) => row.resource ? resourceTypeLabel(row.resource.type) + ' · ' + resourceLocation(row.resource) : '集群范围' },
-    { title: '集群', dataIndex: 'cluster_id', key: 'cluster_id' },
+    // 集群列在 <xl 视口收起：1024 工作区本身已绑定单一集群，宽列会挤压问题/症状。
+    { title: '集群', key: 'cluster_id', width: 160, responsive: ['xl'] as ('xl')[], render: (_: unknown, row: ProblemSummary) => {
+      // 显示集群名而非 36 位 UUID：UUID 可复制，不得逐字换行。
+      const clusterId = row.cluster_id || ''
+      const name = clusterName(clusterId)
+      return name
+        ? <span title={clusterId} style={{ overflowWrap: 'anywhere' }}>{name}</span>
+        : <CellText code copyable={{ text: clusterId }} style={{ fontSize: 12 }}>{clusterId.slice(0, 8)}…</CellText>
+    } },
     { title: '严重度', dataIndex: 'severity', key: 'severity', render: (value: string) => <StatusBadge text={value === 'critical' ? '严重' : value === 'warning' ? '警告' : '信息'} tone={value === 'critical' ? 'crit' : value === 'warning' ? 'warn' : 'info'} /> },
     { title: '健康', dataIndex: 'health', key: 'health', render: (value: string) => <Tag color={value === 'abnormal' ? 'red' : value === 'degraded' ? 'orange' : 'green'}>{value === 'abnormal' ? '异常' : value === 'degraded' ? '降级' : '健康'}</Tag> },
     { title: '影响', key: 'count', render: (_: unknown, row: ProblemSummary) => row.affected_resources.length || '—' },
@@ -113,7 +124,7 @@ const ProblemsView: React.FC = () => {
         </Space>
       )
     } },
-  ], [navigate, problemsQuery])
+  ], [navigate, clusterName, problemsQuery])
 
   const scopeTag = scopeResource ? (
     <Tag color="blue" style={{ marginBottom: 12 }}>资源筛选：{resourceTypeLabel(scopeResource.type)} · {resourceLocation(scopeResource)}</Tag>

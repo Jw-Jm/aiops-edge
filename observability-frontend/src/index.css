@@ -312,6 +312,15 @@ body {
 .platform-cluster-row__reason { color: var(--text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .platform-cluster-row__registration { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
 .platform-priority h3 { margin: 14px 0 6px; font-size: 16px; }
+/* 1024–1279px：集群行改为纵向堆叠，名称不再被时间列/UUID 挤压成 60px 宽。 */
+@media (max-width: 1279px) {
+  .platform-cluster-row { display: block; }
+  .platform-cluster-row__main { display: block; }
+  .platform-cluster-row__main strong { display: block; white-space: normal; overflow-wrap: anywhere; }
+  .platform-cluster-row__main small { display: block; margin-top: 2px; white-space: normal; overflow-wrap: anywhere; }
+  .platform-cluster-row__reason { display: block; margin-top: 2px; white-space: normal; }
+  .platform-cluster-row__time { display: block; margin-top: 2px; }
+}
 .platform-priority p { margin: 0 0 6px; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
 .platform-priority small { color: var(--text-muted); }
 .platform-timeline-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }

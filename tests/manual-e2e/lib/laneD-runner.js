@@ -12,6 +12,17 @@ const { ENV, ensureDirs } = require('./harness')
 const RUN_ID = process.env.TEST_RUN_ID || 'nonllm-' + new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, 'Z')
 const ROOT = path.resolve(__dirname, '..', '..', '..', 'test-results', RUN_ID)
 
+// Launch the bundled Chromium when its build is cached; otherwise fall back to
+// the system Chrome so a real-browser gate never silently degrades to a stub.
+async function launchBrowser() {
+  try {
+    return await chromium.launch()
+  } catch (error) {
+    if (!/Executable doesn't exist|browserType\.launch/.test(String(error))) throw error
+    return chromium.launch({ channel: 'chrome' })
+  }
+}
+
 // Mirrors GLOBAL_PATHS in observability-frontend/src/api/client.ts — requests
 // to these paths are cluster-agnostic and legitimately carry no cluster_id.
 const GLOBAL_PATHS = [
@@ -162,7 +173,7 @@ function shot(page, name) {
 //    （全新 UI 登录会重置服务端 active scope，避免挂载即 403 的爆发）。
 // seedScope=false 供 PF-UI-002 使用：不预置、不门闸，走纯 UI 选择集群的真实流程。
 async function withSession({ viewport, col, seedScope = true }, fn) {
-  const browser = await chromium.launch()
+  const browser = await launchBrowser()
   const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } })
   if (seedScope) {
     await context.addInitScript((clusterId) => {

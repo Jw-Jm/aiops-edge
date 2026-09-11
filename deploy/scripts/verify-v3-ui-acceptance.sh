@@ -12,7 +12,7 @@
 # The gate fails unless the produced JSON reports status=PASS.
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [[ -z "${TEST_RUN_ID:-}" ]]; then
   echo "FAIL: TEST_RUN_ID is required" >&2
@@ -25,6 +25,20 @@ fi
 
 export TEST_RUN_ID
 export AIOPS_E2E_GRAPH_QUERY
+
+# The browser lanes require playwright; when it is only installed globally,
+# NODE_PATH must expose it. This does not add a dependency — it restores the
+# runtime the repo's e2e lanes already require.
+if ! node -e "require('playwright')" >/dev/null 2>&1; then
+  for candidate in /opt/homebrew/lib/node_modules/@playwright/cli/node_modules \
+                   /usr/local/lib/node_modules \
+                   "$HOME/.npm-global/lib/node_modules"; do
+    if [[ -d "${candidate}/playwright" ]]; then
+      export NODE_PATH="${candidate}${NODE_PATH:+:${NODE_PATH}}"
+      break
+    fi
+  done
+fi
 
 echo "==> running v3 browser acceptance (run=${TEST_RUN_ID})"
 node "${repo_root}/tests/manual-e2e/v3-acceptance.js"
