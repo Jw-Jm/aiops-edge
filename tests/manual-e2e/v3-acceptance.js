@@ -368,7 +368,11 @@ async function run() {
           await waitForRouteSettled(page, `/clusters/${ENV.clusterId}/observe`, failures)
           const observeText = await page.locator('body').innerText().catch(() => '')
           const explicitEmpty = /暂无告警|暂无事件|没有告警/.test(observeText)
-          const alertRows = await page.locator('[data-testid="alert-row"], [data-testid="notification-alert-item"], .alert-row').count().catch(() => 0)
+          // The observe projection currently renders problems as ordinary
+          // table rows (not a dedicated alert-row test id). Count only rows
+          // that expose the real investigation action so skeleton/header
+          // rows cannot satisfy this gate.
+          const alertRows = await page.locator('tbody tr').filter({ hasText: /进入调查|发起调查/ }).count().catch(() => 0)
           const investigationEntry = await page.getByText(/进入调查|发起调查|调查/).count().catch(() => 0)
           if ((events.length === 0 && alertRows > 0 && investigationEntry > 0) || (events.length > 0 && alertRows > 0 && investigationEntry > 0) || (events.length === 0 && explicitEmpty)) {
             gates.alert_investigation = 'PASS'

@@ -118,6 +118,14 @@ func TestResourceCatalogFiltersByAuthorizedClusterAndDomain(t *testing.T) {
 	}
 }
 
+func TestResourceCatalogRejectsExplicitClusterOutsideActiveScope(t *testing.T) {
+	rec := httptest.NewRecorder()
+	resourceCatalogTestHandler(t).ResourceCatalog(rec, resourceRequest(http.MethodGet, "/api/v1/resources/catalog?cluster_id=cluster-b&domain=compute&limit=10"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-cluster catalog status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestResourceCatalogFiltersByTypeNamespaceAndFreshness(t *testing.T) {
 	rec := httptest.NewRecorder()
 	resourceCatalogTestHandler(t).ResourceCatalog(rec, resourceRequest(http.MethodGet, "/api/v1/resources/catalog?group=containers&type=pod&namespace=payments&freshness=stale&limit=10"))

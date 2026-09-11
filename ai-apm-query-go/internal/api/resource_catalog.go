@@ -473,6 +473,14 @@ func (h *Handler) resourceReadScope(r *http.Request) (graphpkg.GraphScope, error
 	if authorization.TenantID == "" || authorization.ActiveClusterID == "" {
 		return graphpkg.GraphScope{}, authorizationFailure("SCOPE_SELECTION_REQUIRED")
 	}
+	// Resource catalog reads are always bound to the cluster selected in the
+	// verified session.  An explicit query/header cluster is accepted only as
+	// an assertion of that same scope; silently ignoring a different value
+	// would turn a caller mistake into a misleading 200 response.
+	explicitClusterID := strings.TrimSpace(firstNonEmpty(r.Header.Get("X-Cluster-ID"), r.URL.Query().Get("cluster_id")))
+	if explicitClusterID != "" && explicitClusterID != authorization.ActiveClusterID {
+		return graphpkg.GraphScope{}, authorizationFailure("SCOPE_CLUSTER_MISMATCH")
+	}
 	return graphpkg.GraphScope{TenantID: authorization.TenantID, ClusterIDs: map[string]struct{}{authorization.ActiveClusterID: {}}}, nil
 }
 
