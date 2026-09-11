@@ -1,3 +1,7 @@
+import { buildInvestigationSummary, type InvestigationSummary, type InvestigationSummaryInput } from './summary'
+import { resourceDomainOf } from '../resources/resourceDomain'
+import type { PlatformResourceRef } from '../resources/types'
+
 export interface InvestigationEvidenceInput {
   evidence_id?: string
   observed_at?: string | null
@@ -28,6 +32,10 @@ export interface InvestigationSnapshotInput {
   namespace?: string | null
   query_window_start?: string | null
   query_window_end?: string | null
+  /** 服务端 investigation_summary（因果链/预算/终止原因）。 */
+  summary_input?: InvestigationSummaryInput
+  partial?: boolean
+  stale?: boolean
 }
 
 export interface InvestigationViewModel {
@@ -38,6 +46,8 @@ export interface InvestigationViewModel {
   evidence: Array<{ id: string; observedAt: string; type: string; source: string; fact: string; reliability: number | null; quality: string; supports: string[]; contradicts: string[] }>
   hypotheses: Array<{ id: string; claim: string; confidence: number; missing: string[]; contradicts: string[] }>
   conclusion: { state: 'confirmed' | 'insufficient_evidence' | 'unknown'; title: string; confidence: number; rootCause: string }
+  /** 结论优先摘要：因果链、证据因子、终止原因与预算。 */
+  summary: InvestigationSummary
   action?: { status: string; risk: string; execution?: string | null; verification?: string | null }
 }
 
@@ -65,6 +75,16 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
   const insufficient = !rootCause || confidence < 0.8 || evidence.length === 0
   const resourceType = snapshot.target_resource_type || ''
   const resourceDomain = resourceDomainOf(resourceType)
+  const summary = buildInvestigationSummary({
+    ...(snapshot.root_cause !== undefined ? { root_cause: snapshot.root_cause } : {}),
+    confidence,
+    status: snapshot.status ?? 'created',
+    evidence: snapshot.evidence ?? [],
+    hypotheses: snapshot.hypotheses ?? [],
+    partial: snapshot.partial === true,
+    stale: snapshot.stale === true,
+    ...(snapshot.summary_input ?? {}),
+  })
   return {
     runId: snapshot.run_id,
     scope: {
@@ -85,11 +105,11 @@ export function toInvestigationViewModel(snapshot: InvestigationSnapshotInput): 
     },
     intent: snapshot.intent ?? '—', status: snapshot.status ?? 'created', evidence, hypotheses,
     conclusion: { state: insufficient ? 'insufficient_evidence' : 'confirmed', title: insufficient ? '证据不足，尚不能确认根因' : rootCause, confidence, rootCause: insufficient ? '' : rootCause },
+    // 摘要必须与 conclusion 一致：partial/stale/缺少 eligible evidence 一律不得显示"根因已确认"。
+    summary: { ...summary, conclusionState: insufficient ? 'insufficient_evidence' : summary.conclusionState, rootCause: insufficient ? null : summary.rootCause, evidenceFactors: { ...summary.evidenceFactors, partial: summary.evidenceFactors.partial || snapshot.partial === true, stale: summary.evidenceFactors.stale || snapshot.stale === true } },
     ...(snapshot.action ? { action: { status: snapshot.action.status ?? 'unknown', risk: snapshot.action.risk ?? 'unknown', execution: snapshot.action.execution, verification: snapshot.action.verification } } : {}),
   }
 }
-import { resourceDomainOf } from '../resources/resourceDomain'
-import type { PlatformResourceRef } from '../resources/types'
 
 /** Immutable investigation boundary carried from the persisted Run. */
 export interface FrozenInvestigationScope {

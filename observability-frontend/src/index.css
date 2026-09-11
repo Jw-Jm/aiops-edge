@@ -329,6 +329,28 @@ body {
 .cluster-overview-statusline__reason { color: var(--text-secondary); font-size: 13px; }
 .cluster-overview-statusline__registration { color: var(--text-muted); font-size: 12px; }
 
+/* 长文本在自身容器内换行，禁止逐字竖排。 */
+.cell-wrap { overflow-wrap: anywhere; word-break: normal; }
+
+/* 调查详情：结论优先两栏（左侧主结论 + 右侧影响/完整性/终止原因）。 */
+.investigation-summary-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+.investigation-summary-grid__main { min-width: 0; }
+.investigation-summary-grid__side { min-width: 0; }
+@media (max-width: 1024px) {
+  .investigation-summary-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.investigation-conclusion__factors { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; color: var(--text-secondary); font-size: 13px; }
+
+/* 因果链：每跳一行 源 ─关系→ 目标。 */
+.causal-chain { display: flex; flex-direction: column; gap: 6px; }
+.causal-chain__row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.causal-chain__source, .causal-chain__target { font-weight: 600; overflow-wrap: anywhere; }
+.causal-chain__relation { color: var(--text-secondary); }
+
+.key-evidence { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.key-evidence__item { padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.next-verification { margin: 0; padding-left: 20px; }
+
 /* 1024px：画布保留完整宽度，关系检查器进入 Drawer。 */
 .graph-inspector-trigger { display: none; margin-top: 8px; }
 .graph-semantic-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }

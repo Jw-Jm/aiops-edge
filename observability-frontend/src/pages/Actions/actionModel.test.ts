@@ -22,6 +22,25 @@ describe('action projection', () => {
     expect(canDecideAction('admin')).toBe(true)
   })
 
+  it('localizes every workflow status consumed by the action views', () => {
+    expect(toActionViewModel(action()).approvalStatus).toBe('待审批')
+    expect(toActionViewModel(action()).executionStatus).toBe('未执行')
+    expect(toActionViewModel(action()).verificationStatus).toBe('待验证')
+    expect(toActionViewModel(action()).preflightStatus).toBe('预检通过')
+
+    const approved = toActionViewModel(action({ status: 'approved', execution_status: 'running', verification_status: 'passed' }))
+    expect(approved.approvalStatus).toBe('已批准')
+    expect(approved.executionStatus).toBe('执行中')
+    expect(approved.verificationStatus).toBe('验证通过')
+
+    const failed = toActionViewModel(action({ status: 'failed', execution_status: 'failed', verification_status: 'failed' }))
+    expect(failed.approvalStatus).toBe('失败')
+    expect(failed.executionStatus).toBe('执行失败')
+    expect(failed.verificationStatus).toBe('验证失败')
+    // 不允许裸英文状态泄漏到界面。
+    expect(approved.approvalStatus).not.toMatch(/[a-z_]/)
+  })
+
   it('requires a returned control capability for mutable resource types', () => {
     expect(canControlResource('physical_server', [])).toBe(false)
     expect(canControlResource('physical_server', ['hardware.action.execute'])).toBe(true)

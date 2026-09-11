@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import ActionCenter from './ActionCenter'
 import { listActions } from '../../api/client'
+import actionSource from './ActionCenter.tsx?raw'
 
 vi.mock('../../api/client', () => ({
   listActions: vi.fn(),
@@ -52,7 +53,27 @@ describe('ActionCenter capability gate', () => {
     fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))
     expect(await screen.findByText('ResourceVersion')).toBeInTheDocument()
     expect(screen.getByText('idem-1')).toBeInTheDocument()
-    expect(screen.getByText('执行中')).toHaveClass('flow')
-    expect(screen.getByText('执行中')).not.toHaveClass('status--ok')
+    // 执行中同时出现在首屏执行列与详情时间轴：两者都必须使用流程蓝，绝不使用健康绿。
+    const tableFlow = document.querySelectorAll('.ant-table .flow')
+    expect(tableFlow.length).toBeGreaterThan(0)
+    expect(tableFlow[0].textContent).toBe('执行中')
+    const timelineFlow = document.querySelectorAll('.ant-timeline .flow')
+    expect(timelineFlow.length).toBeGreaterThan(0)
+    expect(timelineFlow[0].textContent).toBe('执行中')
+  })
+
+  it('renders only localized workflow statuses in the summary columns', async () => {
+    vi.mocked(listActions).mockResolvedValueOnce({ data: { actions: [{ ...action, status: 'approved', execution_status: 'running', verification_status: 'pending' }] } } as never)
+    render(<MemoryRouter><ActionCenter /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('tab', { name: /待执行/ }))
+    await screen.findByText('重启工作负载')
+    // 验证列在 <xl 视口按设计收起，因此只断言常驻列的中文状态。
+    for (const label of ['已批准', '执行中']) {
+      expect(screen.getAllByText(label).length).toBeGreaterThan(0)
+    }
+    expect(actionSource).toContain("title: '验证'")
+    for (const raw of ['approved', 'running', 'pending', 'proposed']) {
+      expect(screen.queryByText(raw)).not.toBeInTheDocument()
+    }
   })
 })

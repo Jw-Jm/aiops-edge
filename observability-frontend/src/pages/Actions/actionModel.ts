@@ -1,5 +1,6 @@
 import type { ActionProjection } from '../../api/client'
 import { resourceDomainOf, resourceLocation, resourceTypeLabel } from '../../features/resources/resourceDomain'
+import { actionStatusLabel, executionStatusLabel, preflightStatusLabel, verificationStatusLabel } from '../../features/workflow/statusPresentation'
 
 export function canDecideAction(role: string): boolean {
   return role === 'approver' || role === 'admin'
@@ -39,10 +40,11 @@ export function toActionViewModel(action: ActionProjection & { risk_score?: numb
     targetLocation: resourceDomain ? resourceLocation({ clusterId: action.cluster_id || '', uid: action.target_uid, type: action.target_resource_type, domain: resourceDomain, name: action.target_name, ...(action.namespace ? { namespace: action.namespace } : {}) }) : targetName,
     risk: { level: riskLevel, label: riskLevel === 'unknown' ? '未评估' : riskLevel },
     impact: action.impact_summary || '未提供',
-    approvalStatus: action.approval_status || (action.status === 'proposed' ? '待审批' : action.status),
-    executionStatus: action.execution_status || '未执行',
-    verificationStatus: action.verification_status || '未验证',
-    preflightStatus: action.preflight_status,
+    // 所有流程状态一律走稳定中文映射，界面不再出现 proposed/awaiting approval 等裸英文。
+    approvalStatus: actionStatusLabel(action.approval_status || action.status || 'pending'),
+    executionStatus: executionStatusLabel(action.execution_status || 'not_started'),
+    verificationStatus: verificationStatusLabel(action.verification_status || 'pending'),
+    preflightStatus: action.preflight_status ? preflightStatusLabel(action.preflight_status) : '未提供',
     resourceVersion: action.resource_version,
     actionVersion: action.action_version,
     actionHash: action.action_hash,

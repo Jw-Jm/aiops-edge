@@ -18,7 +18,7 @@ const Actions: React.FC = () => {
   return (
     <div>
       <Breadcrumb items={[{ t: '处置' }, { t: '动作中心' }]} />
-      <PageHeader title="动作中心" desc="所有环境变更均经过风险评估、审批、预检、执行与验证" />
+      <PageHeader title="处置中心" desc="当前集群的全部处置动作，均经过风险评估、预检、审批、执行与验证" />
       <Tabs activeKey={activeKey} items={items} onChange={(key) => setParams({ view: key })} destroyOnHidden />
     </div>
   )
