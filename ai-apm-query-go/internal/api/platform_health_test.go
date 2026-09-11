@@ -1,6 +1,7 @@
 package api
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -73,8 +74,12 @@ func TestSummarizePlatformCapabilitiesReportsNothingWhenNoProbeRan(t *testing.T)
 }
 
 func TestCollectSystemComponentResultsUsesInjectedProbe(t *testing.T) {
+	var mu sync.Mutex
 	probed := map[string]bool{}
 	rows := collectSystemComponentResults(func(kind, addr string) bool {
+		// collector 并发探测：测试自身也必须并发安全。
+		mu.Lock()
+		defer mu.Unlock()
 		probed[addr] = true
 		return false
 	})
