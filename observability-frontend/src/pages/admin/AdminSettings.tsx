@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Form, Input, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert, Card, Typography } from 'antd'
-import { PageHeader, Breadcrumb, StatusBadge, Empty, type StatusTone } from '../../components/ui/PageKit'
+import { PageHeader, Breadcrumb, StatusBadge, type StatusTone } from '../../components/ui/PageKit'
 
 // 集群状态 → StatusBadge tone 映射
 function clusterTone(s?: string): StatusTone {
@@ -632,7 +632,13 @@ function PlatformHealth() {
         loading={loading}
         dataSource={list}
         pagination={false}
-        locale={{ emptyText: <Empty text="暂无组件状态数据" hint="后端 /system/components 尚未上报组件状态" /> }}
+        locale={{ emptyText: (
+          <div className="admin-state-unavailable">
+            <strong>状态未获得</strong>
+            <p>后端 /system/components 尚未上报组件状态，无法判断平台能力健康。</p>
+            <Button size="small" onClick={() => load(false)}>刷新状态</Button>
+          </div>
+        ) }}
         columns={[
           { title: '组件', dataIndex: 'name' },
           { title: '类型', dataIndex: 'type', width: 140 },

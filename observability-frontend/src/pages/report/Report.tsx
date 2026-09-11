@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react'
 import { Alert, Table, Button, message, Tag, Drawer, Space } from 'antd'
 import { BookOutlined } from '@ant-design/icons'
 import ReactMarkdown from 'react-markdown'
+import { useNavigate } from 'react-router-dom'
 import { listReports, addKnowledgeCase } from '../../api/client'
 import api from '../../api/client'
-import { Empty } from '../../components/ui/PageKit'
 import { useScopeStore } from '../../store/scopeStore'
 import { resourceDomainOf, resourceLocation, resourceTypeLabel } from '../../features/resources/resourceDomain'
 import type { PlatformResourceRef } from '../../features/resources/types'
@@ -25,6 +25,7 @@ export function reportSubject(report: Report): string {
 
 const Report: React.FC = () => {
   const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const navigate = useNavigate()
   const [data, setData] = useState<Report[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -141,10 +142,21 @@ const Report: React.FC = () => {
   return (
     <div>
       {error && <Alert type="error" showIcon role="alert" message="报告数据读取失败" description={error} action={<Button size="small" onClick={() => setReloadToken((value) => value + 1)}>重试</Button>} style={{ marginBottom: 12 }} />}
-      <div className="card" style={{ padding: 0 }}>
-        <Table rowKey={taskIdOf} loading={loading} columns={cols} dataSource={data} size="middle"
-          pagination={{ pageSize: 20 }} locale={{ emptyText: <Empty text="暂无报告" /> }} />
-      </div>
+      {/* 错误态与空态互斥：读取失败时不渲染空表；空数据使用自然高度卡片并提供下一步。 */}
+      {error ? null : loading ? (
+        <div className="card" style={{ padding: 0 }}><Table rowKey={taskIdOf} loading columns={cols} dataSource={[]} size="middle" pagination={false} /></div>
+      ) : data.length === 0 ? (
+        <div className="card report-empty-state">
+          <strong>当前集群暂无报告</strong>
+          <p>报告来自已完成的调查与巡检。当前集群还没有可展示的报告。</p>
+          <Button type="primary" onClick={() => navigate(activeClusterId ? `/clusters/${encodeURIComponent(activeClusterId)}/investigations` : '/clusters')}>前往调查</Button>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0 }}>
+          <Table rowKey={taskIdOf} columns={cols} dataSource={data} size="middle"
+            pagination={{ pageSize: 20 }} />
+        </div>
+      )}
 
       {/* 2.18 预览：summary 全文 + verdict + 元信息 */}
       <Drawer width={560} open={!!preview} onClose={() => setPreview(null)} title="报告预览"

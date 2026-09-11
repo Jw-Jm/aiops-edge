@@ -37,9 +37,9 @@ export function ScopeBar({ snapshot }: ScopeBarProps) {
   return (
     <div className="scope-bar" aria-label="活动作用域">
       <span className="scope-bar__label">集群</span>
+      {/* Select 是集群名称的唯一常驻显示，不再重复渲染一段同名摘要。 */}
       <Select aria-label="集群" size="small" placeholder="选择集群" value={activeClusterId || undefined}
         onChange={(value) => { void switchCluster(value) }} options={clusterOptions} />
-      <span className="scope-bar__summary">{scopeLabel(activeClusterId, clusters)}</span>
     </div>
   )
 }

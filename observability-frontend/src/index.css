@@ -90,10 +90,14 @@ body {
 .nav__group.is-collapsed .chev { transform: rotate(-90deg); }
 .nav__group.is-collapsed .nav__group-items { display: none; }
 
-.nav__item { display: flex; align-items: center; gap: 10px; padding: 7px 12px; margin: 1px 0; border-radius: 8px;
+/* 导航轨：图标在上、11px 文字在下，保证 72/88px 宽度下标签仍可发现。 */
+.nav__item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  padding: 6px 4px; margin: 2px 4px; border-radius: 8px; min-height: 48px;
   color: var(--text-secondary); text-decoration: none; font-size: 13px; position: relative; cursor: pointer;
   transition: background var(--t-fast), color var(--t-fast); }
 .nav__item svg { width: 16px; height: 16px; flex-shrink: 0; }
+.nav__label { font-size: 11px; line-height: 1.25; text-align: center; max-width: 100%;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .nav__item:hover { background: var(--surface-hover); color: var(--text); }
 .nav__item.is-active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
 .nav__item.is-active::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
@@ -329,6 +333,14 @@ body {
 .cluster-overview-statusline__reason { color: var(--text-secondary); font-size: 13px; }
 .cluster-overview-statusline__registration { color: var(--text-muted); font-size: 12px; }
 
+/* 可行动空态：自然高度，不通过固定最小高度制造留白。 */
+.report-empty-state, .knowledge-empty-state, .admin-state-unavailable {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 20px;
+}
+.report-empty-state p, .knowledge-empty-state p, .admin-state-unavailable p { margin: 0; color: var(--text-secondary); font-size: 13px; }
+.report-empty-state strong, .knowledge-empty-state strong, .admin-state-unavailable strong { font-size: 14px; }
+.admin-state-unavailable { align-items: center; text-align: center; }
+
 /* 长文本在自身容器内换行，禁止逐字竖排。 */
 .cell-wrap { overflow-wrap: anywhere; word-break: normal; }
 
@@ -470,7 +482,8 @@ body {
 .knowledge-search-results { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .knowledge-search-results button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); background: var(--surface-2); cursor: pointer; }
 .knowledge-workspace__columns { display: grid; grid-template-columns: minmax(220px, .85fr) minmax(360px, 1.6fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
-.knowledge-workspace__columns > .card { min-width: 0; min-height: 450px; }
+/* 空态/少数据时使用自然高度，不通过固定最小高度制造无信息留白。 */
+.knowledge-workspace__columns > .card { min-width: 0; }
 .assistant-workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr) 300px; gap: 16px; min-width: 0; }
 .assistant-mobile-actions { display: none; }
 .assistant-mobile-button { display: none; }

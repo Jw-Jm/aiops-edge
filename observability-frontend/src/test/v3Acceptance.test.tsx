@@ -8,6 +8,11 @@ import adminSource from '../pages/admin/AdminSettings.tsx?raw'
 import assistantSource from '../pages/ai/AiChat.tsx?raw'
 import resourcesSource from '../pages/Resources/index.tsx?raw'
 import aiDockSource from '../components/AiDock.tsx?raw'
+import scopeBarSource from '../features/scope/ScopeBar.tsx?raw'
+import knowledgeSource from '../pages/Knowledge/index.tsx?raw'
+import reportSource from '../pages/report/Report.tsx?raw'
+// 空态留白合同：空态类名 + 组件不得硬编码固定最小高度。
+// （CSS 文件无法用 ?raw 读取——Vite 对 .css?raw 返回空串，因此这里断言组件源。）
 import resourceCenterSource from '../pages/Resources/ResourceCenter.tsx?raw'
 
 const scopeMock = vi.hoisted(() => {
@@ -99,5 +104,37 @@ describe('AIOps UI v3 cross-page acceptance', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800, writable: true })
     render(<MemoryRouter initialEntries={['/overview']}><AppLayout /></MemoryRouter>)
     expect(await screen.findByRole('heading', { name: '云平台运营态势' })).toBeVisible()
+  })
+
+  it('renders a visible text label for every primary navigation item', async () => {
+    render(<MemoryRouter initialEntries={['/overview']}><AppLayout /></MemoryRouter>)
+    await screen.findByRole('heading', { name: '云平台运营态势' })
+    for (const label of ['平台', '集群', '助手', '调查', '处置', '知识', '报告', '系统管理']) {
+      expect(await screen.findByText(label, { selector: '.nav__label' })).toBeVisible()
+    }
+    // 标签在 DOM 中始终可见，不依赖 hover title 才能识别。
+    expect(appSource).not.toContain('title={isCollapsed')
+    expect(appSource).toContain('nav__label')
+  })
+
+  it('shows the cluster name only inside the cluster selector', () => {
+    // ScopeBar 的 Select 是集群名称唯一常驻显示，不再重复渲染同名摘要。
+    expect(scopeBarSource).not.toContain('scope-bar__summary')
+    expect(scopeBarSource).toContain('Select aria-label="集群"')
+  })
+
+  it('keeps knowledge, report and admin empty states actionable with natural height', () => {
+    expect(knowledgeSource).toContain('当前类型暂无')
+    expect(knowledgeSource).toContain('knowledge-empty-state')
+    expect(knowledgeSource).toContain('新增知识')
+    expect(reportSource).toContain('当前集群暂无报告')
+    expect(reportSource).toContain('report-empty-state')
+    expect(reportSource).toContain('前往调查')
+    expect(adminSource).toContain('状态未获得')
+    expect(adminSource).toContain('admin-state-unavailable')
+    // 空态不得依赖固定最小高度制造页面感。
+    for (const source of [knowledgeSource, reportSource, adminSource]) {
+      expect(source).not.toMatch(/minHeight['"]?\s*:\s*['"]?4\d{2}/)
+    }
   })
 })

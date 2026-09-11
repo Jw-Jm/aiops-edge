@@ -186,7 +186,6 @@ export function AppLayout() {
   // narrow so the product surface, rather than a legacy expanded sidebar,
   // owns the available width.
   const navRailWidth = narrow ? 64 : compact ? 72 : 88
-  const isCollapsed = true
   const narrowReadOnlyRoute = pathname === '/overview' || /^\/clusters\/[^/]+\/?$/.test(pathname)
   const selectedItem = visibleNav.find((item) => {
     if (item.workspace) {
@@ -212,24 +211,19 @@ export function AppLayout() {
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
       {/* 侧栏 */}
       <aside className="sidebar" style={{ width: navRailWidth, flexShrink: 0, transition: 'width .2s' }}>
-        <div className="brand" style={{ padding: isCollapsed ? '16px 12px' : undefined, justifyContent: isCollapsed ? 'center' : undefined }}>
+        <div className="brand">
           <div className="brand__logo">观</div>
-          {!isCollapsed && (
-            <div>
-              <div className="brand__name">智能可观测平台</div>
-              <div className="brand__sub">AIOps</div>
-            </div>
-          )}
         </div>
 
         <div className="sidebar__scroll">
           <nav className="nav">
+            {/* 每个一级导航项固定渲染图标 + 11px 文字标签，不依赖 hover title 才能识别。 */}
             {visibleNav.map((it) => (
               <div key={`${it.path}:${it.workspace ?? ''}`} className={'nav__item' + (selectedItem === it ? ' is-active' : '')}
-                onClick={() => navigateToItem(it)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); navigateToItem(it) } }} role="button" tabIndex={0} title={isCollapsed ? it.label : undefined}>
+                onClick={() => navigateToItem(it)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); navigateToItem(it) } }} role="button" tabIndex={0} aria-label={it.label}>
                 <AppIcon name={it.icon} />
-                {!isCollapsed && <span>{it.label}</span>}
-                {!isCollapsed && it.badge && (
+                <span className="nav__label">{it.label}</span>
+                {it.badge && (
                   <span className="nav__badge">
                     {it.badge === 'dynamic' ? (alertCount ?? '') : it.badge}
                   </span>

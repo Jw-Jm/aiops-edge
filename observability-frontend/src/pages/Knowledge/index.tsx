@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Drawer, Input, Space, Tabs, message } from 'antd'
-import { useLocation, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { createKnowledge, getKnowledge, getKnowledgeIndexStatus, listKnowledge, searchKnowledge, submitKnowledge, type KnowledgeInput, type KnowledgeItem, type KnowledgeVersion } from '../../api/knowledge'
 import KnowledgeEditor from './KnowledgeEditor'
 import KnowledgeInspector from './KnowledgeInspector'
@@ -12,6 +12,7 @@ const defaultDraft = (clusterId: string): KnowledgeInput => ({ scope_type: 'clus
 
 export default function Knowledge() {
   const { clusterId = '' } = useParams<{ clusterId: string }>()
+  const navigate = useNavigate()
   const location = useLocation()
   const isNewRoute = location.pathname.endsWith('/knowledge/new')
   const capabilities = useScopeStore((state) => state.capabilities)
@@ -103,7 +104,18 @@ export default function Knowledge() {
     } finally { setSubmitting(false) }
   }
 
-  const listPanel = <KnowledgeList items={visibleItems} selectedId={selected?.knowledge_id} loading={loading} onSelect={selectItem} />
+  const knowledgeEmptyLabels: Record<string, string> = { incident: '故障案例', document: '运维文档', playbook: '内置 Playbook' }
+  // 空态必须类型化并提供权限允许的主动作；不渲染整块无信息留白。
+  const knowledgeEmptyPanel = (
+    <div className="knowledge-empty-state">
+      <strong>当前类型暂无{knowledgeEmptyLabels[activeType] || '知识'}</strong>
+      <p>当前集群还没有{knowledgeEmptyLabels[activeType] || '知识'}，可先新增草稿或切换类型查看。</p>
+      {canWrite && <Button type="primary" onClick={() => { setDraft(defaultDraft(clusterId)); navigate(clusterId ? `/clusters/${encodeURIComponent(clusterId)}/knowledge/new` : '/clusters') }}>新增知识</Button>}
+    </div>
+  )
+  const listPanel = visibleItems.length === 0 && !loading && !error
+    ? knowledgeEmptyPanel
+    : <KnowledgeList items={visibleItems} selectedId={selected?.knowledge_id} loading={loading} onSelect={selectItem} />
   const inspectorPanel = <KnowledgeInspector item={selected} version={version} indexAvailable={indexAvailable} />
 
   return <div className="knowledge-workspace" data-testid="knowledge-workspace">
