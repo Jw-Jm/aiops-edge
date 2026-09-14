@@ -1,0 +1,2 @@
+NAME 	NAMESPACE    	REVISION	UPDATED                             	STATUS  	CHART      	APP VERSION
+aiops	observability	78      	2026-09-11 16:04:24.386955 +0800 CST	deployed	aiops-0.1.1	1.1.1      

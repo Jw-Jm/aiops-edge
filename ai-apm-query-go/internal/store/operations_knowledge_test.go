@@ -50,6 +50,82 @@ func TestKnowledgeContentChecksumAndOutboxIdentityAreStable(t *testing.T) {
 	}
 }
 
+// 回归（真实环境验证发现的 S1 缺陷家族）：Create 的 INSERT 列数与值数不匹配，
+// 参数整体错位导致 status 写入 source_revision。Submit/Review/Disable 必须保持
+// 占位符与参数一一对应，否则生命周期在生产环境静默失效（0 行受影响）。
+func TestKnowledgeSubmitUpdatesDraftWithinScope(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	SetDB(db)
+	defer SetDB(nil)
+
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE operations_knowledge SET status='pending_review', updated_by=?, updated_at=NOW(3) WHERE tenant_id=? AND (scope_type='platform_common' OR (scope_type='cluster' AND cluster_id=?)) AND knowledge_id=? AND status='draft'")).
+		WithArgs("admin", "tenant-a", "cluster-a", "k-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	dao := &OperationsKnowledgeDAO{}
+	if err := dao.Submit(context.Background(), KnowledgeScope{TenantID: "tenant-a", ClusterID: "cluster-a"}, "k-1", "admin"); err != nil {
+		t.Fatalf("submit must affect the draft row within scope: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKnowledgeSubmitRejectsWhenScopeDoesNotMatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	SetDB(db)
+	defer SetDB(nil)
+
+	// 0 行受影响必须显式失败，不得被解释为成功。
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE operations_knowledge SET status='pending_review', updated_by=?, updated_at=NOW(3) WHERE tenant_id=? AND (scope_type='platform_common' OR (scope_type='cluster' AND cluster_id=?)) AND knowledge_id=? AND status='draft'")).
+		WithArgs("admin", "tenant-a", "cluster-a", "k-missing").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	dao := &OperationsKnowledgeDAO{}
+	err = dao.Submit(context.Background(), KnowledgeScope{TenantID: "tenant-a", ClusterID: "cluster-a"}, "k-missing", "admin")
+	if err == nil || !strings.Contains(err.Error(), "not an editable draft") {
+		t.Fatalf("zero-row submit must fail loudly, got %v", err)
+	}
+}
+
+func TestKnowledgeDisableUpdatesAndFailsLoudlyOnZeroRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	SetDB(db)
+	defer SetDB(nil)
+
+	// 占位符顺序：updated_by=?, tenant_id=?, cluster_id=?, knowledge_id=?
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE operations_knowledge SET status='disabled', disabled_at=NOW(3), updated_by=?, updated_at=NOW(3) WHERE tenant_id=? AND (scope_type='platform_common' OR (scope_type='cluster' AND cluster_id=?)) AND knowledge_id=? AND status<>'disabled'")).
+		WithArgs("admin", "tenant-a", "cluster-a", "k-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	dao := &OperationsKnowledgeDAO{}
+	if err := dao.Disable(context.Background(), KnowledgeScope{TenantID: "tenant-a", ClusterID: "cluster-a"}, "k-1", "admin"); err != nil {
+		t.Fatalf("disable must affect the row within scope: %v", err)
+	}
+
+	// 0 行受影响必须报错：静默成功会让"删除验证"建立在假成功上。
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE operations_knowledge SET status='disabled', disabled_at=NOW(3), updated_by=?, updated_at=NOW(3) WHERE tenant_id=? AND (scope_type='platform_common' OR (scope_type='cluster' AND cluster_id=?)) AND knowledge_id=? AND status<>'disabled'")).
+		WithArgs("admin", "tenant-a", "cluster-a", "k-missing").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	if err := dao.Disable(context.Background(), KnowledgeScope{TenantID: "tenant-a", ClusterID: "cluster-a"}, "k-missing", "admin"); err == nil {
+		t.Fatal("zero-row disable must fail loudly")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestKnowledgeReviewPublishesVersionAndOutboxAtomically(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

@@ -617,6 +617,22 @@ class _InvestigationBrainAdapter:
         if item.action_mode == "read_only":
             saw_done = True
             final_text = str(getattr(rca_result, "explanation", "") or "")
+            # 回归（真实环境验证发现的 S1 缺陷 D19）：read_only 调查的候选根因
+            # 从不持久化为假设（hypothesis_events 只来自 plan/full 模式的 brain
+            # 流），导致 run.root_cause 服务端投影恒空 —— UI/报告/评测拿不到
+            # 任何根因。把 RCA V2 候选转为假设审计投影：仅 confirmed 状态且
+            # 命中权威根因的候选标记 confirmed_by_evidence，评分随证据走，
+            # 不做阈值放水。
+            for cand_index, cand in enumerate(
+                    (rca_payload.get("candidate_roots") or [])[:5], start=1):
+                confirmed = (str(rca_result.root_cause_status) == "confirmed"
+                             and str(cand.get("entity_uid") or "") == str(rca_result.root_cause or ""))
+                hypothesis_events.append({
+                    "content": str(cand.get("name") or cand.get("entity_uid") or ""),
+                    "confidence": min(1.0, max(0.0, float(cand.get("score") or 0.0))),
+                    "status": "confirmed" if confirmed else "proposed",
+                    "confirmed_by_evidence": confirmed,
+                })
         else:
             mode = "full"
             async for event in _get_brain().stream_sync(

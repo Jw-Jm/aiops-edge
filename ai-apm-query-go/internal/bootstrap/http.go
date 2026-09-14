@@ -58,10 +58,22 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	mux.HandleFunc("/api/v1/clusters", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 	mux.HandleFunc("/api/v1/clusters/", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 	mux.HandleFunc("/api/v1/clusters/{clusterId}/overview", handler.ClusterOverview)
+	// 集群页运行时事实：Pod 就绪/阶段分布/重启（真实 core/v1），
+	// 网络与存储指标未接入时显式 not_connected（设计规范 §6.3）。
+	mux.HandleFunc("/api/v1/clusters/{clusterId}/runtime", handler.ClusterRuntime)
 	mux.HandleFunc("/api/v1/clusters/{clusterId}/knowledge", handler.OperationsKnowledgeRouter)
 	mux.HandleFunc("/api/v1/clusters/{clusterId}/knowledge/", handler.OperationsKnowledgeRouter)
 	mux.HandleFunc("/api/v1/platform/overview", handler.PlatformOverview)
 	mux.HandleFunc("/api/v1/platform/clusters", handler.PlatformClusters)
+
+	// 总览/集群：集群口径容量事实（设计规范 §6.2 / §6.3）。只返回聚合值，
+	// 不暴露节点名单；未接入指标通道的集群显式 not_connected。
+	mux.HandleFunc("/api/v1/platform/capacity", handler.PlatformCapacity)
+
+	// 全链路监控：云平台路径目录与所选路径详情（设计规范 §6.4 / §7.3）。
+	// 所有面板绑定同一 selectedPathId；路径由真实事件事实分类而来，不含业务示例。
+	mux.HandleFunc("/api/v1/observability/paths", handler.ObservabilityPaths)
+	mux.HandleFunc("/api/v1/observability/paths/", handler.ObservabilityPathDetail)
 
 	mux.HandleFunc("/livez", health.Livez)
 	mux.HandleFunc("/readyz", health.Readyz)
@@ -169,6 +181,11 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	// the legacy orchestrator SQLite endpoint (retired in production).
 	mux.HandleFunc("/api/v1/ai/final_report", handler.GenerateChatReport)
 	mux.HandleFunc("/api/v1/ops/reports", handler.ReportsPublic)
+	// 巡检报告生成：聚合真实事实并写入 tenant/cluster 隔离的 reports 表（§6.7）。
+	// 必须注册在 /ops/reports/ 前缀之前以确保最具体模式生效。
+	mux.HandleFunc("/api/v1/ops/reports/inspection", handler.InspectReportGenerate)
+	// AI 运维报告生成：从已完成/终止 Run 聚合真实事实写入 reports 表（§6 报告）。
+	mux.HandleFunc("/api/v1/ops/reports/ai-operations", handler.GenerateAIOperationsReport)
 	mux.HandleFunc("/api/v1/ops/reports/", handler.ReportsPublicRouter)
 	mux.HandleFunc("/api/v1/ai/runs/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/events", handler.StreamRunEvents)

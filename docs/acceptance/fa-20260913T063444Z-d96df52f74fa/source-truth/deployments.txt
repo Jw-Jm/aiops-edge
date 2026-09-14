@@ -1,0 +1,10 @@
+ai-investigation-worker	127.0.0.1:5050/aiops/ai-orchestrator@sha256:5a904044abf672ecd9e076b4e95b050fb18058e5d3d4c13dbe01fd73fecb38e0	1/1
+ai-llm-egress-proxy	127.0.0.1:5050/aiops/ai-llm-egress-proxy@sha256:74ea6fb0a1a4842eeaf3198a2fd349371be21d4d79c872d625c7b434ca1f7756	1/1
+ai-orchestrator	127.0.0.1:5050/aiops/ai-orchestrator@sha256:5a904044abf672ecd9e076b4e95b050fb18058e5d3d4c13dbe01fd73fecb38e0	1/1
+frontend	127.0.0.1:5050/aiops/observability-frontend@sha256:6d2b0575ccb23dd2a791410d06fe86fd14aa5a924ec64c74e892f5d7cb1fff49	1/1
+ingest	127.0.0.1:5050/aiops/ingest-pipeline@sha256:022a6d37a6c4e34b4b2f02f313ee0d1c8491340d784b3f0292fee72951a84f42	1/1
+query-alert-eval	127.0.0.1:5050/aiops/query-api@sha256:bac541f12329604e986e47ab3692589baacb089d7c53aa49d0684f50ad3988e9	1/1
+query-api-http	127.0.0.1:5050/aiops/query-api@sha256:bac541f12329604e986e47ab3692589baacb089d7c53aa49d0684f50ad3988e9	1/1
+query-run-dispatch	127.0.0.1:5050/aiops/query-api@sha256:bac541f12329604e986e47ab3692589baacb089d7c53aa49d0684f50ad3988e9	1/1
+victoria-logs	victoriametrics/victoria-logs:v1.52.0	1/1
+victoria-metrics	victoriametrics/victoria-metrics:v1.101.0	1/1

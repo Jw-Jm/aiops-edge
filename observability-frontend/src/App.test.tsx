@@ -1,46 +1,62 @@
 import { describe, expect, it } from 'vitest'
 import source from './App.tsx?raw'
-import clusterSource from './pages/Clusters/ClusterOverview.tsx?raw'
-import resourcesSource from './pages/Resources/index.tsx?raw'
-import graphSource from './pages/observability/ResourceRelationships.tsx?raw'
-import assistantSource from './pages/ai/AiChat.tsx?raw'
-import knowledgeSource from './pages/Knowledge/index.tsx?raw'
+import navSource from './layout/navConfig.ts?raw'
 
-describe('production shell', () => {
-  it('does not expose a demo environment banner', () => {
+describe('V1.4 生产壳层合同', () => {
+  it('不暴露演示环境横幅', () => {
     expect(source).not.toContain('演示环境')
+    expect(source).not.toContain('生产平台')
   })
 
-  it('exposes a stable semantic locator for each notification entry', () => {
+  it('为每个通知条目保留稳定语义定位器', () => {
     expect(source).toContain('data-testid="notification-alert-item"')
   })
 
-  it('keeps the v3 product entry points stable', () => {
-    for (const path of ['/overview', '/clusters/:clusterId', '/clusters/:clusterId/assistant', '/clusters/:clusterId/investigations', '/clusters/:clusterId/actions', '/clusters/:clusterId/knowledge', '/clusters/:clusterId/reports', '/admin']) {
+  it('八个规范路由全部注册', () => {
+    for (const path of [
+      '/ai-operations',
+      '/overview',
+      '/clusters/:clusterUid/overview',
+      '/observability',
+      '/knowledge-graph',
+      '/knowledge',
+      '/reports',
+      '/settings',
+    ]) {
       expect(source).toContain(path)
     }
   })
 
-  it('does not expose global search or the fake production platform layer', () => {
+  it('根路径默认进入 AI 智能运维（第一入口）', () => {
+    expect(source).toContain('AI_OPERATIONS_PATH')
+    expect(source).toContain('<Route path="/" element={<Navigate replace to={AI_OPERATIONS_PATH} />} />')
+  })
+
+  it('不再存在问题/资源/调查/处置的独立路由入口', () => {
+    const legacyOnly = ['/clusters/:clusterId/investigations', '/clusters/:clusterId/actions', '/clusters/:clusterId/resources', '/clusters/:clusterId/assistant']
+    for (const path of legacyOnly) {
+      expect(source).not.toContain(`<Route path="${path}"`)
+    }
+  })
+
+  it('旧路由通过统一迁移组件处理，不静默跳转', () => {
+    expect(source).toContain('resolveLegacyRoute')
+    expect(source).toContain('LegacyOrNotFound')
+    expect(source).toContain('MigrationNotice')
+  })
+
+  it('统一账户：不再按角色过滤导航', () => {
+    expect(source).not.toContain('visiblePrimaryNav(role)')
+    expect(navSource).not.toContain('adminOnly')
+    expect(source).not.toContain('adminOnly')
+  })
+
+  it('顶栏保留数据截止、时区与质量表达入口（ScopeBar）', () => {
+    expect(source).toContain('<ScopeBar')
+  })
+
+  it('无全局搜索与伪造平台层', () => {
     expect(source).not.toContain('全局搜索')
     expect(source).not.toContain('searchOpen')
-    expect(source).not.toContain('生产平台')
-  })
-
-  it('keeps the platform overview readable before a cluster is selected', () => {
-    expect(source).toContain("pathname !== '/overview'")
-  })
-
-  it('uses a query-preserving compatibility redirect for legacy routes', () => {
-    expect(source).toContain('function LegacyRedirect')
-    expect(source).toContain('new URLSearchParams(location.search)')
-  })
-
-  it('keeps canonical page headings aligned with the v3 route contract', () => {
-    expect(clusterSource).toContain('title="集群详细总览"')
-    expect(resourcesSource).toContain('title="资源目录"')
-    expect(graphSource).toContain('title="资源关系图谱"')
-    expect(assistantSource).toContain('title="智能运维助手"')
-    expect(knowledgeSource).toContain('title="运维知识"')
   })
 })

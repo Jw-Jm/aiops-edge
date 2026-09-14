@@ -171,9 +171,13 @@ func (d *OperationsKnowledgeDAO) Create(ctx context.Context, scope KnowledgeScop
 		return nil, nil, err
 	}
 	defer tx.Rollback()
+	// 真实环境验证发现的 S1 缺陷：原 SQL 列数 13 而值仅 12（含一个字面量
+	// 'draft' 占位），导致参数整体错位，status 被写入 source_revision，
+	// 触发 1048/3819，知识创建在生产环境完全不可用。
+	// 修复：13 列逐列显式绑定，status 由服务端写死为 draft，不接受调用方指定。
 	_, err = tx.ExecContext(ctx, `INSERT INTO operations_knowledge
  (knowledge_id,tenant_id,scope_type,cluster_id,knowledge_type,title,summary,source_kind,source_revision,status,draft_version_id,created_by,updated_by)
- VALUES (?,?,?,?,?,?,?,?, 'draft', ?,?,?,?)`, knowledgeID, scope.TenantID, input.ScopeType, nullableString(input.ClusterID), input.KnowledgeType, input.Title, input.Summary, input.SourceKind, nullableString(input.SourceRevision), versionID, actor, actor)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, knowledgeID, scope.TenantID, input.ScopeType, nullableString(input.ClusterID), input.KnowledgeType, input.Title, input.Summary, input.SourceKind, nullableString(input.SourceRevision), string(KnowledgeDraft), versionID, actor, actor)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -253,8 +257,12 @@ func (d *OperationsKnowledgeDAO) List(ctx context.Context, scope KnowledgeScope,
 }
 
 func (d *OperationsKnowledgeDAO) Submit(ctx context.Context, scope KnowledgeScope, knowledgeID, actor string) error {
-	where, args := knowledgeScopeClause(scope)
-	args = append(args, actor, knowledgeID)
+	where, scopeArgs := knowledgeScopeClause(scope)
+	// SQL 占位符顺序：updated_by=?, tenant_id=?, cluster_id=?, knowledge_id=?
+	// 此前把 actor 追加在 scope 之后，导致 updated_by 写入 tenant、tenant_id 写入
+	// cluster，UPDATE 恒为 0 行，知识生命周期在生产环境静默失效（真实环境验证发现）。
+	args := append([]interface{}{actor}, scopeArgs...)
+	args = append(args, knowledgeID)
 	db := GetDB()
 	if db == nil {
 		return ErrMySQLUnavailable
@@ -373,14 +381,23 @@ func firstNonEmptyStore(values ...string) string {
 }
 
 func (d *OperationsKnowledgeDAO) Disable(ctx context.Context, scope KnowledgeScope, knowledgeID, actor string) error {
-	where, args := knowledgeScopeClause(scope)
-	args = append(args, actor, knowledgeID)
+	where, scopeArgs := knowledgeScopeClause(scope)
+	// 与 Submit 相同的占位符顺序：disabled_at/updated_by 在前，scope 在后。
+	args := append([]interface{}{actor}, scopeArgs...)
+	args = append(args, knowledgeID)
 	db := GetDB()
 	if db == nil {
 		return ErrMySQLUnavailable
 	}
-	_, err := db.ExecContext(ctx, "UPDATE operations_knowledge SET status='disabled', disabled_at=NOW(3), updated_by=?, updated_at=NOW(3) WHERE "+where+" AND knowledge_id=? AND status<>'disabled'", args...)
-	return err
+	result, err := db.ExecContext(ctx, "UPDATE operations_knowledge SET status='disabled', disabled_at=NOW(3), updated_by=?, updated_at=NOW(3) WHERE "+where+" AND knowledge_id=? AND status<>'disabled'", args...)
+	if err != nil {
+		return err
+	}
+	// 禁用是删除验证的前置：0 行受影响必须显式失败，否则验证会建立在假成功上。
+	if n, _ := result.RowsAffected(); n == 0 {
+		return errors.New("knowledge is not in a state that can be disabled")
+	}
+	return nil
 }
 
 func (d *OperationsKnowledgeDAO) GetVersion(ctx context.Context, scope KnowledgeScope, knowledgeID, versionID string) (*OperationsKnowledgeVersion, error) {

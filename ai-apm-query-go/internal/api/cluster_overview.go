@@ -35,6 +35,9 @@ type kubeVirtSummary struct {
 type clusterOverviewResponse struct {
 	ClusterID          string                `json:"cluster_id"`
 	Name               string                `json:"name"`
+	// 环境与地域：集群页必须永久显示（设计规范 §6.3），为空时前端显示未提供。
+	Environment        string                `json:"environment,omitempty"`
+	Region             string                `json:"region,omitempty"`
 	Status             string                `json:"status"`
 	StatusReason       string                `json:"status_reason"`
 	StatusReasons      []string              `json:"status_reasons"`
@@ -74,6 +77,8 @@ func aggregateClusterOverview(cluster store.Cluster, issues []platformIssueInput
 	result := clusterOverviewResponse{
 		ClusterID:          cluster.ClusterID,
 		Name:               cluster.Name,
+		Environment:        cluster.Environment,
+		Region:             cluster.Region,
 		Status:             state.Health,
 		StatusReason:       state.Reason,
 		StatusReasons:      []string{state.Reason},

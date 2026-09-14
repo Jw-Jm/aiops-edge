@@ -842,6 +842,7 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/resources/detail",
 		"/api/v1/platform/overview",
 		"/api/v1/platform/clusters",
+		"/api/v1/platform/capacity", // 总览/集群的集群口径 CPU/内存（只读聚合，无节点名单）
 		"/api/v1/services",
 		"/api/v1/services/overview",
 		"/api/v1/services/map",
@@ -858,6 +859,10 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/alerts/aggregation", // 观测中心问题聚合（只读；写端点 /alerts/aggregation/create 仍 fail-closed）
 		"/api/v1/logs/query",
 		"/api/v1/logs/aggregate",
+		// 原始日志查询：handler 内强制剥离调用方自报 scope 并注入服务端权威
+		// tenant/cluster（缺少时 fail-closed）；写到该路径的 POST 另有
+		// admin/approver 角色校验。
+		"/api/v1/logs/victorialogs",
 		"/api/v1/dashboard/stats",
 		"/api/v1/dashboard/resources",
 		"/api/v1/capacity/forecast",
@@ -871,6 +876,14 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/settings/llm/history",   // LLM 配置历史
 		"/api/v1/settings/llm/providers", // LLM provider 列表/创建
 		"/api/v1/ai/sessions",            // Query/MySQL-owned scoped chat history
+		"/api/v1/observability/paths",    // 全链路监控：云平台路径目录（只读，事件事实驱动）
+		"/api/v1/ops/reports/inspection", // 巡检报告生成（写入租户/集群隔离的 reports 表）
+		"/api/v1/ai/kg/health",           // 知识图谱健康（只读）
+		"/api/v1/ai/kg/ops/sync-states",  // 知识图谱来源同步状态（只读）
+		"/api/v1/ai/kg/ops/outbox",       // 知识图谱 outbox 积压（只读）
+		"/api/v1/ai/kg/ops/aliases",      // 知识图谱 schema/alias（只读）
+		"/api/v1/ai/kg/ops/shadow-diff",  // 知识图谱 shadow 差异（只读）
+		"/api/v1/ai/actions",             // 动作只读列表（写操作由 /ai/actions/{id}/decision 与审批链控制）
 		"/api/v1/ai/chat":                // P19.6：对话型 canonical-protected 路由。query-api 完成 JWT+tenant+cluster
 		// 解析 + ai.chat capability 签名后转发 orchestrator /internal/v1/chat（SSE 流式）。
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
@@ -887,6 +900,16 @@ func isCanonicalProtectedRoute(path string) bool {
 	}
 	if strings.HasPrefix(path, "/api/v1/ai/session/") {
 		return true
+	}
+	// 全链路监控路径详情：只放行单段 pathId，禁止任意嵌套路径绕过 canonical 边界。
+	// 集群运行时事实：只放行 /api/v1/clusters/{id}/runtime（单段集群 ID + 固定尾段）。
+	if strings.HasPrefix(path, "/api/v1/clusters/") && strings.HasSuffix(path, "/runtime") {
+		trimmed := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/clusters/"), "/runtime")
+		return trimmed != "" && !strings.Contains(trimmed, "/")
+	}
+	if strings.HasPrefix(path, "/api/v1/observability/paths/") {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/observability/paths/"), "/"), "/")
+		return len(parts) == 1 && parts[0] != ""
 	}
 	// Service list details still use the historical /services/{name} alias,
 	// whose handler redirects to the canonical topology detail endpoint. Allow

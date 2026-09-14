@@ -76,14 +76,33 @@ export const useScopeStore = create<ScopeState>()(
       initialize: async () => {
         set({ loading: true, error: null })
         try {
-          const response = await getMe()
-          const nextScope = projectScope(response.data.active_scope)
+          let response = await getMe()
+          let nextScope = projectScope(response.data.active_scope)
+          const available = projectClusters(response.data.available_clusters)
+          // 新会话服务端 active_scope 为空时，所有集群级只读请求都会被服务端
+          // fail-closed 拒绝（403），页面表现为"接口失败"而不是"未选择范围"。
+          // 这里在初始化阶段主动建立服务端确认的范围：优先已记住的集群，
+          // 否则取第一个可用集群，并重新读取 /me 确认服务端已接受。
+          let established = false
+          if (!nextScope.activeClusterId && available.length > 0) {
+            const preferred = get().preferredClusterId
+            const target = available.find((c) => c.cluster_id === preferred) ?? available[0]
+            try {
+              await setActiveScope(target.tenant_id, target.cluster_id)
+              response = await getMe()
+              nextScope = projectScope(response.data.active_scope)
+              established = Boolean(nextScope.activeClusterId)
+            } catch {
+              // 建立失败时保持未选择状态，由页面显示真实的 scope 缺失提示。
+            }
+          }
           setScopeCluster(nextScope.activeClusterId)
           set((state) => ({
             authScope: nextScope,
             capabilities: Array.isArray(response.data.capabilities) ? response.data.capabilities : [],
             active: activeScopeFromAuth(nextScope, state.active),
             clusters: projectClusters(response.data.available_clusters),
+            preferredClusterId: established ? nextScope.activeClusterId : state.preferredClusterId,
             loading: false,
           }))
         } catch (error) {

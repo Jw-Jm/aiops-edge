@@ -819,10 +819,14 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		h.proxyRunList(w, r)
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") {
-		// All browser-facing legacy orchestrator proxies are retired in the
-		// production profile.  Canonical chat/session/run handlers above are the
-		// only supported entry points and carry signed scope context.
+	// 回归（真实环境验证发现的 S1 缺陷 D17）：production 下一刀切 410 使知识库
+	// 页面核心数据源（/ai/knowledge 列表/写入/检索、playbooks、RAG 统计）全部
+	// 失效，违反"不得用前端伪造结果"的设计要求。legacyProxyAllowed 白名单
+	// （settings.go）与 orchestrator production_surface kept 路由表是双重防线：
+	// 只有显式列入白名单的配置面读/写继续代理；白名单之外仍 fail-closed。
+	// 非白名单的 legacy 路由在 production 保持 410。
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") &&
+		!legacyProxyAllowed(r.URL.Path, r.Method) {
 		respondJSON(w, http.StatusGone, map[string]interface{}{"error": "LEGACY_ROUTE_RETIRED"})
 		return
 	}

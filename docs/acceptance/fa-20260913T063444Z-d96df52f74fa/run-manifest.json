@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "run_id": "fa-20260913T063444Z-d96df52f74fa",
+  "base_url": "http://localhost:30253/",
+  "started_at": "2026-09-13T06:34:44Z",
+  "finished_at": null,
+  "local_timezone": "Asia/Shanghai",
+  "git_commit": "d96df52f74fa6328e6bb4daf99aee8016cf29f5f",
+  "git_branch": "main",
+  "frontend_image": "127.0.0.1:5050/aiops/observability-frontend@sha256:6d2b0575ccb23dd2a791410d06fe86fd14aa5a924ec64c74e892f5d7cb1fff49",
+  "backend_image_query_api": "127.0.0.1:5050/aiops/query-api@sha256:bac541f12329604e986e47ab3692589baacb089d7c53aa49d0684f50ad3988e9",
+  "backend_image_orchestrator": "127.0.0.1:5050/aiops/ai-orchestrator@sha256:5a904044abf672ecd9e076b4e95b050fb18058e5d3d4c13dbe01fd73fecb38e0",
+  "backend_image_ingest": "127.0.0.1:5050/aiops/ingest-pipeline@sha256:022a6d37a6c4e34b4b2f02f313ee0d1c8491340d784b3f0292fee72951a84f42",
+  "backend_image_egress_proxy": "127.0.0.1:5050/aiops/ai-llm-egress-proxy@sha256:74ea6fb0a1a4842eeaf3198a2fd349371be21d4d79c872d625c7b434ca1f7756",
+  "deployment_revision": "78",
+  "chart_version": "aiops-0.1.1",
+  "app_version": "1.1.1",
+  "operator": "implementation-agent",
+  "environment": "orbstack-local-acceptance",
+  "namespace": "observability",
+  "authorized_cluster_ids": ["91771a6e-9c2d-11f1-8271-bea176fe9f9f"],
+  "registered_secondary_cluster": "kind-aiops-kind-02",
+  "fault_test_cluster_id": null,
+  "design_baseline": "docs/AIOps平台最终设计与实施规范.docx",
+  "design_version": "V1.4（八页最终信息架构版）2026-09-13",
+  "notes": [
+    "本 run 在 OrbStack 停机后被重新拉起，环境快照取 2026-09-13T06:35Z 稳定态（全部 Pod 1/1 Running）。",
+    "生产数据面只读；写操作与故障注入需单独授权。"
+  ]
+}

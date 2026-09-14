@@ -1,0 +1,20 @@
+ai-investigation-worker-6688b654d4-xt5bm   1/1   Running     4 (23h ago)    46h   192.168.194.28   orbstack   <none>   <none>
+ai-llm-egress-proxy-579d5d794d-99ck5       1/1   Running     4 (23h ago)    46h   192.168.194.19   orbstack   <none>   <none>
+ai-orchestrator-6cc9f7cc57-4hl77           1/1   Running     4 (23h ago)    46h   192.168.194.27   orbstack   <none>   <none>
+categraf-9mdvw                             1/1   Running     15 (23h ago)   8d    192.168.194.24   orbstack   <none>   <none>
+clickhouse-0                               1/1   Running     16 (23h ago)   8d    192.168.194.21   orbstack   <none>   <none>
+clickhouse-init-f2zx5                      0/1   Completed   0              46h   <none>           orbstack   <none>   <none>
+clickhouse-migrator-5wjbq                  0/1   Completed   0              46h   <none>           orbstack   <none>   <none>
+event-collector-xqsvh                      1/1   Running     8 (48s ago)    46h   192.168.194.22   orbstack   <none>   <none>
+frontend-7c77545c5-wjfw9                   1/1   Running     9 (89s ago)    46h   192.168.194.16   orbstack   <none>   <none>
+graph-schema-migrator-kqrxg                0/1   Completed   0              46h   <none>           orbstack   <none>   <none>
+hugegraph-0                                1/1   Running     15 (23h ago)   8d    192.168.194.39   orbstack   <none>   <none>
+ingest-5f8977ff45-4l28v                    1/1   Running     12 (69s ago)   46h   192.168.194.15   orbstack   <none>   <none>
+mysql-0                                    1/1   Running     20 (23h ago)   8d    192.168.194.20   orbstack   <none>   <none>
+mysql-init-9hd2j                           0/1   Completed   0              46h   <none>           orbstack   <none>   <none>
+mysql-users-init-dgbcv                     0/1   Completed   0              46h   <none>           orbstack   <none>   <none>
+query-alert-eval-7c9564f9-5zdkp            1/1   Running     4 (23h ago)    46h   192.168.194.32   orbstack   <none>   <none>
+query-api-http-5f5995498f-cm29r            1/1   Running     4 (23h ago)    46h   192.168.194.40   orbstack   <none>   <none>
+query-run-dispatch-588bf87d55-9xsvm        1/1   Running     4 (23h ago)    46h   192.168.194.29   orbstack   <none>   <none>
+victoria-logs-858c67648d-zp4kn             1/1   Running     17 (23h ago)   8d    192.168.194.25   orbstack   <none>   <none>
+victoria-metrics-5b7bb74b87-4drbl          1/1   Running     17 (23h ago)   8d    192.168.194.37   orbstack   <none>   <none>

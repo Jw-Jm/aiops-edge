@@ -386,13 +386,16 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 }
 
 // deriveRunRootCause is the server-owned projection rule used by the browser.
-// Only an evidence-confirmed hypothesis can become a root cause; transient
-// graph text or client-side ordering is never treated as authoritative.
+// 证据确认（confirmed_by_evidence）的假设始终可投影为根因；证据支撑的
+// Supported 级假设（status=supported，传播路径完整但结论未达 Confirmed）
+// 也可投影 —— 结论等级由 status/confidence 表达，root_cause 字段承载
+// 当前最佳根因候选。瞬态图谱文本或客户端排序永不作为权威来源。
 func deriveRunRootCause(hypotheses []store.AIHypothesis) (string, float64) {
 	rootCause := ""
 	confidence := 0.0
 	for _, hypothesis := range hypotheses {
-		if !hypothesis.ConfirmedByEvidence || hypothesis.Content == "" {
+		eligible := hypothesis.ConfirmedByEvidence || hypothesis.Status == "supported"
+		if !eligible || hypothesis.Content == "" {
 			continue
 		}
 		if rootCause == "" || hypothesis.Confidence > confidence {

@@ -206,6 +206,40 @@ class _WorkerBrain:
 
         if item.action_mode == "read_only":
             saw_done = True
+            # 回归（真实环境验证发现的 S1 缺陷 D19）：read_only 调查的 RCA 候选
+            # 根因从不持久化为假设（hypothesis_events 只存在于 plan/full 模式
+            # 的 brain 流），run.root_cause 服务端投影（deriveRunRootCause 只
+            # 读 ai_hypotheses 的 confirmed 行）恒空 —— UI/报告/评测拿不到根因。
+            # 把 RCA V2 候选转成假设审计投影：仅 confirmed 状态且命中权威根因
+            # 的候选标记 confirmed_by_evidence；评分随证据走，不做阈值放水。
+            try:
+                from control_plane_client import ControlPlaneClient as _CPC
+                import uuid as _uuid
+
+                _cp = ControlPlaneClient()
+                _candidates = (rca_payload or {}).get("candidate_roots") or []
+                _status = str((rca_payload or {}).get("root_cause_status") or "")
+                for _i, _cand in enumerate(_candidates[:5], start=1):
+                    _is_top = str(_cand.get("entity_uid") or "") == str((rca_payload or {}).get("root_cause") or "")
+                    _confirmed = _status == "confirmed" and _is_top
+                    _supported = _status == "probable" and _is_top
+                    _hyp_status = "confirmed" if _confirmed else ("supported" if _supported else "proposed")
+                    _cp.append_hypothesis(
+                        run_id=item.run_id, tenant_id=item.tenant_id, cluster_id=item.cluster_id,
+                        hypothesis_id=str(_uuid.uuid5(_uuid.UUID(str(item.run_id)),
+                                                      f"hypothesis:rca-v2:{item.invocation_id}:{_i}")),
+                        content=str(_cand.get("name") or _cand.get("entity_uid") or ""),
+                        confidence=min(1.0, max(0.0, float(_cand.get("score") or 0.0))),
+                        status=_hyp_status,
+                        confirmed_by_evidence=_confirmed,
+                    )
+            except Exception as exc:  # noqa: BLE001 - hypothesis is an audit projection
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "rca hypothesis persistence failed: %s: %s",
+                    type(exc).__name__, exc, extra={"run_id": str(item.run_id)},
+                )
         else:
             async for event in brain.stream_sync(
                 item.intent or "diagnosis",

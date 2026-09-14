@@ -178,3 +178,100 @@ export async function getPlatformClusters(params: { status?: PlatformClusterHeal
     meta: mapMeta(response.data.meta),
   }
 }
+
+// ===== 集群口径容量事实（设计规范 §6.2 / §6.3）=====
+// CPU = 已使用核数 ÷ 可分配核数；内存 = 已使用容量 ÷ 可分配容量。
+// 必须同时给出 P95 与最大值、热点节点数，避免集群平均掩盖单节点热点。
+
+export interface CapacityResourceFact {
+  used: number
+  allocatable: number
+  usageRatio: number | null
+  unit: string
+  aggregation: string
+  source: string
+  sourceTimestamp: string
+}
+
+export interface CapacityClusterFact {
+  clusterId: string
+  name: string
+  cpu: CapacityResourceFact
+  memory: CapacityResourceFact
+  nodes: { total: number; ready: number; notReady: number; unknown: number }
+  p95CpuUtilization: number | null
+  p95MemUtilization: number | null
+  maxCpuUtilization: number | null
+  maxMemUtilization: number | null
+  hotNodeCount: number
+  hotNodeThresholdPct: number
+  quality: string
+  qualityReason?: string
+  registrationStatus: string
+}
+
+interface CapacityWire {
+  cluster_id: string
+  name: string
+  cpu: { used: number; allocatable: number; usage_ratio: number | null; unit: string; aggregation: string; source: string; source_timestamp: string }
+  memory: { used: number; allocatable: number; usage_ratio: number | null; unit: string; aggregation: string; source: string; source_timestamp: string }
+  nodes: { total: number; ready: number; not_ready: number; unknown: number }
+  p95_cpu_utilization: number | null
+  p95_mem_utilization: number | null
+  max_cpu_utilization: number | null
+  max_mem_utilization: number | null
+  hot_node_count: number
+  hot_node_threshold_pct: number
+  quality: string
+  quality_reason?: string
+  registration_status: string
+}
+
+export interface PlatformCapacityResponse {
+  clusters: CapacityClusterFact[]
+  count: number
+  meta: ResourceReadMetaView
+}
+
+export async function getPlatformCapacity(signal?: AbortSignal): Promise<PlatformCapacityResponse> {
+  const response = await api.get<{ generated_at: string; clusters: CapacityWire[]; count: number; meta: ResourceReadMeta }>(
+    '/platform/capacity',
+    { signal },
+  )
+  return {
+    clusters: (response.data.clusters ?? []).map((c) => ({
+      clusterId: c.cluster_id,
+      name: c.name,
+      cpu: {
+        used: c.cpu.used,
+        allocatable: c.cpu.allocatable,
+        usageRatio: c.cpu.usage_ratio ?? null,
+        unit: c.cpu.unit,
+        aggregation: c.cpu.aggregation,
+        source: c.cpu.source,
+        sourceTimestamp: c.cpu.source_timestamp,
+      },
+      memory: {
+        used: c.memory.used,
+        allocatable: c.memory.allocatable,
+        usageRatio: c.memory.usage_ratio ?? null,
+        unit: c.memory.unit,
+        aggregation: c.memory.aggregation,
+        source: c.memory.source,
+        sourceTimestamp: c.memory.source_timestamp,
+      },
+      nodes: { total: c.nodes.total, ready: c.nodes.ready, notReady: c.nodes.not_ready, unknown: c.nodes.unknown },
+      p95CpuUtilization: c.p95_cpu_utilization ?? null,
+      p95MemUtilization: c.p95_mem_utilization ?? null,
+      maxCpuUtilization: c.max_cpu_utilization ?? null,
+      maxMemUtilization: c.max_mem_utilization ?? null,
+      hotNodeCount: c.hot_node_count,
+      hotNodeThresholdPct: c.hot_node_threshold_pct,
+      quality: c.quality,
+      ...(c.quality_reason ? { qualityReason: c.quality_reason } : {}),
+      registrationStatus: c.registration_status,
+    })),
+    count: response.data.count,
+    meta: mapMeta(response.data.meta),
+  }
+}

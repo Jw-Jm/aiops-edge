@@ -670,11 +670,16 @@ func normalizedDirection(direction string) string {
 }
 
 func candidateRelationTypes() []string {
-	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "USES_DISK", "REFERENCES_VOLUME", "SOURCED_FROM", "DECLARES", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO_NAD", "USES_CNI", "CONNECTS_TO_NETWORK", "INSTANCE_OF"}
+	// 回归（真实环境验证发现的 S1 缺陷 D21）：K8s 工作负载所有权边 OWNS
+	// （deployment→replicaset→pod）是根因传播的核心边（Pod 失败向上传播为
+	// Deployment 不可用），ontology.go 已声明其为合法关系，但候选白名单
+	// 漏掉它 → root_cause_candidate_v1 子图对 K8s 工作负载恒为孤立顶点
+	// （topology 分 0、无传播路径）→ 评分永远达不到 probable 阈值。
+	return []string{"REPRESENTS", "BACKED_BY", "OWNS", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "USES_DISK", "REFERENCES_VOLUME", "SOURCED_FROM", "DECLARES", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO_NAD", "USES_CNI", "CONNECTS_TO_NETWORK", "INSTANCE_OF"}
 }
 
 func impactRelationTypes() []string {
-	return []string{"REPRESENTS", "BACKED_BY", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "USES_DISK", "REFERENCES_VOLUME", "SOURCED_FROM", "DECLARES", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO_NAD", "USES_CNI", "CONNECTS_TO_NETWORK", "CONNECTS_TO"}
+	return []string{"REPRESENTS", "BACKED_BY", "OWNS", "RUNS_ON", "HOSTS", "HAS_COMPONENT", "DEPENDS_ON", "USES_VOLUME", "USES_DISK", "REFERENCES_VOLUME", "SOURCED_FROM", "DECLARES", "BOUND_TO", "ATTACHED_TO", "CONNECTS_TO_NAD", "USES_CNI", "CONNECTS_TO_NETWORK", "CONNECTS_TO"}
 }
 
 var _ GraphRepository = (*HugeGraphRepository)(nil)

@@ -59,7 +59,7 @@ func (h *Handler) ReportsPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "persistence_unavailable"})
 		return
 	}
-	rows, err := db.Query(`SELECT id, task_id, service_name, report_type, verdict, risk_score, summary, content, file_key, created_at, tenant_id, cluster_id
+	rows, err := db.Query(`SELECT id, COALESCE(task_id,''), COALESCE(service_name,''), COALESCE(report_type,''), COALESCE(verdict,''), risk_score, COALESCE(summary,''), COALESCE(content,''), COALESCE(file_key,''), created_at, tenant_id, cluster_id
 		FROM reports WHERE tenant_id = ? AND cluster_id = ? ORDER BY created_at DESC LIMIT ?`, auth.TenantID, clusterID, limit)
 	if err != nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "report_read_failed"})
@@ -126,7 +126,9 @@ func (h *Handler) downloadReportPublic(w http.ResponseWriter, r *http.Request) {
 	}
 	var taskID, content, fileKey string
 	var createdAt interface{}
-	err := db.QueryRow(`SELECT task_id, content, file_key, created_at FROM reports
+	// 可空列必须显式回填：插入方未写 file_key 时值为 NULL，
+	// 直接 Scan 到 string 会报错并表现为 503（真实环境验证发现的缺陷）。
+	err := db.QueryRow(`SELECT COALESCE(task_id,''), COALESCE(content,''), COALESCE(file_key,''), created_at FROM reports
 		WHERE tenant_id = ? AND cluster_id = ? AND (task_id = ? OR CAST(id AS CHAR) = ?) LIMIT 1`,
 		auth.TenantID, clusterID, reportID, reportID).Scan(&taskID, &content, &fileKey, &createdAt)
 	if err == sql.ErrNoRows {

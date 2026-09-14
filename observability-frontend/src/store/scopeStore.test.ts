@@ -58,6 +58,41 @@ describe('scopeStore server-owned active scope', () => {
     expect(useScopeStore.getState().isReady()).toBe(false)
   })
 
+  it('在新会话服务端 active_scope 为空时主动建立被服务端确认的范围', async () => {
+    // 回归缺陷：新会话下服务端 active_scope 为空，所有集群级只读请求被 fail-closed 403，
+    // 页面表现为"接口失败"。初始化必须主动选择可用集群并由服务端确认。
+    useScopeStore.setState({ preferredClusterId: 'cluster-b' })
+    vi.mocked(setActiveScope).mockResolvedValue({ data: { active_scope: { tenant_id: 'tenant-a', cluster_id: 'cluster-b' } } } as never)
+    vi.mocked(getMe).mockResolvedValueOnce(me('') as never).mockResolvedValue(me('cluster-b') as never)
+
+    await useScopeStore.getState().initialize()
+
+    expect(setActiveScope).toHaveBeenCalledWith('tenant-a', 'cluster-b')
+    expect(getMe).toHaveBeenCalledTimes(2)
+    expect(useScopeStore.getState().authScope).toEqual({ tenantId: 'tenant-a', activeClusterId: 'cluster-b' })
+    expect(useScopeStore.getState().isReady()).toBe(true)
+  })
+
+  it('没有记住偏好时选择第一个可用集群并确认', async () => {
+    vi.mocked(setActiveScope).mockResolvedValue({ data: { active_scope: { tenant_id: 'tenant-a', cluster_id: 'cluster-a' } } } as never)
+    vi.mocked(getMe).mockResolvedValueOnce(me('') as never).mockResolvedValue(me('cluster-a') as never)
+
+    await useScopeStore.getState().initialize()
+
+    expect(setActiveScope).toHaveBeenCalledWith('tenant-a', 'cluster-a')
+    expect(useScopeStore.getState().authScope?.activeClusterId).toBe('cluster-a')
+  })
+
+  it('建立范围失败时保持未选择并按真实状态暴露', async () => {
+    vi.mocked(setActiveScope).mockRejectedValue(new Error('server rejected scope'))
+    vi.mocked(getMe).mockResolvedValue(me('') as never)
+
+    await useScopeStore.getState().initialize()
+
+    expect(useScopeStore.getState().authScope?.activeClusterId).toBe('')
+    expect(useScopeStore.getState().isReady()).toBe(false)
+  })
+
   it('switches scope through the server and confirms the resulting projection', async () => {
     const resetQueries = vi.spyOn(queryClientModule, 'resetScopeQueries').mockResolvedValue()
     vi.mocked(setActiveScope).mockResolvedValue({ data: { active_scope: { tenant_id: 'tenant-a', cluster_id: 'cluster-b' } } } as never)

@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional
 
-from tool_registry import ToolRegistry
+from tool_registry import ToolRegistry, init_default_tool_registry
 from trusted_context import TrustedContextError, sign_trusted_request_context_v2
 from trusted_context_issuer import TrustedContextIssuer
 from tool_execution_context import ToolExecutionContext
@@ -142,6 +142,13 @@ class InternalQueryClient:
         self._issuer = issuer
         self._registry = registry or ToolRegistry
         self._http = http or _default_http
+        # 回归（真实环境验证发现的 S1 缺陷 D15）：多条客户端构造路径（kg_graph /
+        # tools / rca_engine.runtime）不会都经过 init_default_tool_registry。
+        # 注册表为空时 query_graph.v1 解析失败 → invalid_context → GRAPH_UNAVAILABLE
+        # → 所有运行 0 证据。在唯一汇聚点幂等初始化（注册表非空时直接返回），
+        # 注入自定义 registry 的测试不受影响。
+        if self._registry is ToolRegistry and not self._registry.list_all():
+            init_default_tool_registry()
 
     def query(
         self,

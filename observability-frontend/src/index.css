@@ -643,3 +643,23 @@ body {
   box-shadow: var(--shadow-lg); padding: 36px 32px; }
 .login-card h2 { font-size: 22px; font-weight: 700; color: var(--text); margin: 0 0 4px; }
 .login-hint { margin-top: 14px; font-size: 12px; color: var(--text-muted); text-align: center; }
+
+/* 集群口径容量比较条：颜色不单独承载语义，始终伴随数值与单位（§5.1 / §14.2） */
+.util-bar { display: flex; align-items: center; gap: 8px; }
+.util-bar__track { flex: 1; min-width: 60px; height: 8px; background: var(--border-soft, #eef1f5); border-radius: 999px; overflow: hidden; }
+.util-bar__fill { height: 100%; border-radius: 999px; }
+.util-bar__value { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-secondary); min-width: 46px; text-align: right; }
+.link-like { background: none; border: 0; padding: 0; color: var(--primary); cursor: pointer; font: inherit; }
+.link-like:hover { text-decoration: underline; }
+.ai-ops-grid { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(360px, 2.2fr) minmax(260px, 1.2fr); gap: 16px; align-items: start; }
+.observability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.settings-layout { display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: start; }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; }
+.settings-nav button { text-align: left; padding: 8px 12px; border-radius: 6px; border: 1px solid transparent; background: transparent; cursor: pointer; font: inherit; }
+.settings-nav button.is-active { background: var(--surface-1); border-color: var(--border); font-weight: 500; }
+@media (max-width: 1279px) {
+  .ai-ops-grid, .observability-grid, .settings-layout { grid-template-columns: minmax(0, 1fr); }
+}
+.cell-wrap { max-width: 420px; white-space: normal; word-break: break-word; }
+.muted-sm { color: var(--text-muted); font-size: 12px; }
+.ai-ops-locate { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 8px; align-items: center; } @media (max-width: 1023px) { .ai-ops-locate { grid-template-columns: minmax(0, 1fr); } } .ai-ops-locate__result { display: flex; flex-direction: column; gap: 2px; }

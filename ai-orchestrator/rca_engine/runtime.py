@@ -15,11 +15,18 @@ from typing import Any, Mapping
 from internal_query import _load_private_key
 from internal_query_client import InternalQueryClient
 from tool_execution_context import ToolExecutionContext
+from tool_registry import init_default_tool_registry
 from trusted_context_issuer import TrustedContextIssuer
 from error_safety import stable_error_code
 
 
 def _client() -> InternalQueryClient:
+    # 回归（真实环境验证发现的 S1 缺陷 D15）： RCA 图谱/证据客户端在 Investigation
+    # worker 中构造时，工具注册表可能尚未初始化（只有 orchestrator 主应用与 kg
+    # runtime 会调用 init_default_tool_registry）。空注册表使 query_graph.v1 解析
+    # 失败 → invalid_context → GRAPH_UNAVAILABLE → 所有运行 0 证据收场。
+    # init_default_tool_registry 幂等（注册表非空时直接返回）。
+    init_default_tool_registry()
     private_key = _load_private_key(os.environ.get("TRUSTED_CONTEXT_PRIVATE_KEY", ""))
     return InternalQueryClient(issuer=TrustedContextIssuer(private_key=private_key))
 
@@ -32,6 +39,16 @@ def _execution_context(item: Any, *, tool_id: str, params: Mapping[str, Any]) ->
     except (ValueError, AttributeError):
         namespace = uuid.NAMESPACE_URL
     tool_run_id = str(uuid.uuid5(namespace, f"aiops:tool:{tool_id}:{raw_params}"))
+    # 回归（真实环境验证发现的 S1 缺陷 D15 最终根因）：tools.py 的调用路径把
+    # 租约令牌绑定到 task-local context（current_execution_lease_token），而本
+    # 适配器只读 scope.lease_token。Lease token 是刻意不入 checkpoint 的任务内
+    # 态，InvestigationRuntime.execute 在任务上下文中绑定它；rca_engine 的图
+    # 调用若只看 scope 恒为空 → ToolExecutionContext 拒绝（requires active
+    # lease identity）→ resolve_entity 静默吞掉 → GRAPH_ENTITY_NOT_FOUND →
+    # 所有运行 0 证据。与 tools.py 保持同一回退语义。
+    from invocation_scope import current_execution_lease_token
+
+    lease_token = str(getattr(scope, "lease_token", "") or current_execution_lease_token())
     return ToolExecutionContext.from_mapping(
         {
             "workload_kind": "investigation",
@@ -41,7 +58,7 @@ def _execution_context(item: Any, *, tool_id: str, params: Mapping[str, Any]) ->
             "cluster_id": str(item.cluster_id),
             "executor_id": str(getattr(scope, "executor_id", "") or ""),
             "lease_epoch": int(getattr(scope, "lease_epoch", 0) or 0),
-            "lease_token": str(getattr(scope, "lease_token", "") or ""),
+            "lease_token": lease_token,
             "query_window_start": str(getattr(item, "window_start", "") or ""),
             "query_window_end": str(getattr(item, "window_end", "") or ""),
             "tool_run_id": tool_run_id,
@@ -84,12 +101,32 @@ class InvestigationGraphClient:
         execution = _execution_context(
             self.item, tool_id="query_graph.v1", params={"graph_operation": operation, **params}
         )
-        result = self.client.query_graph_v1(
-            tenant_id=str(self.item.tenant_id), cluster_id=str(self.item.cluster_id),
-            params={"graph_operation": operation, **params},
-            context_ref=str(self.item.request_id), execution_context=execution,
-        )
-        return _unwrap_query_payload(result.body)
+        result = None
+        try:
+            result = self.client.query_graph_v1(
+                tenant_id=str(self.item.tenant_id), cluster_id=str(self.item.cluster_id),
+                params={"graph_operation": operation, **params},
+                context_ref=str(self.item.request_id), execution_context=execution,
+            )
+            payload = _unwrap_query_payload(result.body)
+            self.failures = []
+            return payload
+        except Exception as exc:
+            # 可观测性（D15 诊断辅助）：此前该适配器的失败被上层静默吞掉，
+            # 导致真实运行总是 GRAPH_ENTITY_NOT_FOUND/GRAPH_UNAVAILABLE 而
+            # 根因不可见。记录失败码后原样抛出，保持 fail-closed 语义。
+            code = str(exc.args[0])[:120] if getattr(exc, "args", None) else type(exc).__name__
+            self.failures.append(code)
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "rca graph call failed: operation=%s http=%s error=%s run_id=%s",
+                operation,
+                getattr(result, "http_status", None),
+                type(exc).__name__ + ": " + code,
+                str(getattr(self.item, "run_id", "")),
+            )
+            raise
 
 
 def _items(body: Mapping[str, Any], *keys: str) -> list[dict[str, Any]]:
@@ -249,6 +286,21 @@ class InvestigationEvidenceProvider:
             observed = next((item.get(key) for key in ("observed_at", "timestamp", "occurred_at", "event_time", "detected_at", "t", "T", "Timestamp", "Start", "StartTime", "LastTS", "last_timestamp") if item.get(key) is not None), None)
             if observed is not None:
                 item["observed_at"] = str(observed)
+            if effective_category == "kubernetes_event" and "severity" not in item:
+                # T11 校准：Kubernetes Warning 事件是平台异常的权威事实信号
+                # （探针失败/重启崩溃/OOM/调度失败/镜像拉取失败），确定性赋
+                # 0.6 异常权重。真实事件行（query_k8s_events.v1）以 reason 字段
+                # 承载 Warning 语义（Unhealthy/BackOff/Failed*/Failing/...），
+                # message 兜底匹配。后端已提供 severity 时以数据为准。
+                reason = str(item.get("reason") or item.get("Reason") or "").strip().lower()
+                message = str(item.get("message") or item.get("Message") or "").lower()
+                warning_reasons = (
+                    reason.startswith("unhealthy") or reason.startswith("backoff")
+                    or reason.startswith("failed") or reason.startswith("failing")
+                    or reason in {"oomkilling", "oomkilled", "evicted", "probingfailed", "replicasetsucceeded"}
+                    or "probe failed" in message or "back-off" in message or "oom" in message
+                )
+                item["severity"] = 0.6 if warning_reasons else 0.0
             if effective_category == "metric" and "severity" not in item:
                 calls = item.get("call_count", item.get("CallCount", 0)) or 0
                 errors = item.get("error_count", item.get("ErrorCount", 0)) or 0
@@ -280,6 +332,12 @@ class InvestigationEvidenceProvider:
                 item_type = str(item.get("type") or item.get("Type") or "").strip().lower()
                 item["severity"] = {"critical": 1.0, "fatal": 1.0, "error": 1.0,
                                      "warning": .6, "warn": .6, "info": .2}.get(item_type, 0.0)
+            if effective_category in {"alert", "hardware_sel"} and "severity" not in item and isinstance(
+                    item.get("Severity"), str):
+                # T11 校准：告警行来自 query-api alerts（Go 大写字段契约
+                # Severity/Service），severity 映射必须兼容大小写键，否则
+                # critical 告警的异常权重恒缺失（真实环境验证发现）。
+                item["severity"] = item["Severity"]
             if effective_category in {"alert", "hardware_sel"} and "severity" in item and isinstance(item["severity"], str):
                 item["severity"] = {"critical": 1.0, "fatal": 1.0, "error": 1.0, "warning": .6, "warn": .6, "info": .2}.get(item["severity"].lower(), 0.0)
             if matched_uids:
@@ -294,9 +352,18 @@ class InvestigationEvidenceProvider:
 
     def __call__(self, request: Any, context: Any) -> list[dict[str, Any]]:
         names = _candidate_names(context)
-        if not names:
-            return []
         candidates = [v for v in list(context.vertices or [])[:12] if isinstance(v, Mapping)]
+        # D16b：实体未建模进图谱时（GRAPH_ENTITY_UNRESOLVED），候选为空不等于
+        # 证据为空 —— 回退到调查请求的目标标识（entity_name/resource_id），
+        # 让 metrics/logs/alerts/changes/events 仍以真实目标采集。此前未建模
+        # 对象的调查恒定 0 证据。
+        if not names:
+            fallback_name = str(getattr(request, "entity_name", "") or getattr(request, "resource_id", "") or "").strip()
+            if not fallback_name:
+                return []
+            names = [fallback_name]
+            candidates = [{"entity_uid": "", "name": fallback_name,
+                           "entity_type": str(getattr(request, "target_type", "") or "service")}]
         output: list[dict[str, Any]] = []
         # One bounded call per candidate/domain keeps the automatic read
         # budget bounded (<= 20) even when the graph returns many candidates.

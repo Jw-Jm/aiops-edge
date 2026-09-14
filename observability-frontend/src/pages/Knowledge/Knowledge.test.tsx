@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -16,6 +16,8 @@ vi.mock('../../api/knowledge', async () => {
     createKnowledge: vi.fn(),
     submitKnowledge: vi.fn(),
     searchKnowledge: vi.fn(),
+    reviewKnowledge: vi.fn(),
+    disableKnowledge: vi.fn(),
   }
 })
 
@@ -36,6 +38,61 @@ describe('Knowledge workspace', () => {
       ? { data: { knowledge_id: 'k-2', title: '新草稿', summary: '', knowledge_type: 'incident', status: 'draft', scope_type: 'cluster', cluster_id: 'cluster-a', draft_version_id: 'v-2' }, version: { version_id: 'v-2', content: '', source_kind: 'manual' } }
       : { data: { knowledge_id: 'k-1', title: 'Pod 未就绪处置', summary: '检查 Pod 和节点', knowledge_type: 'incident', status: 'published', scope_type: 'cluster', cluster_id: 'cluster-a', current_version_id: 'v-1' }, version: { version_id: 'v-1', content: '检查节点和容器运行态', source_kind: 'manual' } })
     vi.mocked(knowledgeApi.searchKnowledge).mockRejectedValue(new Error('unavailable'))
+    vi.mocked(knowledgeApi.reviewKnowledge).mockResolvedValue({ data: { status: 'published' } } as never)
+    vi.mocked(knowledgeApi.disableKnowledge).mockResolvedValue({ data: { status: 'disabled' } } as never)
+  })
+
+  it('待审阅知识必须经人工批准后发布，拒绝必须留痕（§6.6）', async () => {
+    vi.mocked(knowledgeApi.listKnowledge).mockResolvedValue({
+      items: [{ knowledge_id: 'k-p', title: 'AI 沉淀草稿', summary: '由运维任务生成', knowledge_type: 'incident', status: 'pending_review', scope_type: 'cluster', cluster_id: 'cluster-a', current_version_id: 'v-p' }],
+      meta: { index_available: false },
+    })
+    vi.mocked(knowledgeApi.getKnowledge).mockResolvedValue({
+      data: { knowledge_id: 'k-p', title: 'AI 沉淀草稿', summary: '由运维任务生成', knowledge_type: 'incident', status: 'pending_review', scope_type: 'cluster', cluster_id: 'cluster-a' },
+      version: { version_id: 'v-p', content: '第一段结论\n\n第二段证据', source_kind: 'ai_operation' },
+    })
+    render(<MemoryRouter initialEntries={['/clusters/cluster-a/knowledge']}><Routes><Route path="/clusters/:clusterId/knowledge" element={<Knowledge />} /></Routes></MemoryRouter>)
+
+    const reviewers = await screen.findAllByTestId('knowledge-review')
+    expect(reviewers.length).toBeGreaterThanOrEqual(1)
+    const approveButtons = screen.getAllByRole('button', { name: '批准并发布' })
+    await userEvent.click(approveButtons[0])
+    await waitFor(() => expect(knowledgeApi.reviewKnowledge).toHaveBeenCalledWith('cluster-a', 'k-p', 'approve', ''))
+  })
+
+  it('禁用后必须验证检索不再命中；仍命中时验证不得通过（§6.6 删除验证）', async () => {
+    vi.mocked(knowledgeApi.listKnowledge).mockResolvedValue({
+      items: [{ knowledge_id: 'k-d', title: '待删除知识', summary: '关键词', knowledge_type: 'incident', status: 'disabled', scope_type: 'cluster', cluster_id: 'cluster-a' }],
+      meta: { index_available: true },
+    })
+    vi.mocked(knowledgeApi.getKnowledge).mockResolvedValue({
+      data: { knowledge_id: 'k-d', title: '待删除知识', summary: '关键词', knowledge_type: 'incident', status: 'disabled', scope_type: 'cluster', cluster_id: 'cluster-a' },
+      version: { version_id: 'v-d', content: '正文', source_kind: 'manual' },
+    })
+    // 索引仍能命中 → 删除验证必须失败
+    vi.mocked(knowledgeApi.searchKnowledge).mockResolvedValue({ items: [{ knowledge_id: 'k-d', title: '待删除知识' }], meta: { index_available: true } })
+    render(<MemoryRouter initialEntries={['/clusters/cluster-a/knowledge']}><Routes><Route path="/clusters/:clusterId/knowledge" element={<Knowledge />} /></Routes></MemoryRouter>)
+
+    await userEvent.click(await screen.findAllByTestId('knowledge-disable').then((nodes) => nodes[0].querySelector('button') as HTMLElement))
+    const verify = await screen.findByRole('button', { name: '验证检索不再命中' })
+    await userEvent.click(verify)
+    expect(await screen.findByText('删除验证未通过')).toBeVisible()
+
+    // 索引已同步 → 验证通过
+    vi.mocked(knowledgeApi.searchKnowledge).mockResolvedValue({ items: [], meta: { index_available: true } })
+    await userEvent.click(verify)
+    expect(await screen.findByText('删除验证通过')).toBeVisible()
+  })
+
+  it('正文按段落渲染并提供段落级引用定位（§6.6 引用必须可定位）', async () => {
+    vi.mocked(knowledgeApi.getKnowledge).mockResolvedValue({
+      data: { knowledge_id: 'k-1', title: 'Pod 未就绪处置', summary: '检查 Pod 和节点', knowledge_type: 'incident', status: 'published', scope_type: 'cluster', cluster_id: 'cluster-a', current_version_id: 'v-1' },
+      version: { version_id: 'v-1', content: '第一段：现象\n\n第二段：证据\n\n第三段：处置', source_kind: 'manual' },
+    })
+    render(<MemoryRouter initialEntries={['/clusters/cluster-a/knowledge']}><Routes><Route path="/clusters/:clusterId/knowledge" element={<Knowledge />} /></Routes></MemoryRouter>)
+
+    const citations = await screen.findAllByRole('button', { name: /复制第 \d+ 段引用/ })
+    expect(citations.length).toBeGreaterThanOrEqual(3)
   })
 
   it('shows governed tabs and keeps browsing available when semantic search is degraded', async () => {
@@ -73,6 +130,6 @@ describe('Knowledge workspace', () => {
   it('opens a blank editor on the explicit new route', async () => {
     render(<MemoryRouter initialEntries={['/clusters/cluster-a/knowledge/new']}><Routes><Route path="/clusters/:clusterId/knowledge/new" element={<Knowledge />} /></Routes></MemoryRouter>)
 
-    expect(await screen.findByText('选择一条知识查看正文')).toBeVisible()
+    expect(await screen.findByText('选择一条知识查看正文与引用定位')).toBeVisible()
   })
 })

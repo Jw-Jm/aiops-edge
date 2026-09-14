@@ -32,6 +32,9 @@ export interface KubeVirtSummary {
 export interface ClusterOverview {
   clusterId: string
   name: string
+  /** 环境与地域：集群页永久显示（§6.3），服务端未提供时为空 */
+  environment?: string
+  region?: string
   /** 观测健康：healthy | degraded | critical | unknown */
   status: PlatformClusterHealth
   statusReason: string
@@ -52,6 +55,8 @@ export interface ClusterOverview {
 interface ClusterOverviewWire {
   cluster_id: string
   name: string
+  environment?: string
+  region?: string
   status: PlatformClusterHealth
   status_reason?: string
   status_reasons?: string[]
@@ -83,6 +88,8 @@ export function mapClusterOverview(wire: ClusterOverviewWire): ClusterOverview {
   return {
     clusterId: wire.cluster_id,
     name: wire.name,
+    ...(wire.environment ? { environment: wire.environment } : {}),
+    ...(wire.region ? { region: wire.region } : {}),
     status: wire.status,
     statusReason,
     statusReasons: wire.status_reasons ?? (statusReason ? [statusReason] : []),

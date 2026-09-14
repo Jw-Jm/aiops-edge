@@ -323,24 +323,36 @@ func (h *Handler) searchGraphAliases(ctx context.Context, scope graphpkg.GraphSc
 			return items, nil
 		}
 	}
-	if _, ok := h.graphRepo.(*graphpkg.MemoryRepository); ok {
-		entities, err := h.graphRepo.SearchEntities(ctx, scope, graphpkg.EntitySearchQuery{EntityType: entityType, Name: query, Limit: candidateLimit})
-		if err != nil {
-			return nil, err
+	// 回归（真实环境验证发现的 S1 缺陷 D16）：alias 索引不可用/无命中时，
+	// 只有 MemoryRepository 能走 SearchEntities，生产 HugeGraph 仓库一律
+	// 返回 GRAPH_FEATURE_UNAVAILABLE(503)。这使调查链的 resolve_entity
+	// 名称解析在 canonical UID 缺失时必然失败（调查运行 0 证据）。
+	// HugeGraphRepository / ShadowRepository / LegacyMySQLRepository 均已
+	// 实现 SearchEntities，此处改为通用回退。
+	// D16b：HugeGraph 出于安全设计拒绝全名扫描（ErrGraphFeatureUnavailable），
+	// 该"后端能力限制"必须降级为空命中而非 503 —— 否则"实体未建模"（正常
+	// 数据事实）与"图谱不可用"（系统故障）被混为一谈，调查链对未建模对象
+	// 恒定报 GRAPH_UNAVAILABLE 并跳过全部证据采集。降级后 resolve_entity
+	// 返回 GRAPH_ENTITY_NOT_FOUND，引擎可执行真实的"未解析实体"拒答路径。
+	entities, err := h.graphRepo.SearchEntities(ctx, scope, graphpkg.EntitySearchQuery{EntityType: entityType, Name: query, Limit: candidateLimit})
+	if err != nil {
+		var gerr *graphpkg.Error
+		if errors.As(err, &gerr) && gerr.Code == graphpkg.ErrGraphFeatureUnavailable {
+			return nil, nil
 		}
-		items := make([]graphpkg.Entity, 0, limit)
-		for _, entity := range entities {
-			if !graphSearchProfileAllows(profile, entity.EntityType) {
-				continue
-			}
-			items = append(items, entity)
-			if len(items) == limit {
-				break
-			}
-		}
-		return items, nil
+		return nil, err
 	}
-	return nil, graphpkgError(graphpkg.ErrGraphFeatureUnavailable, "graph_entity_alias is unavailable")
+	items := make([]graphpkg.Entity, 0, limit)
+	for _, entity := range entities {
+		if !graphSearchProfileAllows(profile, entity.EntityType) {
+			continue
+		}
+		items = append(items, entity)
+		if len(items) == limit {
+			break
+		}
+	}
+	return items, nil
 }
 
 func graphEntityPath(path string) (string, string, bool) {

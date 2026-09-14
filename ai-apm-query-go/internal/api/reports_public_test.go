@@ -15,7 +15,8 @@ func TestListReportsPublicScopesByTenantAndCluster(t *testing.T) {
 	h := &Handler{}
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, task_id, service_name, report_type, verdict, risk_score, summary, content, file_key, created_at, tenant_id, cluster_id")).
+	// 可空列用 COALESCE 显式回填，避免 NULL 直接 Scan 到 string 报 503。
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, COALESCE(task_id,''), COALESCE(service_name,''), COALESCE(report_type,''), COALESCE(verdict,''), risk_score, COALESCE(summary,''), COALESCE(content,''), COALESCE(file_key,''), created_at, tenant_id, cluster_id")).
 		WithArgs("tenant-a", "cluster-a", 100).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "task_id", "service_name", "report_type", "verdict", "risk_score", "summary", "content", "file_key", "created_at", "tenant_id", "cluster_id"}).
 			AddRow(7, "task-7", "checkout", "diagnostic", "degraded", 0.8, "Pod 未就绪", "# report", "", time.Now(), "tenant-a", "cluster-a"))
@@ -45,7 +46,10 @@ func TestDownloadReportPublicScopesByTenantAndCluster(t *testing.T) {
 	h := &Handler{}
 	mock, cleanup := setupAPIStore(t)
 	defer cleanup()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT task_id, content, file_key, created_at FROM reports")).
+	// 查询文本必须包含 COALESCE（真实 MySQL 中 NULL 会转成空串）。
+	// 注意：sqlmock 不执行 SQL 表达式，驱动层返回的列值仍是测试给定值，
+	// 因此这里用空串而不是 nil —— NULL 场景由真实环境验证覆盖（§7C.3 D12）。
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(task_id,''), COALESCE(content,''), COALESCE(file_key,''), created_at FROM reports")).
 		WithArgs("tenant-a", "cluster-a", "task-7", "task-7").
 		WillReturnRows(sqlmock.NewRows([]string{"task_id", "content", "file_key", "created_at"}).AddRow("task-7", "# report\n", "", time.Now()))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/ops/reports/task-7/download", nil)

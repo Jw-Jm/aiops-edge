@@ -16,16 +16,20 @@ def _bounded_limit(name: str, default: int, upper: int) -> int:
 def graph_candidates(entity: dict[str, Any], graph_client: Any, *, max_depth: int = 6) -> dict[str, Any]:
     """Ask query-api for a bounded propagation candidate subgraph.
 
-    The RCA path starts with a conservative one-hop envelope (50 vertices,
-    150 edges).  A high-degree Kubernetes node can make HugeGraph spend most
-    of its budget expanding the frontier before its result limit is applied;
-    the old 6/2000/5000 request therefore turned a bounded API into a timeout
-    source.  Operators may raise the values only after a capacity gate, but
-    every value remains capped locally before it reaches the signed Query API
-    boundary.
+    The RCA path starts with a conservative envelope (50 vertices, 150 edges).
+    A high-degree Kubernetes node can make HugeGraph spend most of its budget
+    expanding the frontier before its result limit is applied; the old
+    6/2000/5000 request therefore turned a bounded API into a timeout source.
+    Operators may raise the values only after a capacity gate, but every value
+    remains capped locally before it reaches the signed Query API boundary.
+
+    回归（真实环境验证 D22）：K8s 故障传播链 Deployment→RS→Pod 天然两层 ——
+    深度 1 时 Pod 级根因（involved_object=Pod 的 Warning 事件实际归属）不在
+    候选集，唯一候选恒为症状自身（root==symptom → 无传播路径 → 永远拒答）。
+    默认深度提为 2（仍受 _bounded_limit 1..6 与 vertex/edge 预算约束）。
     """
     uid = str(entity.get("entity_uid") or "")
-    depth_cap = _bounded_limit("RCA_GRAPH_MAX_DEPTH", 1, 6)
+    depth_cap = _bounded_limit("RCA_GRAPH_MAX_DEPTH", 2, 6)
     vertex_cap = _bounded_limit("RCA_GRAPH_MAX_VERTICES", 50, 500)
     edge_cap = _bounded_limit("RCA_GRAPH_MAX_EDGES", 150, 1500)
     return graph_client(graph_operation="candidate_subgraph", entity_uid=uid,
