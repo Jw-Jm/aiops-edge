@@ -29,14 +29,17 @@ func (h *Handler) RunGraphContext(w http.ResponseWriter, r *http.Request) {
 		respondGraphError(w, "ENTITY_NOT_FOUND", "run not found")
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondGraphError(w, "GRAPH_SCOPE_DENIED", "run is outside tenant scope")
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	contextValue, err := h.runGraphDAO.GetLatest(runID, auth.TenantID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			respondGraphError(w, "ENTITY_NOT_FOUND", "graph context not found")
+			// A Run is authoritative even when its graph projection was not
+			// generated (for example, a historical Run created before graph
+			// persistence was enabled). Keep the Run detail usable and make the
+			// missing optional projection explicit instead of returning a noisy 404.
+			respondJSON(w, http.StatusOK, emptyRunGraphContext(runID))
 		} else {
 			respondGraphError(w, graphpkg.ErrGraphUnavailable, err.Error())
 		}
@@ -55,6 +58,22 @@ func (h *Handler) RunGraphContext(w http.ResponseWriter, r *http.Request) {
 	response["root_cause_entity_uid"] = contextValue.RootCauseEntityUID
 	response["partial"] = valueOrFalse(response, "partial")
 	respondJSON(w, http.StatusOK, response)
+}
+
+func emptyRunGraphContext(runID string) map[string]interface{} {
+	return map[string]interface{}{
+		"run_id":               runID,
+		"context_version":      0,
+		"graph_schema_version": 0,
+		"graph_generation":     0,
+		"partial":              true,
+		"status":               "not_generated",
+		"warning_codes":        []string{"GRAPH_CONTEXT_NOT_GENERATED"},
+		"message":              "该历史调查尚未生成 Graph Context",
+		"vertices":             []interface{}{},
+		"edges":                []interface{}{},
+		"propagation_paths":    []interface{}{},
+	}
 }
 
 func runGraphContextID(path string) string {

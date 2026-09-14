@@ -13,15 +13,33 @@ import (
 // The orchestrator may keep an internal checkpoint for execution, but it is
 // never the authority for listing, loading, or deleting user sessions.
 type ChatSession struct {
-	SessionID string    `json:"session_id"`
-	UserUUID  string    `json:"user_uuid,omitempty"`
-	TenantID  string    `json:"tenant_id,omitempty"`
-	ClusterID string    `json:"cluster_id,omitempty"`
-	Intent    string    `json:"intent"`
-	Service   string    `json:"service"`
-	Preview   string    `json:"preview,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	SessionID      string    `json:"session_id"`
+	UserUUID       string    `json:"user_uuid,omitempty"`
+	TenantID       string    `json:"tenant_id,omitempty"`
+	ClusterID      string    `json:"cluster_id,omitempty"`
+	Intent         string    `json:"intent"`
+	Service        string    `json:"service"`
+	Preview        string    `json:"preview,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	ResourceUID    string    `json:"resource_uid,omitempty"`
+	TimeFrom       string    `json:"time_from,omitempty"`
+	TimeTo         string    `json:"time_to,omitempty"`
+	KnowledgeScope string    `json:"knowledge_scope,omitempty"`
+}
+
+// AssistantSessionScope is frozen on the first turn.  It is deliberately
+// separate from ChatSession so legacy transcript callers keep their existing
+// SQL shape while the evidence-grounded assistant opts into immutable scope.
+type AssistantSessionScope struct {
+	ResourceUID    string
+	TimeFrom       string
+	TimeTo         string
+	KnowledgeScope string
+}
+
+func (s AssistantSessionScope) Empty() bool {
+	return strings.TrimSpace(s.ResourceUID) == "" && strings.TrimSpace(s.TimeFrom) == "" && strings.TrimSpace(s.TimeTo) == "" && strings.TrimSpace(s.KnowledgeScope) == ""
 }
 
 type ChatMessage struct {
@@ -75,6 +93,46 @@ func (d *AIChatSessionDAO) EnsureSession(sessionID, userUUID, tenantID, clusterI
 	}
 	_, err = db.Exec(`UPDATE ai_chat_sessions SET intent=?,service=?,updated_at=CURRENT_TIMESTAMP(3) WHERE session_id=?`, intent, service, sessionID)
 	return err
+}
+
+// EnsureSessionWithScope creates a structured assistant session or resumes it
+// only when the original resource and absolute time window are identical. The
+// scope columns are intentionally absent from the UPDATE clause: once a
+// conversation has evidence, changing its scope would make citations
+// misleading and would allow cross-resource transcript reuse.
+func (d *AIChatSessionDAO) EnsureSessionWithScope(sessionID, userUUID, tenantID, clusterID, intent, service string, scope AssistantSessionScope) error {
+	db, err := chatDB()
+	if err != nil {
+		return err
+	}
+	if sessionID == "" || userUUID == "" || tenantID == "" || clusterID == "" || strings.TrimSpace(scope.TimeFrom) == "" || strings.TrimSpace(scope.TimeTo) == "" || strings.TrimSpace(scope.KnowledgeScope) == "" {
+		return errors.New("invalid assistant session scope")
+	}
+	if _, err = db.Exec(`INSERT INTO ai_chat_sessions
+		 (session_id,user_uuid,tenant_id,cluster_id,resource_uid,time_from,time_to,knowledge_scope,intent,service)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)
+		 ON DUPLICATE KEY UPDATE session_id = session_id`,
+		sessionID, userUUID, tenantID, clusterID, chatNullableString(scope.ResourceUID), scope.TimeFrom, scope.TimeTo, scope.KnowledgeScope, intent, service); err != nil {
+		return err
+	}
+	var owner, ownerTenant, ownerCluster string
+	var existingResource, existingFrom, existingTo, existingKnowledge sql.NullString
+	if err = db.QueryRow(`SELECT user_uuid,tenant_id,cluster_id,resource_uid,time_from,time_to,knowledge_scope FROM ai_chat_sessions WHERE session_id=?`, sessionID).
+		Scan(&owner, &ownerTenant, &ownerCluster, &existingResource, &existingFrom, &existingTo, &existingKnowledge); err != nil {
+		return err
+	}
+	if owner != userUUID || ownerTenant != tenantID || ownerCluster != clusterID || existingResource.String != scope.ResourceUID || existingFrom.String != scope.TimeFrom || existingTo.String != scope.TimeTo || existingKnowledge.String != scope.KnowledgeScope {
+		return errors.New("chat session scope mismatch")
+	}
+	_, err = db.Exec(`UPDATE ai_chat_sessions SET intent=?,service=?,updated_at=CURRENT_TIMESTAMP(3) WHERE session_id=?`, intent, service, sessionID)
+	return err
+}
+
+func chatNullableString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func (d *AIChatSessionDAO) AppendMessage(sessionID, userUUID, tenantID, clusterID, role, kind, content string, metadata map[string]any) error {
@@ -208,6 +266,31 @@ func (d *AIChatSessionDAO) Get(sessionID, userUUID, tenantID, clusterID string) 
 		messages = append(messages, m)
 	}
 	return &item, messages, rows.Err()
+}
+
+// GetWithAssistantScope is used only by the structured assistant session
+// endpoint. Keeping the legacy Get query unchanged avoids breaking older
+// report/export callers while allowing the new UI to restore the frozen
+// context instead of guessing it from the current browser scope.
+func (d *AIChatSessionDAO) GetWithAssistantScope(sessionID, userUUID, tenantID, clusterID string) (*ChatSession, []ChatMessage, error) {
+	item, messages, err := d.Get(sessionID, userUUID, tenantID, clusterID)
+	if err != nil {
+		return nil, nil, err
+	}
+	db, err := chatDB()
+	if err != nil {
+		return nil, nil, err
+	}
+	var resourceUID, timeFrom, timeTo, knowledgeScope sql.NullString
+	if err := db.QueryRow(`SELECT resource_uid,time_from,time_to,knowledge_scope FROM ai_chat_sessions WHERE session_id=? AND user_uuid=? AND tenant_id=? AND cluster_id=?`, sessionID, userUUID, tenantID, clusterID).
+		Scan(&resourceUID, &timeFrom, &timeTo, &knowledgeScope); err != nil {
+		return nil, nil, err
+	}
+	item.ResourceUID = resourceUID.String
+	item.TimeFrom = timeFrom.String
+	item.TimeTo = timeTo.String
+	item.KnowledgeScope = knowledgeScope.String
+	return item, messages, nil
 }
 
 // GetTurn returns durable cards for one canonical turn after checking the

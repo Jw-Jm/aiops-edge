@@ -5,9 +5,11 @@ COPY go.mod ./
 COPY . .
 # -trimpath：可复现构建；-ldflags "-s -w"：去掉符号表与 DWARF，精简二进制体积（P15.3）
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ingest ./cmd/ingest/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /loadgen ./tools/loadgen/
 
 FROM docker.m.daocloud.io/library/alpine:3.21
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /ingest /ingest
+COPY --from=builder /loadgen /loadgen
 EXPOSE 8080
 ENTRYPOINT ["/ingest"]

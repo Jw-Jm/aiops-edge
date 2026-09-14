@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getGraphCandidate, getGraphNeighbors, getGraphPath } from './knowledgeGraph'
+import { getGraphCandidate, getGraphNeighbors, getGraphPath, searchGraphEntities } from './knowledgeGraph'
 import { api } from './client'
+import source from './client.ts?raw'
 
 describe('knowledge graph API', () => {
   it('uses query-api typed graph routes', async () => {
@@ -19,6 +20,17 @@ describe('knowledge graph API', () => {
     const spy = vi.spyOn(api, 'get').mockResolvedValue({ data: {} } as any)
     await getGraphCandidate('service:v1', { depth: 2, max_vertices: 300, max_edges: 1000 })
     expect(spy).toHaveBeenCalledWith('/ai/kg/entities/service%3Av1/candidate', { params: { depth: 2, max_vertices: 300, max_edges: 1000 } })
+    spy.mockRestore()
+  })
+
+  it('does not expose the retired aggregate graph route', () => {
+    expect(source).not.toContain("'/ai/kg/graph'")
+  })
+
+  it('sends the operations search profile for the default resource view', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValue({ data: { items: [], count: 0 } } as any)
+    await searchGraphEntities({ q: 'aiops', limit: 40, profile: 'operations' })
+    expect(spy).toHaveBeenCalledWith('/ai/kg/entities/search', { params: { q: 'aiops', limit: 40, profile: 'operations' } })
     spy.mockRestore()
   })
 })

@@ -173,3 +173,30 @@ func TestAppendMessageForTurnRejectsPayloadReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEnsureSessionWithScopeFreezesResourceAndAbsoluteWindow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	previous := GetDB()
+	SetDB(db)
+	t.Cleanup(func() { SetDB(previous) })
+	scope := AssistantSessionScope{ResourceUID: "uid-order-api", TimeFrom: "2026-09-10T10:00:00Z", TimeTo: "2026-09-10T11:00:00Z", KnowledgeScope: "platform_common_and_current_cluster"}
+	mock.ExpectExec(`INSERT INTO ai_chat_sessions[\s\S]*resource_uid[\s\S]*ON DUPLICATE KEY UPDATE session_id = session_id`).
+		WithArgs(chatTestSession, chatTestUser, chatTestTenant, chatTestCluster, "uid-order-api", scope.TimeFrom, scope.TimeTo, scope.KnowledgeScope, "diagnosis", "orders").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT user_uuid,tenant_id,cluster_id,resource_uid,time_from,time_to,knowledge_scope FROM ai_chat_sessions WHERE session_id=\?`).
+		WithArgs(chatTestSession).
+		WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "tenant_id", "cluster_id", "resource_uid", "time_from", "time_to", "knowledge_scope"}).
+			AddRow(chatTestUser, chatTestTenant, chatTestCluster, "uid-order-api", scope.TimeFrom, scope.TimeTo, scope.KnowledgeScope))
+	mock.ExpectExec(`UPDATE ai_chat_sessions SET intent=\?,service=\?,updated_at=CURRENT_TIMESTAMP\(3\) WHERE session_id=\?`).
+		WithArgs("diagnosis", "orders", chatTestSession).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := (&AIChatSessionDAO{}).EnsureSessionWithScope(chatTestSession, chatTestUser, chatTestTenant, chatTestCluster, "diagnosis", "orders", scope); err != nil {
+		t.Fatalf("EnsureSessionWithScope() error = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

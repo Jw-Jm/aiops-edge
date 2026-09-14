@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">AIOps 运维信息架构与闭环</title>
+  <desc id="desc">展示全局壳层、六个业务域，以及从异常发现到调查、处置、验证和报告的工作闭环。</desc>
+  <defs>
+    <style>
+      text{font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;fill:#172033}.muted{fill:#687386}.tiny{font-size:13px}.small{font-size:15px}.body{font-size:17px}.label{font-size:18px;font-weight:600}.title{font-size:34px;font-weight:700}.subtitle{font-size:17px;fill:#687386}.card{fill:#fff;stroke:#dfe4eb;stroke-width:1.5}.soft{fill:#f8fafc;stroke:#dfe4eb;stroke-width:1.5}.blue{fill:#3157d5}.blueSoft{fill:#edf2ff}.redSoft{fill:#fff0ee}.amberSoft{fill:#fff7e8}.greenSoft{fill:#edf8f2}.line{stroke:#9ba6b6;stroke-width:2;fill:none}.flow{stroke:#3157d5;stroke-width:3;fill:none}.dash{stroke-dasharray:8 8}.white{fill:#fff}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3157d5"/></marker>
+  </defs>
+  <rect width="1600" height="900" fill="#f4f6f9"/>
+  <text x="70" y="70" class="title">AIOps 运维信息架构</text>
+  <text x="70" y="104" class="subtitle">从技术页面集合，转向异常发现 → 正式调查 → 风险处置 → 验证与复盘</text>
+
+  <rect x="70" y="138" width="1460" height="94" rx="14" class="card"/>
+  <rect x="88" y="156" width="164" height="58" rx="10" class="blue"/>
+  <text x="115" y="181" class="small white" font-weight="600">全局产品壳层</text><text x="115" y="202" class="tiny white">搜索 · 通知 · 用户</text>
+  <text x="292" y="173" class="tiny muted">GLOBAL SCOPE BAR</text>
+  <rect x="292" y="183" width="116" height="34" rx="7" class="soft"/><text x="314" y="205" class="tiny">环境 prod</text>
+  <text x="422" y="205" class="muted">/</text><rect x="440" y="183" width="186" height="34" rx="7" class="soft"/><text x="461" y="205" class="tiny">集群 prod-shanghai</text>
+  <text x="640" y="205" class="muted">/</text><rect x="658" y="183" width="170" height="34" rx="7" class="soft"/><text x="680" y="205" class="tiny">命名空间 payment</text>
+  <text x="842" y="205" class="muted">/</text><rect x="860" y="183" width="194" height="34" rx="7" class="soft"/><text x="882" y="205" class="tiny">资源 payment-api</text>
+  <text x="1068" y="205" class="muted">/</text><rect x="1086" y="183" width="148" height="34" rx="7" class="soft"/><text x="1114" y="205" class="tiny">最近 1 小时</text>
+  <rect x="1270" y="166" width="230" height="44" rx="10" class="blueSoft"/><text x="1303" y="193" class="small" fill="#3157d5" font-weight="600">AI 助手：全局入口</text>
+
+  <text x="70" y="280" class="label">一级业务域</text>
+  <g transform="translate(70 304)">
+    <rect width="218" height="150" rx="14" class="card"/><rect width="218" height="8" rx="4" class="blue"/><text x="20" y="43" class="label">01 工作台</text><text x="20" y="73" class="small muted">待处理问题</text><text x="20" y="98" class="small muted">调查与动作队列</text><text x="20" y="123" class="small muted">服务风险摘要</text>
+  </g>
+  <g transform="translate(316 304)">
+    <rect width="218" height="150" rx="14" class="card"/><rect width="218" height="8" rx="4" fill="#c9362b"/><text x="20" y="43" class="label">02 调查</text><text x="20" y="73" class="small muted">Run 队列</text><text x="20" y="98" class="small muted">三栏调查工作台</text><text x="20" y="123" class="small muted">Evidence / RCA</text>
+  </g>
+  <g transform="translate(562 304)">
+    <rect width="218" height="150" rx="14" class="card"/><rect width="218" height="8" rx="4" fill="#65758b"/><text x="20" y="43" class="label">03 资源</text><text x="20" y="73" class="small muted">服务与应用</text><text x="20" y="98" class="small muted">K8s / VM / 硬件</text><text x="20" y="123" class="small muted">容量与关系</text>
+  </g>
+  <g transform="translate(808 304)">
+    <rect width="218" height="150" rx="14" class="card"/><rect width="218" height="8" rx="4" fill="#65758b"/><text x="20" y="43" class="label">04 观测</text><text x="20" y="73" class="small muted">告警与变更</text><text x="20" y="98" class="small muted">Trace / Logs / Metrics</text><text x="20" y="123" class="small muted">Grafana / Rules</text>
+  </g>
+  <g transform="translate(1054 304)">
+    <rect width="218" height="150" rx="14" class="card"/><rect width="218" height="8" rx="4" fill="#c46816"/><text x="20" y="43" class="label">05 处置</text><text x="20" y="73" class="small muted">风险与 Preflight</text><text x="20" y="98" class="small muted">审批 / 执行</text><text x="20" y="123" class="small muted">验证与回滚</text>
+  </g>
+  <g transform="translate(1300 304)">
+    <rect width="218" height="150" rx="14" class="card"/><rect width="218" height="8" rx="4" fill="#18864b"/><text x="20" y="43" class="label">06 报告</text><text x="20" y="73" class="small muted">调查报告</text><text x="20" y="98" class="small muted">巡检与复盘</text><text x="20" y="123" class="small muted">案例沉淀</text>
+  </g>
+
+  <text x="70" y="514" class="label">核心工作闭环</text>
+  <rect x="70" y="538" width="1460" height="278" rx="16" class="card"/>
+  <g transform="translate(108 584)"><circle cx="54" cy="54" r="54" fill="#fff0ee"/><text x="54" y="48" text-anchor="middle" class="label" fill="#c9362b">发现</text><text x="54" y="73" text-anchor="middle" class="tiny muted">异常优先级</text><text x="54" y="143" text-anchor="middle" class="small">首页 / 告警 / 资源</text></g>
+  <path d="M 232 638 L 337 638" class="flow" marker-end="url(#arrow)"/>
+  <g transform="translate(352 584)"><circle cx="54" cy="54" r="54" fill="#edf2ff"/><text x="54" y="48" text-anchor="middle" class="label" fill="#3157d5">调查</text><text x="54" y="73" text-anchor="middle" class="tiny muted">冻结 Scope</text><text x="54" y="143" text-anchor="middle" class="small">Run / Evidence / RCA</text></g>
+  <path d="M 476 638 L 581 638" class="flow" marker-end="url(#arrow)"/>
+  <g transform="translate(596 584)"><circle cx="54" cy="54" r="54" fill="#fff7e8"/><text x="54" y="48" text-anchor="middle" class="label" fill="#a46f0a">决策</text><text x="54" y="73" text-anchor="middle" class="tiny muted">风险与影响</text><text x="54" y="143" text-anchor="middle" class="small">Action Proposal</text></g>
+  <path d="M 720 638 L 825 638" class="flow" marker-end="url(#arrow)"/>
+  <g transform="translate(840 584)"><circle cx="54" cy="54" r="54" fill="#fff7e8"/><text x="54" y="48" text-anchor="middle" class="label" fill="#c46816">处置</text><text x="54" y="73" text-anchor="middle" class="tiny muted">审批与执行</text><text x="54" y="143" text-anchor="middle" class="small">版本 / 审计 / 回滚</text></g>
+  <path d="M 964 638 L 1069 638" class="flow" marker-end="url(#arrow)"/>
+  <g transform="translate(1084 584)"><circle cx="54" cy="54" r="54" fill="#edf8f2"/><text x="54" y="48" text-anchor="middle" class="label" fill="#18864b">验证</text><text x="54" y="73" text-anchor="middle" class="tiny muted">恢复是否成立</text><text x="54" y="143" text-anchor="middle" class="small">指标 / 告警 / 健康</text></g>
+  <path d="M 1208 638 L 1313 638" class="flow" marker-end="url(#arrow)"/>
+  <g transform="translate(1328 584)"><circle cx="54" cy="54" r="54" fill="#f2f4f7"/><text x="54" y="48" text-anchor="middle" class="label">复盘</text><text x="54" y="73" text-anchor="middle" class="tiny muted">报告与案例</text><text x="54" y="143" text-anchor="middle" class="small">可检索知识</text></g>
+  <path d="M 1382 758 C 1382 800 406 812 406 712" class="flow dash" marker-end="url(#arrow)"/>
+  <text x="827" y="793" text-anchor="middle" class="tiny muted">复盘经验进入下一次调查；不改变生产授权边界</text>
+  <text x="70" y="862" class="tiny muted">系统管理为管理员辅助域；AI 助手只做只读问答与调查草稿，不成为第二套事实源。</text>
+</svg>

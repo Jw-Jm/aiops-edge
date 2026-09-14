@@ -225,6 +225,24 @@ func (c *Client) KubePods(namespace string) ([]map[string]interface{}, error) {
 	return kubePods(c.kubeconfig, namespace)
 }
 
+// KubeNamespaces returns namespace names for this validated client.
+func (c *Client) KubeNamespaces() ([]string, error) {
+	out, err := kubectlJSON(c.kubeconfig, "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.TrimSpace(string(out))), nil
+}
+
+// KubeEvents returns warning/error events for this validated client.
+func (c *Client) KubeEvents() ([]map[string]interface{}, error) {
+	out, err := kubectlJSON(c.kubeconfig, "get", "events", "-A", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	return parseKubeEvents([]byte(out)), nil
+}
+
 // KubeGraphObjects returns the complete, allow-listed resource snapshot used
 // by the graph reconcile builder.  It never reads Secrets or accepts an
 // arbitrary resource name; every object is fetched through this already
@@ -524,8 +542,78 @@ func kubePods(kubeconfig, namespace string) ([]map[string]interface{}, error) {
 	return pods, nil
 }
 
+func parseKubeEvents(raw []byte) []map[string]interface{} {
+	var res struct {
+		Items []struct {
+			LastTimestamp  string `json:"lastTimestamp"`
+			EventTime      string `json:"eventTime"`
+			FirstTimestamp string `json:"firstTimestamp"`
+			Type           string `json:"type"`
+			Reason         string `json:"reason"`
+			Message        string `json:"message"`
+			Count          int32  `json:"count"`
+			Involved       struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"involvedObject"`
+			Regarding struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+			} `json:"regarding"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return []map[string]interface{}{}
+	}
+	result := []map[string]interface{}{}
+	for _, item := range res.Items {
+		if item.Type == "Normal" {
+			continue
+		}
+		ts := item.LastTimestamp
+		if ts == "" {
+			ts = item.EventTime
+		}
+		if ts == "" {
+			ts = item.FirstTimestamp
+		}
+		kind, name := item.Involved.Kind, item.Involved.Name
+		if kind == "" && name == "" {
+			kind, name = item.Regarding.Kind, item.Regarding.Name
+		}
+		result = append(result, map[string]interface{}{
+			"last_timestamp": ts, "type": item.Type, "reason": item.Reason,
+			"message": item.Message, "count": item.Count, "involved_object": kind + "/" + name,
+		})
+	}
+	return result
+}
+
+type graphResource struct {
+	field, name string
+	all         bool
+	optional    bool
+}
+
+func kubeGraphResourceSet() []graphResource {
+	return []graphResource{
+		{"namespaces", "namespaces", false, false}, {"nodes", "nodes", false, false},
+		{"deployments", "deployments", true, false}, {"replicasets", "replicasets", true, false},
+		{"statefulsets", "statefulsets", true, false}, {"daemonsets", "daemonsets", true, false},
+		{"jobs", "jobs", true, false}, {"cronjobs", "cronjobs", true, false},
+		{"pods", "pods", true, false}, {"services", "services", true, false}, {"ingresses", "ingresses", true, true},
+		{"endpoint_slices", "endpointslices", true, false}, {"pvcs", "persistentvolumeclaims", true, false},
+		{"pvs", "persistentvolumes", false, false}, {"storage_classes", "storageclasses", false, false},
+		{"nads", "network-attachment-definitions.k8s.cni.cncf.io", true, true},
+		{"data_volumes", "datavolumes.cdi.kubevirt.io", true, true},
+		{"virtual_machines", "virtualmachines.kubevirt.io", true, true},
+		{"virtual_machine_instances", "virtualmachineinstances.kubevirt.io", true, true},
+		{"migrations", "virtualmachineinstancemigrations.kubevirt.io", true, true},
+	}
+}
+
 // kubeGraphObjects reads only the canonical Kubernetes graph resource set.
-// Optional CRDs (NAD) are reported in errors/partial rather than converting a
+// Optional CRDs are reported in errors/partial rather than converting a
 // missing optional API into a fake empty authoritative snapshot.
 func kubeGraphObjects(kubeconfig, clusterID, identityUID string) (map[string]interface{}, error) {
 	result := map[string]interface{}{
@@ -534,23 +622,7 @@ func kubeGraphObjects(kubeconfig, clusterID, identityUID string) (map[string]int
 			"metadata": map[string]interface{}{"uid": identityUID, "name": clusterID},
 		},
 	}
-	type resource struct {
-		field, name string
-		all         bool
-		optional    bool
-	}
-	resources := []resource{
-		{"namespaces", "namespaces", false, false}, {"nodes", "nodes", false, false},
-		{"deployments", "deployments", true, false}, {"replicasets", "replicasets", true, false},
-		{"statefulsets", "statefulsets", true, false}, {"daemonsets", "daemonsets", true, false},
-		{"pods", "pods", true, false}, {"services", "services", true, false},
-		{"endpoint_slices", "endpointslices", true, false}, {"pvcs", "persistentvolumeclaims", true, false},
-		{"pvs", "persistentvolumes", false, false}, {"storage_classes", "storageclasses", false, false},
-		{"nads", "network-attachment-definitions.k8s.cni.cncf.io", true, true},
-		{"virtual_machines", "virtualmachines.kubevirt.io", true, true},
-		{"virtual_machine_instances", "virtualmachineinstances.kubevirt.io", true, true},
-		{"migrations", "virtualmachineinstancemigrations.kubevirt.io", true, true},
-	}
+	resources := kubeGraphResourceSet()
 	errs := []string{}
 	for _, item := range resources {
 		args := []string{"get", item.name, "-o", "json"}

@@ -197,6 +197,46 @@ func TestReplayChatTurnEmitsDurableCardsOnly(t *testing.T) {
 	}
 }
 
+func TestValidateAssistantAnswerRejectsUnpublishedKnowledgeCitation(t *testing.T) {
+	answer := map[string]any{
+		"conclusion":          "insufficient evidence",
+		"knowledge_citations": []any{map[string]any{"knowledge_id": "k-1", "version_id": "v-draft", "status": "draft", "scope_type": "cluster", "cluster_id": proxyClusterID}},
+		"capabilities":        map[string]any{"execute_action": true},
+	}
+	if err := validateAssistantAnswer(answer, AuthorizationContext{ActiveClusterID: proxyClusterID}); err == nil {
+		t.Fatal("unpublished knowledge citation must be rejected")
+	}
+}
+
+func TestNormalizeAssistantAnswerAlwaysDisablesExecution(t *testing.T) {
+	answer := map[string]any{
+		"conclusion":   "evidence-backed",
+		"capabilities": map[string]any{"execute_action": true, "propose_action": true},
+	}
+	normalized, err := normalizeAssistantAnswer(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, _ := normalized["capabilities"].(map[string]any)
+	if capabilities["execute_action"] != false {
+		t.Fatalf("execute_action = %#v, want false", capabilities["execute_action"])
+	}
+}
+
+func TestReplayChatTurnEmitsStructuredAnswerCard(t *testing.T) {
+	rec := httptest.NewRecorder()
+	messages := []store.ChatMessage{{Role: "assistant", Kind: "answer", Metadata: map[string]any{
+		"conclusion":   "证据支持 ImagePullBackOff",
+		"capabilities": map[string]any{"execute_action": false},
+	}}}
+	if !replayChatTurn(rec, "11111111-1111-4111-8111-111111111111", "55555555-5555-4555-8555-555555555555", messages) {
+		t.Fatal("replayChatTurn() = false, want completed answer")
+	}
+	if !strings.Contains(rec.Body.String(), "event: answer") || !strings.Contains(rec.Body.String(), "ImagePullBackOff") {
+		t.Fatalf("structured answer missing: %s", rec.Body.String())
+	}
+}
+
 func TestPersistChatSSEFramesReturnsPersistenceError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

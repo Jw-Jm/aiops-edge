@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Drawer, Spin, Table, Tag, Descriptions, Typography } from 'antd'
 import { listVms, getVm, type VmItem } from '../../api/client'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
 
@@ -16,7 +16,7 @@ function vmTone(s?: string) {
 }
 
 const VirtualMachines: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [rows, setRows] = useState<VmItem[]>([])
   const [loading, setLoading] = useState(true)
   // KubeVirt 未安装标记：接口返回 kubevirt_not_installed=true 时显示空态引导
@@ -28,10 +28,14 @@ const VirtualMachines: React.FC = () => {
   const [detailError, setDetailError] = useState<string | null>(null)
 
   const load = async () => {
+    if (!activeClusterId) {
+      setRows([]); setLoading(false); setError(null); setKubevirtMissing(false)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
-      const r = await listVms({ cluster_id: currentClusterId === 'all' ? undefined : currentClusterId })
+      const r = await listVms({ cluster_id: activeClusterId })
         const d = r.data
         if (d && (d.kubevirt_not_installed === true || d.kubevirt_installed === false)) {
           setKubevirtMissing(true)
@@ -50,7 +54,7 @@ const VirtualMachines: React.FC = () => {
     }
   }
 
-  useEffect(() => { void load() }, [currentClusterId])
+  useEffect(() => { void load() }, [activeClusterId])
 
   const openDetail = async (vm: VmItem) => {
     setDrawerOpen(true)

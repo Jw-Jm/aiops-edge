@@ -41,9 +41,28 @@ common_secrets=(
   --set-string 'internalTLS.clientSAN=query-api.observability.svc.cluster.local\,ai-orchestrator.observability.svc.cluster.local'
 )
 
+# values-prod.yaml carries the last verified release digests for reproducible
+# installs.  T1/T2 must still prove that removing those pins fails closed, so
+# explicitly clear every self-owned digest for the negative render.
+clear_digests=(
+  --set global.imageDigests.queryApi=""
+  --set global.imageDigests.ingest=""
+  --set global.imageDigests.eventCollector=""
+  --set global.imageDigests.aiOrchestrator=""
+  --set global.imageDigests.investigationWorker=""
+  --set global.imageDigests.frontend=""
+  --set global.imageDigests.aiActionExecutor=""
+  --set global.imageDigests.credentialBroker=""
+  --set global.imageDigests.llmEgressProxy=""
+  --set global.imageDigests.ipmiExporter=""
+  --set global.imageDigests.clickhouseMigrator=""
+  --set global.imageDigests.mysqlMigrator=""
+  --set global.imageDigests.graphSchemaMigrator=""
+)
+
 # Test 1+2: production without digests must fail (no silent mutable tag)
 echo "[digest-contract] T1/T2: production tag-only render must fail"
-if helm template aiops "${chart}" -f "${chart}/values-prod.yaml" "${common_secrets[@]}" \
+if helm template aiops "${chart}" -f "${chart}/values-prod.yaml" "${common_secrets[@]}" "${clear_digests[@]}" \
     --set global.imageTag=v9-tag >"${tmp}/t1.yaml" 2>/dev/null; then
   echo "contract failed: production rendered without digests" >&2
   exit 1

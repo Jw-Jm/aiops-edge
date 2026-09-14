@@ -26,6 +26,26 @@ PRODUCTION_ROUTE_ALLOWLIST = frozenset(
         ("/internal/v1/chat", "POST"),
         ("/internal/v1/run-controls/{operation}", "POST"),
         ("/internal/v1/data-cleanups/ai-sessions", "POST"),
+        # 2026-09-06 产品级路由恢复（用户授权）：变更登记 / 报告中心 / 知识库 /
+        # 审计日志是测试手册要求的必须可用的产品功能，恢复进生产 surface。
+        # 只读/登记类路由；legacy 审批、K8s 执行、chat 等写路径仍保持退役。
+        ("/api/v1/ops/changes", "GET"),
+        ("/api/v1/ops/changes", "POST"),
+        ("/api/v1/ops/changes/webhook", "POST"),
+        ("/api/v1/ops/reports", "GET"),
+        ("/api/v1/ops/reports/history", "GET"),
+        ("/api/v1/ops/reports/trend", "GET"),
+        ("/api/v1/ops/reports/{task_id}/download", "GET"),
+        ("/api/v1/ops/audit-logs", "GET"),
+        ("/api/v1/ai/knowledge", "GET"),
+        ("/api/v1/ai/knowledge", "POST"),
+        ("/api/v1/ai/knowledge/{kid}", "DELETE"),
+        ("/api/v1/ai/knowledge/playbooks", "GET"),
+        ("/api/v1/ai/knowledge/playbooks/{path:path}", "GET"),
+        ("/api/v1/ai/knowledge/rag/stats", "GET"),
+        ("/api/v1/ai/knowledge/rag/reload", "POST"),
+        ("/api/v1/ai/knowledge/rag/import", "POST"),
+        ("/api/v1/ai/knowledge/case", "POST"),
     }
 )
 

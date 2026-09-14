@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
-import ChangePassword from './index'
+import ChangePassword, { humanizePasswordError } from './index'
 
 describe('change password page', () => {
   it('requires the current and replacement passwords', () => {
@@ -16,5 +16,10 @@ describe('change password page', () => {
     expect(screen.getByLabelText('新密码')).toBeInTheDocument()
     expect(screen.getByLabelText('确认新密码')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '修改密码并继续' })).toBeInTheDocument()
+  })
+
+  it('maps the backend current-password error to a user-readable message', () => {
+    expect(humanizePasswordError('invalid_current_password')).toBe('当前密码不正确')
+    expect(humanizePasswordError('unknown_internal_code')).toBe('密码修改失败，请重试')
   })
 })

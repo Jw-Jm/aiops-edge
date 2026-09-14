@@ -212,16 +212,31 @@ func (d *AIRunDAO) GetTx(tx *sql.Tx, runID string) (*AIRun, error) {
 
 // List 列出 tenant 的 Run（按 created_at 倒序）。
 func (d *AIRunDAO) List(tenantID string) ([]AIRun, error) {
+	return d.list(tenantID, "")
+}
+
+// ListByCluster 列出 tenant 当前集群的 Run（按 created_at 倒序）。
+func (d *AIRunDAO) ListByCluster(tenantID, clusterID string) ([]AIRun, error) {
+	return d.list(tenantID, strings.TrimSpace(clusterID))
+}
+
+func (d *AIRunDAO) list(tenantID, clusterID string) ([]AIRun, error) {
 	conn := GetDB()
 	if conn == nil {
 		return nil, errors.New("mysql unavailable")
 	}
-	rows, err := conn.Query(
-		`SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
+	query := `SELECT run_id, request_id, tenant_id, principal, principal_type, session_id,
 		   scope_kind, primary_cluster_id, intent, action_mode, target_type,
 		   target_resource_id, time_range_start, time_range_end, status, state_version,
 		   parent_run_id, created_at, updated_at, finished_at, last_event_sequence
-		 FROM ai_runs WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
+		 FROM ai_runs WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if clusterID != "" {
+		query += " AND primary_cluster_id = ?"
+		args = append(args, clusterID)
+	}
+	query += " ORDER BY created_at DESC"
+	rows, err := conn.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -592,4 +607,15 @@ func nullableTime(t *time.Time) interface{} {
 		return nil
 	}
 	return *t
+}
+
+// SetRuntimeMetadataTx 在给定事务内合并写入 runtime_metadata_json。
+// Task 11：investigation_summary 随 terminal commit 一次性写入，不新增第二套状态列。
+// existingMetadata 为当前值（JSON 对象）；写入策略 = 浅合并，新键覆盖旧键。
+func (d *AIRunDAO) SetRuntimeMetadataTx(tx *sql.Tx, runID string, metadata []byte) error {
+	if len(metadata) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(`UPDATE ai_runs SET runtime_metadata_json = ? WHERE run_id = ?`, metadata, runID)
+	return err
 }

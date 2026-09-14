@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Empty as AntEmpty, Select, Space } from 'antd'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import { getGraphHealth, getGraphImpact, getGraphNeighbors, searchGraphEntities, getServiceDependencies, getServiceDependencyMatrix, getServiceMap, getServiceOverview } from '../../api/knowledgeGraph'
 import type { GraphHealth, GraphSubgraph } from '../../api/graphContracts'
 import type { PanoramaService, ServiceDependenciesResponse, ServiceMapResponse, ServiceMatrixResponse, ServiceOverviewResponse } from '../../api/knowledgeGraph'
@@ -14,6 +14,8 @@ import ServiceMatrixView from './service/ServiceMatrixView'
 import ServiceListView from './service/ServiceListView'
 import ServiceExploreView from './service/ServiceExploreView'
 import ServiceSummary from './service/ServiceSummary'
+import { resourceDomainOf } from '../../features/resources/resourceDomain'
+import MainFailureChain from '../Resources/MainFailureChain'
 
 type ServiceRow = PanoramaService & { service: string; avg_latency_ms: number }
 const EMPTY_GRAPH: GraphSubgraph = { center_entity_uid: '', vertices: [], edges: [], meta: { contract_version: 'graph-dto-v1', schema_version: 0, partial: false, stale: true, generated_at: '', warning_codes: [] } }
@@ -42,8 +44,11 @@ function legacyMap(rows: ServiceRow[]): ServiceMapResponse {
   return { group_by: 'namespace', groups: [...groups.values()], services: rows, aggregated_edges: [], topology_revision: 'legacy-fallback' }
 }
 
-const ServiceObservability: React.FC = () => {
-  const currentClusterId = useUIStore((state) => state.currentClusterId)
+const ServiceObservability: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  const activeScope = useScopeStore((state) => state.active ?? { tenantId: '', clusterId: activeClusterId, timeRange: { mode: 'relative' as const, minutes: 60 } })
+  const setScopeResource = useScopeStore((state) => state.setResource)
+  const setScopeTimeRange = useScopeStore((state) => state.setTimeRange)
   const [timeRange, setTimeRange] = useState(60)
   const [services, setServices] = useState<ServiceRow[]>([])
   const [selectedService, setSelectedService] = useState('')
@@ -70,6 +75,11 @@ const ServiceObservability: React.FC = () => {
   const [error, setError] = useState('')
   const [structureRefresh, setStructureRefresh] = useState(0)
 
+  useEffect(() => {
+    if (activeScope.timeRange.mode === 'relative') setTimeRange(activeScope.timeRange.minutes)
+    setNamespaceFilter(activeScope.resource?.domain === 'kubernetes' ? activeScope.resource.namespace || '' : '')
+  }, [activeScope.resource?.domain, activeScope.resource?.namespace, activeScope.timeRange.mode, activeScope.timeRange.mode === 'relative' ? activeScope.timeRange.minutes : activeScope.timeRange.start, activeScope.timeRange.mode === 'absolute' ? activeScope.timeRange.end : ''])
+
   const loadOverview = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -87,18 +97,22 @@ const ServiceObservability: React.FC = () => {
         setOverview(nextOverview); setMapData(nextMap); setHealth(healthResponse.data)
         const rows = nextMap.services.map((service) => ({ ...service, service: service.service_name }))
         setServices(rows)
-        setSelectedService((current) => rows.some((row) => row.service === current) ? current : rows[0]?.service || '')
-        setSelectedEntityUID((current) => rows.find((row) => row.service === current)?.entity_uid || rows[0]?.entity_uid || '')
+        const requested = activeScope.resource?.uid
+        const requestedRow = rows.find((row) => row.entity_uid === requested || row.service === requested)
+        setSelectedService((current) => rows.some((row) => row.service === current) ? current : requestedRow?.service || rows[0]?.service || '')
+        setSelectedEntityUID((current) => rows.find((row) => row.entity_uid === current)?.entity_uid || requestedRow?.entity_uid || rows[0]?.entity_uid || '')
       } else {
         const [serviceResponse, healthResponse] = await Promise.all([getServices({ minutes: timeRange }), getGraphHealth()])
         const rows = normalizeLegacyServices(serviceResponse.data); setServices(rows); setMapData(legacyMap(rows)); setHealth(healthResponse.data)
-        setSelectedService((current) => rows.some((row) => row.service === current) ? current : rows[0]?.service || '')
+        const requested = activeScope.resource?.uid
+        const requestedRow = rows.find((row) => row.entity_uid === requested || row.service === requested)
+        setSelectedService((current) => rows.some((row) => row.service === current) ? current : requestedRow?.service || rows[0]?.service || '')
       }
     } catch {
       setError('服务摘要或服务地图暂时不可用，请检查 query-api 与事实数据源状态。')
       setServices([]); setMapData(undefined); setOverview(undefined)
     } finally { setLoading(false) }
-  }, [applicationFilter, namespaceFilter, timeRange])
+  }, [activeScope.resource?.uid, applicationFilter, namespaceFilter, timeRange])
 
   const loadMatrix = useCallback(async () => {
     if (typeof getServiceDependencyMatrix !== 'function') return
@@ -106,13 +120,29 @@ const ServiceObservability: React.FC = () => {
     try { setMatrix((await getServiceDependencyMatrix({ minutes: timeRange, limit: 200, ...(namespaceFilter ? { namespace: namespaceFilter } : {}), ...(applicationFilter ? { application_uid: applicationFilter } : {}) })).data) } catch { setError('调用矩阵暂时不可用，请检查 query-api。') } finally { setMatrixLoading(false) }
   }, [applicationFilter, namespaceFilter, timeRange])
 
-  useEffect(() => { void loadOverview(); void loadMatrix() }, [currentClusterId, loadMatrix, loadOverview])
+  useEffect(() => {
+    if (!activeClusterId) {
+      setLoading(false)
+      setMapLoading(false)
+      setMatrixLoading(false)
+      setDependencyLoading(false)
+      setServices([])
+      setMapData(undefined)
+      setOverview(undefined)
+      setMatrix(undefined)
+      setDependency(undefined)
+      return
+    }
+    void loadOverview(); void loadMatrix()
+  }, [activeClusterId, loadMatrix, loadOverview])
   useEffect(() => { const timer = window.setInterval(() => { void loadOverview() }, 30_000); return () => window.clearInterval(timer) }, [loadOverview])
 
   useEffect(() => {
     const row = services.find((service) => service.service === selectedService)
     if (row?.entity_uid) setSelectedEntityUID(row.entity_uid)
-  }, [selectedService, services])
+    if (selectedService && activeClusterId) setScopeResource?.({ clusterId: activeClusterId, uid: row?.entity_uid || selectedService, type: 'service', domain: resourceDomainOf('service') || 'application', name: selectedService })
+    else if (services.length > 0) setScopeResource?.(undefined)
+  }, [selectedService, services, setScopeResource])
 
   // Compatibility fallback for old deployments that have not exposed the
   // panorama contracts yet: resolve the selected service through the typed
@@ -149,11 +179,11 @@ const ServiceObservability: React.FC = () => {
   const fallbackGraph = graph.vertices.length > 0 ? graph : EMPTY_GRAPH
 
   return <div className="page">
-    <Breadcrumb items={[{ t: '可观测性' }, { t: '服务全景' }]} />
-    <PageHeader title="服务全景" desc="服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索。默认地图按 Application/Namespace 聚合，原始关系仅在专家探索中展开。" actions={<Space wrap><Select aria-label="时间范围" value={timeRange} onChange={setTimeRange} options={[{ value: 15, label: '近 15 分钟' }, { value: 60, label: '近 1 小时' }, { value: 1440, label: '近 24 小时' }]} /><Select allowClear aria-label="命名空间" placeholder="命名空间" value={namespaceFilter || undefined} onChange={(value) => setNamespaceFilter(value || '')} options={[...new Set(services.map((service) => service.namespace).filter(Boolean))].map((value) => ({ value, label: value }))} /><Select allowClear aria-label="应用" placeholder="应用" value={applicationFilter || undefined} onChange={(value) => setApplicationFilter(value || '')} options={[...new Map(services.filter((service) => service.application_uid).map((service) => [service.application_uid, service.application_name || service.application_uid])).entries()].map(([value, label]) => ({ value, label }))} /><Select allowClear aria-label="健康状态" placeholder="健康状态" value={healthFilter || undefined} onChange={(value) => setHealthFilter(value || '')} options={[{ value: 'healthy', label: '健康' }, { value: 'degraded', label: '降级' }, { value: 'critical', label: '严重' }]} /><Checkbox checked={onlyAbnormal} onChange={(event) => setOnlyAbnormal(event.target.checked)}>仅看异常</Checkbox><Button onClick={() => void loadOverview()}>刷新摘要</Button></Space>} />
+    {!embedded && <><Breadcrumb items={[{ t: '可观测性' }, { t: '服务全景' }]} /><PageHeader title="服务全景" desc="服务摘要 → 服务地图 → 依赖主链 → 调用矩阵 → 服务列表 → 专家关系探索。默认地图按 Application/Namespace 聚合，原始关系仅在专家探索中展开。" actions={<Space wrap><Select aria-label="时间范围" value={timeRange} onChange={(value) => { setTimeRange(value); setScopeTimeRange?.({ mode: 'relative', minutes: value as 15 | 60 | 1440 }) }} options={[{ value: 15, label: '近 15 分钟' }, { value: 60, label: '近 1 小时' }, { value: 1440, label: '近 24 小时' }]} /><Select allowClear aria-label="命名空间" placeholder="命名空间（局部筛选）" value={namespaceFilter || undefined} onChange={(value) => setNamespaceFilter(value || '')} options={[...new Set(services.map((service) => service.namespace).filter(Boolean))].map((value) => ({ value, label: value }))} /><Select allowClear aria-label="应用" placeholder="应用" value={applicationFilter || undefined} onChange={(value) => setApplicationFilter(value || '')} options={[...new Map(services.filter((service) => service.application_uid).map((service) => [service.application_uid, service.application_name || service.application_uid])).entries()].map(([value, label]) => ({ value, label }))} /><Select allowClear aria-label="健康状态" placeholder="健康状态" value={healthFilter || undefined} onChange={(value) => setHealthFilter(value || '')} options={[{ value: 'healthy', label: '健康' }, { value: 'degraded', label: '降级' }, { value: 'critical', label: '严重' }]} /><Checkbox checked={onlyAbnormal} onChange={(event) => setOnlyAbnormal(event.target.checked)}>仅看异常</Checkbox><Button onClick={() => void loadOverview()}>刷新摘要</Button></Space>} /></>}
     {error && <Alert type="warning" showIcon message={error} style={{ marginBottom: 16 }} />}
     <section aria-label="服务摘要"><ServiceSummary overview={overview} services={services} health={health} timeRange={timeRange} loading={loading} /></section>
     <section aria-label="服务地图" style={{ marginTop: 16 }}><Card title="服务地图" loading={mapLoading} extra={<Space><Select aria-label="地图分组" size="small" value={mapData?.group_by || 'application'} options={[{ value: 'application', label: '按 Application' }, { value: 'namespace', label: '按 Namespace' }]} onChange={async (group_by) => { const selectedGroup = group_by as 'application' | 'namespace'; setMapLoading(true); try { if (typeof getServiceMap === 'function') setMapData((await getServiceMap({ minutes: timeRange, group_by: selectedGroup, ...(namespaceFilter ? { namespace: namespaceFilter } : {}), ...(applicationFilter ? { application_uid: applicationFilter } : {}) })).data) } finally { setMapLoading(false) } }} /><Button size="small" onClick={() => void loadOverview()}>刷新摘要</Button></Space>}>{mapData ? <ServiceMapView data={mapData} selectedService={selectedService} onServiceSelect={setSelectedService} /> : <AntEmpty description="暂无服务地图数据" />}</Card><div style={{ marginTop: 12 }}><GraphSummary subgraph={fallbackGraph} health={health} /></div></section>
+    <section style={{ marginTop: 16 }}><MainFailureChain center={selectedService && activeClusterId ? { clusterId: activeClusterId, uid: selectedEntityUID || selectedService, type: 'service', domain: 'application', name: selectedService } : undefined} upstream={(dependency?.upstream || []).map((entity) => ({ clusterId: entity.cluster_id, uid: entity.entity_uid, type: entity.entity_type, domain: resourceDomainOf(entity.entity_type) || 'application', name: entity.name, ...(entity.namespace ? { namespace: entity.namespace } : {}) }))} downstream={(dependency?.downstream || []).map((entity) => ({ clusterId: entity.cluster_id, uid: entity.entity_uid, type: entity.entity_type, domain: resourceDomainOf(entity.entity_type) || 'application', name: entity.name, ...(entity.namespace ? { namespace: entity.namespace } : {}) }))} /></section>
     <section style={{ marginTop: 16 }}><ServiceDependencyView data={dependency} onEntitySelect={(entity) => { setSelectedEntityUID(entity.entity_uid); setSelectedService(entity.name) }} /></section>
     <section style={{ marginTop: 16 }}><Card loading={matrixLoading} extra={<Button size="small" onClick={() => void loadMatrix()}>刷新矩阵</Button>}><ServiceMatrixView matrix={matrix} vertices={fallbackGraph.vertices} edges={fallbackGraph.edges} onCellSelect={(cell) => { setSelectedService(cell.target_service); setSelectedEntityUID(cell.target_uid) }} /></Card></section>
     <section aria-label="服务列表" style={{ marginTop: 16 }}><ServiceListView services={services} selectedService={selectedService} search={serviceFilter} health={healthFilter} onlyAbnormal={onlyAbnormal} onSearchChange={setServiceFilter} onSelect={(row) => { setSelectedService(row.service); if (row.entity_uid) setSelectedEntityUID(row.entity_uid) }} /></section>

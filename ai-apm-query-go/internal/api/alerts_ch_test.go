@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -102,6 +103,72 @@ func splitHostPort(u string) (string, int) {
 		port = atoiSafe(s[i+1:])
 	}
 	return strings.TrimSuffix(s, ":"+s[i+1:]), port
+}
+
+// newAlertCHTestHandler 构造注入了 fake CH 的 Handler（复用 alerts_ch_test 的拆解逻辑）。
+func newAlertCHTestHandler(t *testing.T, srv *httptest.Server) *Handler {
+	t.Helper()
+	h := &Handler{client: &http.Client{}}
+	host, port := splitHostPort(srv.URL)
+	h.chHost = host
+	h.chPort = port
+	h.repo = *query.NewClickHouseRepo(fmt.Sprintf("http://%s:%d", host, port), &http.Client{Timeout: 5 * time.Second})
+	h.alertRepo = query.NewAlertRepository(&h.repo)
+	return h
+}
+
+// 回归 alerts_events_api_shows_event：SetAlertCH（ModeHTTP 注入路径）后内存态
+// 应从 ClickHouse 加载事件，且 /api/v1/alerts/events 能读到；后续 sync loop
+// 周期重载应能拿到 CH 中新写入的事件。
+func TestSetAlertCHLoadsEventsAndSyncLoopReloads(t *testing.T) {
+	eventsPayload := `{"id":"evt-fix-1","rule_id":"r-fix","rule_name":"错误率","service":"svc-fix","severity":"critical","message":"err","value":50.0,"threshold":1.0,"timestamp":"2026-09-06 08:00:00.000","count":1,"first_timestamp":"2026-09-06 08:00:00.000","last_timestamp":"2026-09-06 08:00:00.000","status":"firing","acknowledged_at":null,"acknowledged_by":"","resolved_at":null,"resolved_by":"","timeline":"","investigation":"","signature":"sig-fix","tenant_id":"tenant-7","cluster_id":"cluster-9"}`
+	seen := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen++
+		// 第 2 次（sync loop 重载）才返回事件，模拟 alert-eval pod 稍后写入 CH。
+		if seen < 2 {
+			_, _ = w.Write([]byte(""))
+			return
+		}
+		_, _ = w.Write([]byte(eventsPayload))
+	}))
+	defer srv.Close()
+
+	prevCH, prevEvents := alertCH, alertEvents
+	defer func() { alertCH, alertEvents = prevCH, prevEvents }()
+
+	h := newAlertCHTestHandler(t, srv)
+	SetAlertCH(h)
+	if len(alertEvents) != 0 {
+		t.Fatalf("expected empty cache before CH has events, got %d", len(alertEvents))
+	}
+
+	// RunAlertEventsSyncLoop：短 interval 触发一次重载后取消。
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		h.RunAlertEventsSyncLoop(ctx, 10*time.Millisecond)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		alertEventsMu.RLock()
+		n := len(alertEvents)
+		alertEventsMu.RUnlock()
+		if n == 1 {
+			cancel()
+			<-done
+			ev := alertEvents[0]
+			if ev.ID != "evt-fix-1" || ev.TenantID != "tenant-7" || ev.Cluster != "cluster-9" {
+				t.Fatalf("event mismatch: %+v", ev)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatal("sync loop did not reload events from ClickHouse within deadline")
 }
 
 func atoiSafe(s string) int {

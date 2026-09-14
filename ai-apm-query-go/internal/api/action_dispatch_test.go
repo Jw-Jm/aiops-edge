@@ -123,3 +123,39 @@ func TestListActionsIsTenantScopedReadModel(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestListActionsFiltersByRequestedCluster(t *testing.T) {
+	h := &Handler{}
+	mock, cleanup := setupAPIStore(t)
+	defer cleanup()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT action_id, run_id, cluster_id, action_type, action_hash, hash_schema_version,")).
+		WithArgs("tenant-1", "cluster-a", 10).
+		WillReturnRows(sqlmock.NewRows([]string{"action_id", "run_id", "cluster_id", "action_type", "action_hash", "hash_schema_version",
+			"action_version", "proposed_by", "policy_version", "preflight_status", "target_resource_type", "status", "dry_run",
+			"target_name", "target_uid", "resource_version", "namespace", "operation", "execution_status", "error_code", "params_json", "created_at", "updated_at"}).
+			AddRow("action-a", "run-a", "cluster-a", "scale", "hash-a", 2, 1, "owner-1", "policy", "passed", "deployment",
+				"proposed", 0, "orders", "uid-a", "rv-1", "prod", "scale", "proposed", "", []byte(`{"replicas":2}`), time.Now(), time.Now()))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/actions?limit=10&cluster_id=cluster-a", strings.NewReader(""))
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "approver-1", TenantID: "tenant-1", ActiveClusterID: "cluster-a"})
+	rec := httptest.NewRecorder()
+	h.ActionPublicHandler(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "action-a") {
+		t.Fatalf("expected cluster-scoped action list, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestActionScopeDeniedRejectsForeignCluster(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/actions/action-a", nil)
+	req = withAuthorizationContext(req, AuthorizationContext{UserID: "user-1", TenantID: "tenant-1", ActiveClusterID: "cluster-b"})
+	rec := httptest.NewRecorder()
+	if !actionScopeDenied(rec, req, "tenant-1", "cluster-a") {
+		t.Fatal("foreign cluster action must be denied")
+	}
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "CONTEXT_SCOPE_MISMATCH") {
+		t.Fatalf("unexpected scope response: %d %s", rec.Code, rec.Body.String())
+	}
+}

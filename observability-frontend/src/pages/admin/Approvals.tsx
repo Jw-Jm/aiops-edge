@@ -5,6 +5,7 @@ import { PageHeader, Breadcrumb, Empty, StatusBadge, type StatusTone } from '../
 import { useAuthStore } from '../../store/authStore'
 import { fmtTime } from '../../lib/format'
 import AppIcon from '../../components/AppIcons'
+import RawDataPanel from '../../components/display/RawDataPanel'
 
 // =====================================================================
 //  审批中心：所有涉及环境操作变更（执行命令 / K8s 动作 / 恢复方案 / AI 处置建议）
@@ -96,7 +97,7 @@ const Approvals: React.FC = () => {
           source: 'canonical_action',
           service: action.target_name,
           plan: `${action.operation} ${action.target_resource_type}/${action.target_name} (${action.namespace})`,
-          script: JSON.stringify({ operation: action.operation, target: action.target_name, namespace: action.namespace }, null, 2),
+          script: `${action.operation} ${action.target_resource_type}/${action.target_name}${action.namespace ? ` · ${action.namespace}` : ''}`,
           risk_score: undefined,
           risk_reason: `preflight=${action.preflight_status}, hash=v${action.hash_schema_version}:${action.action_hash}`,
           status: action.status === 'proposed' ? 'waiting' : action.status,
@@ -239,7 +240,7 @@ const Approvals: React.FC = () => {
         </div>
         <div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>规范化参数</div>
-          <pre data-testid="canonical-action-params" style={codeBlockStyle}>{JSON.stringify(detail.params ?? {}, null, 2)}</pre>
+          <div data-testid="canonical-action-params"><RawDataPanel title="查看规范化参数" data={detail.params ?? {}} /></div>
         </div>
 
         <div>

@@ -12,8 +12,56 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/observability-platform/ai-apm-query-go/internal/k8sboundary"
 	"github.com/observability-platform/ai-apm-query-go/internal/store"
 )
+
+// clusterRegistrationRequest is the browser-safe registration contract. Raw
+// kubeconfig material is intentionally not represented here; credentials are
+// resolved only from a management-plane Secret by k8sboundary.
+type clusterRegistrationRequest struct {
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	Environment   string `json:"environment"`
+	Region        string `json:"region"`
+	CredentialRef string `json:"credential_ref"`
+	Type          string `json:"type"`
+	Capabilities  string `json:"capabilities"`
+	Labels        string `json:"labels"`
+}
+
+func parseClusterRegistrationRequest(r io.Reader, tenantID string) (k8sboundary.ClusterRegistration, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return k8sboundary.ClusterRegistration{}, errors.New("tenant context required")
+	}
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return k8sboundary.ClusterRegistration{}, fmt.Errorf("read registration request: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return k8sboundary.ClusterRegistration{}, errors.New("invalid JSON")
+	}
+	if _, ok := fields["kubeconfig"]; ok {
+		return k8sboundary.ClusterRegistration{}, errors.New("raw kubeconfig is not accepted; use credential_ref")
+	}
+	var req clusterRegistrationRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return k8sboundary.ClusterRegistration{}, errors.New("invalid JSON")
+	}
+	if strings.TrimSpace(req.CredentialRef) == "" {
+		return k8sboundary.ClusterRegistration{}, errors.New("credential_ref is required")
+	}
+	if strings.TrimSpace(req.Slug) == "" || strings.TrimSpace(req.Name) == "" {
+		return k8sboundary.ClusterRegistration{}, errors.New("slug and name are required")
+	}
+	return k8sboundary.ClusterRegistration{
+		TenantID: tenantID, Slug: strings.TrimSpace(req.Slug), Name: strings.TrimSpace(req.Name),
+		Environment: strings.TrimSpace(req.Environment), Region: strings.TrimSpace(req.Region),
+		CredentialRef: strings.TrimSpace(req.CredentialRef), Type: strings.TrimSpace(req.Type),
+		Capabilities: strings.TrimSpace(req.Capabilities), Labels: strings.TrimSpace(req.Labels),
+	}, nil
+}
 
 // ClusterRouter 分发 /api/v1/clusters 下的操作。
 func (h *Handler) ClusterRouter(w http.ResponseWriter, r *http.Request) {
@@ -40,25 +88,25 @@ func (h *Handler) ClusterRouter(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// /clusters/{id} 或 /clusters/{id}/nodes|namespaces|events
+	// /clusters/{cluster_id} 或 /clusters/{cluster_id}/nodes|namespaces|events
 	parts := strings.Split(rest, "/")
-	id, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", 400)
-		return
-	}
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "nodes":
-			h.clusterNodes(w, r, id)
+			h.clusterNodes(w, r, parts[0])
 			return
 		case "namespaces":
-			h.clusterNamespaces(w, r, id)
+			h.clusterNamespaces(w, r, parts[0])
 			return
 		case "events":
-			h.clusterEvents(w, r, id)
+			h.clusterEvents(w, r, parts[0])
 			return
 		}
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		http.Error(w, "bad cluster reference", 400)
+		return
 	}
 	switch r.Method {
 	case http.MethodPut:
@@ -75,7 +123,14 @@ func (h *Handler) ClusterList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) clusterList(w http.ResponseWriter, r *http.Request) {
-	items, err := (&store.ClusterDAO{}).List()
+	tenantID := extractTenantID(r)
+	var items []store.Cluster
+	var err error
+	if tenantID != "" {
+		items, err = (&store.ClusterDAO{}).ListForTenant(tenantID)
+	} else {
+		items, err = (&store.ClusterDAO{}).List()
+	}
 	if err != nil {
 		respondJSON(w, 200, map[string]interface{}{"clusters": []store.Cluster{}, "error": err.Error()})
 		return
@@ -136,35 +191,26 @@ func (h *Handler) clusterList(w http.ResponseWriter, r *http.Request) {
 
 // clusterCreate POST /clusters — 新增集群（含 kubeconfig）。
 func (h *Handler) clusterCreate(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	var req struct {
-		Name       string `json:"name"`
-		Provider   string `json:"provider"`
-		APIServer  string `json:"api_server"`
-		Kubeconfig string `json:"kubeconfig"`
-	}
-	if json.Unmarshal(body, &req) != nil {
-		respondJSON(w, 400, map[string]interface{}{"error": "invalid JSON"})
-		return
-	}
-	if req.Name == "" {
-		respondJSON(w, 400, map[string]interface{}{"error": "name required"})
-		return
-	}
-	if req.Provider == "" {
-		req.Provider = "onprem"
-	}
-	d := &store.ClusterDAO{}
-	id, err := d.Create(&store.Cluster{
-		Name: req.Name, Provider: req.Provider, APIServer: req.APIServer, Kubeconfig: req.Kubeconfig,
-		Status: "active", // A-1 修复：status 列是 ENUM，空串插入会 Data truncated
-	})
+	registration, err := parseClusterRegistrationRequest(r.Body, extractTenantID(r))
 	if err != nil {
-		respondJSON(w, 500, map[string]interface{}{"error": err.Error()})
+		respondJSON(w, 400, map[string]interface{}{"error": err.Error()})
 		return
 	}
-	auditWrite(r, "cluster.create", req.Name, "新增集群 provider="+req.Provider)
-	respondJSON(w, 201, map[string]interface{}{"ok": true, "id": id})
+	if h.clusterRegistrar == nil {
+		respondJSON(w, 503, map[string]interface{}{"error": "cluster registration boundary unavailable"})
+		return
+	}
+	cluster, err := h.clusterRegistrar.Register(registration)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrClusterIdentityDuplicate) {
+			status = http.StatusConflict
+		}
+		respondJSON(w, status, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	auditWrite(r, "cluster.create", cluster.ClusterID, "注册集群 slug="+registration.Slug)
+	respondJSON(w, http.StatusCreated, map[string]interface{}{"ok": true, "cluster_id": cluster.ClusterID, "cluster": cluster})
 }
 
 // clusterSync 从 kubectl 自动发现 K8s 集群信息并 upsert。
@@ -187,9 +233,36 @@ func (h *Handler) clusterSync(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 200, map[string]interface{}{"ok": true, "synced": true, "id": id, "cluster": info})
 }
 
-// clusterNodes 返回集群节点列表（优先用该集群 kubeconfig，否则仅默认集群回退当前 kubectl context）。
-func (h *Handler) clusterNodes(w http.ResponseWriter, r *http.Request, id int64) {
-	c, err := (&store.ClusterDAO{}).GetByID(id)
+func clusterForRef(ref string) (*store.Cluster, error) {
+	ref = strings.TrimSpace(ref)
+	if canonicalUUID.MatchString(ref) {
+		return (&store.ClusterDAO{}).GetByClusterID(ref)
+	}
+	id, err := strconv.ParseInt(ref, 10, 64)
+	if err != nil {
+		return nil, store.ErrInvalidClusterRef
+	}
+	return (&store.ClusterDAO{}).GetByIDCanonical(id)
+}
+
+func (h *Handler) validatedClusterClient(ref string) (*k8sboundary.Client, error) {
+	c, err := clusterForRef(ref)
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, store.ErrClusterNotFound
+	}
+	if h.clusterClients == nil {
+		return nil, errors.New("cluster access boundary unavailable")
+	}
+	return h.clusterClients.GetClient(c.ClusterID)
+}
+
+// clusterNodes uses the identity-validated Kubernetes boundary. The legacy
+// clusters.kubeconfig column is never read by this request path.
+func (h *Handler) clusterNodes(w http.ResponseWriter, r *http.Request, ref string) {
+	c, err := clusterForRef(ref)
 	if err != nil {
 		respondJSON(w, 500, map[string]interface{}{"nodes": []store.ClusterNode{}, "error": err.Error()})
 		return
@@ -198,73 +271,57 @@ func (h *Handler) clusterNodes(w http.ResponseWriter, r *http.Request, id int64)
 		respondJSON(w, 404, map[string]interface{}{"nodes": []store.ClusterNode{}, "error": "cluster not found"})
 		return
 	}
-	// P3.8: no id=1 / kubernetes-cluster / current-context fallback (V9.2 §9).
-	// Any cluster without an explicit kubeconfig fails closed.
-	if c.Kubeconfig == "" {
-		respondJSON(w, 200, map[string]interface{}{
-			"nodes": []store.ClusterNode{}, "count": 0,
-			"error": "cluster has no kubeconfig, cannot query nodes",
-		})
+	client, err := h.validatedClusterClient(c.ClusterID)
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"nodes": []map[string]interface{}{}, "error": err.Error()})
 		return
 	}
-	if c.Kubeconfig == "" {
-		nodes := k8sNodes()
-		respondJSON(w, 200, map[string]interface{}{"nodes": nodes, "count": len(nodes)})
+	nodes, err := client.KubeNodeDetails()
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"nodes": []map[string]interface{}{}, "error": err.Error()})
 		return
 	}
-	nodes := k8sNodesWithKubeconfig(c.Kubeconfig)
-	respondJSON(w, 200, map[string]interface{}{"nodes": nodes, "count": len(nodes)})
+	respondJSON(w, 200, map[string]interface{}{"nodes": nodes, "count": len(nodes), "cluster_id": c.ClusterID})
 }
 
-// clusterNamespaces 返回集群命名空间列表（kubeconfig 或当前 context）。
-func (h *Handler) clusterNamespaces(w http.ResponseWriter, r *http.Request, id int64) {
-	kc, err := clusterKubeconfig(id)
+// clusterNamespaces uses the identity-validated Kubernetes boundary.
+func (h *Handler) clusterNamespaces(w http.ResponseWriter, r *http.Request, ref string) {
+	c, err := clusterForRef(ref)
 	if err != nil {
-		if errors.Is(err, errNoKubeconfig) {
-			respondJSON(w, 200, map[string]interface{}{
-				"namespaces": []string{}, "count": 0,
-				"error": "cluster has no kubeconfig, cannot query namespaces",
-			})
-			return
-		}
 		respondJSON(w, 500, map[string]interface{}{"namespaces": []string{}, "error": err.Error()})
 		return
 	}
-	out, err := kubeList(kc, "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}")
+	client, err := h.validatedClusterClient(c.ClusterID)
 	if err != nil {
-		respondJSON(w, 200, map[string]interface{}{"namespaces": []string{}, "error": err.Error()})
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"namespaces": []string{}, "error": err.Error()})
 		return
 	}
-	ns := []string{}
-	for _, s := range strings.Fields(strings.TrimSpace(out)) {
-		if s != "" {
-			ns = append(ns, s)
-		}
+	ns, err := client.KubeNamespaces()
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"namespaces": []string{}, "error": err.Error()})
+		return
 	}
-	respondJSON(w, 200, map[string]interface{}{"namespaces": ns, "count": len(ns)})
+	respondJSON(w, 200, map[string]interface{}{"namespaces": ns, "count": len(ns), "cluster_id": c.ClusterID})
 }
 
 // clusterEvents 返回集群异常事件列表。
-func (h *Handler) clusterEvents(w http.ResponseWriter, r *http.Request, id int64) {
-	kc, err := clusterKubeconfig(id)
+func (h *Handler) clusterEvents(w http.ResponseWriter, r *http.Request, ref string) {
+	c, err := clusterForRef(ref)
 	if err != nil {
-		if errors.Is(err, errNoKubeconfig) {
-			respondJSON(w, 200, map[string]interface{}{
-				"events": []map[string]interface{}{}, "count": 0,
-				"error": "cluster has no kubeconfig, cannot query events",
-			})
-			return
-		}
 		respondJSON(w, 500, map[string]interface{}{"events": []map[string]interface{}{}, "error": err.Error()})
 		return
 	}
-	out, err := kubeList(kc, "get", "events", "-A", "-o", "json")
+	client, err := h.validatedClusterClient(c.ClusterID)
 	if err != nil {
-		respondJSON(w, 200, map[string]interface{}{"events": []map[string]interface{}{}, "error": err.Error()})
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"events": []map[string]interface{}{}, "error": err.Error()})
 		return
 	}
-	events := parseK8sEvents(out)
-	respondJSON(w, 200, map[string]interface{}{"events": events, "count": len(events)})
+	events, err := client.KubeEvents()
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"events": []map[string]interface{}{}, "error": err.Error()})
+		return
+	}
+	respondJSON(w, 200, map[string]interface{}{"events": events, "count": len(events), "cluster_id": c.ClusterID})
 }
 
 // errNoKubeconfig 非默认集群未配置 kubeconfig 时的守卫错误。

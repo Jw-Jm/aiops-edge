@@ -10,6 +10,7 @@ from typing import Any
 from control_plane_client import ControlPlaneError, ControlPlaneClient
 from error_safety import public_error_message, sanitize_runtime_payload, stable_error_code
 from investigation_dispatcher import AcceptedInvocation
+from investigation_summary import build_investigation_summary
 from invocation_scope import bind_execution_lease_token
 from lease_aware_execution import LeaseAwareExecutor
 
@@ -235,6 +236,16 @@ class InvestigationRuntime:
                         target = "partial"
                         result["error_code"] = "GRAPH_CONTEXT_FINALIZE_FAILED"
                         result["error_message"] = public_error_message("GRAPH_CONTEXT_FINALIZE_FAILED")
+            # Task 11: the summary is produced exactly once, at this terminal
+            # commit boundary, from the outcome the brain already produced. It is
+            # never rebuilt from frontend text and never derived after the fact.
+            if target in _TERMINAL_OUTCOMES:
+                result["investigation_summary"] = build_investigation_summary(
+                    status=target,
+                    rca=result.get("rca") if isinstance(result.get("rca"), dict) else result,
+                    budget=result.get("budget") if isinstance(result.get("budget"), dict) else None,
+                    error_code=str(result.get("error_code") or ""),
+                )
             work.lease.commit(
                 target=target, result=result,
                 events=_runtime_events(events, invocation_id=item.invocation_id,

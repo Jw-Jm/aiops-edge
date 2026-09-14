@@ -13,3 +13,9 @@ PYSEC-2026-311|2026-12-31|chromadb in-process only, server-mode RCE not reachabl
 CVE-2026-45830|2026-12-31|chromadb in-process only, server-mode RCE not reachable, no fixed release yet (see SCA_TRIAGE_LEDGER.md)
 CVE-2026-45831|2026-12-31|chromadb in-process only, server-mode RCE not reachable, no fixed release yet (see SCA_TRIAGE_LEDGER.md)
 CVE-2026-45833|2026-12-31|chromadb in-process only, server-mode RCE not reachable, no fixed release yet (see SCA_TRIAGE_LEDGER.md)
+# 2026-09-14 新披露批次：同一 chromadb 1.1.1 server-mode 系列漏洞，上游仍未发布
+# 修复版本；本项目的暴露面与缓解措施与上方条目一致（in-process 嵌入、无 REST
+# server、egress default-deny）。
+PYSEC-2026-3815|2026-12-31|chromadb in-process only, server-mode vuln not reachable, no fixed release yet (same family as PYSEC-2026-311, see SCA_TRIAGE_LEDGER.md)
+PYSEC-2026-3813|2026-12-31|chromadb in-process only, server-mode vuln not reachable, no fixed release yet (same family as PYSEC-2026-311, see SCA_TRIAGE_LEDGER.md)
+PYSEC-2026-3814|2026-12-31|chromadb in-process only, server-mode vuln not reachable, no fixed release yet (same family as PYSEC-2026-311, see SCA_TRIAGE_LEDGER.md)

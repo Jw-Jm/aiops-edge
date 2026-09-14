@@ -28,7 +28,7 @@ PY
 }
 
 run_check deployment_contract bash deploy/scripts/test-deployment-contracts.sh
-run_check production_architecture env AIOPS_CONTRACT_ALLOW_TEST_SECRETS=true bash deploy/scripts/test-production-architecture-contracts.sh
+run_check production_architecture bash deploy/scripts/test-production-architecture-contracts.sh
 run_check release_signature_contract bash deploy/scripts/test-release-evidence-contract.sh
 run_check helm_lint helm lint --strict deploy/helm/aiops
 run_check diff_check git diff --check
@@ -120,12 +120,14 @@ rendered_manifest="${AIOPS_RELEASE_RENDERED_MANIFEST:-}"
 release_binding="${AIOPS_RELEASE_BINDING_FILE:-}"
 signature_file="${AIOPS_RELEASE_SIGNATURE_FILE:-}"
 signature_public_key="${AIOPS_RELEASE_SIGNATURE_PUBLIC_KEY:-}"
+v3_acceptance="${AIOPS_V3_UI_ACCEPTANCE_FILE:-}"
 python3 - "${repo_root}" "${out}" "${git_commit}" "${tree_digest}" "${tmp_dir}/commands.jsonl" \
   "${image_evidence}" "${rendered_manifest}" "${release_binding}" "${signature_file}" "${signature_public_key}" \
-  "${repo_root}/deploy/scripts/verify-release-signature.sh" "${repo_root}/deploy/scripts/verify-release-binding.sh" <<'PY'
+  "${repo_root}/deploy/scripts/verify-release-signature.sh" "${repo_root}/deploy/scripts/verify-release-binding.sh" \
+  "${v3_acceptance}" <<'PY'
 import json, pathlib, sys, datetime, hashlib
 import subprocess
-root, out, commit, tree_digest, commands_path, image_path, rendered_path, binding_path, signature_path, public_key_path, verifier, binding_verifier = sys.argv[1:]
+root, out, commit, tree_digest, commands_path, image_path, rendered_path, binding_path, signature_path, public_key_path, verifier, binding_verifier, v3_path = sys.argv[1:]
 commands = [json.loads(line) for line in pathlib.Path(commands_path).read_text().splitlines() if line.strip()]
 checks = {}
 for item in commands:
@@ -180,6 +182,41 @@ elif signature_digest:
     signature_status = "present_unverified"
     signature_reason = "signature is present but no version-bound release binding was supplied"
 required_checks_pass = bool(checks) and all(value == "pass" for value in checks.values())
+
+# G11: the live-browser V3 acceptance result is a mandatory release input.
+# It must exist, be PASS, and bind to this exact commit / image tag / revision.
+v3_status = "unverified"
+v3_reason = "AIOPS_V3_UI_ACCEPTANCE_FILE was not supplied"
+v3_doc = None
+if v3_path:
+    candidate = pathlib.Path(v3_path)
+    if not candidate.is_file():
+        v3_status = "unverified"
+        v3_reason = f"acceptance file not found: {v3_path}"
+    else:
+        try:
+            v3_doc = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - evidence must never trust input
+            v3_status = "fail"
+            v3_reason = f"acceptance file is not valid JSON: {exc}"
+        else:
+            if v3_doc.get("status") != "PASS":
+                v3_status = "fail"
+                v3_reason = f"acceptance status={v3_doc.get('status')} failures={len(v3_doc.get('failures') or [])}"
+            elif v3_doc.get("git_commit") != commit:
+                v3_status = "fail"
+                v3_reason = f"acceptance commit {v3_doc.get('git_commit')} != evidence commit {commit}"
+            elif v3_doc.get("image_tag") and v3_doc.get("image_tag") != images.get("tag"):
+                v3_status = "fail"
+                v3_reason = f"acceptance image_tag {v3_doc.get('image_tag')} != release tag {images.get('tag')}"
+            elif not v3_doc.get("screenshots"):
+                v3_status = "fail"
+                v3_reason = "acceptance result contains no screenshots"
+            else:
+                v3_status = "pass"
+                v3_reason = "live browser acceptance bound to this commit, tag and revision"
+checks["v3_ui_acceptance"] = v3_status
+required_checks_pass = required_checks_pass and v3_status == "pass"
 doc = {
     "schema_version": 1,
     "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -190,6 +227,11 @@ doc = {
     "checks": checks,
     "images": images,
     "release_materials": {
+        "v3_ui_acceptance": {
+            "path": v3_path or None,
+            "status": v3_status,
+            "reason": v3_reason,
+        },
         "rendered_manifest": {"path": rendered_path or None, "sha256": rendered_digest, "status": "present" if rendered_digest else "unverified"},
         "signed_binding": {
             "path": binding_path or None,

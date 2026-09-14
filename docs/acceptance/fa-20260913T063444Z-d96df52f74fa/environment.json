@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "run_id": "fa-20260913T063444Z-d96df52f74fa",
+  "captured_at": "2026-09-13T06:35:16Z",
+  "kube_context": "orbstack",
+  "nodes": [{ "name": "orbstack", "ready": true }],
+  "helm": { "release": "aiops", "namespace": "observability", "revision": "78", "status": "deployed" },
+  "workloads_ready": {
+    "frontend": "1/1",
+    "query-api-http": "1/1",
+    "query-alert-eval": "1/1",
+    "query-run-dispatch": "1/1",
+    "ai-orchestrator": "1/1",
+    "ai-investigation-worker": "1/1",
+    "ai-llm-egress-proxy": "1/1",
+    "ingest": "1/1",
+    "event-collector": "1/1",
+    "clickhouse-0": "1/1",
+    "hugegraph-0": "1/1",
+    "mysql-0": "1/1",
+    "victoria-metrics": "1/1",
+    "victoria-logs": "1/1"
+  },
+  "data_sources": {
+    "mysql": { "role": "platform config / users / tenants / clusters / catalog", "configured": true },
+    "clickhouse": { "role": "events / alerts / logs / traces / RED metrics", "configured": true },
+    "victoria_metrics": { "role": "time series metrics", "configured": true },
+    "victoria_logs": { "role": "raw logs", "configured": true },
+    "hugegraph": { "role": "knowledge graph store", "configured": true }
+  },
+  "frontend_entry": { "url": "http://localhost:30253/", "http_status": 200, "server": "nginx/1.27.5", "cache_control": "no-store" },
+  "credentials": {
+    "note": "仅记录配置状态与引用名，不记录任何明文值",
+    "admin_login": "configured",
+    "trusted_context_signing_key": "configured (k8s secret aiops-secrets)",
+    "deepseek_llm_key": "configured (settings/llm)",
+    "kubeconfig_orbstack": "configured (secret kubeconfig-orbstack)"
+  },
+  "unavailable": []
+}

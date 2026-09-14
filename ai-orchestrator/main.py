@@ -617,6 +617,22 @@ class _InvestigationBrainAdapter:
         if item.action_mode == "read_only":
             saw_done = True
             final_text = str(getattr(rca_result, "explanation", "") or "")
+            # 回归（真实环境验证发现的 S1 缺陷 D19）：read_only 调查的候选根因
+            # 从不持久化为假设（hypothesis_events 只来自 plan/full 模式的 brain
+            # 流），导致 run.root_cause 服务端投影恒空 —— UI/报告/评测拿不到
+            # 任何根因。把 RCA V2 候选转为假设审计投影：仅 confirmed 状态且
+            # 命中权威根因的候选标记 confirmed_by_evidence，评分随证据走，
+            # 不做阈值放水。
+            for cand_index, cand in enumerate(
+                    (rca_payload.get("candidate_roots") or [])[:5], start=1):
+                confirmed = (str(rca_result.root_cause_status) == "confirmed"
+                             and str(cand.get("entity_uid") or "") == str(rca_result.root_cause or ""))
+                hypothesis_events.append({
+                    "content": str(cand.get("name") or cand.get("entity_uid") or ""),
+                    "confidence": min(1.0, max(0.0, float(cand.get("score") or 0.0))),
+                    "status": "confirmed" if confirmed else "proposed",
+                    "confirmed_by_evidence": confirmed,
+                })
         else:
             mode = "full"
             async for event in _get_brain().stream_sync(
@@ -3588,6 +3604,8 @@ async def add_knowledge(body: dict = None):
     b = body or {}
     kid = KnowledgeStore().add(b.get("title", ""), b.get("content", ""),
                                b.get("source", "manual"), b.get("tags", ""), b.get("code_ref"))
+    if not kid:
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE")
     return {"ok": True, "id": kid}
 
 
@@ -3605,12 +3623,15 @@ async def delete_knowledge(kid: str):
 async def rag_knowledge_stats():
     """统一知识库统计：故障案例总数（知识文档已废弃, knowledge 恒为 0）。
     total/cases 均为全部案例数, 保持字段兼容前端展示。"""
-    from rag import rag
+    from db_agents import KnowledgeStore
+    rag = KnowledgeStore._rag()
+    if not rag._ensure_init():
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE")
     try:
         items = rag.list_all(limit=100000)
         cases = sum(1 for i in items if (i.get("type") or "case") == "case")
-    except Exception:
-        cases = 0
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE") from exc
     return {"collection": "ops_cases", "total": cases, "cases": cases, "knowledge": 0}
 
 
@@ -3618,6 +3639,10 @@ async def rag_knowledge_stats():
 async def rag_knowledge_reload():
     """重载项目内置知识库文件 (data/knowledge_cases.json)，幂等去重。
     上线后向该文件追加新案例并调用此接口即可增量导入，无需重建镜像。"""
+    from db_agents import KnowledgeStore
+    rag = KnowledgeStore._rag()
+    if not rag._ensure_init():
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE")
     from knowledge_seed import seed_default
     r = seed_default()
     return {"ok": True, **r}
@@ -3638,7 +3663,10 @@ async def rag_knowledge_import(body: dict = None):
     service = b.get("service", "kubernetes")
     import hashlib
     cid = hashlib.md5(symptom.encode()).hexdigest()[:12]
-    from rag import rag
+    from db_agents import KnowledgeStore
+    rag = KnowledgeStore._rag()
+    if not rag._ensure_init():
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE")
     case = {
         "case_id": cid,
         "service": service,
@@ -3649,6 +3677,8 @@ async def rag_knowledge_import(body: dict = None):
         "report": f"[{service}] 故障案例: {symptom}",
     }
     r = rag.add_case(case)
+    if not r:
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE")
     return {"ok": True, "case_id": cid, "inserted": r == cid}
 
 
@@ -3733,7 +3763,11 @@ async def add_knowledge_case(body: dict = None):
         raise HTTPException(400, f"质量审查未通过: {reason}")
     import hashlib
     cid = hashlib.md5(symptom.encode()).hexdigest()[:12]  # 与 knowledge_seed.load_case 一致
-    from rag import rag, infer_case_tags
+    from db_agents import KnowledgeStore
+    from rag import infer_case_tags
+    rag = KnowledgeStore._rag()
+    if not rag._ensure_init():
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE")
     # 自动补标签：未显式传 tags 时按 service/symptom/plan 关键词推断领域标签；
     # type 透传（缺省 case）。质量审查逻辑保持不变（上方已执行）。
     tags = (b.get("tags") or "").strip() or infer_case_tags(service, symptom, plan)
@@ -3749,6 +3783,8 @@ async def add_knowledge_case(body: dict = None):
         "report": f"[{service}] 故障案例: {symptom}",
     }
     r = rag.add_case(case)
+    if not r:
+        raise HTTPException(status_code=503, detail="KNOWLEDGE_STORE_UNAVAILABLE")
     resp = {"ok": True, "case_id": r, "inserted": r == cid, "validated": "pending"}
     if r != cid:
         resp["message"] = "已存在相似案例"

@@ -32,9 +32,10 @@ def _get_ef():
     global _EF
     if _EF is not None:
         return _EF
-    # 非阻塞获取锁：如果别的线程正在加载，直接返回 None（降级），不等待
-    if not _EF_LOCK.acquire(blocking=False):
-        print("[RAG] embedding 模型正在加载中, 本次降级跳过")
+    # 多个后台加载者共享同一 embedding 实例；等待正在进行的加载，避免
+    # 并发请求拿到 None 后把已存在的 Chroma collection 错误标记为不可用。
+    if not _EF_LOCK.acquire(timeout=60):
+        print("[RAG] embedding 模型加载超时, RAG 暂不可用")
         return None
     try:
         if _EF is not None:
@@ -128,10 +129,12 @@ class RAGStore:
                 self.client = chromadb.PersistentClient(
                     path=self._persist_dir, settings=Settings(anonymized_telemetry=False))
                 ef = _get_ef()
+                if ef is None:
+                    raise RuntimeError("embedding unavailable")
                 # V9.2 Phase 4 P4.7：runtime 只 get_collection（缺失 → readiness FAIL），
                 # 不再 get_or_create（collection 由 rag_bootstrap.py 在 bootstrap 阶段创建）。
-                self.collection = self.client.get_collection(
-                    CASE_COLLECTION, embedding_function=ef)
+                self.collection = self._get_collection_compatible(
+                    self.client, CASE_COLLECTION, ef)
                 result["ok"] = True
                 self._ready = True
                 print(f"[RAG] ChromaDB 初始化成功, 当前案例数: {self.collection.count()}")
@@ -163,7 +166,10 @@ class RAGStore:
         case 类型: 文档存 "现象/根因/方案" 拼接文本提升检索质量, 元数据含 title 供列表展示;
         knowledge 类型: 文档=标题+内容(现状保持)。dedup 均用 symptom 语义判定。"""
         if not self._ensure_init():
-            return case.get("case_id", "")
+            # Never report a durable write as successful when the bootstrap
+            # collection is unavailable. Callers surface this as a truthful
+            # 503 instead of creating a false-success record.
+            return ""
         try:
             symptom = case.get("symptom", "")
             # 去重检查：相似度 > 0.92 的不再添加（仍按 symptom 语义判定）
@@ -202,8 +208,11 @@ class RAGStore:
                 metadatas=[meta],
             )
             return case["case_id"]
-        except Exception:
-            return case.get("case_id", "")
+        except Exception as exc:
+            # A failed Chroma write is not a duplicate. Empty is the explicit
+            # unavailable/failure sentinel used by API callers.
+            print(f"[RAG] Chroma case write failed: {type(exc).__name__}", flush=True)
+            return ""
 
     def dedup_check(self, symptom: str, threshold: float = 0.92) -> str | None:
         """返回已有 case_id 如果相似度 > threshold，避免重复存储"""
@@ -387,6 +396,22 @@ class RAGStore:
     #  (与 ops_cases 复用同一嵌入器 bge-small-zh-v1.5, 独立 collection)
     # ─────────────────────────────────────────────
     @classmethod
+    def _get_collection_compatible(cls, client, name: str, ef=None):
+        """Get a collection while tolerating a persisted embedding-function mismatch."""
+        try:
+            if ef is None:
+                return client.get_collection(name)
+            return client.get_collection(name, embedding_function=ef)
+        except ValueError as exc:
+            # Chroma persists the embedding function name in collection config.
+            # Reusing an older local collection with a newer, locally cached model
+            # must not be mistaken for a missing collection.  Without an explicit
+            # EF Chroma rehydrates the collection's persisted/default function.
+            if ef is not None and "embedding function" in str(exc).lower():
+                return client.get_collection(name)
+            raise
+
+    @classmethod
     def ensure_collections(cls, persist_dir: str = None, ef=None):
         """幂等创建 ops_cases + ops_playbooks 两个 collection。
 
@@ -417,10 +442,12 @@ class RAGStore:
             return None
         client = chromadb.PersistentClient(
             path=persist_dir, settings=Settings(anonymized_telemetry=False))
-        for name in (CASE_COLLECTION, "ops_playbooks"):
+        for name in (CASE_COLLECTION, PLAYBOOK_COLLECTION):
             try:
-                client.get_collection(name, embedding_function=ef)
-            except Exception:
+                cls._get_collection_compatible(client, name, ef)
+            except Exception as exc:
+                if "does not exist" not in str(exc).lower():
+                    raise
                 client.create_collection(
                     name, embedding_function=ef,
                     metadata={"hnsw:space": "cosine"})
@@ -432,11 +459,13 @@ class RAGStore:
             return None
         if getattr(self, "_playbooks", None) is None:
             try:
-                self._playbooks = self.client.get_collection(
-                    "ops_playbooks", embedding_function=_get_ef())
-            except Exception:
+                self._playbooks = self._get_collection_compatible(
+                    self.client, PLAYBOOK_COLLECTION, _get_ef())
+            except Exception as exc:
+                if "does not exist" not in str(exc).lower():
+                    return None
                 self._playbooks = self.client.create_collection(
-                    "ops_playbooks", embedding_function=_get_ef(),
+                    PLAYBOOK_COLLECTION, embedding_function=_get_ef(),
                     metadata={"hnsw:space": "cosine"})
         return self._playbooks
 
@@ -562,4 +591,3 @@ def infer_case_tags(service: str, symptom: str, plan: str) -> str:
 
 
 rag = RAGStore()
-

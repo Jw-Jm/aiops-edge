@@ -1,9 +1,13 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -52,6 +56,7 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	var req struct {
 		Username, Password, DisplayName, Role, Email string
+		TenantID                                     string `json:"tenant_id"`
 		IsApprover                                   bool
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -85,11 +90,63 @@ func (h *Handler) UserCreate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 400, map[string]interface{}{"error": err.Error()})
 		return
 	}
+	// PF-LOGIC-013：创建用户时必须写入 user_tenants 成员关系。此前新建用户没有
+	// 任何租户成员关系，登录后 resolveMySQLAuthorizationContext 因 tenant 成员校验
+	// 失败拒绝授权（available_clusters=0、无法建立 canonical scope）。
+	// 租户优先级：请求显式 tenant_id > 创建者（admin）当前会话租户 > 系统引导租户。
+	tenantID := strings.TrimSpace(req.TenantID)
+	if tenantID == "" {
+		if authCtx, ok := requestAuthorizationContext(r); ok && authCtx.TenantID != "" {
+			tenantID = authCtx.TenantID
+		}
+	}
+	if tenantID == "" {
+		tenantID = strings.TrimSpace(os.Getenv("AIOPS_SYSTEM_TENANT_ID"))
+	}
+	if tenantID != "" {
+		if err := assignUserTenant(id, tenantID); err != nil {
+			// 事务一致性：成员关系写入失败则回滚刚创建的用户，不留半创建状态。
+			_ = d.Delete(id)
+			respondJSON(w, 400, map[string]interface{}{"error": "tenant membership write failed: " + err.Error()})
+			return
+		}
+	}
 	if req.IsApprover {
 		_ = d.SetApprover(id, true)
 	}
-	auditWrite(r, "user.create", req.Username, "创建用户 role="+req.Role)
-	respondJSON(w, 200, map[string]interface{}{"ok": true, "id": id})
+	auditWrite(r, "user.create", req.Username, "创建用户 role="+req.Role+" tenant="+tenantID)
+	respondJSON(w, 200, map[string]interface{}{"ok": true, "id": id, "tenant_id": tenantID})
+}
+
+// assignUserTenant 校验租户存在且启用，并把新用户写入 user_tenants（active 成员）。
+// user_tenants 主键 (user_uuid, tenant_id)，幂等 upsert 与 bootstrap 引导逻辑一致。
+func assignUserTenant(id int64, tenantID string) error {
+	conn := store.GetDB()
+	if conn == nil {
+		return errors.New("mysql unavailable")
+	}
+	// users 表的 canonical UUID 由 MySQL LOWER(UUID()) 生成，创建返回值只有自增 id；
+	// GetByID 不投影 user_uuid，这里按 id 取回（同一连接内，避免竞态读错行）。
+	var userUUID string
+	if err := conn.QueryRow("SELECT user_uuid FROM users WHERE id = ?", id).Scan(&userUUID); err != nil {
+		if err == sql.ErrNoRows {
+			return errors.New("created user lookup failed")
+		}
+		return err
+	}
+	if userUUID == "" {
+		return errors.New("created user lookup failed")
+	}
+	var tenant string
+	if err := conn.QueryRow(`SELECT t.id FROM tenants t WHERE t.id=? AND t.enabled=1 LIMIT 1`, tenantID).Scan(&tenant); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("tenant %q not found or disabled", tenantID)
+		}
+		return err
+	}
+	_, err := conn.Exec(`INSERT INTO user_tenants (user_uuid, tenant_id, status) VALUES (?, ?, 'active')
+ON DUPLICATE KEY UPDATE status='active'`, userUUID, tenantID)
+	return err
 }
 
 // UserUpdate PUT /api/v1/users/{id} — 更新用户（admin）。

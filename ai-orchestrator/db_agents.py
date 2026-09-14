@@ -186,12 +186,19 @@ class KnowledgeStore:
         current = getattr(rag_module.rag, "_persist_dir", None)
         if current != expected:
             rag_module.rag = rag_module.RAGStore(expected)
-        if expected not in KnowledgeStore._rag_ready_paths:
+        if expected not in KnowledgeStore._rag_ready_paths or getattr(rag_module.rag, "_init_error", None):
             try:
                 # Runtime normally receives pre-created collections from the
                 # bootstrap Job; local/test data directories may be new.
-                rag_module.RAGStore.ensure_collections(persist_dir=expected)
-                KnowledgeStore._rag_ready_paths.add(expected)
+                ready = rag_module.RAGStore.ensure_collections(persist_dir=expected)
+                if ready is not None:
+                    KnowledgeStore._rag_ready_paths.add(expected)
+                    # Replace a singleton that may have permanently recorded
+                    # an earlier missing-collection failure.
+                    if (getattr(rag_module.rag, "_persist_dir", None) == expected
+                            and (getattr(rag_module.rag, "_init_error", None)
+                                 or not getattr(rag_module.rag, "_ready", False))):
+                        rag_module.rag = rag_module.RAGStore(expected)
             except Exception:
                 pass
         return rag_module.rag

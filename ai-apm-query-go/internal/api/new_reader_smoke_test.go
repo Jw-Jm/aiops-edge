@@ -88,7 +88,7 @@ func newReaderSmokeHandler(t *testing.T) (*Handler, ed25519.PrivateKey) {
 	h.resourceRepo = query.NewResourceRepository(&h.repo)
 	h.changeRepo = query.NewChangeRepository(&h.repo)
 	h.knowledgeRepo = query.NewKnowledgeRepository(&fakeKnowledgeBackend{hits: []query.KnowledgeHit{
-		{DocumentID: "doc-1", Source: "runbook", Version: "v3", Similarity: 0.9, Applicability: "checkout"},
+		{DocumentID: "doc-1", KnowledgeID: "k-1", VersionID: "v-3", TenantID: authzTenantID, ScopeType: "cluster", ClusterID: testClusterID, Status: "published", IsCurrent: true, Source: "runbook", Version: "v3", Similarity: 0.9, Applicability: "checkout"},
 	}})
 	h.kubeRepo = query.NewKubernetesRepository(&smokeKubeAccessor{nodes: []string{"node-a"}})
 	return h, priv

@@ -94,6 +94,53 @@ func TestAIChatToolRunMigrationContainsDurableAuditSchema(t *testing.T) {
 	}
 }
 
+func TestOperationsKnowledgeMigrationContainsGovernedSourceOfTruth(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0019_operations_knowledge.sql")
+	if err != nil {
+		t.Fatalf("read 0019 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{
+		"operations_knowledge", "operations_knowledge_versions", "operations_knowledge_reviews",
+		"operations_knowledge_index_outbox", "operations_knowledge_index_state",
+		"current_version_id", "uq_operations_knowledge_index_event", "pending_review", "platform_common",
+	} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0019 migration missing %q", required)
+		}
+	}
+}
+
+func TestOperationsKnowledgeMigrationSplitsIntoExecutableStatements(t *testing.T) {
+	ms, err := loadEmbedded()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	for _, m := range ms {
+		if m.ID != "mysql/0019_operations_knowledge" {
+			continue
+		}
+		if got, want := len(m.Statements), 5; got != want {
+			t.Fatalf("0019 migration must split into %d executable DDL statements, got %d", want, got)
+		}
+		return
+	}
+	t.Fatal("0019 migration not found")
+}
+
+func TestAIChatScopeMigrationContainsFrozenAssistantFields(t *testing.T) {
+	data, err := versionsFS.ReadFile("versions/0020_ai_chat_scope_and_answers.sql")
+	if err != nil {
+		t.Fatalf("read 0020 migration: %v", err)
+	}
+	sqlText := string(data)
+	for _, required := range []string{"resource_uid", "time_from", "time_to", "knowledge_scope", "assistant answer", "platform_common_and_current_cluster"} {
+		if !strings.Contains(sqlText, required) {
+			t.Fatalf("0020 migration missing %q", required)
+		}
+	}
+}
+
 // TestAIRuntimeSchemaManifest 在可用 MySQL 上跑 schema-migrator 后，逐表核对
 // V9.2 冻结 AI Runtime 表的列 / nullability / PK / unique（P1-1：字段来源
 // docs/AIOPS_DATA_MODEL_REDESIGN.md）。无 MySQL 时跳过。

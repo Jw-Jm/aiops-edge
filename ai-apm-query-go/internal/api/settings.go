@@ -819,10 +819,14 @@ func (h *Handler) ProxyAI(w http.ResponseWriter, r *http.Request) {
 		h.proxyRunList(w, r)
 		return
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") {
-		// All browser-facing legacy orchestrator proxies are retired in the
-		// production profile.  Canonical chat/session/run handlers above are the
-		// only supported entry points and carry signed scope context.
+	// 回归（真实环境验证发现的 S1 缺陷 D17）：production 下一刀切 410 使知识库
+	// 页面核心数据源（/ai/knowledge 列表/写入/检索、playbooks、RAG 统计）全部
+	// 失效，违反"不得用前端伪造结果"的设计要求。legacyProxyAllowed 白名单
+	// （settings.go）与 orchestrator production_surface kept 路由表是双重防线：
+	// 只有显式列入白名单的配置面读/写继续代理；白名单之外仍 fail-closed。
+	// 非白名单的 legacy 路由在 production 保持 410。
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AIOPS_ENV")), "production") &&
+		!legacyProxyAllowed(r.URL.Path, r.Method) {
 		respondJSON(w, http.StatusGone, map[string]interface{}{"error": "LEGACY_ROUTE_RETIRED"})
 		return
 	}
@@ -1022,6 +1026,7 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 	intent, _ := body["intent"].(string)
 	service, _ := body["service"].(string)
 	chatSessions := &store.AIChatSessionDAO{}
+	assistantScope := assistantSessionScopeFromBody(body)
 	// Rehydrate a bounded transcript summary from MySQL so a second query-api
 	// replica can continue the conversation without depending on local SQLite.
 	if _, previous, historyErr := chatSessions.Get(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID); historyErr == nil {
@@ -1038,7 +1043,13 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 			body["history_context"] = fmt.Sprintf("上一轮问题: %s\n上一轮回答要点: %s", lastQuestion[:minStringLen(len(lastQuestion), 200)], lastAnswer[:minStringLen(len(lastAnswer), 500)])
 		}
 	}
-	if err := chatSessions.EnsureSession(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, intent, service); err != nil {
+	var sessionErr error
+	if assistantScope.Empty() {
+		sessionErr = chatSessions.EnsureSession(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, intent, service)
+	} else {
+		sessionErr = chatSessions.EnsureSessionWithScope(sessionID, authCtx.UserID, authCtx.TenantID, cluster.ClusterID, intent, service, assistantScope)
+	}
+	if err := sessionErr; err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "scope mismatch") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
 			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "CHAT_SESSION_SCOPE_DENIED"})
 			return
@@ -1126,7 +1137,7 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 			if n > 0 {
 				streamBuffer += string(buf[:n])
 				var persistErr error
-				streamBuffer, persistErr = persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, streamBuffer)
+				streamBuffer, persistErr = persistChatSSEFramesWithScope(chatSessions, sessionID, turnID, authCtx, assistantScope, streamBuffer)
 				if persistErr != nil {
 					log.Printf("chat transcript persistence failed session=%s turn=%s: %v", sessionID, turnID, persistErr)
 					writeChatPersistenceError(w, flusher)
@@ -1144,12 +1155,64 @@ func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// 不支持 Flusher 的响应容器：退化为一次性复制，同时保留 transcript。
 	data, _ := io.ReadAll(resp.Body)
-	if _, persistErr := persistChatSSEFrames(chatSessions, sessionID, turnID, authCtx, string(data)); persistErr != nil {
+	if _, persistErr := persistChatSSEFramesWithScope(chatSessions, sessionID, turnID, authCtx, assistantScope, string(data)); persistErr != nil {
 		log.Printf("chat transcript persistence failed session=%s turn=%s: %v", sessionID, turnID, persistErr)
 		writeChatPersistenceError(w, nil)
 		return
 	}
 	_, _ = w.Write(data)
+}
+
+// assistantSessionScopeFromBody canonicalizes the browser's relative range
+// into an absolute UTC window before it is persisted. A resumed session is
+// checked against these values by the DAO, so changing the selected resource
+// or time range cannot silently retarget an existing evidence conversation.
+func assistantSessionScopeFromBody(body map[string]interface{}) store.AssistantSessionScope {
+	resourceUID, _ := body["resource_id"].(string)
+	from, _ := body["time_start"].(string)
+	if from == "" {
+		from, _ = body["time_range_start"].(string)
+	}
+	to, _ := body["time_end"].(string)
+	if to == "" {
+		to, _ = body["time_range_end"].(string)
+	}
+	if timeRange, ok := body["time_range"].(map[string]interface{}); ok {
+		if start, ok := timeRange["start"].(string); ok && from == "" {
+			from = start
+		}
+		if end, ok := timeRange["end"].(string); ok && to == "" {
+			to = end
+		}
+		if from == "" || to == "" {
+			if minutes, ok := timeRange["minutes"].(float64); ok && minutes > 0 {
+				end := time.Now().UTC()
+				from = end.Add(-time.Duration(minutes) * time.Minute).Format(time.RFC3339Nano)
+				to = end.Format(time.RFC3339Nano)
+			}
+		}
+	}
+	if from == "" || to == "" {
+		if resourceUID == "" {
+			return store.AssistantSessionScope{}
+		}
+		end := time.Now().UTC()
+		from = end.Add(-60 * time.Minute).Format(time.RFC3339Nano)
+		to = end.Format(time.RFC3339Nano)
+	}
+	knowledgeScope, _ := body["knowledge_scope"].(string)
+	if knowledgeScope == "" {
+		knowledgeScope = "platform_common_and_current_cluster"
+	}
+	return store.AssistantSessionScope{ResourceUID: strings.TrimSpace(resourceUID), TimeFrom: normalizeAssistantTime(from), TimeTo: normalizeAssistantTime(to), KnowledgeScope: knowledgeScope}
+}
+
+func normalizeAssistantTime(value string) string {
+	value = strings.TrimSpace(value)
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.UTC().Format("2006-01-02 15:04:05.999999")
+	}
+	return value
 }
 
 func newCanonicalSessionUUID() string {
@@ -1175,6 +1238,10 @@ func minStringLen(length, max int) int {
 // text and actionable suggestions).  Progress/tool telemetry remains ephemeral
 // and is still streamed to the browser without inflating the MySQL transcript.
 func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string, authCtx AuthorizationContext, input string) (string, error) {
+	return persistChatSSEFramesWithScope(dao, sessionID, turnID, authCtx, store.AssistantSessionScope{}, input)
+}
+
+func persistChatSSEFramesWithScope(dao *store.AIChatSessionDAO, sessionID, turnID string, authCtx AuthorizationContext, assistantScope store.AssistantSessionScope, input string) (string, error) {
 	for {
 		idx := strings.Index(input, "\n\n")
 		if idx < 0 {
@@ -1200,7 +1267,32 @@ func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string,
 			continue
 		}
 		switch name {
+		case "answer", "assistant_answer":
+			normalized, err := normalizeAssistantAnswer(event)
+			if err != nil {
+				return input, fmt.Errorf("validate assistant answer: %w", err)
+			}
+			if err := validateAssistantAnswerInScope(normalized, authCtx, assistantScope); err != nil {
+				return input, err
+			}
+			content, _ := normalized["conclusion"].(string)
+			if err := dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "answer", content, normalized); err != nil {
+				return input, fmt.Errorf("persist assistant answer: %w", err)
+			}
 		case "done":
+			if _, ok := event["answer"]; ok {
+				normalized, err := normalizeAssistantAnswer(event)
+				if err != nil {
+					return input, fmt.Errorf("validate assistant answer: %w", err)
+				}
+				if err := validateAssistantAnswerInScope(normalized, authCtx, assistantScope); err != nil {
+					return input, err
+				}
+				content, _ := normalized["conclusion"].(string)
+				if err := dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "answer", content, normalized); err != nil {
+					return input, fmt.Errorf("persist assistant answer: %w", err)
+				}
+			}
 			if text, _ := event["text"].(string); strings.TrimSpace(text) != "" {
 				if err := dao.AppendMessageForTurn(sessionID, authCtx.UserID, authCtx.TenantID, authCtx.ActiveClusterID, turnID, "assistant", "", text, nil); err != nil {
 					return input, fmt.Errorf("persist assistant response: %w", err)
@@ -1220,6 +1312,111 @@ func persistChatSSEFrames(dao *store.AIChatSessionDAO, sessionID, turnID string,
 	}
 }
 
+// normalizeAssistantAnswer is the canonical compatibility boundary between
+// the orchestrator and the browser. Free-form assistant text remains a
+// legacy fallback, while the structured contract always owns citations and
+// capabilities. In particular, a chat response can never authorize direct
+// execution even if an upstream model tries to set execute_action=true.
+func normalizeAssistantAnswer(input map[string]any) (map[string]any, error) {
+	answer := input
+	if nested, ok := input["answer"].(map[string]any); ok {
+		answer = nested
+	}
+	conclusion, ok := answer["conclusion"].(string)
+	if !ok || strings.TrimSpace(conclusion) == "" {
+		return nil, fmt.Errorf("assistant answer conclusion required")
+	}
+	out := make(map[string]any, len(answer)+1)
+	for key, value := range answer {
+		out[key] = value
+	}
+	caps, _ := out["capabilities"].(map[string]any)
+	if caps == nil {
+		caps = map[string]any{}
+	}
+	caps["execute_action"] = false
+	out["capabilities"] = caps
+	return out, nil
+}
+
+func validateAssistantAnswer(input map[string]any, authCtx AuthorizationContext) error {
+	return validateAssistantAnswerInScope(input, authCtx, store.AssistantSessionScope{})
+}
+
+func validateAssistantAnswerInScope(input map[string]any, authCtx AuthorizationContext, sessionScope store.AssistantSessionScope) error {
+	answer, err := normalizeAssistantAnswer(input)
+	if err != nil {
+		return err
+	}
+	validateKnowledge := func(item map[string]any) error {
+		status, _ := item["status"].(string)
+		if status != "published" {
+			return fmt.Errorf("knowledge citation is not published")
+		}
+		if versionID, _ := item["version_id"].(string); strings.TrimSpace(versionID) == "" {
+			return fmt.Errorf("knowledge citation version required")
+		}
+		scope, _ := item["scope_type"].(string)
+		if scope == "cluster" {
+			clusterID, _ := item["cluster_id"].(string)
+			if clusterID == "" || clusterID != authCtx.ActiveClusterID {
+				return fmt.Errorf("knowledge citation cluster denied")
+			}
+		} else if scope != "platform_common" && scope != "" {
+			return fmt.Errorf("knowledge citation scope denied")
+		}
+		return nil
+	}
+	if values, ok := answer["knowledge_citations"].([]any); ok {
+		for _, value := range values {
+			item, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("invalid knowledge citation")
+			}
+			if err := validateKnowledge(item); err != nil {
+				return err
+			}
+		}
+	}
+	if values, ok := answer["evidence_citations"].([]any); ok {
+		for _, value := range values {
+			item, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("invalid evidence citation")
+			}
+			if clusterID, _ := item["cluster_id"].(string); clusterID != "" && clusterID != authCtx.ActiveClusterID {
+				return fmt.Errorf("evidence citation cluster denied")
+			}
+			if tenantID, _ := item["tenant_id"].(string); tenantID != "" && tenantID != authCtx.TenantID {
+				return fmt.Errorf("evidence citation tenant denied")
+			}
+			if resourceUID, _ := item["resource_uid"].(string); resourceUID != "" && sessionScope.ResourceUID != "" && resourceUID != sessionScope.ResourceUID {
+				return fmt.Errorf("evidence citation resource denied")
+			}
+			if observedAt, _ := item["observed_at"].(string); observedAt != "" && !assistantTimeWithin(observedAt, sessionScope.TimeFrom, sessionScope.TimeTo) {
+				return fmt.Errorf("evidence citation time denied")
+			}
+		}
+	}
+	return nil
+}
+
+func assistantTimeWithin(value, from, to string) bool {
+	if from == "" || to == "" {
+		return true
+	}
+	parse := func(raw string) (time.Time, error) {
+		if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return parsed, nil
+		}
+		return time.ParseInLocation("2006-01-02 15:04:05.999999", raw, time.UTC)
+	}
+	observed, err1 := parse(value)
+	start, err2 := parse(from)
+	end, err3 := parse(to)
+	return err1 == nil && err2 == nil && err3 == nil && !observed.Before(start) && !observed.After(end)
+}
+
 func writeChatPersistenceError(w http.ResponseWriter, flusher http.Flusher) {
 	_, _ = io.WriteString(w, "event: error\ndata: {\"error\":\"CHAT_TRANSCRIPT_PERSIST_FAILED\"}\n\n")
 	if flusher != nil {
@@ -1234,7 +1431,7 @@ func writeChatPersistenceError(w http.ResponseWriter, flusher http.Flusher) {
 func replayChatTurn(w http.ResponseWriter, sessionID, turnID string, messages []store.ChatMessage) bool {
 	completed := false
 	for _, message := range messages {
-		if message.Role == "assistant" && message.Kind == "" && strings.TrimSpace(message.Content) != "" {
+		if message.Role == "assistant" && ((message.Kind == "" && strings.TrimSpace(message.Content) != "") || message.Kind == "answer") {
 			completed = true
 			break
 		}
@@ -1252,6 +1449,11 @@ func replayChatTurn(w http.ResponseWriter, sessionID, turnID string, messages []
 		var eventType string
 		payload := map[string]any{}
 		switch {
+		case message.Role == "assistant" && message.Kind == "answer":
+			eventType = "answer"
+			for key, value := range message.Metadata {
+				payload[key] = value
+			}
 		case message.Role == "assistant" && message.Kind == "suggestion":
 			eventType = "suggestion"
 			for key, value := range message.Metadata {

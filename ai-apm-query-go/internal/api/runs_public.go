@@ -260,7 +260,15 @@ func (h *Handler) ListRunsPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "persistence_unavailable"})
 		return
 	}
-	runs, err := h.runDAO.List(auth.TenantID)
+	clusterID := strings.TrimSpace(r.URL.Query().Get("cluster_id"))
+	if clusterID == "" {
+		clusterID = auth.ActiveClusterID
+	}
+	if auth.ActiveClusterID != "" && clusterID != "" && auth.ActiveClusterID != clusterID {
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "CONTEXT_SCOPE_MISMATCH"})
+		return
+	}
+	runs, err := h.runDAO.ListByCluster(auth.TenantID, clusterID)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": "run_list_failed"})
 		return
@@ -308,11 +316,21 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	runView := airunToMap(run)
+	// Task 11：公共详情投影输出服务端持久化的 investigation_summary。
+	// 解析失败时返回 null + warning code，绝不 500，也绝不编造空成功摘要。
+	warnings := []string{}
+	if summary, ok := projectInvestigationSummary(run.RuntimeMetadata); ok {
+		runView["investigation_summary"] = summary
+	} else if len(run.RuntimeMetadata) > 0 {
+		runView["investigation_summary"] = nil
+		warnings = append(warnings, "INVESTIGATION_SUMMARY_INVALID")
+	} else {
+		runView["investigation_summary"] = nil
+	}
 	// The public detail view is an aggregate read model.  It keeps the UI from
 	// manufacturing empty plan/action state while each write domain remains
 	// owned by its DAO/control-plane endpoint.
@@ -361,17 +379,23 @@ func (h *Handler) GetRunPublic(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if len(warnings) > 0 {
+		runView["warning_codes"] = warnings
+	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"run": runView})
 }
 
 // deriveRunRootCause is the server-owned projection rule used by the browser.
-// Only an evidence-confirmed hypothesis can become a root cause; transient
-// graph text or client-side ordering is never treated as authoritative.
+// 证据确认（confirmed_by_evidence）的假设始终可投影为根因；证据支撑的
+// Supported 级假设（status=supported，传播路径完整但结论未达 Confirmed）
+// 也可投影 —— 结论等级由 status/confidence 表达，root_cause 字段承载
+// 当前最佳根因候选。瞬态图谱文本或客户端排序永不作为权威来源。
 func deriveRunRootCause(hypotheses []store.AIHypothesis) (string, float64) {
 	rootCause := ""
 	confidence := 0.0
 	for _, hypothesis := range hypotheses {
-		if !hypothesis.ConfirmedByEvidence || hypothesis.Content == "" {
+		eligible := hypothesis.ConfirmedByEvidence || hypothesis.Status == "supported"
+		if !eligible || hypothesis.Content == "" {
 			continue
 		}
 		if rootCause == "" || hypothesis.Confidence > confidence {
@@ -406,8 +430,7 @@ func (h *Handler) GetRunToolsPublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	tools, err := h.toolDAO.ListByRun(runID)
@@ -449,8 +472,7 @@ func (h *Handler) GetRunEvidencesPublic(w http.ResponseWriter, r *http.Request) 
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	evs, err := h.evidenceDAO.ListByRun(runID, run.TenantID, run.PrimaryClusterID)
@@ -489,8 +511,7 @@ func (h *Handler) GetRunEvidencePublic(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	ev, err := h.evidenceDAO.GetByID(evidenceID, runID, run.TenantID, run.PrimaryClusterID)
@@ -513,6 +534,25 @@ func evidenceToMap(ev *store.Evidence) map[string]interface{} {
 	}
 }
 
+// runScopeDenied applies the same tenant + active-cluster boundary to every
+// browser Run deep link, including events and evidence. Lists are not enough:
+// a copied detail URL must not become a cross-cluster read or cancel handle.
+func runScopeDenied(w http.ResponseWriter, r *http.Request, tenantID, clusterID string) bool {
+	auth, ok := requestAuthorizationContext(r)
+	if !ok {
+		return false
+	}
+	if auth.TenantID != "" && auth.TenantID != tenantID {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+		return true
+	}
+	if auth.ActiveClusterID != "" && clusterID != "" && auth.ActiveClusterID != clusterID {
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "CONTEXT_SCOPE_MISMATCH"})
+		return true
+	}
+	return false
+}
+
 func nullableStringValue(s string) interface{} {
 	if s == "" {
 		return nil
@@ -525,4 +565,27 @@ func nullableTimeValue(value *time.Time) interface{} {
 		return nil
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+// projectInvestigationSummary decodes the persisted runtime metadata and returns
+// the orchestrator-authored investigation summary. ok=false means the metadata
+// exists but is not a usable JSON object (the caller must surface a warning
+// rather than fabricate a summary).
+func projectInvestigationSummary(metadata []byte) (json.RawMessage, bool) {
+	if len(metadata) == 0 {
+		return nil, false
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &decoded); err != nil {
+		return nil, false
+	}
+	raw, ok := decoded["investigation_summary"]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var summary map[string]interface{}
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		return nil, false
+	}
+	return raw, true
 }

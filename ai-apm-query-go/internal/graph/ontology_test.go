@@ -28,3 +28,14 @@ func TestPropagationPolicyUsesFrozenDirections(t *testing.T) {
 		t.Fatalf("ImpactDirection(RUNS_ON) = %q, want IN", got)
 	}
 }
+
+func TestPropagationPolicyCoversKubeVirtDependencyRelations(t *testing.T) {
+	for _, relation := range []string{"USES_DISK", "REFERENCES_VOLUME", "SOURCED_FROM", "DECLARES", "CONNECTS_TO_NAD", "USES_CNI"} {
+		if got := CandidateDirection(relation); got != "OUT" {
+			t.Fatalf("CandidateDirection(%s) = %q, want OUT", relation, got)
+		}
+		if got := ImpactDirection(relation); got != "IN" {
+			t.Fatalf("ImpactDirection(%s) = %q, want IN", relation, got)
+		}
+	}
+}

@@ -1,0 +1,33 @@
+{
+  "total": 1,
+  "passed": 0,
+  "passRate": 0,
+  "falsePositives": 0,
+  "firstVisibleProgressP95": null,
+  "results": [
+    {
+      "scenario": "S02-probe-failure",
+      "domain": "应用依赖",
+      "run": 1,
+      "judgment": {
+        "verdict": "no_answer"
+      },
+      "runId": "b4639169-322b-4db8-b35e-b374aee27fd3",
+      "status": "partial",
+      "rootCause": "",
+      "confidence": 0,
+      "evidenceCount": 8,
+      "evidenceIds": [
+        "7c801500-4c0c-5f45-820b-fce85c7e99d2",
+        "397bca3f-d8cb-5299-8407-0fb729cfa30f",
+        "fb02e1f1-2e6d-5984-b269-9e47f2194831",
+        "432bfcab-6ed4-5d1e-afe1-b1774870fe0d",
+        "55a76807-0451-5f60-ad66-096407957769",
+        "e3601314-0bfe-5d41-bbec-01bd91c54e70",
+        "f6a0f48c-e081-5ab9-b09d-f00bc725dd3f",
+        "93e9bf49-7436-5181-bdba-a92f40852385"
+      ],
+      "elapsedMs": 5202
+    }
+  ]
+}

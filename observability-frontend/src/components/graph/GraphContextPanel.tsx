@@ -1,5 +1,7 @@
 import React from 'react'
-import { Alert, Card, Descriptions, Empty, Space, Tag } from 'antd'
+import { Alert, Card, Descriptions, Space, Tag } from 'antd'
+import DataState from '../display/DataState'
+import RawDataPanel from '../display/RawDataPanel'
 
 type GraphContextPanelProps = {
   context: Record<string, unknown> | null
@@ -15,7 +17,7 @@ function count(value: unknown): number {
 
 export default function GraphContextPanel({ context }: GraphContextPanelProps) {
   if (!context) {
-    return <Card title="RCA Graph Context" size="small"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无持久化 Graph Context" /></Card>
+    return <Card title="RCA Graph Context" size="small"><DataState kind="empty" compact title="暂无持久化 Graph Context" /></Card>
   }
   const partial = context.partial === true
   const stale = context.stale === true
@@ -35,8 +37,11 @@ export default function GraphContextPanel({ context }: GraphContextPanelProps) {
         <Descriptions.Item label="实体数">{count(context.vertices)}</Descriptions.Item>
         <Descriptions.Item label="关系数">{count(context.edges)}</Descriptions.Item>
         <Descriptions.Item label="传播路径数">{count(context.propagation_paths)}</Descriptions.Item>
+        <Descriptions.Item label="能力数">{count(context.capabilities)}</Descriptions.Item>
       </Descriptions>
+      {context.status === 'not_generated' && <Alert type="info" showIcon message="该历史调查尚未生成 Graph Context，以下为可用的部分结果。" />}
       {warnings.length > 0 && <Alert type="warning" showIcon message={`Graph Context 警告：${warnings.join('、')}`} />}
+      <RawDataPanel data={context} />
     </Card>
   )
 }

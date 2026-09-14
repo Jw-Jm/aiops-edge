@@ -215,6 +215,46 @@ func (d *ClusterDAO) List() ([]Cluster, error) {
 	return items, nil
 }
 
+// ListForTenant returns only canonical clusters explicitly owned by tenantID.
+// Display names are not authorization keys; tenant_clusters is the authority.
+func (d *ClusterDAO) ListForTenant(tenantID string) ([]Cluster, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return []Cluster{}, ErrInvalidClusterRef
+	}
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	rows, err := conn.Query(
+		`SELECT c.id, c.cluster_id, c.tenant_id, c.slug, c.name, c.provider, c.region, c.version, c.node_count, c.status, c.api_server, c.kubeconfig, c.environment, c.lifecycle_status, c.credential_ref, c.kubernetes_identity_uid, c.created_at, c.updated_at
+FROM clusters c INNER JOIN tenant_clusters tc ON tc.cluster_id = c.cluster_id
+WHERE tc.tenant_id = ? AND c.deleted_at IS NULL ORDER BY c.name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Cluster{}
+	for rows.Next() {
+		var c Cluster
+		var clusterID, rowTenantID, slug, kc, credentialRef, identity sql.NullString
+		if err := rows.Scan(&c.ID, &clusterID, &rowTenantID, &slug, &c.Name, &c.Provider, &c.Region, &c.Version,
+			&c.NodeCount, &c.Status, &c.APIServer, &kc, &c.Environment, &c.LifecycleStatus, &credentialRef, &identity, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		c.ClusterID = clusterID.String
+		c.TenantID = rowTenantID.String
+		c.Slug = slug.String
+		c.Kubeconfig = kc.String
+		c.CredentialRef = credentialRef.String
+		c.KubernetesIdentityUID = identity.String
+		items = append(items, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 // GetByID 按 ID 查集群。
 func (d *ClusterDAO) GetByID(id int64) (*Cluster, error) {
 	conn := GetDB()
@@ -234,6 +274,30 @@ func (d *ClusterDAO) GetByID(id int64) (*Cluster, error) {
 		}
 		return nil, err
 	}
+	return &c, nil
+}
+
+// GetByIDCanonical is a temporary numeric-read compatibility path. It returns
+// the canonical registry identity needed before a legacy UI caller is migrated
+// to cluster_id URLs; it never returns raw kubeconfig material to callers.
+func (d *ClusterDAO) GetByIDCanonical(id int64) (*Cluster, error) {
+	conn := GetDB()
+	if conn == nil {
+		return nil, errors.New("mysql unavailable")
+	}
+	row := conn.QueryRow(`SELECT id, cluster_id, tenant_id, slug, name, environment, region, credential_ref, lifecycle_status, kubernetes_identity_uid, created_at, updated_at
+FROM clusters WHERE id = ? AND deleted_at IS NULL`, id)
+	var c Cluster
+	var credential, identity sql.NullString
+	if err := row.Scan(&c.ID, &c.ClusterID, &c.TenantID, &c.Slug, &c.Name, &c.Environment, &c.Region, &credential, &c.LifecycleStatus, &identity, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	c.CredentialRef = credential.String
+	c.KubernetesIdentityUID = identity.String
+	c.Status = c.LifecycleStatus
 	return &c, nil
 }
 

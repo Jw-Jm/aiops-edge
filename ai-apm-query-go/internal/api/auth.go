@@ -339,10 +339,25 @@ func RequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) 
 		return zero, authorizationFailure("cluster_unavailable")
 	}
 	if tenantID == "" {
+		// Platform aggregates are tenant-scoped, not cluster-scoped. When the
+		// user has exactly one active tenant, allow these read-only endpoints to
+		// resolve that tenant without inventing an active cluster. Cluster
+		// workspaces still require an explicit POST /me/scope selection.
+		if isPlatformAggregateRoute(r.URL.Path) {
+			if tenantIDs, _ := availableScopeOptions(userID); len(tenantIDs) == 1 {
+				ctx, err := resolveMySQLAuthorizationContext(userID, sessionID, tenantIDs[0], tokenVersion)
+				if err == nil {
+					ctx.ActiveClusterID = ""
+				}
+				return ctx, err
+			}
+		}
 		// Identity-only endpoints are needed to render the scope selector. They
 		// still validate user/session/token_version from MySQL, but do not
 		// authorize a tenant until POST /me/scope selects one explicitly.
-		if r.URL.Path == "/api/v1/me" || r.URL.Path == "/api/v1/me/scope" {
+		// PF-UI-004/LOGIC-001：/auth/logout 也允许在未选择 tenant 前调用——
+		// 吊销当前会话只依赖身份/会话有效性，不应被 SCOPE_SELECTION_REQUIRED 卡死。
+		if r.URL.Path == "/api/v1/me" || r.URL.Path == "/api/v1/me/scope" || r.URL.Path == "/api/v1/auth/logout" {
 			return resolveMySQLAuthorizationIdentity(userID, sessionID, tokenVersion)
 		}
 		return zero, authorizationFailure("SCOPE_SELECTION_REQUIRED")
@@ -356,6 +371,10 @@ func RequestAuthorizationContext(r *http.Request) (AuthorizationContext, error) 
 		ctx.AuthorizationVersion = scopeVersion
 	}
 	return ctx, err
+}
+
+func isPlatformAggregateRoute(path string) bool {
+	return path == "/api/v1/platform/overview" || path == "/api/v1/platform/clusters"
 }
 
 func resolveMySQLAuthorizationIdentity(userID, sessionID string, tokenVersion int64) (AuthorizationContext, error) {
@@ -560,6 +579,53 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, 401, map[string]interface{}{"error": "invalid credentials"})
 }
 
+// Logout 吊销当前服务端会话并清除浏览器 HttpOnly cookie（PF-UI-004/LOGIC-001）。
+// 此前缺少 /auth/logout 端点，退出仅在前端丢弃 cookie，auth_sessions 行仍为
+// active——token 泄露后可继续使用。现在登录态唯一权威（auth_sessions）被吊销：
+// 后续请求在 resolveMySQLAuthorization* 处因 session status != 'active' fail-closed。
+// 调用方只需持有效 cookie/JWT；不要求已选择 tenant scope。
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	authCtx, ok := requestAuthorizationContext(r)
+	if !ok || authCtx.UserID == "" || authCtx.SessionID == "" {
+		respondJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "unauthorized"})
+		return
+	}
+	conn := store.GetDB()
+	if conn == nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
+		return
+	}
+	// 与 ChangePassword 同款会话吊销语义：状态置 revoked + 记录 revoked_at +
+	// token_version 自增（即使旧 token_version 校验也立即失效）。
+	result, err := conn.Exec(`UPDATE auth_sessions SET status='revoked', revoked_at=UTC_TIMESTAMP(), token_version=token_version+1
+WHERE session_id=? AND user_uuid=? AND status='active'`, authCtx.SessionID, authCtx.UserID)
+	if err != nil {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"error": "auth backend unavailable"})
+		return
+	}
+	if affected, aerr := result.RowsAffected(); aerr == nil && affected == 0 {
+		// 会话已不存在/已吊销：幂等成功，仍清除浏览器 cookie。
+		clearSessionCookie(w)
+		respondJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		return
+	}
+	// 吊销成功：清空浏览器 HttpOnly cookie（MaxAge=-1 让浏览器立即删除）。
+	clearSessionCookie(w)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
+// clearSessionCookie 使浏览器立即删除 aiops_access HttpOnly 会话 cookie。
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name: "aiops_access", Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, Secure: secureSessionCookie(), SameSite: http.SameSiteLaxMode,
+	})
+}
+
 // secureSessionCookie keeps production cookies transport-bound while allowing
 // the explicitly named local OrbStack profile to run over localhost HTTP.
 // Any unknown/missing environment remains secure by default.
@@ -595,6 +661,31 @@ func issueSessionToken(userUUID string) (string, error) {
 func hasRole(r *http.Request, role string) bool {
 	u, ok := authoritativeUser(r)
 	return ok && u.Role == role
+}
+
+const (
+	KnowledgeReadCapability   = "knowledge.read"
+	KnowledgeSubmitCapability = "knowledge.submit"
+	KnowledgeWriteCapability  = "knowledge.write"
+)
+
+// hasKnowledgeCapability maps the governed knowledge capabilities to the
+// authoritative user role. It keeps capability checks in one place while the
+// existing users schema remains role-based; browser headers and JWT role claims
+// never grant knowledge access.
+func hasKnowledgeCapability(r *http.Request, capability string) bool {
+	u, ok := authoritativeUser(r)
+	if !ok {
+		return false
+	}
+	switch capability {
+	case KnowledgeReadCapability, KnowledgeSubmitCapability:
+		return true
+	case KnowledgeWriteCapability:
+		return u.Role == "admin"
+	default:
+		return false
+	}
 }
 
 // RequireRole 返回按角色拦截的处理器包装（admin 仅限 admin 角色）。
@@ -745,9 +836,14 @@ func isCanonicalProtectedRoute(path string) bool {
 	// 注意：仅只读 GET 查询端点；写端点（topology/alerts create、sync-catalog 等）不在此放行，
 	// 保持 fail-closed。
 	switch path {
-	case "/api/v1/resources/resolve":
-		return true
-	case "/api/v1/services",
+	case "/api/v1/resources/resolve",
+		"/api/v1/resources/catalog",
+		"/api/v1/resources/summary",
+		"/api/v1/resources/detail",
+		"/api/v1/platform/overview",
+		"/api/v1/platform/clusters",
+		"/api/v1/platform/capacity", // 总览/集群的集群口径 CPU/内存（只读聚合，无节点名单）
+		"/api/v1/services",
 		"/api/v1/services/overview",
 		"/api/v1/services/map",
 		"/api/v1/services/dependency-matrix",
@@ -760,8 +856,13 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/topology/relation-types",
 		"/api/v1/alerts/rules",
 		"/api/v1/alerts/events",
+		"/api/v1/alerts/aggregation", // 观测中心问题聚合（只读；写端点 /alerts/aggregation/create 仍 fail-closed）
 		"/api/v1/logs/query",
 		"/api/v1/logs/aggregate",
+		// 原始日志查询：handler 内强制剥离调用方自报 scope 并注入服务端权威
+		// tenant/cluster（缺少时 fail-closed）；写到该路径的 POST 另有
+		// admin/approver 角色校验。
+		"/api/v1/logs/victorialogs",
 		"/api/v1/dashboard/stats",
 		"/api/v1/dashboard/resources",
 		"/api/v1/capacity/forecast",
@@ -775,13 +876,40 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/settings/llm/history",   // LLM 配置历史
 		"/api/v1/settings/llm/providers", // LLM provider 列表/创建
 		"/api/v1/ai/sessions",            // Query/MySQL-owned scoped chat history
+		"/api/v1/observability/paths",    // 全链路监控：云平台路径目录（只读，事件事实驱动）
+		"/api/v1/ops/reports/inspection", // 巡检报告生成（写入租户/集群隔离的 reports 表）
+		"/api/v1/ai/kg/health",           // 知识图谱健康（只读）
+		"/api/v1/ai/kg/ops/sync-states",  // 知识图谱来源同步状态（只读）
+		"/api/v1/ai/kg/ops/outbox",       // 知识图谱 outbox 积压（只读）
+		"/api/v1/ai/kg/ops/aliases",      // 知识图谱 schema/alias（只读）
+		"/api/v1/ai/kg/ops/shadow-diff",  // 知识图谱 shadow 差异（只读）
+		"/api/v1/ai/actions",             // 动作只读列表（写操作由 /ai/actions/{id}/decision 与审批链控制）
 		"/api/v1/ai/chat":                // P19.6：对话型 canonical-protected 路由。query-api 完成 JWT+tenant+cluster
 		// 解析 + ai.chat capability 签名后转发 orchestrator /internal/v1/chat（SSE 流式）。
 		// 不是公开放行：仍要求 JWT + canonical tenant + user 是 tenant 成员。
 		return true
 	}
+	// PF-LOGIC-004：规则详情更新/删除（PUT/DELETE /api/v1/alerts/rules/{id}）此前
+	// 不在 canonical-protected 白名单，AuthMiddleware 一律 403 permission_denied，
+	// 规则编辑/删除产品级不可用。这里仅放行单段规则 ID 子路径；admin 可写仍由
+	// handler 的 MySQL 权威角色校验（updateAlertRule/deleteAlertRule hasRole("admin")）
+	// 保持权威。"create" 字面量保持 fail-closed（创建走 POST /api/v1/alerts/rules 集合路由）。
+	if strings.HasPrefix(path, "/api/v1/alerts/rules/") {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/alerts/rules/"), "/"), "/")
+		return len(parts) == 1 && parts[0] != "" && parts[0] != "create"
+	}
 	if strings.HasPrefix(path, "/api/v1/ai/session/") {
 		return true
+	}
+	// 全链路监控路径详情：只放行单段 pathId，禁止任意嵌套路径绕过 canonical 边界。
+	// 集群运行时事实：只放行 /api/v1/clusters/{id}/runtime（单段集群 ID + 固定尾段）。
+	if strings.HasPrefix(path, "/api/v1/clusters/") && strings.HasSuffix(path, "/runtime") {
+		trimmed := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/clusters/"), "/runtime")
+		return trimmed != "" && !strings.Contains(trimmed, "/")
+	}
+	if strings.HasPrefix(path, "/api/v1/observability/paths/") {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/api/v1/observability/paths/"), "/"), "/")
+		return len(parts) == 1 && parts[0] != ""
 	}
 	// Service list details still use the historical /services/{name} alias,
 	// whose handler redirects to the canonical topology detail endpoint. Allow
@@ -899,6 +1027,10 @@ func isCanonicalProtectedRoute(path string) bool {
 		"/api/v1/grafana/search",
 		"/api/v1/system/status",
 		"/api/v1/system/components",
+		// Task 10：告警调查策略（GET 读配置；PUT 写由 RequireRole/hasRole(admin) 校验）
+		"/api/v1/system/alert-investigation-policy",
+		// Task 10：显式接受告警调查草稿 / 从告警发起调查（POST，服务端派生身份）
+		"/api/v1/alerts/investigation",
 		"/api/v1/system/cache",
 		"/api/v1/system/cache/invalidate",
 	} {
@@ -1008,12 +1140,20 @@ func AuthMiddleware(next http.Handler) http.Handler {
 		}
 		// Password bootstrap is a browser-only interactive state. Internal
 		// signed service calls keep their existing service boundary semantics.
+		// PF-UI-004/LOGIC-001：logout 始终可用——即使用户被强制改密也必须能退出登录。
 		internalRequest := r.Header.Get("X-Internal-Token") != "" || r.Header.Get("X-Trusted-Request-Context") != ""
-		if !internalRequest && authorization.MustChangePassword && path != "/api/v1/auth/change-password" && path != "/api/v1/me" {
+		if !internalRequest && authorization.MustChangePassword && path != "/api/v1/auth/change-password" && path != "/api/v1/me" && path != "/api/v1/auth/logout" {
 			respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "password_change_required"})
 			return
 		}
 		if path == "/api/v1/auth/change-password" {
+			next.ServeHTTP(w, withAuthorizationContext(r, authorization))
+			return
+		}
+		// PF-UI-004/LOGIC-001：退出登录必须吊销服务端会话。持有效 cookie/JWT 即可
+		// 调用（identity-only 校验见 RequestAuthorizationContext），不要求已选择
+		// canonical tenant；吊销动作由 handler 对 auth_sessions 落库完成。
+		if path == "/api/v1/auth/logout" {
 			next.ServeHTTP(w, withAuthorizationContext(r, authorization))
 			return
 		}

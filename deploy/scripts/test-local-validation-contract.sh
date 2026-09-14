@@ -6,6 +6,7 @@ set -euo pipefail
 # this gate ensures future edits cannot silently remove a mandatory matrix row.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 validator="${repo_root}/deploy/scripts/validate-local-stack.sh"
+local_validation="${repo_root}/deploy/scripts/local-validation.sh"
 values="${repo_root}/deploy/helm/aiops/values.yaml"
 local_values="${repo_root}/deploy/helm/aiops/values-local-validation.yaml"
 dry_run="${TMPDIR:-/tmp}/aiops-local-validation-dry-run.$$.out"
@@ -45,6 +46,16 @@ required_strings=(
 for required in "${required_strings[@]}"; do
   rg -n --fixed-strings "${required}" "${validator}" >/dev/null || {
     echo "local validation contract failed: missing ${required}" >&2
+    exit 1
+  }
+done
+
+for required in \
+  'resources: ["events"]' \
+  'apiGroups: ["events.k8s.io"]' \
+  'resources: ["events"]'; do
+  rg -n --fixed-strings "${required}" "${local_validation}" >/dev/null || {
+    echo "local validation contract failed: graph reader event RBAC is missing ${required}" >&2
     exit 1
   }
 done

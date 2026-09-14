@@ -108,3 +108,114 @@ type fakeKubeAccessorWithClient struct{ client KubeClient }
 func (f *fakeKubeAccessorWithClient) Client(ctx context.Context, clusterID string) (KubeClient, error) {
 	return f.client, nil
 }
+
+// fakeKubeVirtClient 模拟带窄事件能力的边界客户端。
+type fakeKubeVirtClient struct {
+	objects   map[string]interface{}
+	events    []map[string]interface{}
+	eventsErr error
+}
+
+func (c *fakeKubeVirtClient) ClusterID() string                                  { return "" }
+func (c *fakeKubeVirtClient) ListNodeNames() ([]string, error)                   { return nil, nil }
+func (c *fakeKubeVirtClient) ListNodeDetails() ([]map[string]interface{}, error) { return nil, nil }
+func (c *fakeKubeVirtClient) ListPods(ns string) ([]KubePod, error)              { return nil, nil }
+func (c *fakeKubeVirtClient) GetDeploymentIdentity(namespace, name string) (KubeObjectIdentity, error) {
+	return KubeObjectIdentity{}, nil
+}
+func (c *fakeKubeVirtClient) ListGraphObjects() (map[string]interface{}, error) {
+	return c.objects, nil
+}
+func (c *fakeKubeVirtClient) ListEvents() ([]map[string]interface{}, error) {
+	return c.events, c.eventsErr
+}
+
+const kubeVirtTestCluster = "3f3c3b3a-0000-4000-8000-000000000001"
+
+// TestKubeRepoListKubeVirtObjectsReportsInstalledFromKeyPresence 验证 CRD 不存在与
+// 已安装但为空必须可区分：installed 来自键存在性，而非列表长度。
+func TestKubeRepoListKubeVirtObjectsReportsInstalledFromKeyPresence(t *testing.T) {
+	notInstalled := NewKubernetesRepository(&fakeKubeAccessorWithClient{client: &fakeKubeVirtClient{objects: map[string]interface{}{}}})
+	got, err := notInstalled.ListKubeVirtObjects(context.Background(), KubernetesScope{}, kubeVirtTestCluster)
+	if err != nil {
+		t.Fatalf("ListKubeVirtObjects: %v", err)
+	}
+	if got["installed"] != false {
+		t.Fatalf("missing CRD must report installed=false, got %v", got["installed"])
+	}
+
+	installedEmpty := NewKubernetesRepository(&fakeKubeAccessorWithClient{client: &fakeKubeVirtClient{objects: map[string]interface{}{
+		"virtual_machines":          []map[string]interface{}{},
+		"virtual_machine_instances": []map[string]interface{}{},
+	}}})
+	got, err = installedEmpty.ListKubeVirtObjects(context.Background(), KubernetesScope{}, kubeVirtTestCluster)
+	if err != nil {
+		t.Fatalf("ListKubeVirtObjects: %v", err)
+	}
+	if got["installed"] != true {
+		t.Fatalf("empty CRD list must report installed=true, got %v", got["installed"])
+	}
+}
+
+// TestKubeRepoListKubeVirtObjectsKeepsVMsWhenEventsFail 验证事件读取失败时
+// 保留 VM/VMI 数据并标记 partial，不伪造完整结果。
+func TestKubeRepoListKubeVirtObjectsKeepsVMsWhenEventsFail(t *testing.T) {
+	repo := NewKubernetesRepository(&fakeKubeAccessorWithClient{client: &fakeKubeVirtClient{
+		objects: map[string]interface{}{
+			"virtual_machine_instances": []map[string]interface{}{{"metadata": map[string]interface{}{"name": "vm-1"}}},
+		},
+		eventsErr: errors.New("events backend down"),
+	}})
+	got, err := repo.ListKubeVirtObjects(context.Background(), KubernetesScope{}, kubeVirtTestCluster)
+	if err != nil {
+		t.Fatalf("ListKubeVirtObjects: %v", err)
+	}
+	if got["partial"] != true {
+		t.Fatalf("event failure must mark partial, got %v", got["partial"])
+	}
+	if _, ok := got["events"]; ok {
+		t.Fatalf("failed event read must not fabricate an events payload")
+	}
+	codes, _ := got["warning_codes"].([]string)
+	found := false
+	for _, code := range codes {
+		if code == KubeVirtWarningEventsUnavailable {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s warning code, got %v", KubeVirtWarningEventsUnavailable, got["warning_codes"])
+	}
+}
+
+// TestKubeRepoListKubeVirtObjectsSurfacesEvents 验证事件读取成功时进入固定输出。
+func TestKubeRepoListKubeVirtObjectsSurfacesEvents(t *testing.T) {
+	repo := NewKubernetesRepository(&fakeKubeAccessorWithClient{client: &fakeKubeVirtClient{
+		objects: map[string]interface{}{
+			"virtual_machine_instances": []map[string]interface{}{{"metadata": map[string]interface{}{"name": "vm-1"}}},
+		},
+		events: []map[string]interface{}{{"reason": "FailedScheduling"}},
+	}})
+	got, err := repo.ListKubeVirtObjects(context.Background(), KubernetesScope{}, kubeVirtTestCluster)
+	if err != nil {
+		t.Fatalf("ListKubeVirtObjects: %v", err)
+	}
+	if got["partial"] != false {
+		t.Fatalf("successful read must not be partial, got %v", got["partial"])
+	}
+	events, ok := got["events"].([]map[string]interface{})
+	if !ok || len(events) != 1 || events[0]["reason"] != "FailedScheduling" {
+		t.Fatalf("events = %#v", got["events"])
+	}
+}
+
+// TestKubeRepoListKubeVirtObjectsFailsClosedWithoutGraphCapability 验证未配置图能力时
+// fail closed（unavailable），而不是返回伪造空集。
+func TestKubeRepoListKubeVirtObjectsFailsClosedWithoutGraphCapability(t *testing.T) {
+	repo := NewKubernetesRepository(&fakeKubeAccessorWithClient{client: &fakeKubeClient{}})
+	_, err := repo.ListKubeVirtObjects(context.Background(), KubernetesScope{}, kubeVirtTestCluster)
+	var qe *QueryError
+	if !errors.As(err, &qe) || qe.Code != UnavailableCode {
+		t.Fatalf("expected unavailable, got %v", err)
+	}
+}

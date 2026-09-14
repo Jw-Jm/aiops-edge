@@ -46,6 +46,9 @@ func TestActionDecisionEndpointAtomicallyQueuesApprovedAction(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tenant_id, cluster_id FROM ai_actions WHERE action_id = ?")).
+		WithArgs("action-1").
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "cluster_id"}).AddRow("tenant-1", "cluster-1"))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT approval_id, action_id, COALESCE(action_version, 0), decision,")+
 		"\\s+approver, COALESCE\\(reason, ''\\) FROM ai_approval_decisions").
 		WithArgs("action-1", "decision-1").

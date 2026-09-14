@@ -97,6 +97,8 @@ func (h *Handler) decideActionPublic(w http.ResponseWriter, r *http.Request, act
 		status := http.StatusUnprocessableEntity
 		code := "ACTION_DECISION_REJECTED"
 		switch {
+		case errors.Is(err, errActionDecisionScope):
+			status, code = http.StatusConflict, "CONTEXT_SCOPE_MISMATCH"
 		case errors.Is(err, errActionDecisionConflict):
 			status, code = http.StatusConflict, "ACTION_DECISION_CONFLICT"
 		case errors.Is(err, errActionDecisionIdempotency):
@@ -116,6 +118,7 @@ func (h *Handler) decideActionPublic(w http.ResponseWriter, r *http.Request, act
 
 var (
 	errActionDecisionConflict    = errors.New("action decision state conflict")
+	errActionDecisionScope       = errors.New("action decision scope mismatch")
 	errActionDecisionIdempotency = errors.New("action decision idempotency key reused")
 	errActionDecisionUnavailable = errors.New("action decision persistence unavailable")
 )
@@ -133,6 +136,23 @@ func (h *Handler) decideAction(ctx context.Context, actionID string, auth Author
 		return ActionDecisionResult{}, fmt.Errorf("%w: begin: %v", errActionDecisionUnavailable, err)
 	}
 	defer tx.Rollback()
+
+	// Resolve the action scope before idempotency replay. Otherwise a caller
+	// from another active cluster could replay a valid approval by key without
+	// ever reaching the normal action-state guard below.
+	var actionTenant, actionCluster string
+	if err := tx.QueryRowContext(ctx, `SELECT tenant_id, cluster_id FROM ai_actions WHERE action_id = ?`, actionID).Scan(&actionTenant, &actionCluster); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ActionDecisionResult{}, errActionDecisionConflict
+		}
+		return ActionDecisionResult{}, fmt.Errorf("%w: action scope lookup: %v", errActionDecisionUnavailable, err)
+	}
+	if actionTenant != auth.TenantID {
+		return ActionDecisionResult{}, errActionDecisionConflict
+	}
+	if auth.ActiveClusterID != "" && actionCluster != "" && auth.ActiveClusterID != actionCluster {
+		return ActionDecisionResult{}, errActionDecisionScope
+	}
 
 	var existing ActionDecisionResult
 	var existingReason, existingApprover string

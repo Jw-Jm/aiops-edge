@@ -17,6 +17,22 @@ _TARGET_TO_GRAPH_TYPE = {
 }
 
 
+def _is_entity_not_found(exc: BaseException) -> bool:
+    """D16b：区分"实体未建模"（数据事实）与"图谱系统故障"。
+
+    查询边界的失败信封被转成异常：内部查询客户端的 ``InternalQueryError``
+    （kind=not_found）与适配器层的 ``RuntimeError(GRAPH_ENTITY_NOT_FOUND)``。
+    实体不存在以这两类错误码表达；其它（连接拒绝、边界拒绝、超时）属于
+    系统故障，必须上抛，让引擎 fail-closed 而不是伪装成"实体未找到"。
+    """
+    candidates = [str(getattr(exc, "args", ("",))[0]) if getattr(exc, "args", None) else ""]
+    candidates.append(str(getattr(exc, "kind", "")))
+    candidates.append(str(getattr(exc, "message", "")))
+    text = " ".join(candidates)
+    return ("GRAPH_ENTITY_NOT_FOUND" in text or "ENTITY_AMBIGUOUS" in text
+            or "not_found" in text)
+
+
 def resolve_entity(request: Any, graph_client: Any) -> dict[str, Any] | None:
     """Resolve by canonical UID first, then bounded alias search via query-api."""
     uid = str(getattr(request, "entity_uid", "") or getattr(request, "resource_id", "") or "").strip()
@@ -30,10 +46,11 @@ def resolve_entity(request: Any, graph_client: Any) -> dict[str, Any] | None:
                 entity = response.get("entity") or response.get("vertex") or response
                 if isinstance(entity, dict):
                     return entity
-        except Exception:
-            # A human-facing service name is not a canonical UID. Fall back to
-            # the query-api alias resolver instead of masking it as an outage.
-            pass
+        except Exception as exc:
+            # 实体不存在（canonical UID 无对应顶点）→ 回退名称路径；
+            # 系统故障（连接/边界拒绝）→ 上抛，fail-closed。
+            if not _is_entity_not_found(exc):
+                raise
     name = str(getattr(request, "entity_name", "") or "").strip()
     if not name:
         return None
@@ -50,7 +67,9 @@ def resolve_entity(request: Any, graph_client: Any) -> dict[str, Any] | None:
     preferred_type = _TARGET_TO_GRAPH_TYPE.get(target_type, "service")
     try:
         response = graph_client(graph_operation="resolve_entity", name=name, entity_type=preferred_type)
-    except Exception:
+    except Exception as exc:
+        if not _is_entity_not_found(exc):
+            raise  # 系统故障必须上抛，不得伪装成"实体未找到"
         response = {}
     if not isinstance(response, dict):
         response = {}
@@ -69,7 +88,9 @@ def resolve_entity(request: Any, graph_client: Any) -> dict[str, Any] | None:
     # cannot silently pick a cross-domain or cross-cluster object.
     try:
         response = graph_client(graph_operation="resolve_entity", name=name, entity_type="")
-    except Exception:
+    except Exception as exc:
+        if not _is_entity_not_found(exc):
+            raise
         return None
     if not isinstance(response, dict):
         return None

@@ -20,8 +20,8 @@ vi.mock('../../api/k8s', () => ({
   listK8sNamespaces: vi.fn(), listK8sPods: vi.fn(),
   listK8sDeployments: vi.fn(), listK8sNodes: vi.fn(),
 }))
-vi.mock('../../store/uiStore', () => ({
-  useUIStore: (selector: (state: { currentClusterId: string }) => unknown) => selector({ currentClusterId: '3f3c3b3a-0000-4000-8000-000000000001' }),
+vi.mock('../../store/scopeStore', () => ({
+  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null }) => unknown) => selector({ authScope: { activeClusterId: '3f3c3b3a-0000-4000-8000-000000000001' } }),
 }))
 
 describe('K8sActions canonical workflow', () => {

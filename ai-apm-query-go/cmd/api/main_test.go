@@ -55,6 +55,28 @@ func TestRuntimeModeHTTPStartsNoBackgroundLoops(t *testing.T) {
 	}
 }
 
+// 回归 alerts_events_api_shows_event：http 进程不运行告警评估（alert-eval 是独立
+// pod 写 ClickHouse），因此必须注入 alert CH 事件源并周期重载，否则
+// GET /api/v1/alerts/events 的内存缓存恒空。
+func TestRuntimeModeHTTPIncludesAlertCHEventsSync(t *testing.T) {
+	plan, err := bootstrap.PlanForMode(bootstrap.ModeHTTP)
+	if err != nil {
+		t.Fatalf("PlanForMode(http) error = %v", err)
+	}
+	if !plan.StartAlertEventsSync {
+		t.Fatal("http mode must inject alert CH event source with periodic reload (StartAlertEventsSync)")
+	}
+	for _, mode := range []bootstrap.Mode{bootstrap.ModeRunDispatch, bootstrap.ModeAlertEval} {
+		plan, err := bootstrap.PlanForMode(mode)
+		if err != nil {
+			t.Fatalf("PlanForMode(%s) error = %v", mode, err)
+		}
+		if plan.StartAlertEventsSync {
+			t.Fatalf("mode %s must not start alert events sync loop", mode)
+		}
+	}
+}
+
 func TestParseModeFailsClosedForLegacyAndUnknownRoles(t *testing.T) {
 	for _, candidate := range []string{"", "api", "worker", "unknown"} {
 		if _, err := bootstrap.ParseMode(candidate); err == nil {

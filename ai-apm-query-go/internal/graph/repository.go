@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -444,14 +445,66 @@ func (r *MemoryRepository) walk(ctx context.Context, scope GraphScope, center st
 		}
 	}
 	r.mu.RUnlock()
-	if len(edges) >= maxEdges || len(vertices) >= maxVertices {
-		vertexList, edgeList := mapEntities(vertices), mapEdges(edges)
-		return Subgraph{CenterEntityUID: center, Vertices: vertexList, Edges: edgeList,
-			Meta: graphMeta(vertexList, edgeList, true, []string{ErrGraphQueryLimitExceeded}, time.Now().UTC().Format(time.RFC3339Nano))}, nil
-	}
 	vertexList, edgeList := mapEntities(vertices), mapEdges(edges)
-	return Subgraph{CenterEntityUID: center, Vertices: vertexList, Edges: edgeList,
-		Meta: graphMeta(vertexList, edgeList, false, []string{}, time.Now().UTC().Format(time.RFC3339Nano))}, nil
+	totalNodes, totalEdges := r.walkTotals(ctx, scope, center, maxDepth, relationTypes, direction, policy)
+	truncated := len(edges) >= maxEdges || len(vertices) >= maxVertices || totalNodes > len(vertexList) || totalEdges > len(edgeList)
+	result := Subgraph{CenterEntityUID: center, Vertices: vertexList, Edges: edgeList, TotalNodes: totalNodes, TotalEdges: totalEdges, Aggregated: truncated,
+		Meta: graphMeta(vertexList, edgeList, truncated, []string{}, time.Now().UTC().Format(time.RFC3339Nano))}
+	if truncated {
+		result.Meta.WarningCodes = []string{ErrGraphQueryLimitExceeded}
+		result.NextCursor = center + "|" + strconv.Itoa(len(vertexList)) + "|" + strconv.Itoa(len(edgeList))
+	}
+	return result, nil
+}
+
+// walkTotals traverses the same scoped relation set without the visual budget.
+// It is intentionally bounded by the repository capacity so the browser can
+// always receive truthful totals without allowing an unbounded graph walk.
+func (r *MemoryRepository) walkTotals(ctx context.Context, scope GraphScope, center string, maxDepth int, relationTypes []string, direction string, policy map[string]string) (int, int) {
+	if err := ctx.Err(); err != nil {
+		return 0, 0
+	}
+	vertices := map[string]struct{}{center: {}}
+	edges := map[string]struct{}{}
+	queue := []struct {
+		uid   string
+		depth int
+	}{{center, 0}}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for len(queue) > 0 && len(vertices) < DefaultTraversalCapacity && len(edges) < DefaultTraversalCapacity {
+		item := queue[0]
+		queue = queue[1:]
+		if item.depth >= maxDepth {
+			continue
+		}
+		for _, edge := range r.edges {
+			if !relationAllowed(edge.RelationType, relationTypes) {
+				continue
+			}
+			next, ok := traversalNext(edge, item.uid, direction, policy)
+			if !ok {
+				continue
+			}
+			source, sourceOK := r.vertices[edge.SourceUID]
+			target, targetOK := r.vertices[edge.TargetUID]
+			if !sourceOK || !targetOK || !scope.AllowsEdge(source, target) {
+				continue
+			}
+			edges[edge.EdgeUID] = struct{}{}
+			if _, seen := vertices[next]; !seen {
+				vertices[next] = struct{}{}
+				queue = append(queue, struct {
+					uid   string
+					depth int
+				}{next, item.depth + 1})
+			}
+			if len(vertices) >= DefaultTraversalCapacity || len(edges) >= DefaultTraversalCapacity {
+				break
+			}
+		}
+	}
+	return len(vertices), len(edges)
 }
 
 func traversalNext(edge Edge, current, direction string, policy map[string]string) (string, bool) {

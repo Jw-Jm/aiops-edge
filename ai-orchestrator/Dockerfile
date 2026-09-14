@@ -90,8 +90,12 @@ COPY tools.sha256 models.sha256 ./
 # aiops 用户以固定 UID 65532 运行，与 Helm fsGroup 对齐。
 # /root/.cache 模型缓存对 65532 只读可达；运行写路径（/var/lib/aiops 数据
 # PVC、tmpfs 注入配置）由 Helm volumeMounts 提供。
-RUN useradd --system --uid 65532 --no-create-home aiops && \
-    mkdir -p /var/lib/aiops && chown -R 65532:65532 /app /var/lib/aiops /root/.cache
+RUN useradd --system --uid 65532 --create-home --home-dir /home/aiops aiops && \
+    mkdir -p /home/aiops/.cache && \
+    cp -a /root/.cache/. /home/aiops/.cache/ && \
+    mkdir -p /var/lib/aiops && \
+    chown -R 65532:65532 /app /var/lib/aiops /root/.cache /home/aiops
+ENV HOME=/home/aiops
 USER 65532:65532
 EXPOSE 8080
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "120", "--limit-concurrency", "20"]

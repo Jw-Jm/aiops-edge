@@ -40,6 +40,18 @@ sequenceDiagram
 - ClickHouse 只保存统一 ingest 接受的数据；Graph 是可重建投影，不是第二套 RCA 语义。
 - 所有内部调用必须可追踪到 request/run/session/tool/action/event ID。
 
+## 架构决策记录（ADR）
+
+| ADR | 结论 | 状态 |
+|---|---|---|
+| [ADR-0001 控制面所有权](./ADR-0001-control-plane-ownership.md) | query-api 是 Run/Chat/Action 唯一 owner | 已采纳 |
+| [ADR-0002 集群库存投影](./ADR-0002-cluster-inventory-projection.md) | 采用/暂缓/拒绝三选一 → **暂缓**（测量缺失） | 暂缓 |
+
+持久化集群库存投影（full snapshot + watch delta）目前**未实施**：不创建库存表、
+collector 或第二套资源 API。`k8sboundary` 仍是唯一 Kubernetes 凭据与身份边界，
+HugeGraph 仍是可重建投影。重开该决策前必须按 ADR-0002 §6 完成实测并填写
+[数据合同](../contracts/kubernetes-inventory-projection.md) 的验收条件。
+
 ## 发布证据
 
 生产切换需要与当前 commit、镜像 digest、迁移 checksum、policy/dataset digest 绑定的

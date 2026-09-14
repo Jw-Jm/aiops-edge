@@ -1,12 +1,14 @@
 import React, { useState } from 'react'
 import { Form, Input, Button, message } from 'antd'
 import { UserOutlined, LockOutlined, LoginOutlined } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { login } from '../../api/client'
 import { useAuthStore } from '../../store/authStore'
 
 const Login: React.FC = () => {
   const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
   const [loading, setLoading] = useState(false)
 
   const onFinish = async (values: { username: string; password: string }) => {
@@ -19,7 +21,13 @@ const Login: React.FC = () => {
         // non-secret in-memory session marker for route rendering.
         useAuthStore.getState().login('cookie-session', res.data?.username || values.username, res.data?.role || 'user', res.data?.display_name || '', mustChangePassword)
         message.success('登录成功')
-        navigate(mustChangePassword ? '/change-password' : '/overview')
+        // PF-PAGE-016: 登录成功后跳回来源页（?redirect= 参数或路由 state.from），
+        // 而非固定 /overview；仅接受站内路径，防开放跳转。
+        const fromState = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname
+        // D-03：AI 智能运维是第一入口，登录后的默认落地页必须是 /ai-operations。
+        const rawTarget = searchParams.get('redirect') || fromState || '/ai-operations'
+        const target = rawTarget.startsWith('/') ? rawTarget : '/ai-operations'
+        navigate(mustChangePassword ? '/change-password' : target, { replace: true })
       } else {
         message.error('登录失败：会话未建立')
       }

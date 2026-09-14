@@ -56,6 +56,13 @@ type KubeGraphObjectClient interface {
 	ListGraphObjects() (map[string]interface{}, error)
 }
 
+// KubeEventClient is the optional narrow event capability of the same validated
+// cluster client. It returns only the sanitized warning/error event projection;
+// callers never receive a kubeconfig or an arbitrary kubectl argument surface.
+type KubeEventClient interface {
+	ListEvents() ([]map[string]interface{}, error)
+}
+
 // KubernetesAccessor 解析 canonical cluster_id → 校验身份的 K8s 客户端。
 // 生产实现包装 k8sboundary.ClusterClientManager；测试提供 fake。
 type KubernetesAccessor interface {
@@ -231,25 +238,93 @@ func (r *KubernetesRepository) ListGraphObjects(ctx context.Context, scope Kuber
 	return objects, nil
 }
 
-// ListKubeVirtObjects returns the KubeVirt subset from the same cluster-bound
-// Kubernetes access boundary.  It intentionally does not use the legacy
-// process-global kubeconfig path.
+// KubeVirtWarningEventsUnavailable 表示 KubeVirt VM/VMI 数据可用，但同一集群
+// 边界上的事件读取失败；结果保留 VM/VMI 并标记 partial，不伪造完整结果。
+const KubeVirtWarningEventsUnavailable = "KUBEVIRT_EVENTS_UNAVAILABLE"
+
+// KubeVirtWarningSnapshotPartial 表示集群资源快照本身是部分结果。
+const KubeVirtWarningSnapshotPartial = "KUBERNETES_SNAPSHOT_PARTIAL"
+
+// ListKubeVirtObjects returns the fixed KubeVirt projection from the same
+// cluster-bound Kubernetes access boundary. It intentionally never uses the
+// legacy process-global kubeconfig path and always reports:
+//
+//	virtual_machines, virtual_machine_instances (present even when empty),
+//	installed (derived from key presence, so CRD absence ≠ zero VMs),
+//	events, partial, warning_codes.
 func (r *KubernetesRepository) ListKubeVirtObjects(ctx context.Context, scope KubernetesScope, clusterID string) (map[string]interface{}, error) {
-	objects, err := r.ListGraphObjects(ctx, scope, clusterID)
+	client, err := r.clientFor(ctx, clusterID)
 	if err != nil {
 		return nil, err
 	}
+	graphClient, ok := client.(KubeGraphObjectClient)
+	if !ok {
+		return nil, Unavailable("kubernetes: graph object capability not configured")
+	}
+	objects, err := graphClient.ListGraphObjects()
+	if err != nil {
+		return nil, mapKubeBoundaryError(err)
+	}
+
+	virtualMachines, hasVirtualMachines := objects["virtual_machines"]
+	virtualMachineInstances, hasVirtualMachineInstances := objects["virtual_machine_instances"]
+
 	result := map[string]interface{}{}
-	for _, key := range []string{"virtual_machines", "virtual_machine_instances", "migrations", "virt_launcher_pods", "nodes", "pvcs", "nads", "networks"} {
+	for _, key := range []string{"migrations", "virt_launcher_pods", "nodes", "pvcs", "nads", "networks"} {
 		if value, ok := objects[key]; ok {
 			result[key] = value
 		}
 	}
-	if partial, ok := objects["partial"]; ok {
-		result["partial"] = partial
+	// 两个 KubeVirt 列表始终存在，使调用方可以区分“CRD 不存在”和“已安装但为空”。
+	result["virtual_machines"] = virtualMachines
+	result["virtual_machine_instances"] = virtualMachineInstances
+	result["installed"] = hasVirtualMachines || hasVirtualMachineInstances
+
+	partial := false
+	warningCodes := []string{}
+	if flag, ok := objects["partial"].(bool); ok && flag {
+		partial = true
 	}
-	if errors, ok := objects["errors"]; ok {
-		result["errors"] = errors
+	if rawErrors, ok := objects["errors"]; ok {
+		result["errors"] = rawErrors
+		if list, ok := rawErrors.([]string); ok && len(list) > 0 {
+			partial = true
+			warningCodes = append(warningCodes, KubeVirtWarningSnapshotPartial)
+		}
 	}
+
+	// 事件必须来自同一个已验证的边界客户端；读取失败保留 VM/VMI 并标记 partial。
+	if eventClient, ok := client.(KubeEventClient); ok {
+		events, eventErr := eventClient.ListEvents()
+		if eventErr != nil {
+			partial = true
+			warningCodes = append(warningCodes, KubeVirtWarningEventsUnavailable)
+		} else {
+			result["events"] = events
+		}
+	}
+
+	result["partial"] = partial
+	result["warning_codes"] = dedupeWarningCodes(warningCodes)
 	return result, nil
+}
+
+// dedupeWarningCodes 稳定去重 warning code，保持首次出现顺序。
+func dedupeWarningCodes(codes []string) []string {
+	if len(codes) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(codes))
+	out := make([]string, 0, len(codes))
+	for _, code := range codes {
+		if code == "" {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		out = append(out, code)
+	}
+	return out
 }

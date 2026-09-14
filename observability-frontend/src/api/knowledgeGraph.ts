@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { GraphEntity, GraphHealth, GraphSubgraph } from './graphContracts'
+import type { GraphEntity, GraphHealth, GraphPage, GraphSubgraph } from './graphContracts'
 
 export interface PanoramaService {
   entity_uid?: string
@@ -111,12 +111,12 @@ export interface ServiceDependenciesResponse {
 }
 
 export const getGraphHealth = () => api.get<GraphHealth>('/ai/kg/health')
-export const searchGraphEntities = (params: { q: string; entity_type?: string; limit?: number }) =>
+export const searchGraphEntities = (params: { q: string; entity_type?: string; limit?: number; profile?: 'operations' }) =>
   api.get<{ items: GraphEntity[]; count: number }>('/ai/kg/entities/search', { params })
 export const getGraphEntity = (uid: string) =>
   api.get<GraphEntity>(`/ai/kg/entities/${encodeURIComponent(uid)}`)
 export const getGraphNeighbors = (uid: string, params?: { direction?: string; depth?: number; relation_types?: string; max_vertices?: number; max_edges?: number }) =>
-  api.get<GraphSubgraph>(`/ai/kg/entities/${encodeURIComponent(uid)}/neighbors`, { params })
+  api.get<GraphPage>(`/ai/kg/entities/${encodeURIComponent(uid)}/neighbors`, { params })
 export const getGraphCandidate = (uid: string, params?: { depth?: number; max_vertices?: number; max_edges?: number }) =>
   api.get<GraphSubgraph>(`/ai/kg/entities/${encodeURIComponent(uid)}/candidate`, { params })
 export const getGraphImpact = (uid: string, params?: { max_depth?: number }) =>

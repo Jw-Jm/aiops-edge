@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -77,63 +76,11 @@ func (h *Handler) SystemComponents(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, 403, map[string]interface{}{"error": "forbidden: admin role required"})
 		return
 	}
-	components := []systemComponent{
-		{"query-api", "service", "http", "http://query-api.observability.svc.cluster.local:8080/health", true},
-		{"ingest", "service", "http", "http://ingest.observability.svc.cluster.local:8080/health", true},
-		{"ai-orchestrator", "service", "http", "http://ai-orchestrator.observability.svc.cluster.local:8080/health", true},
-		{"clickhouse", "middleware", "tcp", "clickhouse.observability.svc.cluster.local:8123", true},
-		{"mysql", "middleware", "tcp", "mysql.observability.svc.cluster.local:3306", true},
-		{"victoria-metrics", "middleware", "http", "http://victoria-metrics.observability.svc.cluster.local:8428/health", true},
-		{"victoria-logs", "middleware", "http", "http://victoria-logs.observability.svc.cluster.local:9428/health", true},
-		{"minio", "middleware", "http", "http://minio.observability.svc.cluster.local:9000/minio/health/live", false},
-		{"frontend", "service", "http", "http://frontend.observability.svc.cluster.local/health", true},
-	}
-
-	results := make([]map[string]interface{}, len(components))
-	var wg sync.WaitGroup
-	for i, c := range components {
-		wg.Add(1)
-		go func(i int, c systemComponent) {
-			defer wg.Done()
-			results[i] = systemComponentResult(c, probeComponent)
-		}(i, c)
-	}
-	wg.Wait()
+	// 与平台总览能力摘要共用同一 collector（platform_health.go），
+	// 使系统管理与平台页面对同一组件给出同一结果，不再出现硬编码分子分母。
+	results := collectSystemComponentResults(probeComponent)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{"components": results})
-}
-
-func systemComponentResult(c systemComponent, probe func(string, string) bool) map[string]interface{} {
-	if !c.configured {
-		return map[string]interface{}{
-			"name":       c.name,
-			"type":       c.typ,
-			"status":     "not_configured",
-			"latency_ms": 0,
-			"detail":     "optional component is not configured",
-		}
-	}
-
-	start := time.Now()
-	ok := probe(c.kind, c.addr)
-	latency := time.Since(start).Milliseconds()
-	status := "ok"
-	if !ok {
-		status = "down"
-	} else if latency >= 2000 {
-		status = "degraded"
-	}
-	detail := ""
-	if !ok {
-		detail = c.addr
-	}
-	return map[string]interface{}{
-		"name":       c.name,
-		"type":       c.typ,
-		"status":     status,
-		"latency_ms": latency,
-		"detail":     detail,
-	}
 }
 
 // probeComponent 按 kind 探测组件：http 用 GET（3s 超时），tcp 用 DialTimeout。

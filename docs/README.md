@@ -11,6 +11,10 @@
 - `runtime-slo.md`：运行时预算与失效行为
 - `DEPLOYMENT_AND_VERIFY.md`：部署与验证
 - `../deploy/helm/aiops/`：实际部署配置
+- `product/README.md`：产品信息架构、实施方案与设计图
+- `superpowers/plans/2026-09-10-aiops-v3-post-implementation-remediation.md`：当前完整整改执行顺序
+- `superpowers/specs/assets/ui-v2/UI_RENDER_GUIDE.md`：当前完整 UI 视觉与交互合同
+- `superpowers/verification/2026-09-11-aiops-v3-complete-acceptance.md`：当前发布验收判定合同
 
 ## Runbook
 

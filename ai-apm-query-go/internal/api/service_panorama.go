@@ -125,8 +125,25 @@ func panoramaEntityScope(scope query.TopologyScope) graphpkg.GraphScope {
 	return out
 }
 
-func panoramaAttr(attrs map[string]interface{}, keys ...string) string {
-	for _, key := range keys {
+// panoramaServiceEntity resolves one topology service name to its projected
+// graph identity through the canonical graph_entity_alias name index. It never
+// scans HugeGraph by display name; unknown or out-of-type matches return false.
+func (h *Handler) panoramaServiceEntity(ctx context.Context, scope query.TopologyScope, serviceName string) (graphpkg.Entity, bool) {
+	if h == nil || h.graphAliasDAO == nil || h.graphRepo == nil || h.graphInitErr != nil {
+		return graphpkg.Entity{}, false
+	}
+	alias, err := h.graphAliasDAO.Resolve(scope.TenantID, scope.ClusterID, "name", graphpkg.NameKeyV1(serviceName))
+	if err != nil || alias == nil {
+		return graphpkg.Entity{}, false
+	}
+	entity, getErr := h.graphRepo.GetEntity(ctx, panoramaEntityScope(scope), alias.CanonicalEntityUID)
+	if getErr != nil || entity.EntityType != "service" {
+		return graphpkg.Entity{}, false
+	}
+	return entity, true
+}
+
+func panoramaAttr(attrs map[string]interface{}, keys ...string) string {	for _, key := range keys {
 		if value, ok := attrs[key]; ok && value != nil {
 			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" && text != "<nil>" {
 				return text
@@ -186,10 +203,19 @@ func (h *Handler) collectServicePanorama(ctx context.Context, r *http.Request, m
 
 	entityByName := map[string]graphpkg.Entity{}
 	warnings := []string{}
+	// HugeGraphRepository.SearchEntities deliberately refuses name scans; its
+	// canonical name index is graph_entity_alias. When the repo backend cannot
+	// list service identities, resolve them lazily through the alias table
+	// instead of degrading the whole panorama with a warning.
+	identityViaAlias := false
 	if h.graphRepo != nil && h.graphInitErr == nil {
 		entities, searchErr := h.graphRepo.SearchEntities(ctx, panoramaEntityScope(scope), graphpkg.EntitySearchQuery{EntityType: "service", Limit: 300})
 		if searchErr != nil {
-			warnings = append(warnings, "GRAPH_IDENTITY_UNAVAILABLE")
+			if h.graphAliasDAO != nil && scope.ClusterID != "" {
+				identityViaAlias = true
+			} else {
+				warnings = append(warnings, "GRAPH_IDENTITY_UNAVAILABLE")
+			}
 		} else {
 			for _, entity := range entities {
 				if entity.Name != "" {
@@ -207,6 +233,12 @@ func (h *Handler) collectServicePanorama(ctx context.Context, r *http.Request, m
 			continue
 		}
 		entity := entityByName[node.Service]
+		if entity.EntityUID == "" && identityViaAlias {
+			if resolved, ok := h.panoramaServiceEntity(ctx, scope, node.Service); ok {
+				entity = resolved
+				entityByName[node.Service] = resolved
+			}
+		}
 		service := PanoramaService{EntityUID: entity.EntityUID, ServiceName: node.Service, Namespace: nsMap[node.Service], Calls: node.Calls, Errors: node.Errors,
 			AvgLatencyMS: node.AvgNs / 1e6}
 		if entity.Namespace != "" {
@@ -228,6 +260,12 @@ func (h *Handler) collectServicePanorama(ctx context.Context, r *http.Request, m
 		for _, name := range []string{edge.Source, edge.Target} {
 			if _, ok := byName[name]; !ok {
 				entity := entityByName[name]
+				if entity.EntityUID == "" && identityViaAlias {
+					if resolved, ok := h.panoramaServiceEntity(ctx, scope, name); ok {
+						entity = resolved
+						entityByName[name] = resolved
+					}
+				}
 				service := PanoramaService{EntityUID: entity.EntityUID, ServiceName: name, Namespace: nsMap[name], Health: "unknown"}
 				service.ApplicationUID = panoramaAttr(entity.Attrs, "application_uid", "app_uid")
 				service.ApplicationName = panoramaAttr(entity.Attrs, "application_name", "application")

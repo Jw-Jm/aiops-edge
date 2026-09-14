@@ -42,6 +42,11 @@ type WAL struct {
 	consecutiveAckSeq uint64
 }
 
+// WAL records contain a base64-encoded batch. A single batch is intentionally
+// allowed to exceed bufio.Scanner's 64 KiB default, while the hard cap keeps a
+// corrupt line from allocating unbounded memory during recovery.
+const walScannerMaxCapacity = 16 * 1024 * 1024
+
 // NewWAL 打开（必要时创建）WAL 日志并恢复 ack 水位。
 func NewWAL(dir, file string) (*WAL, error) {
 	// 事件数据含消息正文，仅限采集服务账号可读：目录 0750、文件 0600。
@@ -268,6 +273,7 @@ func (w *WAL) readRemaining(after uint64) ([]walEntry, error) {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), walScannerMaxCapacity)
 	var out []walEntry
 	for sc.Scan() {
 		var e walEntry
@@ -291,6 +297,7 @@ func scanLastSeq(path string) (uint64, error) {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), walScannerMaxCapacity)
 	var last uint64
 	for sc.Scan() {
 		var e walEntry

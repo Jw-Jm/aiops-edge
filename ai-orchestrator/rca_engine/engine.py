@@ -250,28 +250,18 @@ class RCAEngineV2:
         context = GraphContext(request.run_id, request.tenant_id, request.cluster_id,
                                window_start=window_start, window_end=window_end,
                                symptom_time=symptom_time)
-        try:
-            entity = resolve_entity(request, self._graph_call)
-            if not entity:
-                raise ValueError("GRAPH_ENTITY_NOT_FOUND")
-            context.symptom_entity_uid = str(entity.get("entity_uid") or "")
-            context.record("graph_context_created")
-            subgraph = graph_candidates(entity, self._graph_call)
-            context.vertices = list(subgraph.get("vertices") or [])
-            context.edges = list(subgraph.get("edges") or [])
-            # Query-owned graph reads carry the projection generation in the
-            # typed graph meta envelope. Persist it with the RCA context so a
-            # replay can identify the exact graph generation consumed. Older
-            # adapters may not emit meta; keep the value at zero rather than
-            # inventing provenance.
-            graph_meta = subgraph.get("meta") if isinstance(subgraph, Mapping) else None
-            if isinstance(graph_meta, Mapping):
-                try:
-                    context.graph_generation = max(0, int(graph_meta.get("graph_generation") or 0))
-                except (TypeError, ValueError):
-                    context.graph_generation = 0
-            context.record("rca_candidates_ranked")
-        except Exception as exc:  # Graph down must become explicit local-only RCA.
+        def _local_only_result(exc: Exception) -> RCAResult:
+            """Graph system failure: fail-closed local-only RCA（诚实降级，不伪装成功）。"""
+            # 可观测性：该分支此前静默吞掉异常，GRAPH_UNAVAILABLE 的真实根因
+            # （注册表为空 / 查询边界拒绝 / HugeGraph 不可达）完全不可见，
+            # 导致 D15 无法定位。记录完整异常与类型，便于运维诊断。
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "rca graph_context unavailable: %s: %s", type(exc).__name__, exc,
+                extra={"run_id": request.run_id, "tenant_id": request.tenant_id,
+                       "cluster_id": request.cluster_id},
+            )
             evidence = [dict(item) for item in request.evidence]
             result = RCAResult(run_id=request.run_id, root_cause=None, root_cause_status="insufficient_evidence",
                                confidence=0.0, root_cause_scope="local_only", graph_enhanced=False,
@@ -300,6 +290,50 @@ class RCAEngineV2:
                     result.graph_context = context.to_dict()
             return result
 
+        # D16b 语义修复：实体未解析（目标未建模进图谱）是数据事实，不是系统故障。
+        # 此前 GRAPH_ENTITY_NOT_FOUND 与图谱不可用共用同一 fail-closed 分支，
+        # 导致真实告警对象的调查恒定 0 证据（跳过 metrics/logs/alerts/events
+        # 采集）。现在：resolve_entity 异常 = 图谱系统故障 → local-only；
+        # entity 为空 = 实体未建模 → 继续本地证据采集，仅缺 graph_relation。
+        try:
+            entity = resolve_entity(request, self._graph_call)
+        except Exception as exc:
+            return _local_only_result(exc)
+
+        if not entity:
+            import logging
+
+            logging.getLogger(__name__).info(
+                "rca entity unresolved in graph; continuing with local evidence",
+                extra={"run_id": request.run_id, "tenant_id": request.tenant_id,
+                       "cluster_id": request.cluster_id, "resource_id": str(request.resource_id or "")},
+            )
+            context.warning_codes.append("GRAPH_ENTITY_UNRESOLVED")
+            context.partial = True
+            context.record("graph_entity_unresolved")
+            subgraph: dict[str, Any] = {"vertices": [], "edges": []}
+        else:
+            context.symptom_entity_uid = str(entity.get("entity_uid") or "")
+            context.record("graph_context_created")
+            try:
+                subgraph = graph_candidates(entity, self._graph_call)
+            except Exception as exc:
+                return _local_only_result(exc)
+            context.vertices = list(subgraph.get("vertices") or [])
+            context.edges = list(subgraph.get("edges") or [])
+            # Query-owned graph reads carry the projection generation in the
+            # typed graph meta envelope. Persist it with the RCA context so a
+            # replay can identify the exact graph generation consumed. Older
+            # adapters may not emit meta; keep the value at zero rather than
+            # inventing provenance.
+            graph_meta = subgraph.get("meta") if isinstance(subgraph, Mapping) else None
+            if isinstance(graph_meta, Mapping):
+                try:
+                    context.graph_generation = max(0, int(graph_meta.get("graph_generation") or 0))
+                except (TypeError, ValueError):
+                    context.graph_generation = 0
+            context.record("rca_candidates_ranked")
+
         evidence = [dict(item) for item in request.evidence]
         if self.evidence_provider is not None:
             fetched = self.evidence_provider(request, context)
@@ -308,7 +342,7 @@ class RCAEngineV2:
         provider_failures = list(getattr(self.evidence_provider, "failures", []) or [])
         if provider_failures:
             context.partial = True
-        symptom_uid = str(entity.get("entity_uid") or "")
+        symptom_uid = str((entity or {}).get("entity_uid") or "")
         candidate_paths: dict[str, list[dict[str, Any]]] = {}
 
         def has_valid_path(paths_for_candidate: list[dict[str, Any]]) -> bool:
@@ -332,14 +366,31 @@ class RCAEngineV2:
         for candidate in candidate_rows(subgraph):
             uid = str(candidate.get("entity_uid") or "")
             candidate_evidence = evidence_for_candidate(evidence, uid)
-            breakdown = score_candidate(candidate, candidate_evidence, hops=candidate.get("hops", 1),
+            # 传播支持证据（G5 语义增强，非阈值放水）：拥有有效传播路径的候选，
+            # 其路径终点的症状层证据（如下游 critical 告警）是传播链终点的佐证，
+            # 按 RCA 语义计入该候选的异常维度（score_candidate 取 max），但
+            # **不参与独立类别计数**（independent_categories 只数自有证据），
+            # 防止单信号被夸大为多源佐证。无传播路径的候选（含症状自身）
+            # 不得借用症状层证据。
+            propagated = has_valid_path(candidate_paths.get(uid, []))
+            support = []
+            if propagated and uid != symptom_uid:
+                # 传播支持仅限症状层的 alert 类证据：告警在传播链终点的触发是
+                # 路径的佐证（anomaly 维度）。metric/trace/hardware 是症状自身
+                # 的观测维度，跨实体借用会让下游候选复制症状的全部分数
+                # （实测导致 multiple_probable_roots，违反 D-3 防夸大判定）。
+                support = [dict(e, propagated_support=True)
+                           for e in evidence_for_candidate(evidence, symptom_uid)
+                           if e.get("category") == "alert"]
+            scored_evidence = candidate_evidence + support
+            breakdown = score_candidate(candidate, scored_evidence, hops=candidate.get("hops", 1),
                                         symptom_time=request.symptom_time, window_start=request.window_start,
                                         window_end=request.window_end)
             ranked.append({"entity_uid": uid, "name": candidate.get("name", uid), "entity_type": candidate.get("entity_type", ""),
                            "score": breakdown.score, "score_breakdown": breakdown.to_dict(),
                            "evidence_categories": independent_categories(candidate_evidence),
-                           "causal_path_available": has_valid_path(candidate_paths.get(uid, [])),
-                           "evidence": candidate_evidence})
+                           "causal_path_available": propagated,
+                           "evidence": scored_evidence})
         ranked.sort(key=lambda row: (-row["score"], -row["evidence_categories"],
                                     -int(bool(row.get("causal_path_available"))), row["entity_uid"]))
         top = ranked[0] if ranked else None
@@ -356,6 +407,9 @@ class RCAEngineV2:
         context.propagation_paths = paths
         context.record("propagation_paths_built") if paths else None
         missing_evidence = [] if top and top["evidence_categories"] >= 2 else ["independent_evidence"]
+        if not entity:
+            # D16b：实体未解析 → 图谱关系类证据确定性缺失，必须如实申报
+            missing_evidence.append("graph_relation")
         if provider_failures:
             missing_evidence.append("evidence_source_unavailable")
         # A publishable RCA must explain how a distinct candidate propagated
@@ -367,10 +421,34 @@ class RCAEngineV2:
                        if isinstance(path, Mapping)
                        and len(path.get("vertex_uids") or []) >= 2
                        and len(path.get("edge_uids") or []) >= 1]
+        # 评分模型语义评审 D-1（scoring-semantic-review.md，选项 B 分档）：
+        # self-root（症状即根因）不适用传播路径门禁 —— topology 维度对
+        # 同体根因结构性缺失（hops=0）。分档判定（在 classify 之后覆写）：
+        # - 直接因果（change 或 kubernetes_event 绑定症状）+ 独立类别≥2
+        #   + change 存在 + temporal>0 + score≥0.5 → confirmed
+        # - 直接因果 + ≥1 类 → probable（降级不拒答）
+        # - 无直接因果 → 维持 insufficient（防"被观测到即自证为根因"）
+        self_root = bool(top) and top["entity_uid"] == symptom_uid
+        own_evidence = [e for e in (top.get("evidence", []) if top else [])
+                        if not e.get("propagated_support")]
+        direct_causal = any(e.get("category") in {"change", "kubernetes_event"}
+                            for e in own_evidence) if self_root else False
+        own_categories = independent_categories(own_evidence) if top else 0
         if status == "confirmed" and provider_failures:
             status = "insufficient_evidence"
         if status == "confirmed" and not valid_paths:
-            status = "insufficient_evidence"
+            if self_root and direct_causal and own_categories >= 2:
+                # D-1/B：症状即根因，直接因果证据充分 → 合法 confirmed
+                context.record("self_root_confirmed_direct_causal")
+                missing_evidence.append("propagation_path")  # 如实申报：无传播解释
+                missing_evidence = list(dict.fromkeys(missing_evidence))
+            else:
+                status = "insufficient_evidence"
+                missing_evidence.append("propagation_path")
+        elif self_root and direct_causal and status == "insufficient_evidence":
+            # D-1/B 降级档：直接因果存在 → probable 而非拒答
+            status = "probable"
+            missing_evidence = [m for m in missing_evidence if m != "independent_evidence"]
             missing_evidence.append("propagation_path")
         missing_evidence = list(dict.fromkeys(missing_evidence))
         payload = {"root_cause_status": status, "root_cause": top["entity_uid"] if top else None,

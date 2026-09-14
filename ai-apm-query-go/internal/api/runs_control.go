@@ -33,8 +33,7 @@ func (h *Handler) PublicCancelRun(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusNotFound, map[string]interface{}{"error": contract.ErrorCodeResourceNotFound})
 		return
 	}
-	if run.TenantID != auth.TenantID {
-		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": contract.ErrorCodeTenantAccessDenied})
+	if runScopeDenied(w, r, run.TenantID, run.PrimaryClusterID) {
 		return
 	}
 	var body struct {

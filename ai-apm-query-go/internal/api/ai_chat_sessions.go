@@ -147,7 +147,7 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_session_id"})
 		return
 	}
-	item, messages, err := (&store.AIChatSessionDAO{}).Get(sid, ctx.UserID, ctx.TenantID, ctx.ActiveClusterID)
+	item, messages, err := (&store.AIChatSessionDAO{}).GetWithAssistantScope(sid, ctx.UserID, ctx.TenantID, ctx.ActiveClusterID)
 	if err == sql.ErrNoRows {
 		respondJSON(w, http.StatusNotFound, map[string]any{"error": "session_not_found"})
 		return
@@ -167,9 +167,20 @@ func (h *Handler) GetChatSession(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, msg)
 	}
-	respondJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"session_id": item.SessionID, "intent": item.Intent, "service": item.Service, "messages": out,
-	})
+	}
+	if item.TimeFrom != "" && item.TimeTo != "" {
+		response["scope"] = map[string]any{
+			"cluster_id":      ctx.ActiveClusterID,
+			"resource_uid":    item.ResourceUID,
+			"from":            item.TimeFrom,
+			"to":              item.TimeTo,
+			"knowledge_scope": item.KnowledgeScope,
+			"frozen":          true,
+		}
+	}
+	respondJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {

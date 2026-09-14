@@ -9,7 +9,8 @@ import {
   type K8sActionName, type K8sActionProjection, type K8sActionExecuteResult,
 } from '../../api/k8s'
 import { PageHeader, Breadcrumb, Empty } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
+import RawDataPanel from '../../components/display/RawDataPanel'
 
 const { Text } = Typography
 
@@ -51,8 +52,8 @@ function actionParams(action: string): string[] {
 }
 
 const K8sActions: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
-  const scopeLabel = useMemo(() => currentClusterId === 'all' ? '全部集群' : `集群 ${currentClusterId}`, [currentClusterId])
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const scopeLabel = useMemo(() => activeClusterId ? `集群 ${activeClusterId}` : '请选择作用域', [activeClusterId])
 
   // ── 资源区 ──
   const [namespaces, setNamespaces] = useState<string[]>([])
@@ -81,6 +82,11 @@ const K8sActions: React.FC = () => {
 
   // 资源列表加载
   const loadList = () => {
+    if (!activeClusterId) {
+      setRows([])
+      setListLoading(false)
+      return
+    }
     setListLoading(true)
     setListErr('')
     const p: Promise<any> = resView === 'pods'
@@ -100,15 +106,16 @@ const K8sActions: React.FC = () => {
     }).finally(() => setListLoading(false))
   }
 
-  useEffect(() => { loadList() }, [resView, nsFilter, currentClusterId])
+  useEffect(() => { loadList() }, [resView, nsFilter, activeClusterId])
 
   // 命名空间列表
   useEffect(() => {
+    if (!activeClusterId) { setNamespaces([]); return }
     listK8sNamespaces().then((r) => {
       const nss = r.data?.namespaces
       if (Array.isArray(nss)) setNamespaces(nss.map((n) => n.name).filter(Boolean))
     }).catch(() => {})
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   // kind 切换时重置为第一个可用动作
   useEffect(() => {
@@ -135,7 +142,7 @@ const K8sActions: React.FC = () => {
   }
 
   const doPreflight = async () => {
-    if (!name || currentClusterId === 'all') return
+    if (!name || !activeClusterId) return
     setExecResult(null); setExecError(''); setActionRecord(null)
     setPreflightLoading(true)
     try {
@@ -143,7 +150,7 @@ const K8sActions: React.FC = () => {
       setProposalKey(key)
       const r = await createK8sActionProposal({
         idempotency_key: key,
-        cluster_id: currentClusterId,
+        cluster_id: activeClusterId,
         resource_type: kind,
         namespace,
         target_name: name,
@@ -291,7 +298,7 @@ const K8sActions: React.FC = () => {
             </div>
 
             <Space wrap>
-              <Button type="primary" onClick={doPreflight} loading={preflightLoading} disabled={!name || currentClusterId === 'all'}>
+              <Button type="primary" onClick={doPreflight} loading={preflightLoading} disabled={!name || !activeClusterId}>
                 ① 预检并提交审批
               </Button>
               <Button danger type="primary" onClick={requestExecute} loading={execLoading}
@@ -301,7 +308,7 @@ const K8sActions: React.FC = () => {
               <Button size="small" onClick={resetPreflight}>清空</Button>
             </Space>
 
-            {currentClusterId === 'all' && (
+            {!activeClusterId && (
               <div style={{ marginTop: 12, color: 'var(--warning)', fontSize: 12 }}>
                 请先在全局导航选择一个具体集群，再创建 K8s Canonical Action。
               </div>
@@ -356,9 +363,7 @@ const K8sActions: React.FC = () => {
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
           目标：{kind}/{name}{namespace ? ` · ${namespace}` : ''}
         </div>
-        <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, whiteSpace: 'pre-wrap', background: 'var(--surface-2)', padding: 10, borderRadius: 6 }}>
-          {JSON.stringify({ action_id: actionRecord?.action_id, action_hash: actionRecord?.action_hash, params: actionRecord?.params }, null, 2)}
-        </pre>
+        <RawDataPanel title="查看 Canonical Action 载荷" data={{ action_id: actionRecord?.action_id, action_hash: actionRecord?.action_hash, params: actionRecord?.params }} />
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warning)' }}>该动作已通过 Canonical Action 审批，确认后将进入执行器；执行器当前配置为 disabled。</div>
       </Modal>
     </div>

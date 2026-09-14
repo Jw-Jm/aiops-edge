@@ -1,0 +1,960 @@
+id: 1
+event: run_event
+data: {"event_id":"af5daa21-4af0-55af-b56d-c726f416a620","event_type":"rca.v2","payload":{"type":"rca.v2","run_id":"ec91e79d-9f66-4f78-96a6-7f186ca43c34","status":"insufficient_evidence","evidence":[],"confidence":0.0,"event_type":"rca.v2","root_cause":null,"root_score":0.0,"window_end":"2026-09-13T15:52:01.354000Z","explanation":"根因状态：insufficient_evidence；候选：未确认根因。证据类别数：0。","graph_stale":true,"symptom_time":"2026-09-13T15:52:01.354000Z","window_start":"2026-09-13T15:22:01.354000Z","graph_context":{"edges":[],"stale":true,"events":["graph_context_created"],"run_id":"ec91e79d-9f66-4f78-96a6-7f186ca43c34","partial":true,"vertices":[],"tenant_id":"7ed01afc-cc79-4ecd-8767-a2befa6168ad","window_end":"2026-09-13T15:52:01.354000Z","snapshot_at":"2026-09-13T15:52:01.611149+00:00","symptom_time":"2026-09-13T15:52:01.354000Z","window_start":"2026-09-13T15:22:01.354000Z","warning_codes":["GRAPH_UNAVAILABLE"],"context_version":2,"contract_version":"graph-dto-v1","graph_generation":0,"propagation_paths":[],"primary_cluster_id":"91771a6e-9c2d-11f1-8271-bea176fe9f9f","symptom_entity_uid":"","graph_schema_version":2},"graph_partial":true,"policy_digest":"ec25d1c07397f83feb905b88133a699d02e3aceae4a25e708c648f8d9557223d","contradictions":[],"graph_enhanced":false,"policy_version":"v1","time_range_end":"2026-09-13T15:52:01.354000Z","candidate_roots":[],"context_evidence":[],"missing_evidence":["graph_relation"],"propagation_path":[],"root_cause_scope":"local_only","time_range_start":"2026-09-13T15:22:01.354000Z","propagation_paths":[],"root_cause_status":"insufficient_evidence","graph_warning_codes":["GRAPH_UNAVAILABLE"],"subgraph_node_count":0,"deterministic_root_score":0.0},"sequence":1}
+
+id: 2
+event: run_event
+data: {"event_id":"e5ae946f-ea12-5102-9b00-49b58bbe3a36","event_type":"run.completed","payload":{"rca":{"run_id":"ec91e79d-9f66-4f78-96a6-7f186ca43c34","status":"insufficient_evidence","evidence":[],"confidence":0.0,"root_cause":null,"root_score":0.0,"window_end":"2026-09-13T15:52:01.354000Z","explanation":"根因状态：insufficient_evidence；候选：未确认根因。证据类别数：0。","symptom_time":"2026-09-13T15:52:01.354000Z","window_start":"2026-09-13T15:22:01.354000Z","graph_context":{"edges":[],"stale":true,"events":["graph_context_created"],"run_id":"ec91e79d-9f66-4f78-96a6-7f186ca43c34","partial":true,"vertices":[],"tenant_id":"7ed01afc-cc79-4ecd-8767-a2befa6168ad","window_end":"2026-09-13T15:52:01.354000Z","snapshot_at":"2026-09-13T15:52:01.611149+00:00","symptom_time":"2026-09-13T15:52:01.354000Z","window_start":"2026-09-13T15:22:01.354000Z","warning_codes":["GRAPH_UNAVAILABLE"],"context_version":2,"contract_version":"graph-dto-v1","graph_generation":0,"propagation_paths":[],"primary_cluster_id":"91771a6e-9c2d-11f1-8271-bea176fe9f9f","symptom_entity_uid":"","graph_schema_version":2},"policy_digest":"ec25d1c07397f83feb905b88133a699d02e3aceae4a25e708c648f8d9557223d","contradictions":[],"graph_enhanced":false,"policy_version":"v1","time_range_end":"2026-09-13T15:52:01.354000Z","candidate_roots":[],"context_evidence":[],"missing_evidence":["graph_relation"],"propagation_path":[],"root_cause_scope":"local_only","time_range_start":"2026-09-13T15:22:01.354000Z","propagation_paths":[],"root_cause_status":"insufficient_evidence","subgraph_node_count":0,"deterministic_root_score":0.0},"events":1,"status":"partial","error_code":"GRAPH_UNAVAILABLE","investigation_summary":{"causal_chain":[],"evidence_ids":[],"warning_codes":[],"budget_summary":{"max_steps":0,"max_tools":0,"consumed_steps":0,"consumed_tools":0},"root_cause_uid":null,"schema_version":1,"missing_evidence":["graph_relation"],"termination_reason":"source_unavailable"}},"sequence":2}
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+
+: ping
+

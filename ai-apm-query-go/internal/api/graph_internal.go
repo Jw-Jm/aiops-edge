@@ -78,7 +78,9 @@ func (h *Handler) resolveGraphEntity(ctx context.Context, scope graphpkg.GraphSc
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, graphpkgError("GRAPH_INVALID_ARGUMENT", "entity_uid or name is required")
 	}
-	items, err := h.searchGraphAliases(ctx, scope, req.EntityType, req.Name, 20)
+	// 内部精确解析不是“默认图谱搜索”：调用方显式给出 entity_type/name，
+	// 因此不套用 operations profile，保持兼容类型仍可被调查链解析。
+	items, err := h.searchGraphAliases(ctx, scope, req.EntityType, "", req.Name, 20)
 	if err != nil {
 		return nil, err
 	}

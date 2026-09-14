@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Drawer, Spin, Table, Tag, Select, Space, Button, Input } from 'antd'
 import { getTraces, getTraceDetail, getTraceContext, getServices } from '../../api/client'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
 import ErrorState from '../../components/ErrorState'
 
@@ -85,7 +85,8 @@ export function buildSpanTree(spans: any[]): { roots: SpanNode[]; maxMs: number 
 }
 
 const Trace: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
+  const activeScope = useScopeStore((s) => s.active ?? { tenantId: '', clusterId: activeClusterId, timeRange: { mode: 'relative' as const, minutes: 60 } })
   const [data, setData] = useState<TraceRow[]>([])
   const [loading, setLoading] = useState(true)
   const [detail, setDetail] = useState<any>(null)
@@ -102,14 +103,19 @@ const Trace: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const PAGE_SIZE = 50
+  const scopeNamespace = activeScope.resource?.domain === 'kubernetes' ? activeScope.resource.namespace : undefined
+  const scopeHours = activeScope.timeRange.mode === 'relative' ? Math.max(1, Math.ceil(activeScope.timeRange.minutes / 60)) : rangeHours
 
   // B5 修复：服务端分页（后端支持 limit/offset），翻页不再失效；
   // 参数名对齐后端（service 而非 service_name），并携带时间范围 hours。
-  const load = (s = svc, q = search, h = rangeHours, append = false) => {
+  const load = (s = svc, q = search, h = scopeHours, append = false) => {
+    if (!activeClusterId) {
+      setData([]); setLoading(false); setHasMore(false); return
+    }
     setLoading(true)
     if (!append) setError(null)
     const off = append ? offset : 0
-    getTraces({ limit: PAGE_SIZE, offset: off, service: s || undefined, search: q || undefined, hours: h })
+    getTraces({ limit: PAGE_SIZE, offset: off, service: s || undefined, search: q || undefined, hours: h, namespace: scopeNamespace || undefined })
       .then((r) => {
         const rows = Array.isArray(r.data) ? r.data : r.data?.data || []
         setData((prev) => (append ? [...prev, ...rows] : rows))
@@ -123,14 +129,17 @@ const Trace: React.FC = () => {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [currentClusterId])
+  useEffect(() => {
+    setRangeHours(scopeHours)
+    load(svc, search, scopeHours)
+  }, [activeClusterId, scopeNamespace, activeScope.timeRange.mode, activeScope.timeRange.mode === 'relative' ? activeScope.timeRange.minutes : activeScope.timeRange.start, activeScope.timeRange.mode === 'absolute' ? activeScope.timeRange.end : ''])
 
   // B5: 服务下拉选项（复用 /services 活跃服务列表）
   useEffect(() => {
     getServices().then((r) => {
       setServices(extractServiceNames(r.data))
     }).catch(() => setServices([]))
-  }, [currentClusterId])
+  }, [activeClusterId])
 
   const openDetail = (id: string) => {
     setSelectedTraceId(id)

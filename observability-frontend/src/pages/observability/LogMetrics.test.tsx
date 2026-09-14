@@ -2,17 +2,18 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import LogMetrics from './LogMetrics'
-import { aggregateLogs, queryLogs } from '../../api/client'
+import { aggregateLogs, getServices, queryLogs } from '../../api/client'
 
-vi.mock('../../api/client', () => ({ queryLogs: vi.fn(), aggregateLogs: vi.fn() }))
-vi.mock('../../store/uiStore', () => ({
-  useUIStore: (selector: (state: { currentClusterId: string }) => unknown) => selector({ currentClusterId: 'all' }),
+vi.mock('../../api/client', () => ({ queryLogs: vi.fn(), aggregateLogs: vi.fn(), getServices: vi.fn() }))
+vi.mock('../../store/scopeStore', () => ({
+  useScopeStore: (selector: (state: { authScope: { activeClusterId: string } | null }) => unknown) => selector({ authScope: { activeClusterId: 'cluster-1' } }),
 }))
 
 describe('LogMetrics supported source projection', () => {
   beforeEach(() => {
     vi.mocked(queryLogs).mockResolvedValue({ data: { data: [], count: 0, source: 'victorialogs' } } as never)
     vi.mocked(aggregateLogs).mockResolvedValue({ data: { services: [] } } as never)
+    vi.mocked(getServices).mockResolvedValue({ data: [] } as never)
   })
 
   it('uses VictoriaLogs and does not expose the empty ClickHouse raw-log option', async () => {

@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react'
-import { Badge, Button, Card, Col, Collapse, Descriptions, Row, Space, Steps, Tag, Typography } from 'antd'
+import { Alert, Badge, Button, Card, Col, Collapse, Descriptions, Drawer, Row, Space, Spin, Steps, Tag, Typography } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { getRun, listRunEvidences, listRunTools, RunTool, streamRunEvents } from '../../api/client'
+import { getRun, listRunEvidences, listRunTools, RunEvidence, RunTool, streamRunEvents } from '../../api/client'
 import { getRunGraphContext } from '../../api/knowledgeGraph'
 import { PageHeader } from '../../components/ui/PageKit'
 import GraphContextPanel from '../../components/graph/GraphContextPanel'
+import InvestigationShell, { ImpactPane } from './InvestigationShell'
+import { toInvestigationViewModel, type InvestigationViewModel } from '../../features/investigation/model'
+import ScopeBar from '../../features/scope/ScopeBar'
 
 const { Text } = Typography
 
@@ -18,7 +21,7 @@ interface InvestigationDetail {
   intent: string
   status: string
   plan: { step: string; tool: string; status: string }[]
-  evidence: { id: string; type: string; source: string; reliability: number | string; fact: string }[]
+  evidence: { id: string; type: string; source: string; reliability: number | string | null; fact: string; observedAt: string; quality: string; supports: string[]; contradicts: string[] }[]
   hypothesis: { id: string; claim: string; support: number; contradictions: string[]; missing: string[] }[]
   rootCause: string
   confidence: number
@@ -38,6 +41,34 @@ const EMPTY_DETAIL: InvestigationDetail = {
   action: { status: 'created', risk: 'R0', approver: null, execution: null, verification: null },
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : []
+}
+
+/** Normalize the query-api Evidence projection without inventing facts. */
+function normalizeEvidence(rawEvidence: RunEvidence) {
+  const raw = rawEvidence as unknown as Record<string, unknown>
+  const metadata = raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+    ? raw.metadata as Record<string, unknown>
+    : {}
+  const reliabilityValue = raw.reliability ?? raw.source_reliability ?? metadata.reliability ?? metadata.source_reliability
+  const reliability = typeof reliabilityValue === 'number'
+    ? reliabilityValue
+    : typeof reliabilityValue === 'string' && Number.isFinite(Number(reliabilityValue)) ? Number(reliabilityValue) : null
+  const quality = String(raw.quality ?? metadata.quality ?? metadata.result_quality ?? 'unknown')
+  return {
+    id: String(raw.evidence_id ?? raw.id ?? ''),
+    type: String(raw.evidence_type ?? raw.type ?? raw.layer ?? 'unknown'),
+    source: String(raw.source ?? raw.source_ref ?? 'unknown'),
+    reliability,
+    fact: String(raw.fact ?? raw.summary ?? raw.finding ?? ''),
+    observedAt: String(raw.observed_at ?? raw.collected_at ?? raw.created_at ?? ''),
+    quality,
+    supports: stringArray(raw.supports ?? metadata.supports ?? metadata.supporting_evidence),
+    contradicts: stringArray(raw.contradicts ?? metadata.contradicts ?? metadata.contradicting_evidence),
+  }
+}
+
 const InvestigationDetailView: React.FC = () => {
   const { runId } = useParams<{ runId: string }>()
   const navigate = useNavigate()
@@ -46,19 +77,39 @@ const InvestigationDetailView: React.FC = () => {
   const [tools, setTools] = useState<RunTool[]>([])
   const [graphContext, setGraphContext] = useState<Record<string, unknown> | null>(null)
   const [lastEvent, setLastEvent] = useState('')
+  const [viewModel, setViewModel] = useState<InvestigationViewModel | null>(null)
+  const [impactDrawerOpen, setImpactDrawerOpen] = useState(false)
+  const [compactInvestigation, setCompactInvestigation] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [dataWarning, setDataWarning] = useState('')
+  const [reloadToken, setReloadToken] = useState(0)
+
+  useEffect(() => {
+    const update = () => setCompactInvestigation(window.innerWidth < 1280)
+    update(); window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
 
   useEffect(() => {
     // P12：接真实 Run 详情 GET /api/v1/ai/runs/:id；无数据/API 失败保持空态（不伪造 DEMO，不自动创建 Run）
-    if (!runId) return
+    if (!runId) {
+      setLoadError('缺少调查 Run 标识')
+      setLoading(false)
+      return
+    }
     let cancelled = false
     const controller = new AbortController()
+    setLoading(true)
+    setLoadError('')
+    setDataWarning('')
     // C2-4：拉取真实 ToolRun（只读工具执行事实）。
     listRunTools(runId)
       .then((resp) => { if (!cancelled && Array.isArray(resp.data?.tools)) setTools(resp.data.tools) })
-      .catch(() => { if (!cancelled) setTools([]) })
+      .catch(() => { if (!cancelled) { setTools([]); setDataWarning('ToolRun 数据暂时不可用，已保留调查快照。') } })
     getRunGraphContext(runId)
       .then((resp) => { if (!cancelled) setGraphContext(resp.data ?? null) })
-      .catch(() => { if (!cancelled) setGraphContext(null) })
+      .catch(() => { if (!cancelled) { setGraphContext(null); setDataWarning('影响面数据暂时不可用，已保留调查快照。') } })
     getRun(runId)
       .then(async (resp) => {
         const r = resp.data?.run
@@ -73,15 +124,9 @@ const InvestigationDetailView: React.FC = () => {
           if (!cancelled && Array.isArray(evResp.data?.evidences)) {
             // 后端条目为 RCA evidence_chain 原始 dict + evidence_id：
             // {layer, finding, ...} → 前端 {id, type, source, reliability, fact}
-            evidence = evResp.data.evidences.map((e) => ({
-              id: String(e.evidence_id ?? e.id ?? ''),
-              type: String(e.type ?? e.layer ?? 'unknown'),
-              source: String(e.source ?? 'rca'),
-              reliability: (e.reliability as number | string) ?? '-',
-              fact: String(e.fact ?? e.finding ?? ''),
-            }))
+            evidence = evResp.data.evidences.map(normalizeEvidence)
           }
-        } catch { /* 拉取失败 → 空态 */ }
+        } catch { if (!cancelled) setDataWarning('Evidence 数据暂时不可用，已保留调查快照。') }
         if (cancelled) return
         const planSteps = Array.isArray(r.plan_steps) ? r.plan_steps : []
         const actions = Array.isArray(r.actions) ? r.actions : []
@@ -92,6 +137,20 @@ const InvestigationDetailView: React.FC = () => {
           ? approvals.filter((a: any) => a.action_id === latestAction.action_id).slice(-1)[0]
           : undefined
         const latestVerification = r.latest_verification ?? (Array.isArray(r.verifications) ? r.verifications[r.verifications.length - 1] : undefined)
+        setViewModel(toInvestigationViewModel({
+          run_id: r.run_id, tenant_id: r.tenant_id ?? undefined, primary_cluster_id: r.primary_cluster_id ?? undefined,
+          target_resource_id: r.target_resource_id, target_resource_type: r.target_type, intent: r.intent, status: r.status,
+          root_cause: r.root_cause, confidence: r.confidence, created_at: r.created_at,
+          environment: r.environment, namespace: r.namespace,
+          // The API names these fields time_range_*; map them into the frozen
+          // snapshot model without deriving a window from status or timestamps.
+          query_window_start: r.time_range_start, query_window_end: r.time_range_end,
+          investigation_summary: r.investigation_summary ?? null,
+          partial: r.partial === true, stale: r.stale === true,
+          evidence: evidence.map((item) => ({ evidence_id: item.id, type: item.type, source: item.source, fact: item.fact, observed_at: item.observedAt, source_reliability: typeof item.reliability === 'number' ? item.reliability : null, quality: item.quality, supports: item.supports, contradicts: item.contradicts })),
+          hypotheses: hypotheses.map((h: any) => ({ hypothesis_id: String(h.hypothesis_id ?? ''), content: String(h.content ?? ''), confidence: Number(h.confidence ?? 0), missing_evidence: h.missing_evidence ?? [], contradicting_evidence: h.contradicting_evidence ?? [] })),
+          action: latestAction ? { status: String(latestAction.status ?? 'proposed'), risk: String(latestAction.authoritative_risk ?? 'unknown'), execution: latestAction.execution_status ?? null, verification: latestVerification?.status ?? null } : undefined,
+        }))
         setDetail({
           runId: r.run_id,
           scope: {
@@ -122,7 +181,13 @@ const InvestigationDetailView: React.FC = () => {
           } : { status: 'created', risk: 'R0', approver: null, execution: null, verification: null },
         })
       })
-      .catch(() => { if (!cancelled) setDetail(EMPTY_DETAIL) })
+      .catch((error: any) => {
+        if (!cancelled) {
+          setDetail(EMPTY_DETAIL)
+          setViewModel(null)
+          setLoadError(error?.response?.data?.error || error?.message || '调查 Run 读取失败')
+        }
+      })
     streamRunEvents(runId, (event) => {
       if (cancelled) return
       const type = event.event_type ?? event.error ?? ''
@@ -131,7 +196,7 @@ const InvestigationDetailView: React.FC = () => {
       if (payload?.status) setDetail((previous) => ({ ...previous, status: payload.status ?? previous.status }))
     }, controller.signal).catch(() => { /* details remain the durable source */ })
     return () => { cancelled = true; controller.abort() }
-  }, [runId])
+  }, [runId, reloadToken])
 
   const d = detail
 
@@ -142,7 +207,17 @@ const InvestigationDetailView: React.FC = () => {
         desc={`Run ${runId ?? d.runId}`}
         actions={<Button onClick={() => window.history.back()}>返回</Button>}
       />
-      <Row gutter={16}>
+      {loadError && <Alert type="error" showIcon role="alert" message="调查数据读取失败" description={loadError} action={<Button size="small" onClick={() => setReloadToken((value) => value + 1)}>重试</Button>} style={{ marginBottom: 12 }} />}
+      {!loadError && dataWarning && <Alert type="warning" showIcon message="调查部分数据不可用" description={dataWarning} action={<Button size="small" onClick={() => setReloadToken((value) => value + 1)}>重新读取</Button>} style={{ marginBottom: 12 }} />}
+      {loading && !viewModel && <Card><div style={{ textAlign: 'center', padding: 48 }}><Spin tip="正在读取调查快照…" /></div></Card>}
+      {viewModel && <>
+        {viewModel.scope.timeRange && <ScopeBar snapshot={{ mode: 'snapshot', runId: viewModel.runId, tenantId: viewModel.scope.tenantId, clusterId: viewModel.scope.clusterId, resource: viewModel.scope.resource, timeRange: viewModel.scope.timeRange }} />}
+        {compactInvestigation && <Button style={{ margin: '12px 0' }} onClick={() => setImpactDrawerOpen(true)}>查看影响面</Button>}
+        <InvestigationShell model={viewModel} graphContext={graphContext} tools={tools} onOpenAction={() => navigate('/actions')} onEvidenceClick={(id) => navigate(`/investigation/${viewModel.runId}/evidence/${encodeURIComponent(id)}`)} />
+        <Card size="small" style={{ marginTop: 16 }} aria-live="polite"><Text strong>执行事件</Text><div style={{ marginTop: 6 }}>{lastEvent || <Text type="secondary">暂无事件</Text>}</div></Card>
+        <Drawer title="影响面" open={impactDrawerOpen} onClose={() => setImpactDrawerOpen(false)} width={320}><ImpactPane model={viewModel} graphContext={graphContext} /></Drawer>
+      </>}
+      <Row gutter={16} style={{ display: 'none' }} aria-hidden="true">
         <Col span={24}>
           <Card title="Scope 与 Intent" size="small">
             <Descriptions size="small" column={3}>

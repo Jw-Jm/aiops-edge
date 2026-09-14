@@ -402,6 +402,9 @@ queryApi:
   # credential_ref/identity into the validation values at deployment time.
   # Production keeps this empty and supplies ADMIN_KUBECONFIG externally.
   localCredentialSecretName: ""
+  # Explicit allow-list of management-plane Secrets query-api may read for
+  # canonical managed-cluster registration. Empty is fail-closed.
+  credentialSecretNames: []
   # ClickHouse headless service（生产多副本时指向所有 pod；不用 per-pod clickhouse-0）
   clickhouseHost: "clickhouse.observability.svc.cluster.local"
   clickhousePort: "8123"

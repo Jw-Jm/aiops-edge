@@ -11,6 +11,7 @@
 | graph projection | graph projector | 版本化 outbox projection | Graph API（只读） |
 | LLM provider secrets | egress proxy | Secret/registry 管理 | Proxy 内部 |
 | Kubernetes credentials | credential broker | pre-registered profile | Action Executor 短时 lease |
+| Kubernetes 库存投影（未实施） | ADR-0002：暂缓；如采纳则 collector 只读上传、query-api control plane 接收 | 暂缓（不建表、不建 collector） | 暂缓 |
 
 任何服务新增表、直连 ClickHouse/MySQL/Kubernetes 或建立本地权威状态，都必须先更新本表、
 架构 ADR 和 contract 测试；否则视为架构违规。

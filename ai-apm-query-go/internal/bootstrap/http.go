@@ -17,9 +17,9 @@ func newHTTPServer(handler *api.Handler, port int) *http.Server {
 	authHandler := api.AuthMiddleware(corsHandler)
 	protected := internalMTLS(authHandler)
 	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
-		Handler:           protected,
-		ReadTimeout:       30 * time.Second,
+		Addr:        fmt.Sprintf(":%d", port),
+		Handler:     protected,
+		ReadTimeout: 30 * time.Second,
 		// 慢客户端写超时兜底（审核 R4）：WriteTimeout=0 时慢连接可无限占用。
 		// SSE 是唯一长写响应，sse_proxy.go 内用 ResponseController 续期 deadline。
 		WriteTimeout:      5 * time.Minute,
@@ -34,6 +34,8 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 
 	mux.HandleFunc("/api/v1/auth/login", handler.Login)
 	mux.HandleFunc("/api/v1/auth/change-password", handler.ChangePassword)
+	// PF-UI-004/LOGIC-001：退出登录吊销服务端会话（auth_sessions），持 cookie 即可调用。
+	mux.HandleFunc("/api/v1/auth/logout", handler.Logout)
 	mux.HandleFunc("/api/v1/login", handler.Login)
 
 	mux.HandleFunc("/api/v1/users", handler.RequireRole("admin", handler.UserRouter))
@@ -51,13 +53,35 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	mux.HandleFunc("/api/v1/devices", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
 	mux.HandleFunc("/api/v1/devices/", handler.RequireRoleForWrite("admin", handler.DeviceRouter))
 
-	mux.HandleFunc("/api/v1/clusters", handler.ClusterList)
+	// GET remains a tenant-scoped read; POST is checked against the authoritative
+	// MySQL admin role before the canonical registration boundary is reached.
+	mux.HandleFunc("/api/v1/clusters", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
 	mux.HandleFunc("/api/v1/clusters/", handler.RequireRoleForWrite("admin", handler.ClusterRouter))
+	mux.HandleFunc("/api/v1/clusters/{clusterId}/overview", handler.ClusterOverview)
+	// 集群页运行时事实：Pod 就绪/阶段分布/重启（真实 core/v1），
+	// 网络与存储指标未接入时显式 not_connected（设计规范 §6.3）。
+	mux.HandleFunc("/api/v1/clusters/{clusterId}/runtime", handler.ClusterRuntime)
+	mux.HandleFunc("/api/v1/clusters/{clusterId}/knowledge", handler.OperationsKnowledgeRouter)
+	mux.HandleFunc("/api/v1/clusters/{clusterId}/knowledge/", handler.OperationsKnowledgeRouter)
+	mux.HandleFunc("/api/v1/platform/overview", handler.PlatformOverview)
+	mux.HandleFunc("/api/v1/platform/clusters", handler.PlatformClusters)
+
+	// 总览/集群：集群口径容量事实（设计规范 §6.2 / §6.3）。只返回聚合值，
+	// 不暴露节点名单；未接入指标通道的集群显式 not_connected。
+	mux.HandleFunc("/api/v1/platform/capacity", handler.PlatformCapacity)
+
+	// 全链路监控：云平台路径目录与所选路径详情（设计规范 §6.4 / §7.3）。
+	// 所有面板绑定同一 selectedPathId；路径由真实事件事实分类而来，不含业务示例。
+	mux.HandleFunc("/api/v1/observability/paths", handler.ObservabilityPaths)
+	mux.HandleFunc("/api/v1/observability/paths/", handler.ObservabilityPathDetail)
 
 	mux.HandleFunc("/livez", health.Livez)
 	mux.HandleFunc("/readyz", health.Readyz)
 	mux.HandleFunc("/health", health.Livez)
 	mux.HandleFunc("/api/v1/resources/resolve", handler.ResolveResource)
+	mux.HandleFunc("/api/v1/resources/catalog", handler.ResourceCatalog)
+	mux.HandleFunc("/api/v1/resources/summary", handler.ResourceSummary)
+	mux.HandleFunc("/api/v1/resources/detail", handler.ResourceDetail)
 
 	mux.HandleFunc("/api/v1/services/overview", handler.ServicePanoramaOverview)
 	mux.HandleFunc("/api/v1/services/map", handler.ServicePanoramaMap)
@@ -156,6 +180,13 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	// Final report is a Query/MySQL-owned transcript export.  It must not proxy
 	// the legacy orchestrator SQLite endpoint (retired in production).
 	mux.HandleFunc("/api/v1/ai/final_report", handler.GenerateChatReport)
+	mux.HandleFunc("/api/v1/ops/reports", handler.ReportsPublic)
+	// 巡检报告生成：聚合真实事实并写入 tenant/cluster 隔离的 reports 表（§6.7）。
+	// 必须注册在 /ops/reports/ 前缀之前以确保最具体模式生效。
+	mux.HandleFunc("/api/v1/ops/reports/inspection", handler.InspectReportGenerate)
+	// AI 运维报告生成：从已完成/终止 Run 聚合真实事实写入 reports 表（§6 报告）。
+	mux.HandleFunc("/api/v1/ops/reports/ai-operations", handler.GenerateAIOperationsReport)
+	mux.HandleFunc("/api/v1/ops/reports/", handler.ReportsPublicRouter)
 	mux.HandleFunc("/api/v1/ai/runs/", handler.ProxyAI)
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/events", handler.StreamRunEvents)
 	mux.HandleFunc("/api/v1/ai/runs/{runID}/graph-context", handler.RunGraphContext)
@@ -222,6 +253,11 @@ func buildMux(handler *api.Handler) *http.ServeMux {
 	mux.HandleFunc("/api/v1/alerts/events", handler.AlertEvents)
 	mux.HandleFunc("/api/v1/alerts/events/", handler.AlertEventRouter)
 	mux.HandleFunc("/api/v1/alerts/aggregation", handler.AlertAggregation)
+	// Task 10：告警 → 调查的受控关联（策略读取/写入 + 显式接受草稿或发起调查）。
+	mux.HandleFunc("/api/v1/system/alert-investigation-policy", handler.AlertInvestigationPolicyRouter)
+	// /api/v1/alerts/ 兜底只承载 /alerts/{event_id}/investigation；更具体的
+	// rules/events/silences 子树仍由各自已注册的 handler 命中。
+	mux.HandleFunc("/api/v1/alerts/", handler.AlertInvestigationSubrouter)
 	mux.HandleFunc("/api/v1/alerts/silences", handler.AlertSilences)
 	mux.HandleFunc("/api/v1/alerts/silences/", handler.AlertSilenceByID)
 	mux.HandleFunc("/api/v1/slo", handler.SLORouter)

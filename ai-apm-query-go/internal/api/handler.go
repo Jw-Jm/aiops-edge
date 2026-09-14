@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -163,7 +164,9 @@ type Handler struct {
 
 	// kubeRepo 是 kubernetes 资源域 domain repository（P6.2d），包装既有 K8s Access Boundary。
 	// handler 不直接承担 API URL/资源查询/错误映射。
-	kubeRepo *query.KubernetesRepository
+	kubeRepo         *query.KubernetesRepository
+	clusterRegistrar *k8sboundary.ClusterRegistrar
+	clusterClients   *k8sboundary.ClusterClientManager
 
 	// changeRepo 是 changes 资源域 domain repository（P6.2d mandatory gap）。
 	// 按冻结 SoT（ClickHouse change_records）查询，不经 ProxyAI。
@@ -255,17 +258,17 @@ func NewHandler(chHost string, chPort int) *Handler {
 	h.topoRepo = query.NewTopologyRepository(&h.repo)
 	h.resourceRepo = query.NewResourceRepository(&h.repo)
 	// P6.2d：Kubernetes 走既有 K8s Access Boundary（k8sboundary），复用而非重建底层访问。
-	manager := k8sboundary.NewClusterClientManager(
-		k8sboundary.NewSecretResolver(os.Getenv("ADMIN_KUBECONFIG")),
-		k8sboundary.NewKubectlIdentityReader(),
-		&store.ClusterDAO{},
-	)
+	clusterCredentials := k8sboundary.NewSecretResolver(os.Getenv("ADMIN_KUBECONFIG"))
+	clusterIdentities := k8sboundary.NewKubectlIdentityReader()
+	manager := k8sboundary.NewClusterClientManager(clusterCredentials, clusterIdentities, &store.ClusterDAO{})
+	h.clusterClients = manager
+	h.clusterRegistrar = k8sboundary.NewClusterRegistrar(clusterCredentials, clusterIdentities, &store.ClusterDAO{})
 	h.kubeRepo = query.NewKubernetesRepository(boundaryAccessor{manager: manager})
 	h.actionPreflight = NewActionPreflightService(queryActionTargetResolver{repo: h.kubeRepo})
 	h.changeRepo = query.NewChangeRepository(&h.repo)
 	// knowledge 后端（Chroma vector index + MinIO Knowledge Object）由 environment 注入；
 	// 未配置时 repository 返回 unavailable（fail-closed），绝不回退 ProxyAI。
-	h.knowledgeRepo = query.NewKnowledgeRepository(newKnowledgeBackendFromEnv())
+	h.knowledgeRepo = query.NewKnowledgeRepositoryWithAuthority(newKnowledgeBackendFromEnv(), mysqlKnowledgeAuthority{dao: &store.OperationsKnowledgeDAO{}})
 	h.graphRepo, h.graphInitErr = graphpkg.NewRepositoryFromEnv()
 	h.graphAliasDAO = &store.GraphEntityAliasDAO{}
 	h.runGraphDAO = &store.AIRunGraphContextDAO{}
@@ -2001,6 +2004,21 @@ const maxVLLimit = 10000
 // maxVLResponse 限制 VictoriaLogs 代理响应体上限（20MB）。
 const maxVLResponse = 20 << 20
 
+// vlScopeTokenRe 匹配查询串中由调用方自报的 tenant/cluster 过滤项。
+// 这些值不是可信授权依据，必须先剥离再由服务端按已验证身份重新注入。
+var vlScopeTokenRe = regexp.MustCompile(`(?i)(?:^|\s)(tenant_id|cluster_id)\s*:\s*(?:"[^"]*"|[^\s]+)`)
+
+// enforceLogScope 剥离调用方自报的 scope 过滤项，并注入服务端权威 scope。
+// 这是跨租户读取的第一道防线：客户端提交的 tenant/cluster 只是请求参数。
+func enforceLogScope(query, tenantID, clusterID string) string {
+	stripped := vlScopeTokenRe.ReplaceAllString(query, " ")
+	stripped = strings.Join(strings.Fields(stripped), " ")
+	if stripped == "" {
+		stripped = "_time:5m"
+	}
+	return fmt.Sprintf("%s tenant_id:%q cluster_id:%q", stripped, tenantID, clusterID)
+}
+
 // ProxyVictoriaLogs handles GET/POST /api/v1/logs/victorialogs
 func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 	// POST: insert logs
@@ -2009,10 +2027,28 @@ func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// GET: query logs
-	query := r.URL.Query().Get("query")
-	if query == "" {
-		query = "_time:5m" // last 5 minutes
+	// 原始日志查询必须由服务端推导 scope：缺少 canononical tenant/cluster 时
+	// fail-closed，绝不允许浏览器用自报标签决定可读范围（曾存在跨租户读取风险）。
+	auth, ok := requestAuthorizationContext(r)
+	if !ok {
+		var authErr error
+		auth, authErr = RequestAuthorizationContext(r)
+		if authErr != nil {
+			respondAuthorizationError(w, authErr)
+			return
+		}
 	}
+	if auth.TenantID == "" {
+		respondJSON(w, http.StatusForbidden, map[string]interface{}{"error": "permission_denied"})
+		return
+	}
+	// 只使用服务端从已验证会话推导的活动集群；不接受浏览器用查询参数指定 scope。
+	clusterID := auth.ActiveClusterID
+	if clusterID == "" {
+		respondJSON(w, http.StatusConflict, map[string]interface{}{"error": "SCOPE_SELECTION_REQUIRED"})
+		return
+	}
+	query := enforceLogScope(r.URL.Query().Get("query"), auth.TenantID, clusterID)
 	limit := r.URL.Query().Get("limit")
 	if limit == "" {
 		limit = "50"
@@ -2026,8 +2062,10 @@ func (h *Handler) ProxyVictoriaLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 查询串由服务端注入 scope 后可能包含空格与引号，必须整体做 URL 编码，
+	// 否则上游会返回 400（此前依赖调用方预先编码，注入后失效）。
 	vlURL := fmt.Sprintf("http://victoria-logs.observability.svc.cluster.local:9428/select/logsql/query?query=%s&limit=%s",
-		query, limit)
+		url.QueryEscape(query), url.QueryEscape(limit))
 
 	req, _ := http.NewRequest("GET", vlURL, nil)
 	client := &http.Client{Timeout: 15 * time.Second}

@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import { Table, Segmented, Button, Space, Drawer, Spin } from 'antd'
+import { Alert, Table, Segmented, Button, Space, Drawer, Spin } from 'antd'
 import { useSearchParams } from 'react-router-dom'
 import { getAlertEvents, rcaAlertAnalysis, deleteAlertEvent } from '../../api/client'
 import { PageHeader, Breadcrumb, StatusBadge, Empty } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import { normalizeSeverity, SEVERITY_LABELS } from '../../lib/severity'
+import { formatStructuredValue } from '../../lib/structuredDisplay'
 
 interface AlertEvent { id: string | number; severity?: string; labels?: any; summary?: string; description?: string; service_name?: string; startsAt?: string; status?: string }
 
@@ -15,12 +16,13 @@ const sevTone = (s: string): 'crit' | 'warn' | 'info' => {
 }
 
 const AlertEvents: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const [searchParams] = useSearchParams()
   const [sev, setSev] = useState<string>('all')
   const [status, setStatus] = useState<string>('current') // 默认当前告警（firing/acknowledged），已解决事件不展示，避免历史累积干扰
   const [data, setData] = useState<AlertEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [detail, setDetail] = useState<AlertEvent | null>(null)
   const [rca, setRca] = useState('')
   const [rcaLoading, setRcaLoading] = useState(false)
@@ -30,16 +32,26 @@ const AlertEvents: React.FC = () => {
   const serviceFilter = searchParams.get('service') || ''
 
   const load = () => {
+    if (!activeClusterId) {
+      setData([])
+      setLoading(false)
+      setError('')
+      return
+    }
     setLoading(true)
+    setError('')
     const params: Record<string, unknown> = { limit: 200 }
     if (ruleFilter) params.rule = ruleFilter
     if (serviceFilter) params.service = serviceFilter
     getAlertEvents(params).then((r) => {
       const d = Array.isArray(r.data) ? r.data : r.data?.events || r.data?.data || []
       setData(d)
-    }).catch(() => setData([])).finally(() => setLoading(false))
+    }).catch((e) => {
+      setData([])
+      setError(e?.response?.data?.error || e?.message || '告警事件加载失败')
+    }).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [ruleFilter, serviceFilter, currentClusterId])
+  useEffect(() => { load() }, [ruleFilter, serviceFilter, activeClusterId])
 
   const severity = (e: AlertEvent) => e.severity || e.labels?.severity || e.labels?.level || 'warning'
   const eventStatus = (e: any) => e.status || e.state || (e.resolved_at ? 'resolved' : 'firing')
@@ -107,14 +119,14 @@ const AlertEvents: React.FC = () => {
       const impact = pick(['impact', 'affected', 'scope'])
       const sections: string[] = []
       if (typeof rootCause === 'string') sections.push('【可能根因】\n' + rootCause)
-      else if (rootCause) sections.push('【可能根因】\n' + JSON.stringify(rootCause))
+      else if (rootCause) sections.push('【可能根因】\n' + formatStructuredValue(rootCause))
       if (typeof reason === 'string') sections.push('\n【分析依据】\n' + reason)
-      else if (reason) sections.push('\n【分析依据】\n' + JSON.stringify(reason))
+      else if (reason) sections.push('\n【分析依据】\n' + formatStructuredValue(reason))
       if (typeof action === 'string') sections.push('\n【处置方案】\n' + action)
-      else if (action) sections.push('\n【处置方案】\n' + JSON.stringify(action))
+      else if (action) sections.push('\n【处置方案】\n' + formatStructuredValue(action))
       if (typeof impact === 'string') sections.push('\n【影响范围】\n' + impact)
       // 兜底：若有未解析的其余字段，补一行
-      if (sections.length === 0) return JSON.stringify(data, null, 2)
+      if (sections.length === 0) return formatStructuredValue(data)
       return sections.join('\n')
     }
     return raw
@@ -152,7 +164,7 @@ const AlertEvents: React.FC = () => {
       namespace: r.namespace || r.labels?.namespace || _infer_namespace(r) || '',
       count: r.count, last_timestamp: r.last_timestamp || r.first_timestamp || '',
     })
-      .then((res) => setRca(typeof res.data === 'string' ? res.data : JSON.stringify(res.data)))
+      .then((res) => setRca(typeof res.data === 'string' ? res.data : formatStructuredValue(res.data)))
       .catch((e) => setRca(`RCA 分析失败：${e?.response?.data?.error || e.message}`))
       .finally(() => setRcaLoading(false))
   }
@@ -165,6 +177,7 @@ const AlertEvents: React.FC = () => {
           <Segmented value={status} onChange={(v) => setStatus(v as string)} options={[{ label: '当前告警', value: 'current' }, { label: '历史告警', value: 'resolved' }, { label: '全部', value: 'all' }]} />
           <Segmented value={sev} onChange={(v) => setSev(v as string)} options={[{ label: '全部', value: 'all' }, { label: '严重', value: 'critical' }, { label: '警告', value: 'warning' }, { label: '信息', value: 'info' }]} />
         </Space>} />
+      {error && <Alert type="error" showIcon role="alert" message="告警事件读取失败" description={error} action={<Button size="small" onClick={load}>重试</Button>} style={{ marginBottom: 12 }} />}
 
       <div className="card" style={{ padding: 0 }}>
         <Table rowKey={(r: any, idx?: number) => `${r?.id ?? 'evt'}-${idx ?? 0}`} loading={loading} columns={cols} dataSource={filtered} size="middle"

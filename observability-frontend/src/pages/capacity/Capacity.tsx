@@ -3,7 +3,7 @@ import { Select, Button, Space, Spin, Statistic, Row, Col, Empty, Tag } from 'an
 import * as echarts from 'echarts'
 import { getCapacityForecast, getCapacityInstances, CapacityForecast } from '../../api/client'
 import { PageHeader, Breadcrumb } from '../../components/ui/PageKit'
-import { useUIStore } from '../../store/uiStore'
+import { useScopeStore } from '../../store/scopeStore'
 import ErrorState from '../../components/ErrorState'
 
 // A1: 区分"无数据"与"数值为 0"。后端空数据时返回 current:0 + 空 history（且后续版本带 has_data:false），
@@ -42,7 +42,7 @@ const ettTone = (d: CapacityForecast | null): string => {
 }
 
 const Capacity: React.FC = () => {
-  const currentClusterId = useUIStore((s) => s.currentClusterId)
+  const activeClusterId = useScopeStore((s) => s.authScope?.activeClusterId ?? '')
   const chartRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [instances, setInstances] = useState<string[]>([])
   const [instance, setInstance] = useState('')
@@ -52,10 +52,16 @@ const Capacity: React.FC = () => {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    if (!activeClusterId) return
     getCapacityInstances().then((r) => setInstances(r.data?.instances || [])).catch(() => {})
-  }, [])
+  }, [activeClusterId])
 
   const load = () => {
+    if (!activeClusterId) {
+      setLoading(false)
+      setData({})
+      return
+    }
     setLoading(true)
     setErrors({})
     Promise.all(
@@ -72,7 +78,7 @@ const Capacity: React.FC = () => {
       setErrors(errMap)
     }).finally(() => setLoading(false))
   }
-  useEffect(() => { load() }, [instance, horizon, currentClusterId])
+  useEffect(() => { load() }, [instance, horizon, activeClusterId])
 
   useEffect(() => {
     if (!Object.keys(data).length) return
@@ -89,12 +95,12 @@ const Capacity: React.FC = () => {
         legend: { bottom: 0 },
         grid: { left: 40, right: 20, top: 30, bottom: 40 },
         xAxis: { type: 'category', data: x, axisLabel: { color: '#7a8794' } },
-        yAxis: { type: 'value', axisLabel: { color: '#7a8794' }, splitLine: { lineStyle: { color: '#eef2f7' } } },
+        yAxis: { type: 'value', axisLabel: { color: '#7a8794' }, splitLine: { lineStyle: { color: '#dde3ea' } } },
         series: [
-          { name: '历史', type: 'line', data: d.history, symbol: 'none', itemStyle: { color: '#2f54eb' } },
-          { name: '线性预测', type: 'line', data: d.forecasts.linear.values, symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#16a34a' } },
-          { name: 'EWMA 预测', type: 'line', data: d.forecasts.ewma.values, symbol: 'none', lineStyle: { type: 'dotted' }, itemStyle: { color: '#d97706' } },
-          { name: '阈值', type: 'line', data: d.history.map(() => d.threshold), symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#dc2626' } },
+          { name: '历史', type: 'line', data: d.history, symbol: 'none', itemStyle: { color: '#3157d5' } },
+          { name: '线性预测', type: 'line', data: d.forecasts.linear.values, symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#18864b' } },
+          { name: 'EWMA 预测', type: 'line', data: d.forecasts.ewma.values, symbol: 'none', lineStyle: { type: 'dotted' }, itemStyle: { color: '#c46816' } },
+          { name: '阈值', type: 'line', data: d.history.map(() => d.threshold), symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: '#c9362b' } },
         ],
       })
       charts.push(ch)

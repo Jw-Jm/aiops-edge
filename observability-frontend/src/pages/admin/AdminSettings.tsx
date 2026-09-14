@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react'
-import { Form, Input, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert } from 'antd'
-import { PageHeader, Breadcrumb, StatusBadge, Empty, type StatusTone } from '../../components/ui/PageKit'
+import React, { useCallback, useEffect, useState } from 'react'
+import { Form, Input, InputNumber, Select, Tabs, Table, Button, message, Modal, Tag, Space, Popconfirm, Descriptions, Alert, Card, Typography } from 'antd'
+import { PageHeader, Breadcrumb, StatusBadge, type StatusTone } from '../../components/ui/PageKit'
+import { getAlertInvestigationPolicy, putAlertInvestigationPolicy } from '../../api/client'
 
 // 集群状态 → StatusBadge tone 映射
 function clusterTone(s?: string): StatusTone {
@@ -54,6 +55,9 @@ import api, {
 } from '../../api/client'
 import { fmtCpu } from '../../lib/format'
 import { clusterDetailError } from './clusterDetail'
+import KnowledgeIndexOperations from './KnowledgeIndexOperations'
+import { getKnowledgeIndexStatus } from '../../api/knowledge'
+import { useScopeStore } from '../../store/scopeStore'
 
 
 // ---- 预登记 LLM provider：浏览器只选择 provider_id，不接触 URL 或密钥 ----
@@ -61,6 +65,84 @@ const LLM_VENDORS: { key: string; name: string; default_model: string }[] = [
   { key: 'deepseek', name: 'DeepSeek', default_model: 'deepseek-chat' },
   { key: 'openai', name: 'OpenAI', default_model: 'gpt-4o-mini' },
 ]
+
+function clusterRows(data: unknown): any[] {
+  if (Array.isArray(data)) return data
+  if (data && typeof data === 'object') {
+    const value = data as Record<string, unknown>
+    return (value.clusters ?? value.data ?? []) as any[]
+  }
+  return []
+}
+
+function componentRows(data: unknown): SystemComponent[] {
+  if (Array.isArray(data)) return data as SystemComponent[]
+  if (data && typeof data === 'object') {
+    const value = data as Record<string, unknown>
+    return (value.components ?? value.items ?? value.data ?? []) as SystemComponent[]
+  }
+  return []
+}
+
+/**
+ * Three separate facts: cluster registration is not cluster health, and AIOps
+ * component/index failures must not be presented as Kubernetes failures.
+ */
+export function AdminCapabilityOverview() {
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
+  const [clusters, setClusters] = useState<any[]>([])
+  const [components, setComponents] = useState<SystemComponent[]>([])
+  const [indexFailed, setIndexFailed] = useState(0)
+  const [indexError, setIndexError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.allSettled([
+      Promise.resolve(listClusters()),
+      Promise.resolve(getSystemComponents()),
+      activeClusterId ? Promise.resolve(getKnowledgeIndexStatus(activeClusterId)) : Promise.resolve(null),
+    ]).then(([clusterResult, componentResult, indexResult]) => {
+      if (cancelled) return
+      if (clusterResult.status === 'fulfilled' && clusterResult.value) setClusters(clusterRows(clusterResult.value.data))
+      if (componentResult.status === 'fulfilled' && componentResult.value) setComponents(componentRows(componentResult.value.data))
+      if (indexResult.status === 'fulfilled' && indexResult.value) {
+        const rows = indexResult.value.items ?? []
+        setIndexFailed(rows.filter((row) => ['failed', 'error'].includes(String(row.status ?? ''))).length)
+        setIndexError('')
+      } else if (indexResult.status === 'rejected') {
+        setIndexError(indexResult.reason?.message || '知识索引状态读取失败')
+      }
+    })
+    return () => { cancelled = true }
+  }, [activeClusterId])
+
+  const readyClusters = clusters.filter((cluster) => ['ready', 'Ready', 'healthy', 'active'].includes(String(cluster.status))).length
+  const healthyComponents = components.filter((component) => ['ok', 'healthy', 'up', 'running'].includes(component.status)).length
+  const componentTotal = components.length
+
+  return (
+    <div className="admin-capability-overview" aria-label="AIOps 运维能力状态">
+      <div className="admin-capability-grid">
+        <Card size="small" title="集群接入状态">
+          <div className="admin-fact-value">{readyClusters}/{clusters.length || '—'}</div>
+          <Typography.Text type="secondary">已确认接入 / 纳管集群</Typography.Text>
+          <div style={{ marginTop: 8 }}><Tag color="blue">接入事实</Tag><Typography.Text type="secondary">不代表资源健康</Typography.Text></div>
+        </Card>
+        <Card size="small" title="AIOps 自身健康">
+          <div className="admin-fact-value">{componentTotal ? `${healthyComponents}/${componentTotal}` : '不可用'}</div>
+          <Typography.Text type="secondary">采集、同步、调查和处置能力</Typography.Text>
+          {components.filter((component) => !['ok', 'healthy', 'up', 'running'].includes(component.status)).slice(0, 2).map((component) => <div key={`${component.type}:${component.name}`} style={{ marginTop: 8 }}><Tag color="orange">需关注</Tag>{component.name}</div>)}
+        </Card>
+        <Card size="small" title="知识索引任务">
+          <div className="admin-fact-value">{indexError ? '不可用' : indexFailed ? `${indexFailed} 项失败` : '正常'}</div>
+          <Typography.Text type="secondary">版本索引与正文分离</Typography.Text>
+          {(indexFailed > 0 || indexError) && <div style={{ marginTop: 8 }}><Tag color="orange">正文仍可浏览</Tag></div>}
+        </Card>
+      </div>
+      <div className="admin-capability-note">异常项显示影响范围与最近成功时间；完整组件、图谱和索引任务进入下方管理页。</div>
+    </div>
+  )
+}
 
 // ---- 集群管理 ----
 function ClusterManager() {
@@ -75,6 +157,8 @@ function ClusterManager() {
   const [namespaces, setNamespaces] = useState<string[]>([])
   const [events, setEvents] = useState<unknown[]>([])
   const [detailErrors, setDetailErrors] = useState<{ nodes?: string; namespaces?: string; events?: string }>({})
+
+  const clusterRef = (c: ClusterItem) => c.cluster_id || String(c.id ?? '')
 
   const load = async () => {
     setLoading(true)
@@ -96,7 +180,7 @@ function ClusterManager() {
   // 这里直接走 api 实例显式传 cluster_id）。
   useEffect(() => {
     if (!detail) return
-    api.get('/nodes/metrics', { params: { cluster_id: String(detail.id) } }).then((r) => {
+      api.get('/nodes/metrics', { params: { cluster_id: clusterRef(detail) } }).then((r) => {
       const m: Record<string, any> = {}
       ;(r.data?.nodes || []).forEach((n: any) => { m[n.node] = n })
       setNodeMetrics(m)
@@ -107,8 +191,8 @@ function ClusterManager() {
   const onSubmit = async () => {
     const v = await form.validateFields()
     try {
-      await createCluster(v)
-      message.success('集群已添加')
+      const response = await createCluster(v)
+      message.success(`集群已添加（${response.data?.cluster_id || '已注册'}）`)
       setOpen(false)
       form.resetFields()
       load()
@@ -127,7 +211,7 @@ function ClusterManager() {
   const loadNodes = async (c: ClusterItem) => {
     setDetailErrors((prev) => ({ ...prev, nodes: '' }))
     try {
-      const r = await listClusterNodes(c.id)
+      const r = await listClusterNodes(clusterRef(c))
       const d = r.data
       setDetailErrors((prev) => ({ ...prev, nodes: clusterDetailError(d) }))
       setNodes(Array.isArray(d) ? d : (d?.nodes ?? []))
@@ -140,7 +224,7 @@ function ClusterManager() {
   const loadNamespaces = async (c: ClusterItem) => {
     setDetailErrors((prev) => ({ ...prev, namespaces: '' }))
     try {
-      const r = await getClusterNamespaces(c.id)
+      const r = await getClusterNamespaces(clusterRef(c))
       const d = r.data
       setDetailErrors((prev) => ({ ...prev, namespaces: clusterDetailError(d) }))
       setNamespaces(Array.isArray(d) ? d : (d?.namespaces ?? []))
@@ -153,7 +237,7 @@ function ClusterManager() {
   const loadEvents = async (c: ClusterItem) => {
     setDetailErrors((prev) => ({ ...prev, events: '' }))
     try {
-      const r = await getClusterEvents(c.id)
+      const r = await getClusterEvents(clusterRef(c))
       const d = r.data
       setDetailErrors((prev) => ({ ...prev, events: clusterDetailError(d) }))
       setEvents(Array.isArray(d) ? d : (d?.events ?? []))
@@ -182,7 +266,7 @@ function ClusterManager() {
         </Space>
       </div>
       <Table
-        rowKey="id"
+        rowKey={(row) => clusterRef(row)}
         size="small"
         loading={loading}
         dataSource={list}
@@ -197,7 +281,7 @@ function ClusterManager() {
           { title: '操作', width: 200, render: (_, r) => (
             <Space size={0}>
               <Button type="link" size="small" onClick={() => viewDetail(r)}>查看</Button>
-              <Popconfirm title="确认删除该集群？" onConfirm={async () => { await deleteCluster(r.id); message.success('已删除'); load() }}>
+              <Popconfirm title="确认删除该集群？" onConfirm={async () => { await deleteCluster(r.id ?? 0); message.success('已删除'); load() }}>
                 <Button type="link" size="small" danger>删除</Button>
               </Popconfirm>
             </Space>
@@ -207,12 +291,13 @@ function ClusterManager() {
 
       <Modal title="纳管集群" open={open} onOk={onSubmit} onCancel={() => setOpen(false)} okText="添加" width={620}>
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="集群名称" rules={[{ required: true, message: '请输入集群名称' }]}><Input placeholder="如 production-cluster" /></Form.Item>
-          <Form.Item name="provider" label="提供商"><Select options={[{ value: 'k8s', label: 'Kubernetes' }, { value: 'openshift', label: 'OpenShift' }, { value: 'k3s', label: 'K3s' }]} /></Form.Item>
-          <Form.Item name="api_server" label="API Server 地址"><Input placeholder="https://192.168.1.10:6443" /></Form.Item>
-          <Form.Item name="kubeconfig" label="Kubeconfig" rules={[{ required: true, message: '请粘贴 kubeconfig' }]}>
-            <Input.TextArea rows={8} placeholder="粘贴 kubeconfig 内容（含 server / certificate-authority-data / client-certificate-data / client-key-data）" />
+          <Form.Item name="name" label="集群名称" rules={[{ required: true, message: '请输入集群名称' }]}><Input placeholder="如 cloud-sh-01" /></Form.Item>
+          <Form.Item name="slug" label="集群标识" rules={[{ required: true, message: '请输入集群标识' }]}><Input placeholder="如 kind-aiops-kind-02" /></Form.Item>
+          <Form.Item name="type" label="类型" initialValue="kubernetes"><Select options={[{ value: 'kubernetes', label: 'Kubernetes' }, { value: 'openshift', label: 'OpenShift' }, { value: 'k3s', label: 'K3s' }]} /></Form.Item>
+          <Form.Item name="credential_ref" label="凭据引用" rules={[{ required: true, message: '请输入凭据引用' }]}>
+            <Input placeholder="k8s-secret://observability/aiops-managed-cluster-kubeconfig" />
           </Form.Item>
+          <Alert type="info" showIcon message="浏览器不会接收或提交 kubeconfig；凭据必须预先存入管理集群 Secret，并以 credential_ref 引用。" style={{ marginBottom: 16 }} />
           <Form.Item name="region" label="区域"><Input placeholder="可选：如 cn-south-1" /></Form.Item>
         </Form>
       </Modal>
@@ -548,7 +633,13 @@ function PlatformHealth() {
         loading={loading}
         dataSource={list}
         pagination={false}
-        locale={{ emptyText: <Empty text="暂无组件状态数据" hint="后端 /system/components 尚未上报组件状态" /> }}
+        locale={{ emptyText: (
+          <div className="admin-state-unavailable">
+            <strong>状态未获得</strong>
+            <p>后端 /system/components 尚未上报组件状态，无法判断平台能力健康。</p>
+            <Button size="small" onClick={() => load(false)}>刷新状态</Button>
+          </div>
+        ) }}
         columns={[
           { title: '组件', dataIndex: 'name' },
           { title: '类型', dataIndex: 'type', width: 140 },
@@ -561,19 +652,100 @@ function PlatformHealth() {
   )
 }
 
+
+// ── Task 10：告警调查策略（按实际集群配置，缺省人工发起）─────────────────
+const ALERT_INVESTIGATION_MODES = [
+  { value: 'manual', label: '人工发起' },
+  { value: 'draft', label: '自动创建调查草稿' },
+  { value: 'auto_readonly', label: '自动创建只读调查' },
+]
+const ALERT_INVESTIGATION_SEVERITIES = [
+  { value: 'critical', label: '严重' },
+  { value: 'warning', label: '警告' },
+  { value: 'info', label: '信息' },
+]
+
+export const AlertInvestigationPolicyForm: React.FC<{ clusterId: string }> = ({ clusterId }) => {
+  const [policy, setPolicy] = useState<{ mode: string; minimum_severity: string; max_concurrent: number; max_per_hour: number }>({
+    mode: 'manual', minimum_severity: 'critical', max_concurrent: 2, max_per_hour: 10,
+  })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = useCallback(() => {
+    if (!clusterId) { setLoading(false); return }
+    setLoading(true); setError('')
+    getAlertInvestigationPolicy(clusterId)
+      .then((res: any) => setPolicy({
+        mode: res.data?.mode ?? 'manual',
+        minimum_severity: res.data?.minimum_severity ?? 'critical',
+        max_concurrent: res.data?.max_concurrent ?? 2,
+        max_per_hour: res.data?.max_per_hour ?? 10,
+      }))
+      .catch((e: any) => setError(e?.response?.data?.error || e?.message || '策略读取失败'))
+      .finally(() => setLoading(false))
+  }, [clusterId])
+
+  useEffect(() => { load() }, [load])
+
+  const save = () => {
+    setSaving(true)
+    putAlertInvestigationPolicy(clusterId, policy)
+      .then((res: any) => {
+        // 保存后必须回读真实配置，不允许用本地乐观值冒充服务端状态。
+        message.success(res.data?.note || '已保存')
+        load()
+      })
+      .catch((e: any) => message.error(e?.response?.data?.error || '保存失败'))
+      .finally(() => setSaving(false))
+  }
+
+  if (!clusterId) return <Alert type="info" showIcon message="请先选择实际集群" />
+  return (
+    <div data-testid="alert-investigation-policy" style={{ maxWidth: 520 }}>
+      <Alert type="warning" showIcon message="自动调查仅只读，不会执行处置" style={{ marginBottom: 16 }} />
+      {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} action={<Button size="small" onClick={load}>重试</Button>} />}
+      <Form layout="vertical" disabled={loading}>
+        <Form.Item label="调查模式">
+          <Select value={policy.mode} options={ALERT_INVESTIGATION_MODES}
+            onChange={(value) => setPolicy((p) => ({ ...p, mode: String(value) }))} />
+        </Form.Item>
+        <Form.Item label="最小严重度">
+          <Select value={policy.minimum_severity} options={ALERT_INVESTIGATION_SEVERITIES}
+            onChange={(value) => setPolicy((p) => ({ ...p, minimum_severity: String(value) }))} />
+        </Form.Item>
+        <Form.Item label="最大并发调查数（1–8）">
+          <InputNumber min={1} max={8} value={policy.max_concurrent}
+            onChange={(value) => setPolicy((p) => ({ ...p, max_concurrent: Number(value ?? 2) }))} />
+        </Form.Item>
+        <Form.Item label="每小时上限（1–100）">
+          <InputNumber min={1} max={100} value={policy.max_per_hour}
+            onChange={(value) => setPolicy((p) => ({ ...p, max_per_hour: Number(value ?? 10) }))} />
+        </Form.Item>
+        <Button type="primary" loading={saving} onClick={save}>保存并回读</Button>
+      </Form>
+    </div>
+  )
+}
+
 // B7 修复：移除死代码（未使用的 form/loading/useEffect/llmTab），
 // AI 模型配置已由 LLMConfig 组件承载。
 const AdminSettings: React.FC = () => {
+  const activeClusterId = useScopeStore((state) => state.authScope?.activeClusterId ?? '')
   return (
     <div>
       <Breadcrumb items={[{ t: '系统管理' }, { t: '系统设置' }]} />
-      <PageHeader title="系统设置" desc="AI 模型、纳管集群与平台基础配置" />
+      <PageHeader title="系统管理" desc="AIOps 自身健康、数据可信度与平台能力配置" />
+      <AdminCapabilityOverview />
       <Tabs
         items={[
           { key: 'llm', label: 'AI 模型配置', children: <LLMConfig /> },
           { key: 'clusters', label: '纳管集群', children: <ClusterManager /> },
+          { key: 'knowledge-index', label: '知识索引任务', children: <KnowledgeIndexOperations clusterId={activeClusterId} /> },
           { key: 'audit', label: '审计日志', children: <AuditLog /> },
-          { key: 'health', label: '平台健康', children: <PlatformHealth /> },
+          { key: 'health', label: 'AIOps 自身健康', children: <PlatformHealth /> },
+          { key: 'alert-investigation', label: '告警调查策略', children: <AlertInvestigationPolicyForm clusterId={activeClusterId} /> },
         ]}
       />
     </div>

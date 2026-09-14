@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AIOps 多集群云平台资源运维 · UI V3 审核基线</title>
+  <style>
+    :root {
+      --bg:#f3f5f7; --surface:#fff; --subtle:#f8fafc; --line:#d9e0e7; --line-soft:#e9edf2;
+      --text:#162033; --muted:#5c687a; --faint:#778394; --blue:#2f5bd3; --blue-soft:#eef3ff;
+      --red:#c83c35; --red-soft:#fff1f0; --orange:#c26a1b; --orange-soft:#fff6eb;
+      --green:#168654; --green-soft:#edf9f3; --gray:#6b7482; --gray-soft:#f0f2f5;
+      --violet:#6f56b3; --teal:#267b83; --radius:10px;
+    }
+    * { box-sizing:border-box; }
+    html, body { margin:0; width:100%; height:100%; overflow:hidden; }
+    body { font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif; color:var(--text); background:var(--bg); font-size:14px; line-height:1.45; }
+    button, input, textarea, select { font:inherit; color:inherit; }
+    button { cursor:default; }
+    svg { display:block; }
+    .app { width:100%; height:100%; display:grid; grid-template-columns:84px minmax(0,1fr); grid-template-rows:64px minmax(0,1fr); }
+    .nav-rail { grid-row:1/3; background:#131b2a; color:#cad3df; display:flex; flex-direction:column; align-items:center; padding:14px 8px; overflow:hidden; }
+    .brand { width:42px; height:42px; border-radius:10px; background:#315fd7; color:#fff; display:grid; place-items:center; font-weight:800; letter-spacing:-1px; margin-bottom:18px; }
+    .nav-stack { display:flex; flex-direction:column; gap:5px; width:100%; }
+    .nav-item { width:100%; min-height:55px; border:0; border-radius:8px; background:transparent; color:#9eabba; display:flex; flex-direction:column; gap:4px; align-items:center; justify-content:center; font-size:12px; }
+    .nav-item svg { width:19px; height:19px; stroke:currentColor; fill:none; stroke-width:1.8; }
+    .nav-item.active { background:#24334b; color:#fff; }
+    .nav-bottom { margin-top:auto; width:100%; }
+    .topbar { grid-column:2; background:var(--surface); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; padding:0 28px; min-width:0; }
+    .cluster-picker { min-width:276px; max-width:360px; height:40px; display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:8px; background:var(--surface); padding:0 12px; text-align:left; }
+    .cluster-picker .grow { min-width:0; flex:1; }
+    .cluster-picker strong, .cluster-picker small { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .cluster-picker strong { font-size:14px; }
+    .cluster-picker small { color:var(--muted); font-size:12px; }
+    .top-scope { color:var(--muted); font-size:12px; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .top-actions { margin-left:auto; display:flex; align-items:center; gap:8px; }
+    .icon-btn { width:36px; height:36px; display:grid; place-items:center; border:1px solid var(--line); background:var(--surface); border-radius:8px; color:var(--muted); }
+    .icon-btn svg { width:17px; height:17px; stroke:currentColor; fill:none; stroke-width:1.8; }
+    .avatar { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; color:#fff; background:#40516b; font-size:12px; font-weight:700; }
+    .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+    .dot.red { background:var(--red); } .dot.orange { background:var(--orange); } .dot.green { background:var(--green); } .dot.gray { background:var(--gray); } .dot.blue { background:var(--blue); }
+    main { grid-column:2; overflow:auto; min-width:0; }
+    .view { display:none; min-height:100%; padding:24px 28px 32px; }
+    .view.active { display:block; }
+    .page-head { display:flex; align-items:flex-start; gap:18px; justify-content:space-between; margin-bottom:16px; }
+    .page-head h1 { margin:0 0 5px; font-size:22px; line-height:1.2; letter-spacing:-.3px; }
+    .page-head p { margin:0; color:var(--muted); }
+    .head-actions { display:flex; align-items:center; gap:8px; flex:none; }
+    .btn { min-height:36px; border:1px solid var(--line); background:var(--surface); border-radius:8px; padding:0 13px; font-weight:650; }
+    .btn.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+    .btn.quiet { background:var(--subtle); }
+    .card { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); min-width:0; }
+    .section-title { min-height:45px; display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line-soft); }
+    .section-title h2, .section-title h3 { margin:0; font-size:15px; }
+    .section-title .right { margin-left:auto; color:var(--muted); font-size:12px; }
+    .muted { color:var(--muted); } .faint { color:var(--faint); }
+    .mono { font-family:"SFMono-Regular",Consolas,monospace; word-break:break-all; }
+    .eyebrow { color:var(--muted); font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
+    .status-chip { display:inline-flex; align-items:center; gap:6px; min-height:26px; border-radius:999px; padding:3px 9px; font-size:12px; font-weight:750; white-space:nowrap; }
+    .status-chip::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
+    .critical { color:var(--red); background:var(--red-soft); }
+    .degraded { color:var(--orange); background:var(--orange-soft); }
+    .healthy { color:var(--green); background:var(--green-soft); }
+    .unknown { color:var(--gray); background:var(--gray-soft); }
+    .running { color:var(--blue); background:var(--blue-soft); }
+    .tag { display:inline-block; color:var(--blue); background:var(--blue-soft); border-radius:5px; padding:3px 7px; font-size:12px; font-weight:700; }
+    .health-band { display:grid; grid-template-columns:minmax(270px,1.35fr) repeat(3,minmax(145px,.72fr)); overflow:hidden; }
+    .health-primary { padding:18px 20px; background:var(--surface); border-left:4px solid var(--red); }
+    .health-primary .state { display:flex; align-items:center; gap:12px; margin:4px 0 8px; }
+    .health-primary .state strong { font-size:27px; color:var(--red); }
+    .health-primary p { margin:3px 0; }
+    .fact { padding:18px; border-left:1px solid var(--line-soft); }
+    .fact > span { color:var(--muted); font-size:12px; }
+    .fact b { display:block; font-size:24px; line-height:1.2; margin:8px 0 4px; }
+    .fact small { color:var(--muted); font-size:12px; }
+    .platform-context { margin-top:10px; display:flex; align-items:center; flex-wrap:wrap; gap:8px 24px; padding:11px 15px; color:var(--muted); font-size:12px; }
+    .platform-context b { color:var(--text); }
+    .split { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(310px,.82fr); gap:14px; margin-top:14px; align-items:start; }
+    .table { width:100%; border-collapse:collapse; table-layout:fixed; }
+    .table th { color:var(--faint); text-align:left; font-size:12px; font-weight:650; padding:10px 12px; background:var(--subtle); border-bottom:1px solid var(--line-soft); }
+    .table td { padding:11px 12px; border-bottom:1px solid var(--line-soft); vertical-align:middle; overflow-wrap:anywhere; }
+    .table tr:last-child td { border-bottom:0; }
+    .name-cell strong, .name-cell small { display:block; }
+    .name-cell small { color:var(--muted); font-size:12px; margin-top:2px; }
+    .risk { padding:16px; border-left:4px solid var(--red); }
+    .risk h2 { margin:10px 0 6px; font-size:18px; line-height:1.3; }
+    .risk p { margin:6px 0; }
+    .risk .meta { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:14px 0; }
+    .risk .meta div { background:var(--subtle); border:1px solid var(--line-soft); border-radius:7px; padding:9px; }
+    .risk .meta span, .risk .meta b { display:block; }
+    .risk .meta span { font-size:12px; color:var(--muted); }
+    .trust-strip { margin-top:14px; display:grid; grid-template-columns:220px 1fr auto; gap:16px; align-items:center; padding:14px 16px; }
+    .trust-strip .summary { display:flex; align-items:center; gap:9px; }
+    .trust-strip .issue { min-width:0; border-left:1px solid var(--line); padding-left:16px; }
+    .trust-strip .issue b, .trust-strip .issue span { display:block; }
+    .trust-strip .issue span { color:var(--muted); font-size:12px; margin-top:2px; }
+    .cluster-head { display:grid; grid-template-columns:minmax(330px,1.45fr) repeat(3,minmax(150px,.65fr)); overflow:hidden; }
+    .cluster-identity { padding:17px 18px; border-left:4px solid var(--orange); }
+    .cluster-identity h2 { margin:4px 0 6px; font-size:20px; }
+    .cluster-identity p { margin:4px 0; }
+    .cluster-main { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(290px,.75fr); gap:14px; margin-top:14px; }
+    .problem-list { padding:0 16px; }
+    .problem-row { display:grid; grid-template-columns:102px minmax(0,1fr) 116px; align-items:center; gap:12px; min-height:58px; border-bottom:1px solid var(--line-soft); }
+    .problem-row:last-child { border:0; }
+    .problem-row strong, .problem-row small { display:block; }
+    .problem-row small { color:var(--muted); margin-top:3px; font-size:12px; }
+    .change-list { padding:4px 16px 12px; }
+    .change { border-left:2px solid var(--line); padding:8px 0 8px 12px; }
+    .change strong, .change span { display:block; }
+    .change span { color:var(--muted); font-size:12px; margin-top:3px; }
+    .planes { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }
+    .plane-body { padding:14px 16px; }
+    .plane-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+    .kind-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+    .kind-stat { min-width:0; padding:9px 10px; border:1px solid var(--line-soft); border-radius:8px; background:var(--subtle); }
+    .kind-stat span, .kind-stat b, .kind-stat small { display:block; overflow-wrap:anywhere; }
+    .kind-stat span, .kind-stat small { color:var(--muted); font-size:12px; }
+    .kind-stat b { margin:2px 0; font-size:18px; }
+    .mini-stat { background:var(--subtle); border:1px solid var(--line-soft); border-radius:8px; padding:10px; min-width:0; }
+    .mini-stat span, .mini-stat b, .mini-stat small { display:block; }
+    .mini-stat b { font-size:19px; margin:3px 0; }
+    .mini-stat small, .mini-stat span { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+    .plane-alert { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding-top:11px; border-top:1px solid var(--line-soft); }
+    .foundation { margin-top:14px; }
+    .foundation-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); }
+    .foundation-item { padding:13px 14px; border-right:1px solid var(--line-soft); }
+    .foundation-item:last-child { border:0; }
+    .foundation-item .line { display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:7px; }
+    .foundation-item p { margin:0; color:var(--muted); font-size:12px; }
+    .tabs { display:flex; align-items:center; gap:4px; border-bottom:1px solid var(--line); margin-bottom:14px; }
+    .tab { border:0; background:transparent; padding:10px 14px; color:var(--muted); border-bottom:2px solid transparent; font-weight:650; }
+    .tab.active { color:var(--blue); border-color:var(--blue); }
+    .aux-link { margin-left:auto; color:var(--blue); font-weight:650; }
+    .resource-layout { display:grid; grid-template-columns:238px minmax(0,1fr); gap:14px; align-items:start; }
+    .filter-panel { padding:14px; }
+    .search-box { height:38px; display:flex; align-items:center; color:var(--faint); border:1px solid var(--line); border-radius:8px; padding:0 10px; margin-bottom:14px; }
+    .filter-group { border-top:1px solid var(--line-soft); padding-top:12px; margin-top:12px; }
+    .filter-group h3 { font-size:12px; margin:0 0 8px; color:var(--muted); }
+    .filter-option { display:flex; align-items:center; min-height:30px; gap:8px; font-size:13px; }
+    .checkbox { width:15px; height:15px; border:1px solid var(--line); border-radius:4px; }
+    .checkbox.checked { background:var(--blue); border-color:var(--blue); position:relative; }
+    .checkbox.checked::after { content:"✓"; position:absolute; color:#fff; font-size:11px; left:2px; top:-1px; }
+    .result-head { min-height:48px; display:flex; align-items:center; gap:8px; padding:0 14px; border-bottom:1px solid var(--line-soft); }
+    .result-head .right { margin-left:auto; color:var(--muted); font-size:12px; }
+    .resource-table th:nth-child(1){width:21%}.resource-table th:nth-child(2){width:29%}.resource-table th:nth-child(3){width:13%}.resource-table th:nth-child(4){width:25%}.resource-table th:nth-child(5){width:12%}
+    .kind-strip { display:flex; flex-wrap:wrap; gap:6px; padding:10px 14px; border-bottom:1px solid var(--line-soft); }
+    .kind-chip { border:1px solid var(--line); border-radius:999px; background:var(--surface); padding:5px 9px; font-size:12px; color:var(--muted); }
+    .kind-chip.active { color:var(--blue); border-color:#aebfea; background:var(--blue-soft); font-weight:700; }
+    .drawer-trigger { color:var(--blue); font-weight:700; }
+    .compact-only { display:none; }
+    .identity-band { display:grid; grid-template-columns:minmax(300px,1.35fr) repeat(3,minmax(150px,.65fr)); overflow:hidden; }
+    .identity-main { padding:16px 18px; border-left:4px solid var(--red); }
+    .identity-main h2 { margin:5px 0 3px; font-size:20px; overflow-wrap:anywhere; }
+    .detail-grid, .observe-layout, .investigation-layout, .action-layout, .report-layout, .admin-layout { display:grid; grid-template-columns:minmax(0,1fr) 310px; gap:14px; margin-top:14px; align-items:start; }
+    .summary-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; padding:14px; }
+    .content-tabs { padding:0 14px; }
+    .evidence-list { padding:0 14px 10px; }
+    .evidence-row { padding:12px 0; border-bottom:1px solid var(--line-soft); display:grid; grid-template-columns:110px minmax(0,1fr) 120px; gap:12px; }
+    .evidence-row:last-child { border:0; }
+    .context-section { padding:14px 16px; border-bottom:1px solid var(--line-soft); }
+    .context-section:last-child { border:0; }
+    .context-section h3 { margin:0 0 9px; font-size:13px; }
+    .relation-pill { background:var(--subtle); border:1px solid var(--line-soft); border-radius:7px; padding:9px; margin-top:7px; overflow-wrap:anywhere; }
+    .kv { display:grid; grid-template-columns:112px minmax(0,1fr); gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft); }
+    .kv:last-child { border:0; }
+    .kv > span:first-child { color:var(--muted); }
+    .observe-main { overflow:hidden; }
+    .chart-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:14px 16px 5px; }
+    .chart-head h2 { margin:0; font-size:15px; }
+    .chart-head p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+    .legend { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:12px; font-size:12px; }
+    .legend span { display:flex; align-items:center; gap:5px; }
+    .legend i { width:18px; height:3px; display:inline-block; }
+    .chart { padding:0 10px 6px; }
+    .chart svg { width:100%; height:245px; }
+    .axis { fill:var(--faint); font-size:12px; }
+    .timeline { padding:4px 16px 14px; }
+    .timeline-item { border-left:2px solid var(--line); padding:9px 0 9px 13px; }
+    .timeline-item p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+    .scope-strip { padding:12px 14px; display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; }
+    .scope-strip span { color:var(--muted); font-size:12px; }
+    .scope-strip b { color:var(--text); margin-left:4px; }
+    .fault-chain { display:flex; align-items:center; gap:7px; padding:22px 14px; overflow-x:auto; }
+    .conclusion-panel { padding:16px; border-bottom:1px solid var(--line-soft); background:linear-gradient(90deg,var(--green-soft),#fff 58%); }
+    .conclusion-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .conclusion-panel h2 { margin:8px 0 5px; font-size:18px; }
+    .conclusion-panel p { margin:0; color:var(--muted); }
+    .conclusion-meta { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+    .evidence-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:12px 14px 14px; }
+    .evidence-card { border:1px solid var(--line-soft); border-radius:8px; padding:10px; background:var(--subtle); min-width:0; }
+    .evidence-card strong, .evidence-card span, .evidence-card small { display:block; overflow-wrap:anywhere; }
+    .evidence-card span { margin:5px 0; }
+    .evidence-card small { color:var(--muted); }
+    .details-collapsed { min-height:45px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 14px; border-top:1px solid var(--line-soft); color:var(--muted); }
+    .chain-node { min-width:145px; border:1px solid var(--line); border-radius:8px; padding:10px; background:var(--surface); text-align:center; }
+    .chain-node.critical { border-color:#e6a5a1; background:var(--red-soft); color:var(--text); }
+    .chain-edge { min-width:112px; display:flex; flex-direction:column; align-items:center; color:var(--muted); font-size:12px; }
+    .chain-edge .edge-name { color:var(--blue); font-weight:750; background:var(--blue-soft); border-radius:5px; padding:2px 5px; white-space:nowrap; }
+    .chain-edge .arrowline { width:100%; display:flex; align-items:center; margin:3px 0; }
+    .chain-edge .arrowline::before { content:""; height:1px; background:var(--blue); flex:1; }
+    .chain-edge .arrowline::after { content:""; border-left:8px solid var(--blue); border-top:4px solid transparent; border-bottom:4px solid transparent; }
+    .hypothesis { margin:10px 14px; border:1px solid var(--line-soft); border-radius:8px; padding:11px; }
+    .hypothesis.active { border-color:#b8c8f3; background:var(--blue-soft); }
+    .hypothesis h3 { margin:0 0 4px; font-size:13px; }
+    .hypothesis p { margin:0; color:var(--muted); font-size:12px; }
+    .pipeline { display:grid; grid-template-columns:repeat(6,1fr); margin-bottom:14px; overflow:hidden; }
+    .pipeline-step { padding:13px 15px; border-right:1px solid var(--line-soft); }
+    .pipeline-step:last-child { border:0; }
+    .pipeline-step span, .pipeline-step b { display:block; }
+    .pipeline-step span { color:var(--muted); font-size:12px; }
+    .pipeline-step b { font-size:20px; margin-top:3px; }
+    .action-row { min-height:62px; display:grid; grid-template-columns:minmax(0,1fr) 92px 70px; gap:12px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--line-soft); }
+    .action-row.selected { background:var(--blue-soft); border-left:3px solid var(--blue); }
+    .action-row strong, .action-row small { display:block; }
+    .action-row small { font-size:12px; margin-top:3px; }
+    .log-box { background:#111827; color:#dce6f2; border-radius:7px; padding:10px; font:12px/1.6 "SFMono-Regular",Consolas,monospace; white-space:pre-wrap; margin-top:10px; }
+    .graph-layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:14px; margin-top:14px; align-items:start; }
+    .graph-card { overflow:hidden; }
+    .graph-toolbar { min-height:48px; padding:7px 10px; display:flex; flex-wrap:wrap; align-items:center; gap:6px; border-bottom:1px solid var(--line-soft); }
+    .graph-filterbar { min-height:42px; padding:6px 10px; display:flex; align-items:center; gap:6px; overflow-x:auto; border-bottom:1px solid var(--line-soft); background:var(--subtle); }
+    .graph-filterbar > span { flex:none; color:var(--muted); font-size:12px; font-weight:700; }
+    .tool { min-height:31px; border:1px solid var(--line); background:var(--surface); border-radius:7px; padding:0 9px; font-size:12px; }
+    .tool.active { color:var(--blue); border-color:#aebfea; background:var(--blue-soft); }
+    .graph-budget { margin-left:auto; color:var(--muted); font-size:12px; }
+    .graph-stage-wrap { height:540px; overflow:auto; background:#fbfcfe; }
+    .graph-stage { width:100%; min-width:850px; height:540px; }
+    .graph-stage .layer-bg { fill:#f8fafc; stroke:#d9e0e7; stroke-dasharray:4 4; }
+    .graph-stage .layer-label { fill:#5c687a; font-size:12px; font-weight:700; }
+    .graph-stage .node { fill:#fff; stroke:#bfc9d5; stroke-width:1.2; }
+    .graph-stage .node.selected { stroke:#2f5bd3; stroke-width:2.5; }
+    .graph-stage .node-title { fill:#162033; font-size:12px; font-weight:750; }
+    .graph-stage .node-type { fill:#5c687a; font-size:12px; }
+    .graph-stage .edge { fill:none; stroke:#607089; stroke-width:1.5; marker-end:url(#arrow); }
+    .graph-stage .edge.active { stroke:#2f5bd3; stroke-width:2; marker-end:url(#arrowBlue); }
+    .graph-stage .edge-label-bg { fill:#fff; stroke:#d9e0e7; }
+    .graph-stage .edge-label { fill:#25324a; font-size:12px; font-weight:700; }
+    .graph-stage.focused g, .graph-stage.focused .edge, .graph-stage.focused .edge-label-bg, .graph-stage.focused .edge-label { opacity:.22; transition:opacity .15s ease; }
+    .graph-stage.focused g:has(.node.selected), .graph-stage.focused .edge.active, .graph-stage.focused .edge.active + .edge-label-bg, .graph-stage.focused .edge.active + .edge-label-bg + .edge-label { opacity:1; }
+    .graph-stage .count { fill:#c83c35; font-size:12px; font-weight:750; }
+    .graph-footer { min-height:42px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; border-top:1px solid var(--line-soft); color:var(--muted); font-size:12px; }
+    .inspector-head { padding:16px; border-bottom:1px solid var(--line-soft); }
+    .inspector-head h2 { margin:8px 0 4px; font-size:17px; overflow-wrap:anywhere; }
+    .relation-triple { padding:12px; background:var(--blue-soft); border:1px solid #c9d5f4; border-radius:8px; line-height:1.6; }
+    .relation-triple b { color:var(--blue); }
+    .report-list .report-item { padding:12px 14px; border-bottom:1px solid var(--line-soft); }
+    .report-layout { grid-template-columns:300px minmax(0,1fr); }
+    .report-list .report-item.active { background:var(--blue-soft); border-left:3px solid var(--blue); }
+    .report-item strong, .report-item small { display:block; }
+    .report-item small { margin-top:4px; }
+    .report-body { padding:20px; }
+    .report-body h2 { font-size:21px; margin:8px 0 4px; }
+    .report-facts { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:16px 0; }
+    .report-section { padding:14px 0; border-top:1px solid var(--line-soft); }
+    .report-section h3 { margin:0 0 5px; font-size:14px; }
+    .report-section p { margin:0; color:var(--muted); }
+    .admin-layout { grid-template-columns:220px minmax(0,1fr); }
+    .settings-menu { padding:8px; }
+    .settings-menu div { padding:10px 12px; border-radius:7px; color:var(--muted); }
+    .settings-menu .active { color:var(--blue); background:var(--blue-soft); font-weight:700; }
+    .self-health { display:grid; grid-template-columns:230px repeat(3,1fr); overflow:hidden; }
+    .self-health > div { padding:14px; border-right:1px solid var(--line-soft); }
+    .self-health > div:last-child { border:0; }
+    .component-row { display:grid; grid-template-columns:1fr 120px 140px 120px; gap:10px; align-items:center; min-height:57px; padding:8px 14px; border-bottom:1px solid var(--line-soft); }
+    .component-row:last-child { border:0; }
+    .policy-grid { display:grid; grid-template-columns:1.2fr repeat(3,1fr); }
+    .policy-grid > div { padding:13px 14px; border-right:1px solid var(--line-soft); min-width:0; }
+    .policy-grid > div:last-child { border:0; }
+    .policy-grid span, .policy-grid b, .policy-grid small { display:block; overflow-wrap:anywhere; }
+    .policy-grid span, .policy-grid small { color:var(--muted); font-size:12px; }
+    .policy-grid b { margin:4px 0; }
+    .knowledge-health { display:grid; grid-template-columns:1.2fr repeat(4,1fr); overflow:hidden; }
+    .knowledge-health > div { padding:14px 16px; border-right:1px solid var(--line-soft); min-width:0; }
+    .knowledge-health > div:last-child { border:0; }
+    .knowledge-health span, .knowledge-health b, .knowledge-health small { display:block; }
+    .knowledge-health span, .knowledge-health small { color:var(--muted); font-size:12px; }
+    .knowledge-health b { font-size:20px; margin:4px 0; }
+    .knowledge-search { margin-top:14px; min-height:48px; padding:7px 9px; display:flex; align-items:center; gap:8px; }
+    .knowledge-search .search-box { flex:1; margin:0; min-width:220px; }
+    .knowledge-layout { display:grid; grid-template-columns:210px minmax(390px,1fr) 310px; gap:14px; margin-top:14px; align-items:start; }
+    .knowledge-filters { padding:12px; }
+    .knowledge-row { padding:12px 14px; border-bottom:1px solid var(--line-soft); display:grid; gap:6px; }
+    .knowledge-row:last-child { border:0; }
+    .knowledge-row.active { background:var(--blue-soft); border-left:3px solid var(--blue); }
+    .knowledge-row-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+    .knowledge-row p { margin:0; color:var(--muted); font-size:12px; }
+    .knowledge-meta { display:flex; flex-wrap:wrap; gap:6px 12px; color:var(--faint); font-size:12px; }
+    .scope-chip { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:3px 7px; color:var(--muted); background:var(--surface); font-size:12px; }
+    .knowledge-editor { padding:14px 16px; }
+    .knowledge-editor h2 { margin:8px 0 4px; font-size:18px; }
+    .knowledge-editor p { margin:6px 0; }
+    .knowledge-form-layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:14px; align-items:start; }
+    .knowledge-form { padding:18px; }
+    .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .field textarea, .field select { width:100%; border:1px solid var(--line); border-radius:8px; padding:10px 11px; background:var(--surface); outline:none; }
+    .field textarea { min-height:112px; resize:vertical; }
+    .field small { display:block; color:var(--muted); margin-top:5px; }
+    .form-actions { display:flex; justify-content:flex-end; gap:8px; padding-top:14px; border-top:1px solid var(--line-soft); }
+    .assistant-layout { display:grid; grid-template-columns:220px minmax(480px,1fr) 300px; gap:14px; align-items:stretch; height:650px; }
+    .assistant-threads { padding:8px; display:flex; flex-direction:column; min-height:0; }
+    .assistant-threads .btn { width:100%; margin-bottom:10px; }
+    .thread-label { padding:7px 9px; color:var(--faint); font-size:12px; font-weight:700; }
+    .thread-item { padding:10px; border-radius:7px; margin-bottom:3px; }
+    .thread-item.active { background:var(--blue-soft); border-left:3px solid var(--blue); }
+    .thread-item strong, .thread-item small { display:block; }
+    .thread-item small { color:var(--muted); font-size:12px; margin-top:4px; }
+    .chat-workspace { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+    .chat-head { min-height:54px; display:flex; align-items:center; gap:10px; padding:0 16px; border-bottom:1px solid var(--line-soft); }
+    .chat-head .grow { min-width:0; flex:1; }
+    .chat-head strong, .chat-head small { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+    .chat-head small { color:var(--muted); margin-top:2px; }
+    .chat-messages { flex:1; min-height:0; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:14px; background:var(--subtle); }
+    .chat-message { max-width:92%; border:1px solid var(--line); border-radius:10px; padding:13px 14px; background:var(--surface); }
+    .chat-message.user { align-self:flex-end; max-width:75%; background:var(--blue); color:#fff; border-color:var(--blue); }
+    .chat-message.assistant { align-self:flex-start; }
+    .chat-message h2 { font-size:15px; margin:9px 0 5px; }
+    .chat-message p { margin:5px 0; }
+    .chat-message .answer-meta { display:flex; flex-wrap:wrap; gap:6px; }
+    .chat-message .answer-section { margin-top:11px; padding-top:10px; border-top:1px solid var(--line-soft); }
+    .citation-list { display:grid; gap:6px; margin-top:7px; }
+    .citation { display:grid; grid-template-columns:90px minmax(0,1fr) auto; gap:8px; align-items:center; padding:8px; border:1px solid var(--line-soft); border-radius:7px; background:var(--surface); font-size:12px; }
+    .citation span:first-child { color:var(--blue); font-weight:700; }
+    .citation span:last-child { color:var(--muted); }
+    .answer-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:11px; }
+    .chat-composer { padding:10px 12px; border-top:1px solid var(--line-soft); background:var(--surface); }
+    .composer-box { display:flex; align-items:flex-end; gap:8px; border:1px solid var(--line); border-radius:9px; padding:8px; }
+    .composer-box textarea { flex:1; min-height:38px; max-height:90px; border:0; resize:none; outline:none; padding:8px; }
+    .composer-meta { display:flex; flex-wrap:wrap; gap:8px; margin-top:7px; color:var(--muted); font-size:12px; }
+    .assistant-context { min-height:0; overflow:auto; }
+    .context-source { padding:9px 0; border-bottom:1px solid var(--line-soft); }
+    .context-source:last-child { border:0; }
+    .context-source strong, .context-source small { display:block; overflow-wrap:anywhere; }
+    .context-source small { color:var(--muted); margin-top:3px; }
+    .login-view { display:none; width:100%; height:100%; background:#eef2f7; position:relative; overflow:hidden; }
+    .login-view.active { display:grid; place-items:center; }
+    .login-shell { width:min(1080px,calc(100% - 64px)); min-height:610px; display:grid; grid-template-columns:1.15fr .85fr; background:#fff; border:1px solid var(--line); border-radius:16px; overflow:hidden; }
+    .login-story { padding:64px; position:relative; background:#15233a; color:#fff; display:flex; flex-direction:column; justify-content:center; }
+    .login-story::after { content:""; position:absolute; inset:32px; opacity:.14; background-image:linear-gradient(#fff 1px,transparent 1px),linear-gradient(90deg,#fff 1px,transparent 1px); background-size:40px 40px; mask-image:linear-gradient(90deg,transparent,#000); }
+    .login-story > * { position:relative; z-index:1; }
+    .login-story .mark { width:46px; height:46px; display:grid; place-items:center; border-radius:10px; background:#315fd7; margin-bottom:28px; font-weight:800; }
+    .login-story h1 { font-size:31px; margin:0 0 8px; letter-spacing:-.6px; }
+    .login-story .en { color:#9fb1ca; font-size:14px; margin:0 0 30px; }
+    .login-story .lead { font-size:17px; line-height:1.7; max-width:520px; margin:0 0 28px; color:#e5ebf3; }
+    .capability { display:flex; gap:12px; align-items:flex-start; margin:12px 0; color:#d9e2ee; }
+    .capability i { width:22px; height:22px; border-radius:6px; background:#2f5bd3; flex:none; display:grid; place-items:center; font-style:normal; font-size:12px; }
+    .login-form { padding:56px; display:flex; flex-direction:column; justify-content:center; }
+    .login-form h2 { font-size:23px; margin:0 0 7px; }
+    .login-form > p { color:var(--muted); margin:0 0 26px; }
+    .field { margin-bottom:16px; }
+    .field label { display:block; font-weight:650; margin-bottom:6px; }
+    .field input { width:100%; height:42px; border:1px solid var(--line); border-radius:8px; padding:0 11px; outline:none; }
+    .login-form .btn { width:100%; height:42px; margin-top:4px; }
+    .login-note { margin-top:18px; color:var(--muted); font-size:12px; text-align:center; }
+    @media (max-width:1279px) {
+      .app { grid-template-columns:70px minmax(0,1fr); }
+      .topbar, .view { padding-left:20px; padding-right:20px; }
+      .nav-item { font-size:12px; }
+      .graph-layout { grid-template-columns:minmax(0,1fr) 276px; }
+      .foundation-grid { grid-template-columns:repeat(3,1fr); }
+      .foundation-item:nth-child(3) { border-right:0; }
+      .foundation-item:nth-child(n+4) { border-top:1px solid var(--line-soft); }
+    }
+    @media (max-width:1100px) {
+      .cluster-picker { min-width:230px; }
+      .top-scope { display:none; }
+      .split, .cluster-main, .detail-grid, .observe-layout, .investigation-layout, .action-layout, .report-layout, .knowledge-layout, .knowledge-form-layout, .assistant-layout { grid-template-columns:minmax(0,1fr); }
+      .split > aside, .cluster-main > aside, .detail-grid > aside, .observe-layout > aside, .investigation-layout > aside, .action-layout > aside, .report-layout > aside, .knowledge-layout > aside, .knowledge-form-layout > aside, .assistant-layout > aside { display:none; }
+      .investigation-layout > aside { display:block; }
+      .compact-only { display:inline-flex; }
+      .resource-layout { grid-template-columns:minmax(0,1fr); }
+      .resource-layout > .filter-panel { display:none; }
+      .graph-layout { grid-template-columns:minmax(0,1fr); }
+      .graph-layout > aside { display:none; }
+      .health-band, .cluster-head, .identity-band { grid-template-columns:1.25fr repeat(3,.75fr); }
+      .health-primary p:nth-of-type(2) { display:none; }
+      .plane-stats { grid-template-columns:repeat(2,1fr); }
+      .knowledge-health { grid-template-columns:repeat(3,1fr); }
+      .knowledge-health > div:nth-child(3) { border-right:0; }
+      .knowledge-health > div:nth-child(n+4) { border-top:1px solid var(--line-soft); }
+      .report-list { display:none; }
+      .policy-grid { grid-template-columns:repeat(2,1fr); }
+      .policy-grid > div:nth-child(2) { border-right:0; }
+      .policy-grid > div:nth-child(n+3) { border-top:1px solid var(--line-soft); }
+    }
+    @media (max-width:820px) {
+      .app { grid-template-columns:58px minmax(0,1fr); }
+      .nav-item span { display:none; }
+      .nav-item { min-height:48px; }
+      .brand { width:36px; height:36px; }
+      .health-band, .cluster-head, .identity-band { grid-template-columns:1fr 1fr; }
+      .health-primary, .cluster-identity, .identity-main { grid-column:1/3; }
+      .fact:nth-last-child(1) { display:none; }
+      .planes { grid-template-columns:1fr; }
+      .foundation-grid { grid-template-columns:1fr 1fr; }
+      .foundation-item:nth-child(n) { border-right:1px solid var(--line-soft); }
+      .foundation-item:nth-child(even) { border-right:0; }
+      .trust-strip { grid-template-columns:1fr; }
+      .trust-strip .issue { border-left:0; border-top:1px solid var(--line); padding:10px 0 0; }
+      .summary-grid, .report-facts { grid-template-columns:1fr 1fr; }
+      .kind-grid, .knowledge-health { grid-template-columns:1fr 1fr; }
+      .knowledge-health > div:nth-child(n) { border-right:1px solid var(--line-soft); }
+      .knowledge-health > div:nth-child(even) { border-right:0; }
+      .knowledge-search { flex-wrap:wrap; }
+      .form-grid { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute"><defs>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5V21H3z"/><path d="M9 21v-6h6v6"/></symbol>
+    <symbol id="i-cluster" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="6" rx="2"/><rect x="4" y="15" width="16" height="6" rx="2"/><path d="M8 9v6m8-6v6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 4h16v12H8l-4 4z"/><path d="M8 9h8M8 12h5"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="m13 2-8 12h7l-1 8 8-12h-7z"/></symbol>
+    <symbol id="i-report" viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5z"/><path d="M15 3v5h4M8 12h8M8 16h8"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H12v18H7.5A3.5 3.5 0 0 0 4 23z"/><path d="M20 5.5A3.5 3.5 0 0 0 16.5 2H12v18h4.5A3.5 3.5 0 0 1 20 23z"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.5 6A8 8 0 0 0 9 7.1l-2.4-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1A8 8 0 0 0 10.5 18l.3 2.6h4L15 18a8 8 0 0 0 1.5-1.1l2.4 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 7 3 7 3 7H3s3 0 3-7M9 20h6"/></symbol>
+  </defs></svg>
+
+  <div id="login" class="login-view">
+    <div class="login-shell">
+      <section class="login-story"><div class="mark">AI</div><h1>智能云平台运维</h1><p class="en">AIOps for Kubernetes & KubeVirt</p><p class="lead">先看多集群云平台中必须处理的问题和数据可信度，再进入真实 Kubernetes 集群，围绕容器与 KubeVirt 虚拟机完成观测、问答、调查和受控处置。</p><div class="capability"><i>1</i><span>多集群问题态势与影响优先级</span></div><div class="capability"><i>2</i><span>容器、Kubernetes Service 与 KubeVirt 资源关系</span></div><div class="capability"><i>3</i><span>证据问答、调查处置与可审核运维知识</span></div></section>
+      <section class="login-form"><h2>登录平台</h2><p>使用运维平台账号继续</p><div class="field"><label>用户名</label><input value="platform-operator" /></div><div class="field"><label>密码</label><input type="password" value="password" /></div><button class="btn primary">登录</button><div class="login-note">仅授权用户可访问生产云平台资源</div></section>
+    </div>
+  </div>
+
+  <div id="app" class="app">
+    <aside class="nav-rail"><div class="brand">AI</div><nav class="nav-stack">
+      <button class="nav-item" data-nav="platform"><svg><use href="#i-home"/></svg><span>平台</span></button>
+      <button class="nav-item" data-nav="cluster"><svg><use href="#i-cluster"/></svg><span>集群</span></button>
+      <button class="nav-item" data-nav="assistant"><svg><use href="#i-chat"/></svg><span>助手</span></button>
+      <button class="nav-item" data-nav="investigation"><svg><use href="#i-search"/></svg><span>调查</span></button>
+      <button class="nav-item" data-nav="actions"><svg><use href="#i-bolt"/></svg><span>处置</span></button>
+      <button class="nav-item" data-nav="knowledge"><svg><use href="#i-book"/></svg><span>知识</span></button>
+      <button class="nav-item" data-nav="reports"><svg><use href="#i-report"/></svg><span>报告</span></button>
+    </nav><div class="nav-bottom"><button class="nav-item" data-nav="admin"><svg><use href="#i-settings"/></svg><span>管理</span></button></div></aside>
+    <header class="topbar"><button class="cluster-picker"><span class="dot orange"></span><span class="grow"><strong id="cluster-name">cloud-sh-01</strong><small id="cluster-sub">Kubernetes 1.31.4 · 降级</small></span><span>⌄</span></button><span class="top-scope">真实集群选择用于资源、观测、助手、调查、处置、知识与报告</span><div class="top-actions"><button class="icon-btn" aria-label="通知"><svg><use href="#i-bell"/></svg></button><div class="avatar">OP</div></div></header>
+    <main>
+      <section id="platform" class="view" data-nav-section="platform"><div class="page-head"><div><h1>云平台运营态势</h1><p>全部授权 Kubernetes 集群 · 不受顶栏当前选择影响</p></div><div class="head-actions"><span class="muted">更新于 10:32:18</span><button class="btn primary">进入最高优先级问题</button></div></div>
+        <div class="card health-band"><div class="health-primary"><span class="eyebrow">当前活动严重问题</span><div class="state"><strong>3</strong></div><p><b>新增/待处置 1</b> · 处置中 1 · 待验证 1</p><p class="muted">已恢复问题不计入；点击数字下钻到同一口径问题列表。</p></div><div class="fact"><span>受影响集群</span><b>2 / 12</b><small>cloud-bj-02 · cloud-sh-01</small></div><div class="fact"><span>未知或数据陈旧</span><b>1</b><small>cloud-gz-edge · 最旧 9 分钟前</small></div><div class="fact"><span>采集覆盖率</span><b>118 / 120</b><small>98.3% · 缺少 2 个预期目标</small></div></div>
+        <div class="card platform-context"><span><b>集群分布：</b><span style="color:var(--green)">健康 8</span> · <span style="color:var(--orange)">降级 2</span> · <span style="color:var(--red)">严重 1</span> · 未知 1</span><span><b>最新有效数据：</b>14 秒前</span><span><b>最旧有效数据：</b>9 分钟前</span><span><b>读取范围：</b>12/12 集群</span></div>
+        <div class="split"><section class="card"><div class="section-title"><h2>需要关注的集群</h2><span class="right">按严重 → 降级 → 未知 → 健康排序</span></div><table class="table"><thead><tr><th style="width:26%">实际集群</th><th style="width:15%">状态</th><th>主要依据</th><th style="width:18%">最新数据</th></tr></thead><tbody><tr><td class="name-cell"><strong>cloud-bj-02</strong><small>北京 · Kubernetes 1.31.4</small></td><td><span class="status-chip critical">严重</span></td><td>控制面 2/3 API Server 不可用</td><td>28 秒前</td></tr><tr><td class="name-cell"><strong>cloud-sh-01</strong><small>上海 · Kubernetes 1.31.4</small></td><td><span class="status-chip degraded">降级</span></td><td>5 个 order-api Pod 未就绪</td><td>14 秒前</td></tr><tr><td class="name-cell"><strong>cloud-gz-edge</strong><small>广州边缘 · Kubernetes 1.30.7</small></td><td><span class="status-chip unknown">未知</span></td><td>资源同步已陈旧 9 分钟</td><td>9 分钟前</td></tr><tr><td class="name-cell"><strong>cloud-hz-01</strong><small>杭州 · Kubernetes 1.31.4</small></td><td><span class="status-chip healthy">健康</span></td><td>关键能力与数据均正常</td><td>11 秒前</td></tr></tbody></table></section><aside class="card risk"><span class="status-chip critical">最高优先级问题</span><h2>控制面可用性下降</h2><p><b>cloud-bj-02</b> · kube-apiserver</p><p class="muted">2/3 API Server 健康检查失败，持续 7 分钟；集群写请求已有超时。</p><div class="meta"><div><span>直接影响</span><b>写请求超时</b></div><div><span>持续时间</span><b>7 分钟</b></div><div><span>证据</span><b>9 条事实</b></div><div><span>证据新鲜度</span><b>28 秒前</b></div></div><button class="btn primary">进入 cloud-bj-02</button></aside></div>
+        <div class="card trust-strip"><div class="summary"><span class="status-chip degraded">运维数据与能力</span><b>6 / 7 正常</b></div><div class="issue"><b>拓扑同步延迟</b><span>cloud-gz-edge 最近成功同步于 10:23；关系图可能不完整，但不改变其他集群健康。</span></div><button class="btn">前往系统管理</button></div>
+      </section>
+
+      <section id="cluster" class="view" data-nav-section="cluster"><div class="page-head"><div><h1>cloud-sh-01 集群总览</h1><p>上海 · Kubernetes 1.31.4 · 当前真实集群</p></div><div class="head-actions"><span class="muted">最新数据 14 秒前</span><button class="btn primary">调查最重要问题</button></div></div>
+        <div class="card cluster-head"><div class="cluster-identity"><span class="eyebrow">实际集群健康</span><h2><span class="status-chip degraded">降级</span> Deployment 与 Pod 可用性下降</h2><p><b>依据：</b>order-api 5/8 Pod 未就绪，Kubernetes Service 端点减少。</p></div><div class="fact"><span>采集覆盖</span><b>1,972 / 1,980</b><small>99.6% · 8 个目标缺失</small></div><div class="fact"><span>连接与同步</span><b>正常</b><small>API 可达 · 14 秒前</small></div><div class="fact"><span>未决严重问题</span><b style="color:var(--red)">2</b><small>容器 1 · KubeVirt 1</small></div></div>
+        <div class="cluster-main"><section class="card"><div class="section-title"><h2>当前最重要问题</h2><span class="right">按故障影响排序</span></div><div class="problem-list"><div class="problem-row"><span class="status-chip critical">严重</span><div><strong>Deployment / order-api 仅 3/8 Ready</strong><small>影响 Kubernetes Service / order-api · commerce · 11 分钟</small></div><span class="drawer-trigger">查看容器资源 →</span></div><div class="problem-row"><span class="status-chip critical">严重</span><div><strong>VM / checkout-worker-03 磁盘延迟</strong><small>VMI I/O p99 87ms · virtualization · 18 分钟</small></div><span class="drawer-trigger">查看虚拟机 →</span></div><div class="problem-row"><span class="status-chip degraded">降级</span><div><strong>集群网络面出现丢包</strong><small>CNI 已确认 · 影响 node-worker-12 上 14 个 Pod</small></div><span class="drawer-trigger">查看影响 →</span></div></div></section><aside class="card"><div class="section-title"><h2>近期变化与影响</h2></div><div class="change-list"><div class="change"><strong>10:15 · order-api 镜像变更</strong><span>疑似触发 5 个 Pod 启动失败</span></div><div class="change"><strong>10:08 · VM 热迁移失败</strong><span>checkout-worker-03 留在原节点</span></div><div class="change"><strong>09:52 · CNI 配置下发</strong><span>与 node-worker-12 丢包时间接近</span></div></div></aside></div>
+        <div class="planes">
+          <section class="card"><div class="section-title"><h2>容器资源</h2><span class="right">8 类明确 Kubernetes Kind</span></div><div class="plane-body"><div class="kind-grid">
+            <div class="kind-stat"><span>Deployment</span><b>62</b><small>1 严重 · 2 降级</small></div><div class="kind-stat"><span>StatefulSet</span><b>28</b><small>1 降级</small></div><div class="kind-stat"><span>DaemonSet</span><b>14</b><small>全部就绪</small></div><div class="kind-stat"><span>Job</span><b>41</b><small>2 个失败</small></div>
+            <div class="kind-stat"><span>CronJob</span><b>18</b><small>1 次最近失败</small></div><div class="kind-stat"><span>Pod</span><b>1,824</b><small>5 未就绪 · 11 重启</small></div><div class="kind-stat"><span>Kubernetes Service</span><b>74</b><small>1 个端点不足</small></div><div class="kind-stat"><span>Ingress</span><b>22</b><small>1 个下游异常</small></div>
+          </div><div class="plane-alert"><span><b>最突出：</b>Deployment / order-api 发布后 5 个 Pod 持续未就绪</span><button class="btn">打开容器目录</button></div></div></section>
+          <section class="card"><div class="section-title"><h2>KubeVirt 虚拟机</h2><span class="right">与容器资源同级</span></div><div class="plane-body"><div class="plane-stats"><div class="mini-stat"><span>VM</span><b>86</b><small>1 严重 · 2 降级</small></div><div class="mini-stat"><span>运行中 VMI</span><b>81</b><small>3 已停止 · 2 迁移</small></div><div class="mini-stat"><span>异常 VM/VMI</span><b>3</b><small>按真实对象下钻</small></div><div class="mini-stat"><span>迁移中 / 失败</span><b>2 / 1</b><small>最近 1 小时</small></div></div><div class="plane-alert"><span><b>依赖影响：</b>1 台 VM 受存储 I/O 延迟影响；辅助网络无当前异常</span><button class="btn">打开虚拟机目录</button></div></div></section>
+        </div>
+        <section class="card foundation"><div class="section-title"><h2>集群基础能力</h2><span class="right">状态与依据 · 关键异常自动提升至问题队列</span></div><div class="foundation-grid"><div class="foundation-item"><div class="line"><b>控制面</b><span class="status-chip healthy">健康</span></div><p>3/3 API Server 可用</p></div><div class="foundation-item"><div class="line"><b>节点与物理机</b><span class="status-chip degraded">降级</span></div><p>24/24 Ready · 1 个节点 NetworkUnavailable</p></div><div class="foundation-item"><div class="line"><b>网络面</b><span class="status-chip degraded">降级</span></div><p>CNI 正常 · 1 条关键链路丢包 4.8%</p></div><div class="foundation-item"><div class="line"><b>存储面</b><span class="status-chip healthy">健康</span></div><p>CSI 正常 · 存储池容量 68% · I/O 正常</p></div><div class="foundation-item"><div class="line"><b>KubeVirt 能力</b><span class="status-chip healthy">健康</span></div><p>Operator 正常 · 迁移能力可用</p></div></div></section>
+      </section>
+
+      <section id="resources" class="view" data-nav-section="cluster"><div class="page-head"><div><h1>资源目录</h1><p>cloud-sh-01 · 真实资源载体 · 异常优先</p></div><div class="head-actions"><button class="btn compact-only">筛选</button><button class="btn">共享存储依赖</button><button class="btn">导出当前筛选</button></div></div><div class="tabs"><button class="tab active">容器资源</button><button class="tab">KubeVirt 虚拟机</button><span class="aux-link">集群基础能力 →</span></div><div class="resource-layout">
+        <aside class="card filter-panel"><div class="search-box">搜索当前集群资源…</div><div class="filter-group"><h3>健康状态</h3><div class="filter-option"><i class="checkbox checked"></i>仅看异常 <span style="margin-left:auto">16</span></div><div class="filter-option"><i class="checkbox"></i>未知/陈旧 <span style="margin-left:auto">8</span></div></div><div class="filter-group"><h3>资源 Kind</h3><div class="filter-option"><i class="checkbox checked"></i>Deployment</div><div class="filter-option"><i class="checkbox"></i>StatefulSet</div><div class="filter-option"><i class="checkbox"></i>DaemonSet</div><div class="filter-option"><i class="checkbox"></i>Job</div><div class="filter-option"><i class="checkbox"></i>CronJob</div><div class="filter-option"><i class="checkbox checked"></i>Pod</div><div class="filter-option"><i class="checkbox checked"></i>Kubernetes Service</div><div class="filter-option"><i class="checkbox checked"></i>Ingress</div></div><div class="filter-group"><h3>Namespace</h3><div class="filter-option"><i class="checkbox checked"></i>commerce</div><div class="filter-option"><i class="checkbox"></i>payments</div><div class="filter-option"><i class="checkbox"></i>platform</div></div></aside>
+        <section class="card"><div class="kind-strip"><span class="kind-chip active">全部明确 Kind</span><span class="kind-chip">Deployment</span><span class="kind-chip">StatefulSet</span><span class="kind-chip">DaemonSet</span><span class="kind-chip">Job</span><span class="kind-chip">CronJob</span><span class="kind-chip">Pod</span><span class="kind-chip">Kubernetes Service</span><span class="kind-chip">Ingress</span></div><div class="result-head"><strong>16 个异常资源</strong><span class="muted">容器资源 · commerce</span><span class="right">第 1–16 项，共 16 项</span></div><table class="table resource-table"><thead><tr><th>类型</th><th>名称与定位</th><th>健康</th><th>关键症状</th><th>操作</th></tr></thead><tbody><tr><td><span class="tag">Deployment</span></td><td class="name-cell"><strong>order-api</strong><small>commerce / cloud-sh-01</small></td><td><span class="status-chip critical">严重</span></td><td>5/8 Pod 未就绪 · 11 分钟</td><td><span class="drawer-trigger">快速查看</span></td></tr><tr><td><span class="tag">Pod</span></td><td class="name-cell"><strong>order-api-69dff8b9c7-kwm2r</strong><small>commerce / node-worker-07</small></td><td><span class="status-chip critical">严重</span></td><td>CrashLoopBackOff · Container 重启 17 次</td><td><span class="drawer-trigger">快速查看</span></td></tr><tr><td><span class="tag">Kubernetes Service</span></td><td class="name-cell"><strong>order-api</strong><small>commerce / ClusterIP</small></td><td><span class="status-chip degraded">降级</span></td><td>EndpointSlice 显示就绪端点仅 3/8</td><td><span class="drawer-trigger">快速查看</span></td></tr><tr><td><span class="tag">Ingress</span></td><td class="name-cell"><strong>commerce-public</strong><small>commerce / api.example.internal</small></td><td><span class="status-chip degraded">降级</span></td><td>下游 Kubernetes Service 失败率 6.8%</td><td><span class="drawer-trigger">快速查看</span></td></tr><tr><td><span class="tag">CronJob</span></td><td class="name-cell"><strong>order-reconcile</strong><small>commerce / 每 15 分钟</small></td><td><span class="status-chip degraded">降级</span></td><td>最近一次 Job 失败 · 8 分钟前</td><td><span class="drawer-trigger">快速查看</span></td></tr></tbody></table></section>
+      </div></section>
+
+      <section id="resource-detail" class="view" data-nav-section="cluster"><div class="page-head"><div><h1>资源详情</h1><p>cloud-sh-01 · commerce · canonical UID 可完整复制</p></div><div class="head-actions"><button class="btn">查看关系</button><button class="btn primary">创建调查</button></div></div><div class="card identity-band"><div class="identity-main"><span class="tag">Deployment</span><h2>order-api</h2><p class="muted">commerce · apps/v1 · uid 8fe0…e41c（查看完整值 / 复制）</p></div><div class="fact"><span>健康</span><b style="color:var(--red)">严重</b><small>5/8 副本未就绪</small></div><div class="fact"><span>最近变更</span><b>11 分钟前</b><small>镜像 v2.18.4</small></div><div class="fact"><span>数据时效</span><b>14 秒前</b><small>来源：资源同步</small></div></div><div class="detail-grid"><section class="card"><div class="summary-grid"><div class="mini-stat"><span>期望 / 就绪</span><b>8 / 3</b><small>5 个不可用</small></div><div class="mini-stat"><span>容器重启</span><b>49</b><small>最近 1 小时</small></div><div class="mini-stat"><span>关联 Service</span><b>1</b><small>3/8 Endpoint</small></div><div class="mini-stat"><span>关联 PVC</span><b>2</b><small>1 个容量风险</small></div></div><div class="tabs content-tabs"><button class="tab active">证据概览</button><button class="tab">观测</button><button class="tab">事件与变更</button><button class="tab">关联调查</button></div><div class="evidence-list"><div class="evidence-row"><b>状态依据</b><span>Deployment 超过 ProgressDeadline，5 个新副本因启动探针失败未就绪。</span><span class="status-chip critical">已确认</span></div><div class="evidence-row"><b>关键变更</b><span class="mono">registry.local/order-api:v2.18.3 → v2.18.4</span><span>10:15:18</span></div><div class="evidence-row"><b>K8s Event</b><span>ProgressDeadlineExceeded · MinimumReplicasUnavailable</span><span>10:21:04</span></div><div class="evidence-row"><b>容器日志</b><span>startup probe failed: connection refused on /health/startup</span><span>10:18:32</span></div></div></section><aside class="card"><div class="context-section"><h3>关系与影响</h3><div class="relation-pill"><b>管理 → 8 个 Pod</b><br><span class="muted">5 个严重 · 3 个健康</span></div><div class="relation-pill"><b>被选择 ← Kubernetes Service / order-api</b><br><span class="muted">可用 Endpoint 3/8</span></div><div class="relation-pill"><b>Pod 挂载 → PVC / order-cache-data</b><br><span class="muted">容量使用 87%</span></div></div><div class="context-section"><h3>可用能力</h3><div class="kv"><span>回滚版本</span><span>需预检与审批</span></div><div class="kv"><span>调整副本</span><span>允许建议</span></div><button class="btn primary" style="width:100%;margin-top:10px">进入处置</button></div><div class="context-section"><h3>数据可信度</h3><span class="status-chip healthy">完整</span><p class="muted">指标、事件、日志、拓扑均已同步。</p></div></aside></div></section>
+
+      <section id="vm-detail" class="view" data-nav-section="cluster"><div class="page-head"><div><h1>KubeVirt 虚拟机详情</h1><p>cloud-sh-01 · virtualization · VM 与当前 VMI 的存储/网络依赖</p></div><div class="head-actions"><button class="btn">查看关系图谱</button><button class="btn primary">创建调查</button></div></div>
+        <div class="card identity-band"><div class="identity-main"><span class="tag">VirtualMachine</span><h2>checkout-worker-03</h2><p class="muted">virtualization · kubevirt.io/v1 · uid 39db…a821（查看完整值 / 复制）</p></div><div class="fact"><span>运行状态</span><b style="color:var(--orange)">运行中 · 降级</b><small>VMI I/O p99 87ms</small></div><div class="fact"><span>所在节点</span><b>node-worker-12</b><small>virt-launcher 正常</small></div><div class="fact"><span>数据时效</span><b>18 秒前</b><small>资源与指标完整</small></div></div>
+        <div class="detail-grid"><section class="card"><div class="tabs content-tabs"><button class="tab">概览</button><button class="tab active">磁盘与卷</button><button class="tab">网络接口</button><button class="tab">事件与迁移</button></div><div class="section-title"><h2>磁盘设备到共享存储的真实引用</h2><span class="right">PVC 只保留一个 canonical 身份</span></div><table class="table"><thead><tr><th>来宾设备</th><th>VM Volume</th><th>数据源</th><th>容量 / I/O</th><th>健康</th></tr></thead><tbody><tr><td class="name-cell"><strong>vda · VirtIO</strong><small>启动盘</small></td><td>rootdisk</td><td class="name-cell"><strong>DataVolume / checkout-worker-03-root</strong><small>→ PVC / dv-checkout-worker-03-root</small></td><td>120 GiB · p99 87ms</td><td><span class="status-chip critical">严重</span></td></tr><tr><td class="name-cell"><strong>vdb · VirtIO</strong><small>数据盘</small></td><td>checkout-data</td><td class="name-cell"><strong>PVC / checkout-data</strong><small>canonical uid pvc-712f…b940</small></td><td>500 GiB · p99 11ms</td><td><span class="status-chip healthy">健康</span></td></tr><tr><td>—</td><td>cloudinitdisk</td><td>cloud-init NoCloud</td><td>非持久化</td><td><span class="status-chip healthy">正常</span></td></tr></tbody></table><div class="section-title"><h2>网络接口与辅助网络</h2><span class="right">只显示实际引用</span></div><table class="table"><thead><tr><th>VMI 接口</th><th>网络来源</th><th>配置链</th><th>状态</th></tr></thead><tbody><tr><td>eth0 · masquerade</td><td>Pod 默认网络</td><td>CNI / cilium</td><td><span class="status-chip healthy">正常</span></td></tr><tr><td>net1 · SR-IOV</td><td class="name-cell"><strong>NAD / sriov-prod</strong><small>spec.networks[].multus.networkName</small></td><td>Multus → SR-IOV → vlan-240</td><td><span class="status-chip healthy">正常</span></td></tr></tbody></table></section>
+        <aside class="card"><div class="inspector-head"><span class="status-chip critical">存储依赖异常</span><h2>rootdisk I/O 延迟</h2><p class="muted">影响 checkout-worker-03 · 18 分钟</p></div><div class="context-section"><h3>完整依赖链</h3><div class="relation-pill">VM ─实例化→ VMI</div><div class="relation-pill">VMI ─使用→ 磁盘设备 / vda</div><div class="relation-pill">磁盘设备 ─引用→ Volume / rootdisk</div><div class="relation-pill">Volume ─来源于→ DataVolume / checkout-worker-03-root</div><div class="relation-pill">DataVolume ─声明→ PVC / dv-checkout-worker-03-root</div><div class="relation-pill">PVC ─绑定到→ PV / pvc-39db…</div></div><div class="context-section"><h3>辅助网络解释</h3><p class="muted">NAD 是 Multus 辅助网络定义，不是网卡或物理网络。默认 Pod 网络不创建 NAD 关系。</p></div></aside></div>
+      </section>
+
+      <section id="observe" class="view" data-nav-section="cluster">
+        <div class="page-head"><div><h1>观测工作区</h1><p>cloud-sh-01 · Deployment / commerce / order-api</p></div><div class="head-actions"><button class="btn">最近 1 小时⌄</button><button class="btn primary">基于当前证据调查</button></div></div>
+        <div class="tabs"><button class="tab active">问题</button><button class="tab">指标</button><button class="tab">日志</button><button class="tab">Trace</button><button class="tab">事件</button><button class="tab">变更</button></div>
+        <div class="observe-layout"><section class="card observe-main"><div class="chart-head"><div><h2>请求失败率与副本就绪变化</h2><p>10:00–11:00 · 来源：Metrics + Kubernetes 资源状态</p></div><div class="legend"><span><i style="background:var(--red)"></i>请求失败率（左轴 %）</span><span><i style="background:var(--blue)"></i>就绪副本（右轴 个）</span></div></div><div class="chart"><svg viewBox="0 0 820 245" aria-label="请求失败率和就绪副本双序列图"><path d="M52 18V206H770" stroke="#cbd4df" fill="none"/><path d="M52 55H770M52 96H770M52 137H770M52 178H770" stroke="#e9edf2"/><path d="M52 188 L122 185 L192 183 L262 179 L332 169 L402 142 L472 112 L542 82 L612 68 L682 55 L752 48" stroke="#c83c35" stroke-width="3" fill="none"/><path d="M52 42 L122 42 L192 42 L262 42 L332 42 L402 66 L472 90 L542 114 L612 138 L682 138 L752 138" stroke="#2f5bd3" stroke-width="3" fill="none"/><path d="M52 96H770" stroke="#c26a1b" stroke-dasharray="5 4"/><text x="10" y="24" class="axis">8%</text><text x="10" y="100" class="axis">4%</text><text x="18" y="208" class="axis">0%</text><text x="780" y="24" class="axis">8个</text><text x="780" y="100" class="axis">5个</text><text x="780" y="208" class="axis">0个</text><text x="52" y="230" class="axis">10:00</text><text x="390" y="230" class="axis">10:30</text><text x="730" y="230" class="axis">11:00</text><circle cx="752" cy="48" r="4" fill="#c83c35"/><circle cx="752" cy="138" r="4" fill="#2f5bd3"/></svg></div><div class="section-title"><h2>关联信号</h2><span class="right">6 项 · 按时间相关性排序</span></div><table class="table"><thead><tr><th>时间</th><th>证据</th><th>资源</th><th>可信度</th></tr></thead><tbody><tr><td>10:21:04</td><td>ProgressDeadlineExceeded</td><td>Deployment / order-api</td><td><span class="status-chip healthy">完整</span></td></tr><tr><td>10:18:32</td><td>CrashLoopBackOff</td><td>Pod / order-api-…-kwm2r</td><td><span class="status-chip healthy">完整</span></td></tr><tr><td>10:15:18</td><td>镜像版本变更 v2.18.4</td><td>Deployment / order-api</td><td><span class="status-chip healthy">完整</span></td></tr></tbody></table></section>
+          <aside class="card"><div class="context-section"><h3>告警调查</h3><span class="status-chip degraded">调查草稿</span><p><b>ALERT-20260911-034</b></p><p class="muted">策略模式：系统建议（draft）。已冻结当前告警 Scope，需用户确认后开始调查。</p><button class="btn primary" style="width:100%">开始调查</button></div><div class="section-title"><h2>异常时间线</h2><span class="right">10:15–现在</span></div><div class="timeline"><div class="timeline-item"><strong>10:21 · 发布超时</strong><p>Deployment 未达到期望副本数。</p></div><div class="timeline-item"><strong>10:18 · 容器连续重启</strong><p>启动探针失败，开始退避。</p></div><div class="timeline-item"><strong>10:15 · 镜像发布</strong><p>v2.18.3 更新到 v2.18.4。</p></div></div><div class="context-section"><h3>数据质量</h3><p class="muted">指标、事件、变更完整；1 条 Trace 缺少下游 Span。</p><span class="status-chip degraded">部分 Trace</span></div></aside>
+        </div>
+      </section>
+
+      <section id="assistant" class="view" data-nav-section="assistant"><div class="page-head"><div><h1>智能运维助手</h1><p>cloud-sh-01 · 基于当前集群资源事实、观测证据与已发布运维知识</p></div><div class="head-actions"><button class="btn compact-only">会话</button><button class="btn compact-only">上下文</button><button class="btn primary">新建会话</button></div></div><div class="card scope-strip" style="margin-bottom:14px"><span>会话 Scope <b>已冻结</b></span><span>集群 <b>cloud-sh-01</b></span><span>资源 <b>Deployment / commerce / order-api</b></span><span>时间 <b>最近 1 小时</b></span><span>知识范围 <b>平台通用 + 当前集群</b></span></div><div class="assistant-layout">
+        <aside class="card assistant-threads"><button class="btn primary">＋ 新建会话</button><div class="thread-label">今天</div><div class="thread-item active"><strong>order-api 发布异常</strong><small>Deployment · 3 分钟前</small></div><div class="thread-item"><strong>VM 根盘延迟</strong><small>KubeVirt VM · 28 分钟前</small></div><div class="thread-item"><strong>节点丢包影响范围</strong><small>Kubernetes Node · 1 小时前</small></div><div class="thread-label">昨天</div><div class="thread-item"><strong>Service 端点减少</strong><small>Kubernetes Service · 昨天 16:42</small></div></aside>
+        <section class="card chat-workspace"><div class="chat-head"><div class="grow"><strong>order-api 发布异常</strong><small>对话 CH-20260910-026 · Scope 不随顶栏切换改写</small></div><span class="status-chip healthy">回答完成</span></div><div class="chat-messages"><div class="chat-message user">为什么 order-api 的 5 个 Pod 一直未就绪？请基于最近 1 小时证据分析。</div><article class="chat-message assistant"><div class="answer-meta"><span class="tag">AI 应答</span><span class="scope-chip">11 条事实</span><span class="scope-chip">2 条已发布知识</span><span class="scope-chip">生成于 10:34:12</span></div><h2>结论</h2><p>5 个 Pod 在镜像升级到 <b>v2.18.4</b> 后持续未就绪，直接原因是 <b>startup probe 访问 /health/startup 被拒绝</b>。现有证据支持“新版本探针路径或监听时机不兼容”，暂不支持节点资源不足。</p><div class="answer-section"><b>关键事实证据</b><div class="citation-list"><div class="citation"><span>[证据 1]</span><span>Deployment 期望/就绪从 8/8 变为 8/3</span><span>10:21:04</span></div><div class="citation"><span>[证据 2]</span><span>5 个 Pod 出现 startup probe connection refused</span><span>Container Log</span></div><div class="citation"><span>[证据 3]</span><span>唯一相邻变更为镜像 v2.18.3 → v2.18.4</span><span>Change</span></div></div></div><div class="answer-section"><b>运维知识引用</b><div class="citation-list"><div class="citation"><span>[知识 K-42]</span><span>Deployment 发布后启动探针持续失败 · 当前版本 v3</span><span>已发布</span></div><div class="citation"><span>[Playbook P-12]</span><span>发布回滚预检与验证 · Git 7c03ae1</span><span>平台通用</span></div></div></div><div class="answer-section"><b>不确定性与缺失证据</b><p class="muted">1 条下游 Trace 缺少 Span；尚未对比 v2.18.3 与 v2.18.4 的 startupProbe 配置，因此根因仍需验证。</p></div><div class="answer-section"><b>建议下一步</b><p>先比较两个版本的探针路径和启动监听时间；若差异确认，创建带预检与审批的回滚建议，并以 8/8 Ready、端点恢复和 15 分钟无新增 BackOff 作为验证条件。</p><div class="answer-actions"><button class="btn">查看 11 条证据</button><button class="btn">打开引用知识</button><button class="btn primary">创建调查草稿</button></div></div></article></div><div class="chat-composer"><div class="composer-box"><textarea aria-label="向智能运维助手提问">继续比较两个版本的 startupProbe 配置，并列出需要补充的证据。</textarea><button class="btn primary">发送</button></div><div class="composer-meta"><span>已附带：Deployment / order-api</span><span>回答只使用当前 Scope 的事实与已发布知识</span><span>Enter 发送 · Shift+Enter 换行</span></div></div></section>
+        <aside class="card assistant-context"><div class="section-title"><h2>会话上下文</h2><span class="right">可追溯</span></div><div class="context-section"><div class="kv"><span>集群</span><b>cloud-sh-01</b></div><div class="kv"><span>资源 UID</span><span class="mono">8fe0…e41c</span></div><div class="kv"><span>时间范围</span><span>10:00–11:00</span></div><div class="kv"><span>数据时效</span><span>14 秒前</span></div></div><div class="context-section"><h3>已用数据源</h3><div class="context-source"><strong>Kubernetes 资源与 Event</strong><small>完整 · 14 秒前</small></div><div class="context-source"><strong>Metrics 与 Container Log</strong><small>完整 · 18 秒前</small></div><div class="context-source"><strong>Trace</strong><small>部分 · 缺少 1 个下游 Span</small></div></div><div class="context-section"><h3>能力边界</h3><div class="kv"><span>读取证据</span><span class="status-chip healthy">允许</span></div><div class="kv"><span>创建调查</span><span>仅草稿</span></div><div class="kv"><span>处置动作</span><span>只能建议；需预检与审批</span></div><p class="muted">AI 不直接执行命令，不读取未发布知识，不跨集群扩展 Scope。</p></div></aside>
+      </div></section>
+
+      <section id="investigation" class="view" data-nav-section="investigation">
+        <div class="page-head"><div><h1>故障调查</h1><p>RUN-20260909-0182 · 主语：Deployment / order-api</p></div><div class="head-actions"><span class="status-chip healthy">已结束</span><button class="btn">加入运维知识（待审核）</button><button class="btn primary">打开处置中心</button></div></div>
+        <div class="card scope-strip"><span>集群 <b>cloud-sh-01</b></span><span>Namespace <b>commerce</b></span><span>绝对时间 <b>10:00:00–11:00:00</b></span><span>资源 UID <b>8fe0…e41c</b></span><span>证据快照 <b>已冻结</b></span></div>
+        <div class="investigation-layout">
+          <section class="card">
+            <div class="conclusion-panel"><div class="conclusion-head"><div><span class="eyebrow">调查结论</span><h2>新版本启动探针配置不兼容</h2></div><span class="status-chip healthy">根因已确认</span></div><p>镜像 v2.18.4 发布后，startup probe 在应用监听前持续失败，直接造成 5 个 Pod 不就绪，并进一步减少 Service 端点、抬高请求失败率。</p><div class="conclusion-meta"><span class="scope-chip">置信度 0.91</span><span class="scope-chip">支持 8</span><span class="scope-chip">反驳 1</span><span class="scope-chip">缺失 1</span><span class="scope-chip">数据部分完整</span></div></div>
+            <div class="section-title"><h2>可验证因果链</h2><span class="right">4 个事实节点 · 3 条关系 · 11 条证据</span></div>
+            <div class="fault-chain"><div class="chain-node">镜像变更<br><b>v2.18.4</b></div><div class="chain-edge"><span class="edge-name">触发</span><span class="arrowline"></span><span>Change + 日志 · 3</span></div><div class="chain-node critical">Pod 启动失败<br><b>5 个副本</b></div><div class="chain-edge"><span class="edge-name">导致</span><span class="arrowline"></span><span>K8s Event · 4</span></div><div class="chain-node">Service 端点减少<br><b>3 / 8</b></div><div class="chain-edge"><span class="edge-name">影响</span><span class="arrowline"></span><span>Metrics · 4</span></div><div class="chain-node">请求失败率升高<br><b>6.8%</b></div></div>
+            <div class="section-title"><h2>关键证据</h2><span class="right">优先显示 3–5 条 eligible evidence</span></div>
+            <div class="evidence-cards"><div class="evidence-card"><strong>版本变更</strong><span>v2.18.3 → v2.18.4</span><small>Change · 10:15:18 · 支持根因</small></div><div class="evidence-card"><strong>启动探针失败</strong><span>connection refused</span><small>Container Log · 10:18:32 · 支持根因</small></div><div class="evidence-card"><strong>节点无资源压力</strong><span>CPU / 内存正常</span><small>Metrics · 10:20:00 · 反驳节点假设</small></div></div>
+            <div class="details-collapsed"><span>技术详情已收起：完整时间线、全部假设、工具调用、图上下文和原始载荷</span><button class="btn quiet">展开技术详情</button></div>
+          </section>
+          <aside class="card"><div class="context-section"><h3>影响与冻结 Scope</h3><div class="kv"><span>影响</span><span>5 Pod · 1 Kubernetes Service</span></div><div class="kv"><span>窗口</span><span>10:00:00–11:00:00</span></div><div class="kv"><span>快照</span><span>已冻结 · UID 已确认</span></div></div><div class="context-section"><h3>证据完整性</h3><span class="status-chip degraded">部分完整</span><p class="muted">指标、事件、日志和变更可用；1 条下游 Trace 缺少 Span，不影响当前根因。</p></div><div class="context-section"><h3>终止原因与预算</h3><div class="kv"><span>终止原因</span><span><b>root_confirmed</b><br>已取得足够证据并确认根因</span></div><div class="kv"><span>调查步骤</span><span>7 / 12</span></div><div class="kv"><span>工具调用</span><span>9 / 20</span></div></div><div class="context-section"><h3>下一步验证</h3><p class="muted">先对比两个版本 startupProbe 配置；处置建议必须经过预检、人工审批和恢复验证。</p><button class="btn primary" style="width:100%">创建处置建议</button></div></aside>
+        </div>
+      </section>
+
+      <section id="actions" class="view" data-nav-section="actions"><div class="page-head"><div><h1>处置工作区</h1><p>cloud-sh-01 · 所有动作可预检、审批、验证和审计</p></div><div class="head-actions"><button class="btn">最近 24 小时⌄</button></div></div><div class="card pipeline"><div class="pipeline-step"><span>待预检</span><b>2</b></div><div class="pipeline-step"><span>待审批</span><b>3</b></div><div class="pipeline-step"><span style="color:var(--blue)">执行中</span><b style="color:var(--blue)">1</b></div><div class="pipeline-step"><span>待验证</span><b>2</b></div><div class="pipeline-step"><span style="color:var(--green)">已完成</span><b>18</b></div><div class="pipeline-step"><span style="color:var(--red)">失败</span><b>1</b></div></div><div class="action-layout"><section class="card"><div class="result-head"><strong>动作队列</strong><span class="right">按风险排序</span></div><div class="action-row selected"><div><strong>回滚 Deployment / order-api 至 v2.18.3</strong><small class="muted">RUN-20260909-0182 · commerce · 10:29</small></div><span class="status-chip degraded">待审批</span><span>中风险</span></div><div class="action-row"><div><strong>迁移 VM / checkout-worker-03</strong><small class="muted">RUN-20260909-0174 · virtualization · 10:18</small></div><span class="status-chip running">执行中</span><span>中风险</span></div><div class="action-row"><div><strong>隔离 Kubernetes Node / node-worker-12</strong><small class="muted">RUN-20260909-0166 · 09:48</small></div><span class="status-chip degraded">待预检</span><span>高风险</span></div><div class="action-row"><div><strong>扩容 PVC / order-cache-data</strong><small class="muted">RUN-20260909-0152 · commerce · 09:14</small></div><span class="status-chip unknown">待验证</span><span>低风险</span></div></section><aside class="card"><div class="inspector-head"><span class="status-chip degraded">待审批</span><h2>回滚 order-api</h2><p class="muted">Deployment · commerce · cloud-sh-01</p></div><div class="context-section"><div class="kv"><span>目标版本</span><b>v2.18.3</b></div><div class="kv"><span>当前版本</span><span>v2.18.4 · 已预检</span></div><div class="kv"><span>风险</span><span>中等 · 短时连接重建</span></div><div class="kv"><span>回滚条件</span><span>5 分钟内就绪副本少于 7</span></div><div class="log-box">precheck: resource_version matched
+capability: rollback allowed
+approval: awaiting platform-owner</div></div></aside></div></section>
+
+      <section id="graph" class="view" data-nav-section="cluster"><div class="page-head"><div><h1>资源关系图谱</h1><p>cloud-sh-01 · 集群依赖拓扑 · 每条边直接说明“谁以什么关系指向谁”</p></div><div class="head-actions"><button class="btn">等价关系列表</button><button class="btn primary">定位最高问题</button></div></div><div class="tabs"><button class="tab active">集群依赖拓扑</button><button class="tab">资源关系</button><button class="tab">主故障链</button><span class="aux-link">实线＝事实 · 虚线＝推断 · 箭头指向关系宾语</span></div><div class="graph-layout"><section class="card graph-card"><div class="graph-toolbar"><button class="tool">−</button><button class="tool">+</button><button class="tool">适应画布</button><button class="tool">回到中心</button><button class="tool active">已聚焦：虚拟接口 → NAD</button><button class="tool">清除聚焦</button><button class="tool compact-only">检查器</button><span class="graph-budget">当前 16 / 2,418 节点 · 15 / 4,806 边 · 首屏预算 80 / 200</span></div><div class="graph-filterbar"><span>关系语义</span><button class="tool active">结构</button><button class="tool active">运行</button><button class="tool active">流量</button><button class="tool active">存储</button><button class="tool active">网络</button><button class="tool">故障传播</button><button class="tool">推断</button><span style="margin-left:auto">上下文：Namespace / Node 已折叠 · 孤点已隐藏</span></div><div class="graph-stage-wrap"><svg class="graph-stage focused" viewBox="0 0 900 540" aria-label="容器与 KubeVirt 集群依赖拓扑；当前聚焦虚拟接口连接 NAD，其他关系已降低强调；所有可见关系均包含中文名称和箭头"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 8 4 0 8Z" fill="#607089"/></marker><marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 8 4 0 8Z" fill="#2f5bd3"/></marker></defs>
+          <rect class="layer-bg" x="20" y="24" width="860" height="82" rx="9"/><text class="layer-label" x="32" y="44">访问 / 流量</text>
+          <rect class="layer-bg" x="20" y="120" width="860" height="84" rx="9"/><text class="layer-label" x="32" y="140">控制器</text>
+          <rect class="layer-bg" x="20" y="218" width="860" height="112" rx="9"/><text class="layer-label" x="32" y="238">运行实例</text>
+          <rect class="layer-bg" x="20" y="344" width="860" height="176" rx="9"/><text class="layer-label" x="32" y="364">集群依赖</text>
+          <text class="layer-label" x="182" y="20">容器资源</text><text class="layer-label" x="650" y="20">KubeVirt 虚拟机</text>
+
+          <path class="edge" d="M185 69H250"/><rect class="edge-label-bg" x="193" y="53" width="54" height="20" rx="4"/><text class="edge-label" x="205" y="67">路由到</text>
+          <path class="edge" d="M325 94V252"/><rect class="edge-label-bg" x="292" y="106" width="68" height="20" rx="4"/><text class="edge-label" x="302" y="120">选择 8 个</text>
+          <path class="edge" d="M137 190V270H250"/><rect class="edge-label-bg" x="151" y="254" width="90" height="20" rx="4"/><text class="edge-label" x="158" y="268">管理 8 个 Pod</text>
+          <path class="edge" d="M250 285H140V380"/><rect class="edge-label-bg" x="152" y="300" width="54" height="20" rx="4"/><text class="edge-label" x="164" y="314">挂载</text>
+          <path class="edge" d="M140 426V459"/><rect class="edge-label-bg" x="110" y="432" width="62" height="20" rx="4"/><text class="edge-label" x="120" y="446">绑定到</text>
+          <path class="edge" d="M325 308V380H337"/><rect class="edge-label-bg" x="298" y="335" width="66" height="20" rx="4"/><text class="edge-label" x="308" y="349">调度到</text>
+          <path class="edge" d="M337 426V459"/><rect class="edge-label-bg" x="293" y="432" width="88" height="20" rx="4"/><text class="edge-label" x="300" y="446">映射到物理机</text>
+
+          <path class="edge" d="M630 169H700"/><rect class="edge-label-bg" x="635" y="153" width="62" height="20" rx="4"/><text class="edge-label" x="645" y="167">实例化</text>
+          <path class="edge" d="M745 196V226H570V252"/><rect class="edge-label-bg" x="594" y="210" width="108" height="20" rx="4"/><text class="edge-label" x="601" y="224">通过启动器运行</text>
+          <path class="edge" d="M745 196V252"/><rect class="edge-label-bg" x="719" y="214" width="54" height="20" rx="4"/><text class="edge-label" x="731" y="228">具有</text>
+          <path class="edge" d="M500 169H410V403H420"/><rect class="edge-label-bg" x="413" y="218" width="76" height="20" rx="4"/><text class="edge-label" x="422" y="232">使用磁盘</text>
+          <path class="edge" d="M510 403H540"/><rect class="edge-label-bg" x="508" y="354" width="54" height="20" rx="4"/><text class="edge-label" x="520" y="368">引用</text>
+          <path class="edge" d="M630 403H660"/><rect class="edge-label-bg" x="628" y="354" width="68" height="20" rx="4"/><text class="edge-label" x="638" y="368">来源于</text>
+          <path class="edge" d="M760 403H790"/><rect class="edge-label-bg" x="753" y="354" width="74" height="20" rx="4"/><text class="edge-label" x="763" y="368">声明 PVC</text>
+          <path class="edge active" d="M765 308V335H410V482H500"/><rect class="edge-label-bg" x="620" y="319" width="82" height="20" rx="4"/><text class="edge-label" x="628" y="333">连接到 NAD</text>
+          <path class="edge" d="M610 482H635"/><rect class="edge-label-bg" x="610" y="433" width="54" height="20" rx="4"/><text class="edge-label" x="622" y="447">配置</text>
+          <path class="edge" d="M750 482H770"/><rect class="edge-label-bg" x="745" y="433" width="54" height="20" rx="4"/><text class="edge-label" x="757" y="447">接入</text>
+
+          <g><rect class="node" x="65" y="47" width="120" height="46" rx="7"/><text class="node-type" x="78" y="64">Ingress</text><text class="node-title" x="78" y="82">commerce-public</text></g>
+          <g><rect class="node" x="250" y="47" width="150" height="47" rx="7"/><circle cx="386" cy="59" r="5" fill="#c26a1b"/><text class="node-type" x="263" y="64">Kubernetes Service</text><text class="node-title" x="263" y="82">order-api · 3/8 Ready</text></g>
+          <g><rect class="node" x="65" y="146" width="145" height="44" rx="7"/><circle cx="196" cy="158" r="5" fill="#c83c35"/><text class="node-type" x="78" y="163">Deployment</text><text class="node-title" x="78" y="181">order-api</text></g>
+          <g><rect class="node" x="250" y="252" width="150" height="56" rx="7"/><circle cx="386" cy="264" r="5" fill="#c83c35"/><text class="node-type" x="263" y="270">Pod 聚合 · 8 个</text><text class="node-title" x="263" y="291">5 严重 · 3 健康</text></g>
+          <g><rect class="node" x="80" y="380" width="120" height="46" rx="7"/><text class="node-type" x="93" y="397">PVC</text><text class="node-title" x="93" y="415">order-cache-data</text></g>
+          <g><rect class="node" x="80" y="459" width="120" height="46" rx="7"/><text class="node-type" x="93" y="476">PV</text><text class="node-title" x="93" y="494">pvc-8fe0…</text></g>
+          <g><rect class="node" x="277" y="380" width="120" height="46" rx="7"/><circle cx="383" cy="392" r="5" fill="#c26a1b"/><text class="node-type" x="290" y="397">Kubernetes Node</text><text class="node-title" x="290" y="415">node-worker-12</text></g>
+          <g><rect class="node" x="277" y="459" width="120" height="46" rx="7"/><text class="node-type" x="290" y="476">Physical Server</text><text class="node-title" x="290" y="494">ps-12</text></g>
+
+          <g><rect class="node" x="500" y="146" width="130" height="46" rx="7"/><text class="node-type" x="513" y="163">VirtualMachine</text><text class="node-title" x="513" y="181">checkout-worker-03</text></g>
+          <g><rect class="node" x="700" y="146" width="130" height="50" rx="7"/><circle cx="816" cy="158" r="5" fill="#c83c35"/><text class="node-type" x="713" y="163">VMI</text><text class="node-title" x="713" y="183">checkout-worker-03</text></g>
+          <g><rect class="node" x="505" y="252" width="130" height="56" rx="7"/><text class="node-type" x="518" y="270">virt-launcher Pod</text><text class="node-title" x="518" y="291">checkout…-9kl42</text></g>
+          <g><rect class="node selected" x="700" y="252" width="130" height="56" rx="7"/><text class="node-type" x="713" y="270">虚拟网络接口</text><text class="node-title" x="713" y="291">net1 · SR-IOV</text></g>
+          <g><rect class="node" x="420" y="380" width="90" height="46" rx="7"/><text class="node-type" x="433" y="397">磁盘设备</text><text class="node-title" x="433" y="415">vda · VirtIO</text></g>
+          <g><rect class="node" x="540" y="380" width="90" height="46" rx="7"/><text class="node-type" x="553" y="397">VM Volume</text><text class="node-title" x="553" y="415">rootdisk</text></g>
+          <g><rect class="node" x="660" y="380" width="100" height="46" rx="7"/><circle cx="746" cy="392" r="5" fill="#c83c35"/><text class="node-type" x="673" y="397">DataVolume</text><text class="node-title" x="673" y="415">checkout-root</text></g>
+          <g><rect class="node" x="790" y="380" width="100" height="46" rx="7"/><text class="node-type" x="803" y="397">PVC</text><text class="node-title" x="803" y="415">dv-checkout…</text></g>
+          <g><rect class="node selected" x="500" y="459" width="110" height="46" rx="7"/><text class="node-type" x="513" y="476">NAD</text><text class="node-title" x="533" y="494">sriov-prod</text></g>
+          <g><rect class="node" x="635" y="459" width="115" height="46" rx="7"/><text class="node-type" x="648" y="476">Multus / CNI</text><text class="node-title" x="663" y="494">SR-IOV</text></g>
+          <g><rect class="node" x="770" y="459" width="115" height="46" rx="7"/><text class="node-type" x="783" y="476">实际网络</text><text class="node-title" x="788" y="494">vlan-240</text></g>
+        </svg></div><div class="graph-footer"><span>匹配总数 2,418 节点 / 4,806 关系 · 当前加载 17 / 16 · 聚合 1 组 · 权限过滤 0</span><span>可分页展开 · 等价列表读取完整关系</span></div></section><aside class="card"><div class="inspector-head"><span class="tag">已选中事实关系</span><h2>虚拟接口连接到 NAD</h2><p class="muted">运行期关系 · 10:32:04 同步</p></div><div class="context-section"><div class="relation-triple">VMI / checkout-worker-03 / net1<br><b>─ 连接到 →</b><br>NAD / virtualization / sriov-prod</div></div><div class="context-section"><h3>关系证据</h3><div class="kv"><span>权威字段</span><span class="mono">spec.networks[].multus.networkName</span></div><div class="kv"><span>配置链</span><span>Multus → SR-IOV → vlan-240</span></div><div class="kv"><span>事实状态</span><span>已确认</span></div><div class="kv"><span>同步时间</span><span>14 秒前</span></div><div class="kv"><span>说明</span><span>NAD 不是网卡或物理网络</span></div></div><div class="context-section"><button class="btn primary" style="width:100%">查看等价关系列表</button></div></aside></div></section>
+
+      <section id="knowledge" class="view" data-nav-section="knowledge"><div class="page-head"><div><h1>运维知识</h1><p>cloud-sh-01 · 平台通用知识 + 当前集群知识 · RAG 治理入口</p></div><div class="head-actions"><button class="btn compact-only">筛选</button><button class="btn primary">新增知识</button></div></div>
+        <div class="card knowledge-health"><div><span>检索与索引</span><b><span class="status-chip healthy">可用</span></b><small>canonical API · 范围校验正常</small></div><div><span>已发布</span><b>186</b><small>平台通用 42 · 本集群 144</small></div><div><span>待审核</span><b>7</b><small>仅管理员可查看全部</small></div><div><span>最近成功索引</span><b>2 分钟前</b><small>版本与正文一致</small></div><div><span>索引失败</span><b style="color:var(--red)">1</b><small>正文仍可浏览 · 可重试</small></div></div>
+        <div class="card knowledge-search"><div class="search-box">语义搜索当前平台通用与 cloud-sh-01 已发布知识…</div><button class="tool active">类型：全部⌄</button><button class="tool">范围⌄</button><button class="tool">资源 Kind⌄</button><button class="tool">来源⌄</button></div>
+        <div class="tabs" style="margin-top:14px"><button class="tab active">故障案例</button><button class="tab">运维文档</button><button class="tab">内置 Playbook</button><span class="aux-link">只检索已发布的当前版本</span></div>
+        <div class="knowledge-layout"><aside class="card knowledge-filters"><div class="filter-group" style="border-top:0;margin-top:0"><h3>生命周期</h3><div class="filter-option"><i class="checkbox checked"></i>已发布 <span style="margin-left:auto">186</span></div><div class="filter-option"><i class="checkbox"></i>待审核 <span style="margin-left:auto">7</span></div><div class="filter-option"><i class="checkbox"></i>草稿 <span style="margin-left:auto">3</span></div><div class="filter-option"><i class="checkbox"></i>已禁用 <span style="margin-left:auto">12</span></div></div><div class="filter-group"><h3>适用范围</h3><div class="filter-option"><i class="checkbox checked"></i>平台通用</div><div class="filter-option"><i class="checkbox checked"></i>cloud-sh-01</div></div><div class="filter-group"><h3>资源 Kind</h3><div class="filter-option"><i class="checkbox checked"></i>Deployment</div><div class="filter-option"><i class="checkbox"></i>Pod</div><div class="filter-option"><i class="checkbox"></i>VirtualMachine</div><div class="filter-option"><i class="checkbox"></i>Kubernetes Service</div></div></aside>
+          <section class="card"><div class="result-head"><strong>语义命中 24 项</strong><span class="right">第 1–20 项 · 索引于 2 分钟前</span></div><div class="knowledge-row active"><div class="knowledge-row-head"><strong>Deployment 发布后 Pod 启动探针持续失败</strong><span class="status-chip healthy">已发布</span></div><p>命中片段：确认镜像变更后 startup probe 路径与应用版本不兼容，应先对比探针配置与旧版本……</p><div class="knowledge-meta"><span class="tag">故障案例</span><span class="scope-chip">cloud-sh-01</span><span>Deployment · Pod</span><span>来源 RUN-20260909-0182</span><span>v3</span></div></div><div class="knowledge-row"><div class="knowledge-row-head"><strong>KubeVirt 虚拟机磁盘 I/O 延迟排查</strong><span class="status-chip healthy">已发布</span></div><p>从 VMI 磁盘设备追踪 Volume、DataVolume → PVC、PV、StorageClass 与后端存储指标。</p><div class="knowledge-meta"><span class="tag">运维文档</span><span class="scope-chip">平台通用</span><span>VirtualMachine · VMI</span><span>v5</span></div></div><div class="knowledge-row"><div class="knowledge-row-head"><strong>Service 就绪端点减少检查清单</strong><span class="status-chip healthy">已发布</span></div><p>核对 selector、EndpointSlice、Pod Ready 与入口流量，不把业务 Service 与 Kubernetes Service 混同。</p><div class="knowledge-meta"><span class="tag">内置 Playbook</span><span class="scope-chip">平台通用</span><span>Git 7c03ae1</span><span>v12</span></div></div></section>
+          <aside class="card"><div class="knowledge-editor"><span class="tag">故障案例</span><h2>Deployment 发布后 Pod 启动探针持续失败</h2><div class="knowledge-meta"><span class="scope-chip">cloud-sh-01</span><span class="status-chip healthy">已发布</span><span>当前版本 v3</span></div><p class="muted">来源：RUN-20260909-0182 / 报告 RPT-20260909-44</p></div><div class="context-section"><h3>症状与根因</h3><p>新镜像启动后 5/8 Pod 因 startup probe 连接失败反复重启；确认探针路径与 v2.18.4 不兼容。</p></div><div class="context-section"><h3>处理与验证</h3><p>回滚 v2.18.3，验证 8/8 Ready、Endpoint 恢复且 15 分钟内无新增 BackOff。</p></div><div class="context-section"><h3>治理与索引</h3><div class="kv"><span>审核</span><span>platform-admin · 09-09 12:04</span></div><div class="kv"><span>索引</span><span>成功 · 2 分钟前</span></div><div class="kv"><span>版本</span><span>v3 · 可查看历史</span></div></div></aside>
+        </div>
+      </section>
+
+      <section id="knowledge-new" class="view" data-nav-section="knowledge"><div class="page-head"><div><h1>新增运维知识</h1><p>cloud-sh-01 · 保存草稿或提交审核 · 未发布内容不进入 RAG</p></div><div class="head-actions"><button class="btn">取消</button></div></div><div class="knowledge-form-layout"><section class="card knowledge-form"><div class="form-grid"><div class="field"><label>知识类型</label><select><option>故障案例</option><option>运维文档</option></select></div><div class="field"><label>适用范围</label><select><option>当前集群：cloud-sh-01</option><option>平台通用（需要管理员权限）</option></select><small>服务端校验租户与集群，不能指定未授权范围。</small></div></div><div class="field"><label>标题</label><input value="KubeVirt 虚拟机根盘 I/O 延迟处置案例" /></div><div class="form-grid"><div class="field"><label>资源 Kind</label><input value="VirtualMachine, VirtualMachineInstance, PVC" /></div><div class="field"><label>来源与版本</label><input value="RUN-20260910-0038 · v1" /></div></div><div class="field"><label>症状</label><textarea>VM checkout-worker-03 的 vda I/O p99 达到 87ms，来宾系统写入延迟升高。</textarea></div><div class="field"><label>根因</label><textarea>DataVolume 对应 PVC 所绑定存储池发生热点；通过 VM → VMI → 磁盘设备 → Volume → DataVolume → PVC → PV 关系确认影响链。</textarea></div><div class="field"><label>处理步骤与验证</label><textarea>1. 确认 PVC canonical UID 与 StorageClass。
+2. 经预检和审批迁移后端卷。
+3. 验证 I/O p99 低于 20ms，VM 业务探针连续 15 分钟正常。</textarea></div><div class="field"><label>标签</label><input value="kubevirt, storage, io-latency" /></div><div class="form-actions"><button class="btn">保存草稿</button><button class="btn primary">提交审核</button></div></section><aside class="card"><div class="section-title"><h2>发布规则</h2></div><div class="context-section"><p>提交后状态为“待审核”；管理员批准才生成已发布版本并进入向量索引。</p></div><div class="context-section"><h3>自动附带</h3><div class="kv"><span>租户</span><span>从登录态确定</span></div><div class="kv"><span>集群</span><span>cloud-sh-01</span></div><div class="kv"><span>来源</span><span>RUN-20260910-0038</span></div><div class="kv"><span>审计</span><span>创建、审核、发布全记录</span></div></div><div class="context-section"><h3>不会发生</h3><p class="muted">草稿不会被 AI 检索；前端不能直接写 Chroma；禁用知识保留历史与审计。</p></div></aside></div></section>
+
+      <section id="reports" class="view" data-nav-section="reports"><div class="page-head"><div><h1>运维报告</h1><p>cloud-sh-01 · 真实资源事件、证据、动作和验证</p></div><div class="head-actions"><button class="btn">最近 30 天⌄</button><button class="btn">加入运维知识（待审核）</button><button class="btn primary">生成报告</button></div></div><div class="report-layout"><aside class="card report-list"><div class="result-head"><strong>最近报告</strong><span class="right">24 项</span></div><div class="report-item active"><strong>order-api 发布故障调查报告</strong><small class="muted">Deployment · commerce<br>2026-09-09 11:26</small></div><div class="report-item"><strong>checkout-worker-03 磁盘延迟事件</strong><small class="muted">KubeVirt VM · virtualization<br>2026-09-09 10:54</small></div><div class="report-item"><strong>cloud-sh-01 每日健康报告</strong><small class="muted">集群报告 · 2026-09-09 08:00</small></div></aside><article class="card report-body"><span class="tag">调查报告</span><h2>Deployment / order-api 发布故障</h2><p class="muted">cloud-sh-01 · commerce · RUN-20260909-0182 · 10:15–10:43</p><div class="report-facts"><div class="mini-stat"><span>影响持续</span><b>28 分钟</b><small>已恢复</small></div><div class="mini-stat"><span>影响资源</span><b>8 Pod</b><small>1 个 Kubernetes Service</small></div><div class="mini-stat"><span>验证结果</span><b style="color:var(--green)">通过</b><small>8/8 Ready</small></div></div><div class="report-section"><h3>事件摘要</h3><p>镜像 v2.18.4 发布后，5 个 Pod 因启动探针失败进入重启退避，导致 Kubernetes Service 可用端点下降至 3/8。</p></div><div class="report-section"><h3>证据与根因</h3><p>Deployment 变更、容器日志、Kubernetes Event 和失败率变化在同一时间窗口内一致；确认新版本启动探针路径配置不兼容。</p></div><div class="report-section"><h3>处置与恢复验证</h3><p>经预检和审批回滚至 v2.18.3；8/8 副本就绪，失败率恢复至 0.18%，连续 15 分钟无新增 BackOff。</p></div></article></div></section>
+
+      <section id="admin" class="view" data-nav-section="admin">
+        <div class="page-head"><div><h1>系统管理</h1><p>AIOps 自身健康、数据可信度与平台能力配置</p></div><div class="head-actions"><span class="muted">管理员视图</span></div></div>
+        <div class="admin-layout"><aside class="card settings-menu"><div>纳管集群</div><div class="active">AIOps 自身健康</div><div>采集器状态</div><div>图谱同步</div><div>知识索引任务</div><div>数据可信度</div><div>告警调查策略</div><div>能力策略</div><div>用户与角色</div><div>审计日志</div></aside><section>
+          <div class="card self-health"><div><span class="eyebrow">AIOps 自身状态</span><h2 style="margin:6px 0"><span class="status-chip degraded">降级</span></h2><p class="muted" style="margin:0">与各集群资源健康分离</p></div><div class="fact"><span>正常能力</span><b>6 / 7</b><small>1 项需要关注</small></div><div class="fact"><span>最新成功同步</span><b>14 秒前</b><small>资源同步</small></div><div class="fact"><span>影响范围</span><b>1 个集群</b><small>仅拓扑关系陈旧</small></div></div>
+          <div class="card" style="margin-top:14px"><div class="section-title"><h2>告警调查策略 · cloud-sh-01</h2><span class="right">自动调查仅只读，不会执行处置</span></div><div class="policy-grid"><div><span>模式</span><b>系统建议（draft）</b><small>生成草稿，用户确认后开始</small></div><div><span>最小严重度</span><b>严重</b><small>warning 不触发</small></div><div><span>最大并发</span><b>3</b><small>超出进入有界队列</small></div><div><span>每小时上限</span><b>12</b><small>按集群计数</small></div></div></div>
+          <div class="card" style="margin-top:14px"><div class="section-title"><h2>组件与能力状态</h2><span class="right">异常优先</span></div><div class="component-row"><div class="name-cell"><strong>拓扑同步</strong><small>graph-sync-worker</small></div><span class="status-chip degraded">延迟</span><span>cloud-gz-edge</span><span>9 分钟前</span></div><div class="component-row"><div class="name-cell"><strong>资源同步</strong><small>inventory-sync</small></div><span class="status-chip healthy">正常</span><span>12 个集群</span><span>14 秒前</span></div><div class="component-row"><div class="name-cell"><strong>指标采集</strong><small>metrics-collector</small></div><span class="status-chip healthy">正常</span><span>118/120 目标</span><span>18 秒前</span></div><div class="component-row"><div class="name-cell"><strong>知识索引</strong><small>knowledge-index-worker</small></div><span class="status-chip degraded">1 项失败</span><span>186 已发布版本</span><span>2 分钟前</span></div><div class="component-row"><div class="name-cell"><strong>处置控制器</strong><small>action-controller</small></div><span class="status-chip healthy">正常</span><span>能力可用</span><span>8 秒前</span></div></div>
+        </section></div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const requested = params.get('view') || 'platform';
+    const login = requested === 'login';
+    document.getElementById('login').classList.toggle('active', login);
+    document.getElementById('app').style.display = login ? 'none' : 'grid';
+    if (!login) {
+      const view = document.getElementById(requested) || document.getElementById('platform');
+      view.classList.add('active');
+      const section = view.dataset.navSection || 'cluster';
+      document.querySelector(`[data-nav="${section}"]`)?.classList.add('active');
+      if (view.id === 'platform') {
+        document.getElementById('cluster-name').textContent = '选择 Kubernetes 集群';
+        document.getElementById('cluster-sub').textContent = '平台总览不受选择影响';
+        document.querySelector('.cluster-picker .dot').className = 'dot gray';
+      }
+    }
+  </script>
+</body>
+</html>

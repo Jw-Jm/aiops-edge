@@ -85,6 +85,10 @@ type AlertEvent struct {
 	Investigation  string  `json:"investigation,omitempty"` // 调查结果（RCA 分析 JSON）
 	Signature      string  `json:"signature,omitempty"`     // dedupe 指纹（rule+service+detail）
 	Cluster        string  `json:"cluster,omitempty"`       // A-6：事件所属集群（继承规则）
+	// InvestigationLink 是告警→调查的受控投影（mode/status/reason_code/run_id）。
+	// 权威记录在 MySQL ai_alert_run_links；此处仅供告警列表展示，skipped 原因不隐藏。
+	InvestigationLink *AlertInvestigationProjection `json:"investigation_link,omitempty"`
+
 }
 
 // eventSignature 生成事件指纹（rule+service+detail 维度），用于 dedupe。
@@ -166,6 +170,26 @@ func generateID() string {
 func SetAlertCH(h *Handler) {
 	alertCH = h
 	loadAlertEvents()
+}
+
+// RunAlertEventsSyncLoop 周期性从 ClickHouse 重载告警事件到内存态。
+// http 模式（query-api-http）不运行告警评估循环，事件由 alert-eval pod 写入 CH；
+// 若不周期重载，http 进程内存缓存启动后即冻结，GET /api/v1/alerts/events
+// 看不到 alert-eval 新产生的事件（回归 alerts_events_api_shows_event）。
+func (h *Handler) RunAlertEventsSyncLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			loadAlertEvents()
+		}
+	}
 }
 
 // toCHTime 把 RFC3339 转成 ClickHouse DateTime64(3) 格式；空串返回空（由调用方写 NULL）。
@@ -804,6 +828,8 @@ func (h *Handler) AlertEventAck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saveAlertEvents()
+	// Task 10：恢复只记录 source_resolved，不改写冻结窗口，也不取消已开始的调查。
+	h.markAlertSourceResolved(alertEvents[idx])
 	respondJSON(w, http.StatusOK, alertEvents[idx])
 }
 

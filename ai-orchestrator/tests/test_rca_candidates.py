@@ -10,11 +10,12 @@ def test_graph_candidates_use_bounded_production_limits(monkeypatch):
 
     graph_candidates({"entity_uid": "node-1"}, graph_client, max_depth=6)
 
+    # D22：K8s 故障传播链 Deployment→RS→Pod 天然两层，默认深度 2
     assert calls == [{
         "graph_operation": "candidate_subgraph",
         "entity_uid": "node-1",
         "relation_policy": "root_cause_candidate_v1",
-        "max_depth": 1,
+        "max_depth": 2,
         "max_vertices": 50,
         "max_edges": 150,
     }]

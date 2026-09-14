@@ -456,7 +456,7 @@ func (f *fakeKnowledgeBackend) Search(ctx context.Context, scope query.Knowledge
 func TestInternalQueryKnowledgeSuccess(t *testing.T) {
 	c := newInternalQueryTestHandler(t, nil)
 	c.h.knowledgeRepo = query.NewKnowledgeRepository(&fakeKnowledgeBackend{hits: []query.KnowledgeHit{
-		{DocumentID: "doc-1", Source: "runbook", Version: "v3", Similarity: 0.92, Applicability: "checkout"},
+		{DocumentID: "doc-1", KnowledgeID: "k-1", VersionID: "v-3", TenantID: authzTenantID, ScopeType: "cluster", ClusterID: testClusterID, Status: "published", IsCurrent: true, Source: "runbook", Version: "v3", Similarity: 0.92, Applicability: "checkout"},
 	}})
 	req := c.signedRequest(t, http.MethodPost, "/internal/v1/query/knowledge", `{"query":"checkout crashloop"}`, func(ctx *contract.TrustedRequestContext) {
 		ctx.Capability = "knowledge.search"
