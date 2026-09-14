@@ -375,8 +375,13 @@ class RCAEngineV2:
             propagated = has_valid_path(candidate_paths.get(uid, []))
             support = []
             if propagated and uid != symptom_uid:
+                # 传播支持仅限症状层的 alert 类证据：告警在传播链终点的触发是
+                # 路径的佐证（anomaly 维度）。metric/trace/hardware 是症状自身
+                # 的观测维度，跨实体借用会让下游候选复制症状的全部分数
+                # （实测导致 multiple_probable_roots，违反 D-3 防夸大判定）。
                 support = [dict(e, propagated_support=True)
-                           for e in evidence_for_candidate(evidence, symptom_uid)]
+                           for e in evidence_for_candidate(evidence, symptom_uid)
+                           if e.get("category") == "alert"]
             scored_evidence = candidate_evidence + support
             breakdown = score_candidate(candidate, scored_evidence, hops=candidate.get("hops", 1),
                                         symptom_time=request.symptom_time, window_start=request.window_start,
