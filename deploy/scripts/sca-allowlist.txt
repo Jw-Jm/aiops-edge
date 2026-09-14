@@ -18,3 +18,4 @@ CVE-2026-45833|2026-12-31|chromadb in-process only, server-mode RCE not reachabl
 # server、egress default-deny）。
 PYSEC-2026-3815|2026-12-31|chromadb in-process only, server-mode vuln not reachable, no fixed release yet (same family as PYSEC-2026-311, see SCA_TRIAGE_LEDGER.md)
 PYSEC-2026-3813|2026-12-31|chromadb in-process only, server-mode vuln not reachable, no fixed release yet (same family as PYSEC-2026-311, see SCA_TRIAGE_LEDGER.md)
+PYSEC-2026-3814|2026-12-31|chromadb in-process only, server-mode vuln not reachable, no fixed release yet (same family as PYSEC-2026-311, see SCA_TRIAGE_LEDGER.md)
